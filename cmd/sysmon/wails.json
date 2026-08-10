@@ -1,0 +1,7 @@
+{
+    "name": "sysmon",
+    "outputfilename": "sysmon",
+    "frontend:install": "npm install",
+    "frontend:build": "npm run build",
+    "wailsjsdir": "./frontend/src/lib/wails"
+}

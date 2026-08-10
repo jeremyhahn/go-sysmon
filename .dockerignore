@@ -1,0 +1,23 @@
+# Keep the build context small.
+#
+# Three Dockerfiles share this file and they need different things:
+#   ./Dockerfile                  builds the frontend from source, so it needs
+#                                 cmd/sysmon/frontend/{src,package*.json}
+#   test/integration/Dockerfile   expects cmd/sysmon/frontend/dist prebuilt
+#   test/desktop/Dockerfile       installs the Cinnamon applet, so it needs
+#                                 extensions/
+#
+# So the frontend source and the extensions stay IN the context and only
+# genuinely useless things are excluded.
+.git
+.github/
+bin/
+dist/
+
+cmd/sysmon/frontend/node_modules/
+cmd/sysmon/frontend/test-results/
+cmd/sysmon/frontend/playwright-report/
+
+docs/
+coverage.out
+coverage.html
