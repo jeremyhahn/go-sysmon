@@ -1,0 +1,445 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  GO_VERSION_FILE: go.mod
+  NODE_VERSION: '22'
+
+jobs:
+  verify:
+    name: Verify Before Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cmd/sysmon/frontend/package-lock.json
+
+      # Every tool `make ci-fast` reaches for. If one is missing the release
+      # gate fails at the tool check rather than on a real finding, which is a
+      # confusing way to lose a release.
+      - name: Install tools
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Install frontend dependencies
+        working-directory: cmd/sysmon/frontend
+        run: npm ci
+
+      # `make ci-fast` ends in `make build`, which builds the DESKTOP binary
+      # too -- and that links GTK and WebKit through cgo. Without these headers
+      # the gate dies in the compiler rather than on a real finding. Every
+      # other job that runs `make build` installs them; this one was the
+      # exception, which is exactly why v0.1.0 failed here.
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      # Nothing is published unless lint, vulnerability scans and the race
+      # suite pass. The container and browser suites are covered by CI on the
+      # commit being tagged.
+      - name: Run the release gate
+        run: make ci-fast
+
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          # arm64 builds natively on an ARM runner rather than cross-compiling:
+          # CGO is mandatory (NVIDIA NVML), and a native toolchain avoids
+          # maintaining a cross-compilation setup for a cgo dependency.
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cmd/sysmon/frontend/package-lock.json
+
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      # The server binary is the portable artifact: 3 shared libraries, runs on
+      # a headless host. The desktop binary additionally links GTK and WebKit
+      # and only runs where those are installed.
+      - name: Build release binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          make release-build VERSION="${VERSION}"
+          make release-build-desktop VERSION="${VERSION}"
+
+      - name: Verify the binaries run
+        run: |
+          for b in dist/sysmon-server-*-linux-*; do
+            case "$b" in *.sha256) continue;; esac
+            "$b" version
+          done
+
+      # See the note in ci.yml: artifact v4 is GitHub-only. The binaries are
+      # still built and verified on Gitea; they are just not uploaded.
+      - uses: actions/upload-artifact@v4
+        if: github.server_url == 'https://github.com'
+        with:
+          name: release-${{ matrix.arch }}
+          path: dist/
+          retention-days: 7
+
+  # Images are built on the SAME native runners as the binaries rather than
+  # under QEMU. A cgo build (NVML) through emulation is slow enough to dominate
+  # the whole release, and it is avoidable when native arm64 runners exist.
+  #
+  # Each runner pushes by digest only; the manifest list that ties them into
+  # one multi-arch tag is assembled afterwards.
+  image:
+    name: Image (${{ matrix.arch }})
+    # ghcr.io and its GITHUB_TOKEN credential only exist on GitHub, and the
+    # digest hand-off uses upload-artifact@v4, which refuses to run elsewhere.
+    # On Gitea this job is skipped rather than failing the release.
+    if: github.server_url == 'https://github.com'
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          provenance: false
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      # The digest is the only thing the manifest step needs, and artifact
+      # names must not collide between matrix legs.
+      - name: Export the digest
+        run: |
+          mkdir -p /tmp/digests
+          # The build output is "sha256:<hex>". Artifact filenames cannot
+          # contain a colon, so strip the algorithm prefix -- which is also
+          # what the manifest step expects when it rebuilds the reference as
+          # "${IMAGE}@sha256:${digest}".
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  image-manifest:
+    name: Publish Image Manifest
+    if: github.server_url == 'https://github.com'
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      # ghcr requires a lowercase repository path; github.repository already is
+      # for this repo, but tolower keeps it correct if the owner ever changes.
+      - name: Create the multi-arch tags
+        working-directory: /tmp/digests
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
+          VERSION="${{ steps.version.outputs.version }}"
+          # One digest file per architecture, named for the digest. Collect
+          # them into an array rather than relying on an unquoted expansion to
+          # word-split, which is what shellcheck objects to (SC2046) and is
+          # genuinely fragile.
+          refs=()
+          for digest in *; do
+            refs+=("${IMAGE}@sha256:${digest}")
+          done
+          docker buildx imagetools create \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:latest" \
+            "${refs[@]}"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+
+  publish:
+    name: Publish Release
+    # softprops/action-gh-release talks to the GitHub Releases API.
+    if: github.server_url == 'https://github.com'
+    needs: [build, image-manifest]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        run: |
+          cat > NOTES.md <<'EOF'
+          ## Installation
+
+          `sysmon-server` is the portable build: it links only libc, runs on a
+          headless host, and embeds the web dashboard. This is the one to
+          deploy to servers.
+
+          ```bash
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/sysmon-server-${{ steps.version.outputs.version }}-linux-amd64
+          chmod +x sysmon-server-*
+          sudo install -m 0755 sysmon-server-* /usr/local/bin/sysmon-server
+          sysmon-server serve --addr :8080
+          ```
+
+          `sysmon` is the desktop build. It does everything the server build
+          does and adds a native GUI window, but links GTK and WebKit and will
+          not start without them:
+
+          ```bash
+          sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0 libsoup-3.0-0
+          ```
+
+          Run `sysmon doctor` on any host to see what that build can do there
+          and how to fix anything missing.
+
+          ### Container
+
+          ```bash
+          docker run -d --name sysmon \
+            --pid=host --network=host \
+            -v /sys:/sys:ro -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }} \
+            serve --addr :8080
+          ```
+
+          linux/amd64 and linux/arm64. The host flags are not optional: without
+          them the container reports itself (1 process, its own veth) rather
+          than the host. Add `--privileged` for SMART disk health -- capabilities
+          alone are not sufficient. See docs/server/container.md.
+
+          ### Verifying a download
+
+          ```bash
+          sha256sum -c sysmon-server-${{ steps.version.outputs.version }}-linux-amd64.sha256
+          ```
+
+          ### Note on the dashboard
+
+          The web dashboard has no authentication. It exposes hostnames, the
+          process list, disk serial numbers and network configuration. Bind it
+          to a private interface
+          (`--addr 10.0.0.5:8080`) or put an authenticating proxy in front of
+          it before exposing it to an untrusted network.
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: go-sysmon ${{ steps.version.outputs.tag }}
+          body_path: NOTES.md
+          files: artifacts/*
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.tag, '-rc') || contains(steps.version.outputs.tag, '-beta') }}
+          generate_release_notes: true
+
+  # The Gitea equivalent of build + image + publish, in one job.
+  #
+  # It cannot reuse the jobs above: those hand artifacts between jobs, and
+  # upload-artifact refuses to run against a non-github.com server. So this
+  # builds, pushes and publishes in a single job instead.
+  #
+  # Single architecture, because there is one runner. GitHub produces amd64 and
+  # arm64 from native runners; here you get the runner's own architecture.
+  gitea-release:
+    name: Gitea Release
+    needs: verify
+    if: github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      - name: Resolve version and instance
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/}"
+          fi
+          {
+            echo "version=${version#v}"
+            echo "tag=${version}"
+            # github.server_url is the Gitea instance; the registry is the same
+            # host and port with the scheme stripped.
+            server="${{ github.server_url }}"
+            echo "registry=${server#*://}"
+            echo "api=${server}/api/v1"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        run: |
+          make release-build VERSION="${{ steps.meta.outputs.version }}"
+          make release-build-desktop VERSION="${{ steps.meta.outputs.version }}"
+
+      - name: Verify the binaries run
+        run: |
+          for b in dist/sysmon-server-*-linux-*; do
+            case "$b" in *.sha256) continue;; esac
+            "$b" version
+          done
+
+      # Gitea's built-in container registry. Over plain HTTP this needs
+      # insecure-registries on the pushing daemon and on every daemon that
+      # pulls, so it is allowed to fail without losing the binary release --
+      # see infra/gitea/docs/lessons.md.
+      - name: Push the container image
+        continue-on-error: true
+        env:
+          REGISTRY: ${{ steps.meta.outputs.registry }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: bash .github/scripts/gitea-image.sh
+
+      - name: Publish the release
+        env:
+          GITEA_API: ${{ steps.meta.outputs.api }}
+          GITEA_REPO: ${{ github.repository }}
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: bash .github/scripts/gitea-release.sh

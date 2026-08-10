@@ -1,0 +1,35 @@
+{
+    "server-address": {
+        "type": "entry",
+        "default": "localhost:8080",
+        "description": "Sysmon server address (host:port)"
+    },
+    "update-interval": {
+        "type": "spinbutton",
+        "default": 1000,
+        "min": 250,
+        "max": 60000,
+        "step": 250,
+        "description": "Update interval in milliseconds"
+    },
+    "show-cpu": {
+        "type": "switch",
+        "default": true,
+        "description": "Show CPU gauge"
+    },
+    "show-memory": {
+        "type": "switch",
+        "default": true,
+        "description": "Show memory gauge"
+    },
+    "show-network": {
+        "type": "switch",
+        "default": true,
+        "description": "Show network throughput"
+    },
+    "show-disk": {
+        "type": "switch",
+        "default": true,
+        "description": "Show disk usage"
+    }
+}

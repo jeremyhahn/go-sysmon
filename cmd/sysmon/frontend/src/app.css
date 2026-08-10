@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+/* dist/ holds the previous build and is committed on purpose, because
+   //go:embed all:frontend/dist needs it present in a fresh clone. Tailwind's
+   automatic source detection skips gitignored paths, so a tracked dist/ gets
+   scanned as if it were source: class-like strings in the last minified bundle
+   become real utilities in the next one. That made the CSS grow on every
+   rebuild and gave a clean build and an incremental build different content
+   hashes. Excluding it keeps the output a function of src/ alone. */
+@source not "../dist";
+
+@plugin "daisyui";

@@ -1,0 +1,29 @@
+CLAUDE.md
+
+# Build output. The leading slashes matter: /dist/ is the release directory,
+# and must not also match the embedded frontend bundle at
+# cmd/sysmon/frontend/dist/.
+/bin/
+/dist/
+/sysmon
+/sysmon-server
+
+# Dependencies
+cmd/sysmon/frontend/node_modules/
+
+# Test output
+coverage.out
+coverage.html
+cmd/sysmon/frontend/test-results/
+cmd/sysmon/frontend/playwright-report/
+# Captured run output from `make test` / `make integration-test`, which the
+# analysis workflows read and then discard.
+test.log
+integration-test.log
+
+# Tooling state
+.serena/
+
+# Note: cmd/sysmon/frontend/dist/ IS committed, deliberately. //go:embed
+# all:frontend/dist means a clone without it cannot `go build`, `go test` or
+# `go install` at all. Three files, 1.4 MB; rebuild with `make build-frontend`.

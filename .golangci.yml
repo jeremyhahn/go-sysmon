@@ -1,0 +1,21 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # The fmt.Fprint family is excluded because every renderer writes through
+      # pkg/cli.errWriter, which records the first write error and short-circuits
+      # the rest; each Render* function returns that error to its caller. Checking
+      # 130+ individual Fprintf calls would add no coverage over what errWriter
+      # already reports. See pkg/cli/errwriter.go.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    # Generated and vendored trees are not ours to lint.
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
