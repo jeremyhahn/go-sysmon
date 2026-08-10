@@ -362,3 +362,84 @@ jobs:
           draft: false
           prerelease: ${{ contains(steps.version.outputs.tag, '-rc') || contains(steps.version.outputs.tag, '-beta') }}
           generate_release_notes: true
+
+  # The Gitea equivalent of build + image + publish, in one job.
+  #
+  # It cannot reuse the jobs above: those hand artifacts between jobs, and
+  # upload-artifact refuses to run against a non-github.com server. So this
+  # builds, pushes and publishes in a single job instead.
+  #
+  # Single architecture, because there is one runner. GitHub produces amd64 and
+  # arm64 from native runners; here you get the runner's own architecture.
+  gitea-release:
+    name: Gitea Release
+    needs: verify
+    if: github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
+
+      - name: Resolve version and instance
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF#refs/tags/}"
+          fi
+          {
+            echo "version=${version#v}"
+            echo "tag=${version}"
+            # github.server_url is the Gitea instance; the registry is the same
+            # host and port with the scheme stripped.
+            server="${{ github.server_url }}"
+            echo "registry=${server#*://}"
+            echo "api=${server}/api/v1"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        run: |
+          make release-build VERSION="${{ steps.meta.outputs.version }}"
+          make release-build-desktop VERSION="${{ steps.meta.outputs.version }}"
+
+      - name: Verify the binaries run
+        run: |
+          for b in dist/sysmon-server-*-linux-*; do
+            case "$b" in *.sha256) continue;; esac
+            "$b" version
+          done
+
+      # Gitea's built-in container registry. Over plain HTTP this needs
+      # insecure-registries on the pushing daemon and on every daemon that
+      # pulls, so it is allowed to fail without losing the binary release --
+      # see infra/gitea/docs/lessons.md.
+      - name: Push the container image
+        continue-on-error: true
+        env:
+          REGISTRY: ${{ steps.meta.outputs.registry }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: bash .github/scripts/gitea-image.sh
+
+      - name: Publish the release
+        env:
+          GITEA_API: ${{ steps.meta.outputs.api }}
+          GITEA_REPO: ${{ github.repository }}
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: bash .github/scripts/gitea-release.sh
