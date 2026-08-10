@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import * as echarts from "echarts";
+  import {
+    init,
+    DARK_MODE,
+    type ChartOption,
+    type ECharts,
+  } from "$lib/echarts";
   import { usageEchartsColor } from "$lib/format";
 
   interface Props {
@@ -12,11 +17,12 @@
   let { value = 0, label = "", height = "180px" }: Props = $props();
 
   let container: HTMLDivElement;
-  let chart: echarts.ECharts | null = null;
+  let chart: ECharts | null = null;
 
-  function buildOption(pct: number): echarts.EChartsOption {
+  function buildOption(pct: number): ChartOption {
     const color = usageEchartsColor(pct);
     return {
+      darkMode: DARK_MODE,
       backgroundColor: "transparent",
       series: [
         {
@@ -60,7 +66,7 @@
   }
 
   onMount(() => {
-    chart = echarts.init(container, "dark", { renderer: "canvas" });
+    chart = init(container, null, { renderer: "canvas" });
     chart.setOption(buildOption(value));
 
     const ro = new ResizeObserver(() => chart?.resize());

@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import * as echarts from "echarts";
+  import {
+    init,
+    graphic,
+    AXIS_POINTER_COLOR,
+    DARK_MODE,
+    type ChartOption,
+    type ECharts,
+  } from "$lib/echarts";
 
   export interface SeriesConfig {
     label: string;
@@ -28,7 +35,7 @@
   }: Props = $props();
 
   let container: HTMLDivElement;
-  let chart: echarts.ECharts | null = null;
+  let chart: ECharts | null = null;
 
   const DEFAULT_COLORS = [
     "#36d399", // success green
@@ -41,9 +48,10 @@
   // Build 60-point X-axis labels: "-59s" … "0s"
   const xLabels = Array.from({ length: 60 }, (_, i) => `${i - 59}s`);
 
-  function buildOption(s: SeriesConfig[]): echarts.EChartsOption {
+  function buildOption(s: SeriesConfig[]): ChartOption {
     const firstFormatter = s[0]?.formatter;
     return {
+      darkMode: DARK_MODE,
       backgroundColor: "transparent",
       animation: false,
       grid: { top: 8, right: 8, bottom: showXAxis ? 24 : 8, left: 48 },
@@ -52,6 +60,10 @@
         backgroundColor: "#1d232a",
         borderColor: "#3d4451",
         textStyle: { color: "#a6adbb", fontSize: 11 },
+        axisPointer: {
+          lineStyle: { color: AXIS_POINTER_COLOR },
+          crossStyle: { color: AXIS_POINTER_COLOR },
+        },
         formatter: (params: unknown) => {
           const items = params as Array<{
             seriesName: string;
@@ -103,7 +115,7 @@
         },
         areaStyle: areaStyle
           ? {
-              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              color: new graphic.LinearGradient(0, 0, 0, 1, [
                 {
                   offset: 0,
                   color:
@@ -119,7 +131,7 @@
   }
 
   onMount(() => {
-    chart = echarts.init(container, "dark", { renderer: "canvas" });
+    chart = init(container, null, { renderer: "canvas" });
     chart.setOption(buildOption(series));
 
     const ro = new ResizeObserver(() => chart?.resize());

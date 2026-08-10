@@ -49,6 +49,36 @@ caught after this shipped.
 Built from `cmd/sysmon/frontend/` and embedded at compile time via
 `//go:embed frontend/dist`. The window is 1400x900 and titled "System Monitor".
 
+Because the embed directive needs `dist/` to exist in a fresh clone, the build
+output is committed rather than ignored. Two consequences follow, and both have
+already caused bugs:
+
+- Tailwind's automatic source detection skips gitignored paths, so a tracked
+  `dist/` would otherwise be scanned as source and turn class-like strings in
+  the last minified bundle into real utilities in the next one. `src/app.css`
+  excludes it with `@source not "../dist"`. Without that the CSS grows on every
+  rebuild and a clean build and an incremental build disagree on content hashes.
+- A change to the frontend is not complete until `dist/` is rebuilt and
+  committed with it, or the embedded UI and the source drift apart.
+
+## Charts
+
+`src/lib/echarts.ts` is the only module that imports ECharts. It pulls from
+`echarts/core` and registers exactly what the dashboard draws — gauge and line
+series, the grid and tooltip components, and the canvas renderer. The package's
+default entry point registers everything it ships, which costs roughly twice the
+bundle for a dashboard that draws two kinds of chart.
+
+Anything added to a chart option later — another series type, a legend, a data
+zoom — has to be registered there first, or ECharts silently renders nothing for
+it. Vendor code is emitted as its own content-hashed chunk, so redeploying the
+app does not invalidate the charting library in returning browsers.
+
+The stock `dark` theme is not used: it ships as a UMD bundle that re-imports the
+full ECharts build, which would undo the tree shaking. The chart options already
+state every colour they draw, so the theme only ever contributed `darkMode` and
+the axis pointer colour, and both are now set explicitly.
+
 ## Tables
 
 Every table that can grow without bound uses the shared `DataTable` component,
