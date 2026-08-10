@@ -133,7 +133,7 @@ stages, so it needs no prebuilt artifacts.
 
 ## Security
 
-The dashboard has no authentication and its WebSocket accepts any origin, and
+The dashboard has no authentication, and
 `network_mode: host` means it is bound wherever `--addr` says on the real host.
 It publishes hostnames, the full process list, disk serial numbers and network
 configuration. Bind it to a private interface (`--addr 10.0.0.5:8080`) or put

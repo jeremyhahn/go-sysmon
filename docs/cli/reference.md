@@ -203,7 +203,8 @@ Each check reports `ok`, `degraded` or `unavailable`, and anything less than
 
 ### serve
 
-Start the HTTP/WebSocket server for real-time browser-based monitoring.
+Start the HTTP server for real-time browser-based monitoring, streaming
+snapshots as server-sent events.
 
 ```bash
 sysmon serve --addr :8080 --interval 1000

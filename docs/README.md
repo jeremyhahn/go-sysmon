@@ -15,7 +15,7 @@ when you need to know why a number says what it says.
 | [Disk and network detail](collector/disk-and-network.md) | Queue depth, peaks, interface classification, DNS |
 | [Sensors](collector/sensors.md) | Where temperatures, power and PSI come from |
 | [Monitor](monitor/architecture.md) | Polling, and broadcasting to subscribers |
-| [Server](server/architecture.md) | HTTP and WebSocket streaming |
+| [Server](server/architecture.md) | HTTP, server-sent events and TLS |
 | [Container](server/container.md) | Running in Docker, and what it needs from the host |
 | [API](server/api.md) | Connecting your own client |
 | [CLI](cli/reference.md) | Every command and flag |
@@ -26,8 +26,9 @@ when you need to know why a number says what it says.
 
 | Extension | What it does |
 |-----------|--------------|
-| [Cinnamon applet](extensions/cinnamon.md) | Per-core bars and gauges drawn onto the panel |
+| [Cinnamon applet](extensions/cinnamon.md) | Per-core bars and gauges on the panel, full detail in the popup |
 | [System tray](extensions/systray.md) | Live CPU, RAM, swap and GPU in the notification area |
+| [Desktop testing](testing/desktop.md) | How the extensions are tested, in three tiers |
 
 ## Building, testing, releasing
 

@@ -32,12 +32,12 @@ embedded in the binary, so deploying it is copying one file.
 
 ### Interfaces
 
-- **Web dashboard** — WebSocket streaming with a selectable refresh rate (500ms to 60s), embedded in the binary
+- **Web dashboard** — server-sent event streaming with a selectable refresh rate (500ms to 60s), embedded in the binary
 - **Desktop GUI** — Wails v2 native window
 - **CLI** — formatted terminal output, `--json` on every command, `--refresh` for continuous updates
 - **System tray** — live CPU/RAM/swap/GPU/load in the notification area
 - **Cinnamon applet** — Cairo-rendered per-core bars and gauges in the panel
-- **REST + WebSocket API** — `GET /api/snapshot` and `GET /ws` for your own clients
+- **REST + streaming API** — `GET /api/snapshot` and `GET /api/events` for your own clients, with optional TLS
 
 ### Engineering
 
@@ -206,11 +206,12 @@ Checks the target's architecture and glibc, installs to `/usr/local/bin`, and
 verifies the binary runs. See **[docs/server/deployment.md](docs/server/deployment.md)**
 for the systemd unit and hardening notes.
 
-> **Security**: the dashboard has **no authentication** and its WebSocket
-> accepts any origin. It exposes hostnames, the full process list, disk serial
-> numbers and network configuration. Bind it to a private interface or put an
-> authenticating reverse proxy in front of it before exposing it anywhere
-> untrusted.
+> **Security**: the dashboard has **no authentication**. It exposes hostnames,
+> the full process list, disk serial numbers and network configuration. The
+> event stream is subject to the browser's same-origin policy, which stops a
+> random web page reading it — that is not a substitute for access control.
+> Bind it to a private interface or put an authenticating reverse proxy in
+> front of it before exposing it anywhere untrusted.
 
 ---
 
@@ -226,7 +227,7 @@ for the systemd unit and hardening notes.
 | [docs/collector/disk-and-network.md](docs/collector/disk-and-network.md) | Queue depth, peaks, interface classification, DNS |
 | [docs/collector/virtualization.md](docs/collector/virtualization.md) | Containers, VMs and image inventory |
 | [docs/monitor/architecture.md](docs/monitor/architecture.md) | Snapshot aggregation and broadcasting |
-| [docs/server/api.md](docs/server/api.md) | REST and WebSocket API |
+| [docs/server/api.md](docs/server/api.md) | REST and event-stream API |
 | [docs/server/deployment.md](docs/server/deployment.md) | Build, deploy, systemd, modes |
 | [docs/server/container.md](docs/server/container.md) | Docker and Kubernetes, and the privileges each metric needs |
 | [docs/gui/architecture.md](docs/gui/architecture.md) | Frontend structure and table conventions |
@@ -260,7 +261,7 @@ cmd/sysmon/          CLI, GUI entry point, embedded frontend
   frontend/          Svelte 5 + Tailwind web dashboard
 pkg/collector/       Metric collection from /proc, /sys, cgroups and ioctls
 pkg/monitor/         Snapshot aggregation and subscriber broadcast
-pkg/server/          HTTP and WebSocket server
+pkg/server/          HTTP server, event streaming and TLS
 pkg/cli/             Terminal rendering
 pkg/types/           Shared data structures and typed errors
 test/integration/    Containerised end-to-end CLI tests

@@ -11,7 +11,7 @@ five.
 ```
 +-------------------+         +-----------+         +------------------+
 |  SystemCollector  |         |  Monitor  |         |   Subscribers    |
-|  (Snapshotter)    +-------->+  (poll)   +-------->+  WebSocket conn  |
+|  (Snapshotter)    +-------->+  (poll)   +-------->+   Event stream   |
 |                   |         |           |         |  GUI binding     |
 +-------------------+         +-----+-----+         |  System tray     |
                                     |               +------------------+
@@ -55,7 +55,7 @@ snapshot is dropped to make room for the newest.
 
 That is deliberate. A monitor is only interesting in the present tense: a slow
 consumer that falls behind wants the current reading, not a queue of stale
-ones. And more importantly, one wedged WebSocket connection must never stall
+ones. And more importantly, one wedged event stream must never stall
 the loop for everyone else.
 
 ## Changing the interval
@@ -65,7 +65,8 @@ change is already pending, it gets replaced, so the last value wins rather than
 the loop working through a backlog of interval changes someone made by dragging
 through a dropdown. Safe to call from any goroutine.
 
-Clients over WebSocket may pick 250ms, 500ms, 1s, 5s, 10s, 15s, 30s or 60s.
+Clients may pick 250ms, 500ms, 1s, 5s, 10s, 15s, 30s or 60s via POST
+/api/interval.
 
 ## Thread safety
 

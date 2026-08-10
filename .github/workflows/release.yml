@@ -346,9 +346,9 @@ jobs:
 
           ### Note on the dashboard
 
-          The web dashboard has no authentication and its WebSocket accepts any
-          origin. It exposes hostnames, the process list, disk serial numbers
-          and network configuration. Bind it to a private interface
+          The web dashboard has no authentication. It exposes hostnames, the
+          process list, disk serial numbers and network configuration. Bind it
+          to a private interface
           (`--addr 10.0.0.5:8080`) or put an authenticating proxy in front of
           it before exposing it to an untrusted network.
           EOF

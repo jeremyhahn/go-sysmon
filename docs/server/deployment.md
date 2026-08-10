@@ -286,8 +286,9 @@ the reduced detail — `sysmon doctor` will tell you exactly what you lost.
 
 ## Behind a reverse proxy
 
-The `/ws` location needs the upgrade headers and a long read timeout, or the
-WebSocket will be closed out from under you every 60 seconds.
+No upgrade headers are needed — the stream is an ordinary HTTP response. What
+it does need is for the proxy to stop buffering it and to allow a long-lived
+read, or the dashboard freezes on its first frame.
 
 ```nginx
 server {
@@ -298,21 +299,47 @@ server {
         proxy_pass http://127.0.0.1:8080;
     }
 
-    location /ws {
+    location /api/events {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
+
+        # Buffering is the whole problem: nginx would otherwise hold events
+        # until its buffer filled, which for a stream means indefinitely.
+        proxy_buffering off;
+        proxy_cache off;
+
+        # A stream that is working as intended never finishes.
         proxy_read_timeout 86400;
     }
 }
 ```
 
+The server already sends `X-Accel-Buffering: no`, which nginx honours on its
+own; the explicit `proxy_buffering off` is belt and braces, and documents the
+requirement for proxies that do not read that header.
+
+### Terminating TLS in sysmon instead
+
+A proxy is not required for HTTPS. The server can hold the certificate itself:
+
+```bash
+sysmon serve --addr :8443 \
+    --tls-cert /etc/ssl/sysmon.crt \
+    --tls-key /etc/ssl/sysmon.key
+```
+
+Both flags must be given together. TLS 1.2 is the floor. An unreadable or
+mismatched key pair fails at startup with a `tls config:` error rather than at
+the first request.
+
 ## Before you expose it
 
-The dashboard has no authentication, and the WebSocket accepts any origin. It
-publishes hostnames, the full process list, disk serial numbers and network
-configuration.
+The dashboard has no authentication. It publishes hostnames, the full process
+list, disk serial numbers and network configuration.
+
+The event stream is subject to the browser's same-origin policy, so a random
+web page cannot read it cross-origin. That is not authentication: anything that
+can route to the port and is not a browser reads everything.
 
 Bind it to a private interface (`--addr 198.51.100.90:8080`) or put an
 authenticating proxy in front of it. Binding to `:8080` listens on everything,

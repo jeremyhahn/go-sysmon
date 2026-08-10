@@ -17,7 +17,7 @@ exposes, or an ioctl issued against a block device.
                                            +-----------+-----------+
                                            |           |           |
                                         Server       GUI          CLI
-                                      (WebSocket)  (Wails)     (one-shot)
+                                         (SSE)     (Wails)     (one-shot)
 ```
 
 ## Sub-collectors
