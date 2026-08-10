@@ -1,0 +1,77 @@
+# go-sysmon as a container.
+#
+#   docker compose up -d      then open http://localhost:8080/
+#
+# A monitor that can only see its own container is not a monitor. Everything
+# below exists to give sysmon the host's view; each setting maps to specific
+# metrics, and they are documented in docs/server/container.md.
+#
+# This file deliberately does NOT run privileged. That costs you SMART disk
+# health and DIMM detail; see the note at the bottom for the one-line change if
+# you want them. Run `docker compose exec sysmon sysmon-server doctor` at any
+# time and it will tell you exactly what the current settings allow.
+
+services:
+  sysmon:
+    image: ghcr.io/jeremyhahn/go-sysmon:0.1.0
+    container_name: sysmon
+    restart: unless-stopped
+
+    # The host's process table. Without this the process list is just this
+    # container (1 process), and no virtual machine can be discovered, because
+    # guests are identified from the hypervisor's /proc/<pid>/cmdline.
+    pid: host
+
+    # The host's interfaces. Without this you see the container's veth pair
+    # instead of the real NICs, bridges, bonds and wifi adapters -- and the
+    # dashboard binds inside the container's namespace.
+    #
+    # Host networking also means --addr decides the exposed port directly, so
+    # there is no `ports:` mapping below; change the command to move it.
+    network_mode: host
+
+    volumes:
+      # CPU topology, frequencies, hwmon temperatures, fans, thermal zones,
+      # RAPL power, block device queue stats, network driver details.
+      - /sys:/sys:ro
+
+      # Per-container CPU, memory, PIDs, I/O, throttling, OOM kills and PSI
+      # pressure. This is a separate mount from /sys, so mounting /sys alone
+      # is not enough -- an easy thing to miss.
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+
+      # Distribution name and version on the Host tab.
+      - /etc/os-release:/etc/os-release:ro
+
+      # Container image inventory and reclaimable space. Read-only, and still
+      # only queried when --docker is passed, because the socket grants
+      # control of the daemon. Comment this out if you do not want that.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    command: ["serve", "--addr", ":8080", "--interval", "1000"]
+
+    # Uncomment for SMART/NVMe health, disk temperatures and DIMM detail.
+    #
+    # Capabilities alone are NOT enough -- SYS_RAWIO and SYS_ADMIN with
+    # --device both still return 0 disks with SMART. This was measured, not
+    # assumed. Only full privileged access works, because the SMART ioctl needs
+    # unrestricted access to the block device.
+    #
+    # Weigh it honestly: privileged is close to root on the host. On a machine
+    # where you already trust the workloads it is reasonable; on a shared host
+    # it is not, and losing SMART is the better trade.
+    #
+    # privileged: true
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

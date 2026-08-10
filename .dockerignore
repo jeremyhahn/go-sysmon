@@ -1,0 +1,22 @@
+# Keep the build context small.
+#
+# Two Dockerfiles share this file and they need different things:
+#   ./Dockerfile                  builds the frontend from source, so it needs
+#                                 cmd/sysmon/frontend/{src,package*.json}
+#   test/integration/Dockerfile   expects cmd/sysmon/frontend/dist prebuilt
+#
+# So the frontend source stays IN the context and only genuinely useless
+# things are excluded.
+.git
+.github/
+bin/
+dist/
+
+cmd/sysmon/frontend/node_modules/
+cmd/sysmon/frontend/test-results/
+cmd/sysmon/frontend/playwright-report/
+
+docs/
+extensions/
+coverage.out
+coverage.html
