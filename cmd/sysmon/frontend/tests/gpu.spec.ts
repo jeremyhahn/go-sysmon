@@ -2,11 +2,11 @@ import { test, expect } from '@playwright/test';
 
 test.describe('GPU Panel', () => {
   // Helper: navigate to the GPU tab and wait for snapshot data.
-  // Uses a direct WebSocket probe to ensure data is flowing before asserting DOM.
   async function openGpuPanel(page: import('@playwright/test').Page) {
     await page.goto('/');
-    // Wait for the app's WebSocket to connect and deliver at least one snapshot
-    // by polling for the "Updated:" label which only renders when snapshot != null.
+    // Wait for the app's event stream to connect and deliver at least one
+    // snapshot by polling for the "Updated:" label, which only renders once
+    // snapshot != null.
     await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
     // Switch to the GPU tab.
     await page.getByRole('button', { name: 'GPU' }).click();
@@ -30,23 +30,33 @@ test.describe('GPU Panel', () => {
     await expect(content).toBeVisible({ timeout: 5000 });
   });
 
-  test('WebSocket snapshot contains a gpus array', async ({ page }) => {
+  test('event stream snapshot contains a gpus array', async ({ page }) => {
     await page.goto('/');
 
     const gpus = await page.evaluate((): Promise<unknown[]> => {
       return new Promise((resolve, reject) => {
-        const ws = new WebSocket(`ws://${location.host}/ws`);
-        ws.onmessage = (ev) => {
-          ws.close();
+        const es = new EventSource('/api/events');
+        const timer = setTimeout(() => {
+          es.close();
+          reject(new Error('timed out waiting for a snapshot event'));
+        }, 15000);
+
+        es.addEventListener('snapshot', (ev: MessageEvent<string>) => {
+          clearTimeout(timer);
+          es.close();
           try {
-            const data = JSON.parse(ev.data as string) as { gpus: unknown[] };
+            const data = JSON.parse(ev.data) as { gpus: unknown[] };
             resolve(data.gpus ?? []);
           } catch {
-            reject(new Error('Parse error'));
+            reject(new Error('snapshot event data was not valid JSON'));
           }
+        });
+
+        es.onerror = () => {
+          clearTimeout(timer);
+          es.close();
+          reject(new Error('event stream error'));
         };
-        ws.onerror = () => reject(new Error('WebSocket error'));
-        setTimeout(() => reject(new Error('Timeout')), 15000);
       });
     });
 
@@ -58,18 +68,28 @@ test.describe('GPU Panel', () => {
 
     const gpus = await page.evaluate((): Promise<unknown[]> => {
       return new Promise((resolve, reject) => {
-        const ws = new WebSocket(`ws://${location.host}/ws`);
-        ws.onmessage = (ev) => {
-          ws.close();
+        const es = new EventSource('/api/events');
+        const timer = setTimeout(() => {
+          es.close();
+          reject(new Error('timed out waiting for a snapshot event'));
+        }, 15000);
+
+        es.addEventListener('snapshot', (ev: MessageEvent<string>) => {
+          clearTimeout(timer);
+          es.close();
           try {
-            const data = JSON.parse(ev.data as string) as { gpus: unknown[] };
+            const data = JSON.parse(ev.data) as { gpus: unknown[] };
             resolve(data.gpus ?? []);
           } catch {
-            reject(new Error('Parse error'));
+            reject(new Error('snapshot event data was not valid JSON'));
           }
+        });
+
+        es.onerror = () => {
+          clearTimeout(timer);
+          es.close();
+          reject(new Error('event stream error'));
         };
-        ws.onerror = () => reject(new Error('WebSocket error'));
-        setTimeout(() => reject(new Error('Timeout')), 15000);
       });
     });
 

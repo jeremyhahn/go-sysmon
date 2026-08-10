@@ -11,7 +11,6 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -133,6 +132,39 @@ func TestStart_AddressInUse(t *testing.T) {
 	}
 }
 
+// TestStart_TLSAddressInUse covers the same bind failure on the TLS path,
+// which reaches the listener through ListenAndServeTLS instead.
+func TestStart_TLSAddressInUse(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close() //nolint:errcheck
+
+	cert, _ := selfSigned(t)
+	certPath, keyPath := writeKeyPair(t, cert)
+
+	m := newMonitor(t, "tls-conflict-host")
+	srv, err := server.NewWithConfig(server.Config{
+		Monitor: m,
+		Addr:    l.Addr().String(),
+		TLS:     &server.TLS{CertFile: certPath, KeyFile: keyPath},
+	})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
+
+	err = srv.Start()
+	if err == nil {
+		t.Fatal("Start() = nil, want an error when the TLS address is already in use")
+	}
+
+	var startErr *types.ServerStartError
+	if !errors.As(err, &startErr) {
+		t.Fatalf("Start() error = %T (%v), want *types.ServerStartError", err, err)
+	}
+}
+
 // TestStop_BeforeStart verifies Stop on a server that never started is a no-op
 // rather than a panic or a hang.
 func TestStop_BeforeStart(t *testing.T) {
@@ -147,13 +179,12 @@ func TestStop_BeforeStart(t *testing.T) {
 	}
 }
 
-// ---- WebSocket shutdown ---------------------------------------------------
+// ---- stream shutdown ------------------------------------------------------
 
-// TestWebSocket_ReceivesCloseFrameWhenMonitorStops verifies that stopping the
-// monitor tells streaming clients to go away. http.Server.Shutdown does not
-// track hijacked connections, so this close frame is the only clean disconnect
-// a WebSocket client ever gets.
-func TestWebSocket_ReceivesCloseFrameWhenMonitorStops(t *testing.T) {
+// TestEvents_ByeEventWhenMonitorStops verifies that stopping the monitor tells
+// streaming clients to go away over a real listener. Without it the handler
+// would sit on the subscription and Shutdown would block until its timeout.
+func TestEvents_ByeEventWhenMonitorStops(t *testing.T) {
 	m := newMonitor(t, "closing-host")
 	addr := freeAddr(t)
 	srv := server.New(m, addr, nil)
@@ -171,38 +202,62 @@ func TestWebSocket_ReceivesCloseFrameWhenMonitorStops(t *testing.T) {
 		}
 	}()
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/ws", nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close() //nolint:errcheck
+	c := dialEvents(t, "http://"+addr+"/api/events", false)
 
 	// Drain the first snapshot so the handler is definitely streaming.
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
-	if _, _, err := conn.ReadMessage(); err != nil {
-		t.Fatalf("read first snapshot: %v", err)
-	}
+	c.nextNamed(t, "snapshot", 5*time.Second)
 
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
 
-	// The client must observe a normal closure, not an abrupt EOF.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if err := conn.SetReadDeadline(deadline); err != nil {
-			t.Fatalf("set read deadline: %v", err)
+	c.nextNamed(t, "bye", 5*time.Second)
+}
+
+// TestShutdown_CompletesWithOpenStream is the regression test for a hung
+// shutdown: an event stream never ends on its own, so Shutdown can only return
+// once the monitor has released its subscribers.
+func TestShutdown_CompletesWithOpenStream(t *testing.T) {
+	m := newMonitor(t, "shutdown-host")
+	addr := freeAddr(t)
+	srv := server.New(m, addr, nil)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Start() }()
+	if !waitForServer(addr, 2*time.Second) {
+		t.Fatal("server did not start listening")
+	}
+
+	c := dialEvents(t, "http://"+addr+"/api/events", false)
+	c.nextNamed(t, "snapshot", 5*time.Second)
+
+	// Release the streaming handler, then shut the listener down.
+	if err := m.Stop(); err != nil {
+		t.Fatalf("monitor.Stop: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Stop(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Stop with an open stream: %v", err)
 		}
-		_, _, err := conn.ReadMessage()
-		if err == nil {
-			continue // a queued snapshot; keep reading until the close frame
+	case <-time.After(8 * time.Second):
+		t.Fatal("Stop did not return with an event stream open")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Start() = %v, want nil after a clean Stop", err)
 		}
-		if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-			return // expected
-		}
-		t.Fatalf("read error = %v, want a normal websocket closure", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after Stop")
 	}
 }
 
@@ -234,15 +289,7 @@ func (w *failingResponseWriter) WriteHeader(statusCode int) { w.code = statusCod
 func TestHandleSnapshot_EncodeError(t *testing.T) {
 	m := newMonitor(t, "encode-error-host")
 	srv := server.New(m, ":0", nil)
-
-	// Wait for the monitor's first snapshot so the handler reaches the encoder.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := m.Snapshot(); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForSnapshot(t, m)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/snapshot", nil)
 	w := &failingResponseWriter{}
@@ -255,48 +302,61 @@ func TestHandleSnapshot_EncodeError(t *testing.T) {
 	}
 }
 
-// TestHandleWebSocket_UpgradeFailure covers the rejection path: a plain GET to
-// /ws carries no upgrade headers, so the handshake must fail with a 4xx rather
-// than hijacking the connection or panicking.
-func TestHandleWebSocket_UpgradeFailure(t *testing.T) {
-	m := newMonitor(t, "upgrade-failure-host")
+// TestHandleEvents_UnflushableWriter covers middleware that wraps the response
+// writer without forwarding Flush. Streaming is impossible, so the handler must
+// answer with an error instead of silently buffering forever.
+func TestHandleEvents_UnflushableWriter(t *testing.T) {
+	m := newMonitor(t, "unflushable-host")
 	srv := server.New(m, ":0", nil)
-	ts := httptest.NewServer(srv)
-	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/ws") //nolint:noctx
-	if err != nil {
-		t.Fatalf("GET /ws: %v", err)
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
+	w := &noFlushRecorder{header: make(http.Header)}
+
+	srv.ServeHTTP(w, req)
+
+	if w.code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500 when the writer cannot flush", w.code)
 	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Errorf("close body: %v", err)
-		}
-	}()
-
-	if resp.StatusCode < 400 || resp.StatusCode >= 500 {
-		t.Errorf("status = %d, want a 4xx for a non-websocket request to /ws", resp.StatusCode)
+	if !strings.Contains(w.body.String(), "streaming") {
+		t.Errorf("body = %q, want it to explain the streaming failure", w.body.String())
 	}
 }
 
-// TestHandleWebSocket_WriteToClosedConnection drives the writeJSON failure
-// path: the client vanishes without a close handshake while the server is
-// still streaming, so the next write must fail and end the handler.
-func TestHandleWebSocket_WriteToClosedConnection(t *testing.T) {
+// noFlushRecorder records a response but deliberately omits Flush.
+type noFlushRecorder struct {
+	header http.Header
+	body   strings.Builder
+	code   int
+}
+
+func (w *noFlushRecorder) Header() http.Header         { return w.header }
+func (w *noFlushRecorder) Write(p []byte) (int, error) { return w.body.Write(p) }
+func (w *noFlushRecorder) WriteHeader(code int)        { w.code = code }
+
+// TestHandleEvents_WriteToClosedConnection drives the write-failure path: the
+// client vanishes while the server is still streaming, so the next write must
+// fail and end the handler without taking the server down.
+func TestHandleEvents_WriteToClosedConnection(t *testing.T) {
 	m := newMonitor(t, "write-fail-host")
+	waitForSnapshot(t, m)
+
 	srv := server.New(m, ":0", nil)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	// Speak HTTP by hand so the socket can be ripped away mid-stream.
+	conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
 	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
+		t.Fatalf("dial: %v", err)
+	}
+	if _, err := conn.Write([]byte("GET /api/events HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		t.Fatalf("write request: %v", err)
 	}
 
-	// Rip the socket away at the TCP level so the server's next write fails.
-	if err := conn.UnderlyingConn().Close(); err != nil {
-		t.Fatalf("close underlying conn: %v", err)
+	// Let the handler start streaming, then drop the connection.
+	time.Sleep(100 * time.Millisecond)
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close conn: %v", err)
 	}
 
 	// Give the server time to attempt a write and unwind the handler; the test

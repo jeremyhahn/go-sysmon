@@ -87,30 +87,70 @@ func TestMonitorAlreadyRunningError_As(t *testing.T) {
 	}
 }
 
-// ---- WebSocketUpgradeError ------------------------------------------------
+// ---- StreamUnsupportedError -----------------------------------------------
 
-func TestWebSocketUpgradeError_Error(t *testing.T) {
-	e := &types.WebSocketUpgradeError{Cause: errSentinel}
-	want := "websocket upgrade: underlying cause"
+func TestStreamUnsupportedError_Error(t *testing.T) {
+	e := &types.StreamUnsupportedError{}
+	want := "response writer does not support streaming"
 	if got := e.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
 	}
 }
 
-func TestWebSocketUpgradeError_Unwrap(t *testing.T) {
-	e := &types.WebSocketUpgradeError{Cause: errSentinel}
-	if !errors.Is(e, errSentinel) {
-		t.Error("errors.Is(WebSocketUpgradeError, errSentinel) = false, want true")
+func TestStreamUnsupportedError_As(t *testing.T) {
+	err := fmt.Errorf("outer: %w", &types.StreamUnsupportedError{})
+
+	var target *types.StreamUnsupportedError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As failed to unwrap StreamUnsupportedError")
 	}
 }
 
-func TestWebSocketUpgradeError_As(t *testing.T) {
-	wrapped := &types.WebSocketUpgradeError{Cause: errSentinel}
+// ---- TLSConfigError -------------------------------------------------------
+
+func TestTLSConfigError_Error(t *testing.T) {
+	tests := map[string]struct {
+		err  *types.TLSConfigError
+		want string
+	}{
+		"with cause": {
+			err:  &types.TLSConfigError{Message: "load key pair", Cause: errSentinel},
+			want: "tls config: load key pair: underlying cause",
+		},
+		"without cause": {
+			err:  &types.TLSConfigError{Message: "no certificate source"},
+			want: "tls config: no certificate source",
+		},
+	}
+
+	for name, tc := range tests {
+		if got := tc.err.Error(); got != tc.want {
+			t.Errorf("%s: Error() = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestTLSConfigError_Unwrap(t *testing.T) {
+	e := &types.TLSConfigError{Message: "load key pair", Cause: errSentinel}
+	if !errors.Is(e, errSentinel) {
+		t.Error("errors.Is(TLSConfigError, errSentinel) = false, want true")
+	}
+
+	// A configuration error with no underlying cause must unwrap to nil rather
+	// than panicking.
+	bare := &types.TLSConfigError{Message: "no certificate source"}
+	if bare.Unwrap() != nil {
+		t.Errorf("Unwrap() = %v, want nil when no cause was recorded", bare.Unwrap())
+	}
+}
+
+func TestTLSConfigError_As(t *testing.T) {
+	wrapped := &types.TLSConfigError{Message: "load key pair", Cause: errSentinel}
 	err := fmt.Errorf("outer: %w", wrapped)
 
-	var target *types.WebSocketUpgradeError
+	var target *types.TLSConfigError
 	if !errors.As(err, &target) {
-		t.Fatal("errors.As failed to unwrap WebSocketUpgradeError")
+		t.Fatal("errors.As failed to unwrap TLSConfigError")
 	}
 }
 

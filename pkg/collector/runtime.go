@@ -45,7 +45,7 @@ const diskUsageInterval = 5 * time.Minute
 
 // maxImages caps how many images are reported so a host with thousands does not
 // produce an unbounded snapshot: every image is serialised into every snapshot
-// the WebSocket streams, so the list is a per-second cost, not a one-off.
+// the event streams, so the list is a per-second cost, not a one-off.
 //
 // The UI paginates, so this is a transport bound rather than a display one and
 // can be generous. Anything dropped is reported in ImagesTruncated and shown

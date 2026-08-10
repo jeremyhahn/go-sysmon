@@ -1,5 +1,5 @@
-// Transport layer: adapts Wails v2 desktop events and browser WebSocket
-// to a single unified callback interface.
+// Transport layer: adapts Wails v2 desktop events and browser server-sent
+// events to a single unified callback interface.
 
 import type { Snapshot } from "./types";
 
@@ -7,8 +7,15 @@ export type SnapshotCallback = (snapshot: Snapshot) => void;
 export type StatusCallback = (connected: boolean) => void;
 
 const WAILS_EVENT = "sysmon:snapshot";
-const WS_RECONNECT_DELAY_MS = 3000;
-const WS_MAX_RECONNECT_DELAY_MS = 30000;
+
+const EVENTS_URL = "/api/events";
+const INTERVAL_URL = "/api/interval";
+
+// Backoff bounds for the manual reconnect path. EventSource retries on its own
+// using the interval the server advertises, so these only apply when it gives
+// up entirely — a non-2xx response or the wrong content type.
+const RECONNECT_DELAY_MS = 3000;
+const MAX_RECONNECT_DELAY_MS = 30000;
 
 /**
  * isWailsRuntime returns true when the page is loaded inside a Wails v2
@@ -21,12 +28,12 @@ function isWailsRuntime(): boolean {
 // Transport is the opaque handle returned by connect().
 export interface Transport {
   disconnect: () => void;
-  sendCommand: (cmd: Record<string, unknown>) => void;
+  setInterval: (ms: number) => void;
 }
 
 /**
  * connect subscribes to system snapshots using whatever transport is
- * available (Wails events in desktop mode, WebSocket in browser mode).
+ * available (Wails events in desktop mode, server-sent events in the browser).
  *
  * Returns a Transport handle whose disconnect() method tears down the
  * subscription cleanly.
@@ -38,7 +45,7 @@ export function connect(
   if (isWailsRuntime()) {
     return connectWails(onSnapshot, onStatus);
   }
-  return connectWebSocket(onSnapshot, onStatus);
+  return connectEventSource(onSnapshot, onStatus);
 }
 
 // --- Wails transport -------------------------------------------------------
@@ -73,87 +80,101 @@ function connectWails(
       rt.EventsOff(WAILS_EVENT);
       onStatus(false);
     },
-    sendCommand(cmd: Record<string, unknown>) {
-      if (cmd.type === "set_interval" && typeof cmd.interval_ms === "number") {
-        window.go?.main.MonitorBinding.SetInterval(cmd.interval_ms);
-      }
+    setInterval(ms: number) {
+      window.go?.main.MonitorBinding.SetInterval(ms);
     },
   };
 }
 
-// --- WebSocket transport ----------------------------------------------------
+// --- Server-sent events transport ------------------------------------------
 
-function connectWebSocket(
+function connectEventSource(
   onSnapshot: SnapshotCallback,
   onStatus: StatusCallback
 ): Transport {
-  let ws: WebSocket | null = null;
+  let source: EventSource | null = null;
   let stopped = false;
-  let reconnectDelay = WS_RECONNECT_DELAY_MS;
-  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectDelay = RECONNECT_DELAY_MS;
+  let reconnectTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 
-  function wsUrl(): string {
-    const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    return `${proto}//${location.host}/ws`;
-  }
-
-  function connect() {
+  function open() {
     if (stopped) return;
 
-    ws = new WebSocket(wsUrl());
+    source = new EventSource(EVENTS_URL);
 
-    ws.onopen = () => {
-      reconnectDelay = WS_RECONNECT_DELAY_MS;
+    source.onopen = () => {
+      reconnectDelay = RECONNECT_DELAY_MS;
       onStatus(true);
     };
 
-    ws.onmessage = (ev: MessageEvent<string>) => {
+    source.addEventListener("snapshot", (ev: MessageEvent<string>) => {
       try {
         const snapshot: Snapshot = JSON.parse(ev.data) as Snapshot;
         onSnapshot(snapshot);
+        onStatus(true);
       } catch {
-        // Malformed message — ignore.
+        // Malformed payload — ignore.
       }
-    };
+    });
 
-    ws.onclose = () => {
-      ws = null;
+    // The server sends "bye" when the monitor stops. There is nothing left to
+    // stream, so retrying would just hammer a server that has told us it is
+    // done.
+    source.addEventListener("bye", () => {
+      stopped = true;
+      source?.close();
+      source = null;
       onStatus(false);
-      if (!stopped) {
+    });
+
+    source.onerror = () => {
+      onStatus(false);
+
+      // EventSource reconnects by itself while it is CONNECTING, using the
+      // retry interval the stream advertised. It only reaches CLOSED when it
+      // has given up — an HTTP error or a bad content type — and that is the
+      // only case this code has to handle.
+      if (source?.readyState === EventSource.CLOSED) {
+        source = null;
         scheduleReconnect();
       }
-    };
-
-    ws.onerror = () => {
-      // onclose fires after onerror — let that handle reconnection.
-      ws?.close();
     };
   }
 
   function scheduleReconnect() {
-    reconnectTimer = setTimeout(() => {
-      reconnectDelay = Math.min(reconnectDelay * 2, WS_MAX_RECONNECT_DELAY_MS);
-      connect();
+    if (stopped || reconnectTimer != null) return;
+
+    reconnectTimer = globalThis.setTimeout(() => {
+      reconnectTimer = null;
+      reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+      open();
     }, reconnectDelay);
   }
 
-  connect();
+  open();
 
   return {
     disconnect() {
       stopped = true;
       if (reconnectTimer != null) {
-        clearTimeout(reconnectTimer);
+        globalThis.clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
-      ws?.close();
-      ws = null;
+      source?.close();
+      source = null;
       onStatus(false);
     },
-    sendCommand(cmd: Record<string, unknown>) {
-      if (ws != null && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(cmd));
-      }
+    setInterval(ms: number) {
+      // The poll rate belongs to the server's single monitor, so it is a plain
+      // REST call rather than something carried on the stream.
+      void fetch(INTERVAL_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interval_ms: ms }),
+      }).catch(() => {
+        // Best-effort: a dropped rate change corrects itself the next time the
+        // user picks an interval, and the stream is unaffected.
+      });
     },
   };
 }

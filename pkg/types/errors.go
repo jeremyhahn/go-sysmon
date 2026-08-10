@@ -30,16 +30,31 @@ func (e *MonitorAlreadyRunningError) Error() string {
 	return "monitor is already running"
 }
 
-// WebSocketUpgradeError indicates a WebSocket upgrade failure.
-type WebSocketUpgradeError struct {
-	Cause error
+// StreamUnsupportedError indicates that the http.ResponseWriter handling an
+// event-stream request cannot flush, so server-sent events cannot be delivered.
+// Every ResponseWriter in net/http supports flushing; this signals a wrapping
+// middleware that dropped the capability.
+type StreamUnsupportedError struct{}
+
+func (e *StreamUnsupportedError) Error() string {
+	return "response writer does not support streaming"
 }
 
-func (e *WebSocketUpgradeError) Error() string {
-	return "websocket upgrade: " + e.Cause.Error()
+// TLSConfigError indicates that the server's TLS configuration could not be
+// built, for example because a certificate or key file failed to load.
+type TLSConfigError struct {
+	Message string
+	Cause   error
 }
 
-func (e *WebSocketUpgradeError) Unwrap() error {
+func (e *TLSConfigError) Error() string {
+	if e.Cause == nil {
+		return "tls config: " + e.Message
+	}
+	return "tls config: " + e.Message + ": " + e.Cause.Error()
+}
+
+func (e *TLSConfigError) Unwrap() error {
 	return e.Cause
 }
 

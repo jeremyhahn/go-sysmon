@@ -17,8 +17,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // binaryPath is the path to the sysmon binary built once in TestMain.
@@ -609,23 +607,16 @@ func TestCLI_Serve_APIReturnsSnapshot(t *testing.T) {
 	}
 }
 
-func TestCLI_Serve_WebSocket(t *testing.T) {
+func TestCLI_Serve_EventStream(t *testing.T) {
 	startServer(t)
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws://"+serveAddr+"/ws", nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close()
+	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", false)
 
-	// The server pushes a snapshot immediately after each poll interval.
-	// Set a generous deadline to account for slow CI machines.
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
-
-	_, msg, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("websocket ReadMessage: %v", err)
+	if ct := stream.contentType; ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
 	}
+
+	ev := stream.nextNamed(t, "snapshot", 10*time.Second)
 
 	var snap struct {
 		Timestamp time.Time `json:"timestamp"`
@@ -633,15 +624,38 @@ func TestCLI_Serve_WebSocket(t *testing.T) {
 			Hostname string `json:"hostname"`
 		} `json:"host"`
 	}
-	if err := json.Unmarshal(msg, &snap); err != nil {
-		t.Fatalf("parse websocket message: %v\nraw: %s", err, msg)
+	if err := json.Unmarshal([]byte(ev.data), &snap); err != nil {
+		t.Fatalf("parse snapshot event: %v\nraw: %s", err, ev.data)
 	}
 
 	if snap.Timestamp.IsZero() {
-		t.Error("websocket snapshot: timestamp is zero")
+		t.Error("event stream snapshot: timestamp is zero")
 	}
 	if snap.Host.Hostname == "" {
-		t.Error("websocket snapshot: hostname is empty")
+		t.Error("event stream snapshot: hostname is empty")
+	}
+}
+
+// TestCLI_Serve_EventStream_Gzip verifies the real binary compresses the
+// stream for a client that offers it. Consecutive snapshots barely differ, so
+// this is where the bandwidth saving lives.
+func TestCLI_Serve_EventStream_Gzip(t *testing.T) {
+	startServer(t)
+
+	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", true)
+
+	if stream.encoding != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", stream.encoding)
+	}
+
+	ev := stream.nextNamed(t, "snapshot", 10*time.Second)
+
+	var snap map[string]any
+	if err := json.Unmarshal([]byte(ev.data), &snap); err != nil {
+		t.Fatalf("parse compressed snapshot event: %v", err)
+	}
+	if _, ok := snap["timestamp"]; !ok {
+		t.Error("compressed snapshot missing timestamp field")
 	}
 }
 
@@ -715,42 +729,40 @@ func TestCLI_GPU_ContainsGPUDetails(t *testing.T) {
 	}
 }
 
-// ── WebSocket set_interval ────────────────────────────────────────────────────
+// ── Rate control over REST ────────────────────────────────────────────────────
 
-func TestServer_WebSocket_SetInterval(t *testing.T) {
+func TestServer_SetInterval(t *testing.T) {
 	startServer(t)
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws://"+serveAddr+"/ws", nil)
-	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
-	}
-	defer conn.Close()
+	// A stream opened first must keep working across the rate change.
+	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", false)
+	stream.nextNamed(t, "snapshot", 10*time.Second)
 
-	// Read first snapshot to confirm connection works.
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
-	_, msg, err := conn.ReadMessage()
+	resp, err := http.Post("http://"+serveAddr+"/api/interval", "application/json",
+		strings.NewReader(`{"interval_ms":1000}`)) //nolint:noctx
 	if err != nil {
-		t.Fatalf("read first snapshot: %v", err)
+		t.Fatalf("POST /api/interval: %v", err)
 	}
-	var snap map[string]interface{}
-	if err := json.Unmarshal(msg, &snap); err != nil {
-		t.Fatalf("parse first snapshot: %v", err)
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/interval status = %d, want 200", resp.StatusCode)
 	}
 
-	// Send set_interval command to change the push rate to 1s.
-	cmd := `{"type":"set_interval","interval_ms":1000}`
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(cmd)); err != nil {
-		t.Fatalf("write set_interval: %v", err)
+	var got struct {
+		IntervalMS int `json:"interval_ms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode interval response: %v", err)
+	}
+	if got.IntervalMS != 1000 {
+		t.Errorf("interval_ms = %d, want 1000", got.IntervalMS)
 	}
 
-	// Read another snapshot after the interval change to verify the connection
-	// still delivers data correctly.
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
-	_, msg, err = conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read snapshot after interval change: %v", err)
-	}
-	if err := json.Unmarshal(msg, &snap); err != nil {
+	// The already-open stream must still deliver after the change.
+	ev := stream.nextNamed(t, "snapshot", 10*time.Second)
+	var snap map[string]any
+	if err := json.Unmarshal([]byte(ev.data), &snap); err != nil {
 		t.Fatalf("parse snapshot after interval change: %v", err)
 	}
 	if _, ok := snap["timestamp"]; !ok {
@@ -758,30 +770,65 @@ func TestServer_WebSocket_SetInterval(t *testing.T) {
 	}
 }
 
-func TestServer_WebSocket_SetInterval_Disallowed(t *testing.T) {
+func TestServer_SetInterval_Disallowed(t *testing.T) {
 	startServer(t)
 
-	conn, _, err := websocket.DefaultDialer.Dial("ws://"+serveAddr+"/ws", nil)
+	resp, err := http.Post("http://"+serveAddr+"/api/interval", "application/json",
+		strings.NewReader(`{"interval_ms":999}`)) //nolint:noctx
 	if err != nil {
-		t.Fatalf("websocket dial: %v", err)
+		t.Fatalf("POST /api/interval: %v", err)
 	}
-	defer conn.Close()
+	defer resp.Body.Close() //nolint:errcheck
 
-	// Send a disallowed interval (999ms is not in the allowlist).
-	cmd := `{"type":"set_interval","interval_ms":999}`
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(cmd)); err != nil {
-		t.Fatalf("write: %v", err)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for a disallowed interval", resp.StatusCode)
 	}
 
-	// The server must keep the connection alive and continue sending snapshots.
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
-	_, msg, err := conn.ReadMessage()
+	// The server must still be serving normally afterwards.
+	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", false)
+	stream.nextNamed(t, "snapshot", 10*time.Second)
+}
+
+func TestServer_GetInterval(t *testing.T) {
+	startServer(t)
+
+	resp, err := http.Get("http://" + serveAddr + "/api/interval") //nolint:noctx
 	if err != nil {
-		t.Fatalf("read after disallowed interval: %v", err)
+		t.Fatalf("GET /api/interval: %v", err)
 	}
-	var snap map[string]interface{}
-	if err := json.Unmarshal(msg, &snap); err != nil {
-		t.Fatalf("parse: %v", err)
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var got struct {
+		IntervalMS int `json:"interval_ms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.IntervalMS <= 0 {
+		t.Errorf("interval_ms = %d, want a positive interval", got.IntervalMS)
+	}
+}
+
+// TestServer_WebSocketRouteRetired is the migration regression test: the old
+// endpoint must not stream, so a stale client fails loudly.
+func TestServer_WebSocketRouteRetired(t *testing.T) {
+	startServer(t)
+
+	resp, err := http.Get("http://" + serveAddr + "/ws") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET /ws: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Error("GET /ws upgraded a connection; the WebSocket route should be gone")
+	}
+	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "event-stream") {
+		t.Errorf("GET /ws Content-Type = %q, want no stream on the retired route", ct)
 	}
 }
 

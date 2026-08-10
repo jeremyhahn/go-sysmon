@@ -137,7 +137,7 @@ class MonitorStore {
 
   setInterval(ms: number): void {
     this.intervalMs = ms;
-    this.#transport?.sendCommand({ type: "set_interval", interval_ms: ms });
+    this.#transport?.setInterval(ms);
   }
 
   applySnapshot(snap: Snapshot): void {

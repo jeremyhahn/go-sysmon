@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -107,19 +107,17 @@ func TestHandleSnapshot_SnapshotterError(t *testing.T) {
 	}
 }
 
-// ---- WebSocket – upgrade fails for non-WebSocket request ------------------
+// ---- events – method not allowed ------------------------------------------
 
-// A plain HTTP GET to /ws without the Upgrade header must receive a non-101
-// response (the upgrader rejects it and writes its own error).
-func TestHandleWebSocket_UpgradeFailsForPlainHTTP(t *testing.T) {
-	m := newMonitor(t, "upgrade-host")
+func TestHandleEvents_MethodNotAllowed(t *testing.T) {
+	m := newMonitor(t, "events-verb-host")
 	s := server.New(m, ":0", nil)
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/ws")
+	resp, err := http.Post(ts.URL+"/api/events", "application/json", nil)
 	if err != nil {
-		t.Fatalf("GET /ws: %v", err)
+		t.Fatalf("POST /api/events: %v", err)
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -127,14 +125,47 @@ func TestHandleWebSocket_UpgradeFailsForPlainHTTP(t *testing.T) {
 		}
 	}()
 
-	if resp.StatusCode == http.StatusSwitchingProtocols {
-		t.Errorf("status = 101, want a non-upgrade response for plain HTTP GET")
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
 	}
 }
 
-// ---- WebSocket – multiple concurrent clients all receive snapshots ---------
+// ---- events – no snapshot yet ---------------------------------------------
 
-func TestHandleWebSocket_ConcurrentClients(t *testing.T) {
+// TestHandleEvents_StreamsBeforeFirstSnapshot covers a client that connects in
+// the window before the monitor has collected anything. The stream must open
+// and then deliver the first snapshot when it arrives, not fail outright.
+func TestHandleEvents_StreamsBeforeFirstSnapshot(t *testing.T) {
+	stub := &stubSnapshotter{
+		snapshot: &types.Snapshot{Host: types.HostInfo{Hostname: "early-host"}},
+	}
+	m, err := monitor.New(stub, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("monitor.Start: %v", err)
+	}
+	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+
+	s := server.New(m, ":0", nil)
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+
+	// Connect immediately, racing the monitor's first tick.
+	c := dialEvents(t, ts.URL+"/api/events", false)
+
+	ev := c.nextNamed(t, "snapshot", 3*time.Second)
+	var snap types.Snapshot
+	decodeSnapshot(t, ev, &snap)
+	if snap.Host.Hostname != "early-host" {
+		t.Errorf("hostname = %q, want %q", snap.Host.Hostname, "early-host")
+	}
+}
+
+// ---- events – multiple concurrent clients all receive snapshots ------------
+
+func TestHandleEvents_ConcurrentClients(t *testing.T) {
 	const numClients = 5
 
 	m := newMonitor(t, "concurrent-host")
@@ -144,8 +175,6 @@ func TestHandleWebSocket_ConcurrentClients(t *testing.T) {
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
-
 	var wg sync.WaitGroup
 	errs := make(chan string, numClients)
 
@@ -154,32 +183,16 @@ func TestHandleWebSocket_ConcurrentClients(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-			if err != nil {
-				errs <- "client " + string(rune('0'+id)) + " dial: " + err.Error()
-				return
-			}
-			defer func() {
-				if err := conn.Close(); err != nil {
-					t.Errorf("close connection: %v", err)
-				}
-			}()
+			c := dialEvents(t, ts.URL+"/api/events", false)
 
-			conn.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck
-
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				errs <- "client " + string(rune('0'+id)) + " read: " + err.Error()
-				return
-			}
-
+			ev := c.nextNamed(t, "snapshot", 5*time.Second)
 			var snap types.Snapshot
-			if err := json.Unmarshal(msg, &snap); err != nil {
-				errs <- "client " + string(rune('0'+id)) + " unmarshal: " + err.Error()
+			if err := json.Unmarshal([]byte(ev.Data), &snap); err != nil {
+				errs <- fmt.Sprintf("client %d unmarshal: %v", id, err)
 				return
 			}
 			if snap.Host.Hostname != "concurrent-host" {
-				errs <- "client " + string(rune('0'+id)) + " hostname mismatch"
+				errs <- fmt.Sprintf("client %d hostname = %q", id, snap.Host.Hostname)
 			}
 		}(i)
 	}
@@ -192,11 +205,11 @@ func TestHandleWebSocket_ConcurrentClients(t *testing.T) {
 	}
 }
 
-// ---- WebSocket – client abrupt close does not panic -----------------------
+// ---- events – abrupt client close does not break the server ---------------
 
-// Connects several clients, closes them without a handshake, and verifies the
-// server continues to handle new connections correctly.
-func TestHandleWebSocket_AbruptClientClose(t *testing.T) {
+// Connects several clients, drops them without reading to completion, and
+// verifies the server continues to handle new requests correctly.
+func TestHandleEvents_AbruptClientClose(t *testing.T) {
 	m := newMonitor(t, "abrupt-host")
 	waitForSnapshot(t, m)
 
@@ -204,28 +217,15 @@ func TestHandleWebSocket_AbruptClientClose(t *testing.T) {
 	ts := httptest.NewServer(s)
 	t.Cleanup(ts.Close)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
-
-	// Open and immediately close several connections without a handshake close.
 	for range 3 {
-		conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-		if err != nil {
-			t.Fatalf("websocket dial: %v", err)
-		}
-		// Force-close the underlying TCP connection without sending a WS close.
-		conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond)) //nolint:errcheck
-		conn.ReadMessage()                                          //nolint:errcheck
-		// An abrupt close is the point of this test, so a Close error is an
-		// acceptable outcome and only worth recording.
-		if err := conn.Close(); err != nil {
-			t.Logf("force-close connection: %v", err)
-		}
+		c := dialEvents(t, ts.URL+"/api/events", false)
+		c.nextNamed(t, "snapshot", 3*time.Second)
+		c.Close()
 	}
 
 	// Give the server goroutines time to notice the disconnections.
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify the server is still functional by making a successful snapshot request.
 	resp, err := http.Get(ts.URL + "/api/snapshot")
 	if err != nil {
 		t.Fatalf("GET /api/snapshot after abrupt closes: %v", err)
@@ -237,6 +237,54 @@ func TestHandleWebSocket_AbruptClientClose(t *testing.T) {
 	}()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// ---- interval affects the stream ------------------------------------------
+
+// TestSetInterval_AppliesToActiveStream verifies the REST rate control reaches
+// a stream that is already running, which is the whole point of moving the
+// command off the transport.
+func TestSetInterval_AppliesToActiveStream(t *testing.T) {
+	stub := &stubSnapshotter{
+		snapshot: &types.Snapshot{Host: types.HostInfo{Hostname: "rate-host"}},
+	}
+	// Start slow enough that the default rate would not deliver in time.
+	m, err := monitor.New(stub, time.Hour)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("monitor.Start: %v", err)
+	}
+	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+
+	s := server.New(m, ":0", nil)
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+
+	c := dialEvents(t, ts.URL+"/api/events", false)
+
+	// Speed the monitor up over REST while the stream is open.
+	resp, err := http.Post(ts.URL+"/api/interval", "application/json",
+		strings.NewReader(`{"interval_ms":250}`))
+	if err != nil {
+		t.Fatalf("POST /api/interval: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/interval status = %d, want 200", resp.StatusCode)
+	}
+
+	// A snapshot must now arrive on the already-open stream well inside the
+	// original hour-long interval.
+	ev := c.nextNamed(t, "snapshot", 5*time.Second)
+	var snap types.Snapshot
+	decodeSnapshot(t, ev, &snap)
+	if snap.Host.Hostname != "rate-host" {
+		t.Errorf("hostname = %q, want %q", snap.Host.Hostname, "rate-host")
 	}
 }
 

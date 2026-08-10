@@ -16,6 +16,10 @@ coverage.out
 coverage.html
 cmd/sysmon/frontend/test-results/
 cmd/sysmon/frontend/playwright-report/
+# Captured run output from `make test` / `make integration-test`, which the
+# analysis workflows read and then discard.
+test.log
+integration-test.log
 
 # Tooling state
 .serena/

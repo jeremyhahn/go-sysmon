@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { mockSnapshotFeed, systemdMatchCount } from './fixtures/mock-ws';
+import { mockSnapshotFeed, systemdMatchCount } from './fixtures/mock-sse';
 
 // These exercise the shared DataTable component through the Host tab's process
-// table. The data is injected over a mocked WebSocket rather than read from
+// table. The data is injected over a mocked event stream rather than read from
 // the machine: pagination and search are properties of the component, and an
 // earlier version of this file assumed "a host always has more than 25
 // processes", which is false in a container without --pid=host. That made the

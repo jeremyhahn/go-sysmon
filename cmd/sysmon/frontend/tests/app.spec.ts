@@ -21,7 +21,7 @@ test.describe('Core Application', () => {
     await expect(statusDot).toBeVisible();
   });
 
-  test('connection status transitions to Connected after WebSocket handshake', async ({ page }) => {
+  test('connection status transitions to Connected once the event stream opens', async ({ page }) => {
     await page.goto('/');
     // Wait for the "Connected" text to appear in the navbar status area
     const connectedText = page.locator('nav').getByText('Connected');

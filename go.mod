@@ -7,7 +7,6 @@ toolchain go1.26.5
 require (
 	fyne.io/systray v1.12.2
 	github.com/NVIDIA/go-nvml v0.13.3-1
-	github.com/gorilla/websocket v1.5.3
 	github.com/jaypipes/ghw v0.25.0
 	github.com/shirou/gopsutil/v4 v4.26.7
 	github.com/spf13/cobra v1.10.2
@@ -21,6 +20,7 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jaypipes/pcidb v1.1.1 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect

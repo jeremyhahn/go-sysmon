@@ -25,22 +25,36 @@ var (
 	serveAddr       string
 	serveIntervalMs int
 	serveDockerAPI  bool
+	serveTLSCert    string
+	serveTLSKey     string
 )
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the web server",
-	Long:  "Start the HTTP/WebSocket server that streams live system metrics to connected browsers.",
-	RunE:  runServeCmd,
+	Long: "Start the HTTP server that streams live system metrics to connected browsers " +
+		"as server-sent events.",
+	RunE: runServeCmd,
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveAddr, "addr", ":8080", "HTTP/WebSocket listen address")
+	serveCmd.Flags().StringVar(&serveAddr, "addr", ":8080", "HTTP listen address")
 	serveCmd.Flags().IntVar(&serveIntervalMs, "interval", 1000, "Polling interval in milliseconds")
 	serveCmd.Flags().BoolVar(&serveDockerAPI, "docker", false,
 		"Query the container runtime API for image inventory and storage usage. "+
 			"Off by default: the runtime socket grants control of the daemon.")
+	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "Path to a PEM certificate; enables HTTPS")
+	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "Path to the PEM private key matching --tls-cert")
 	rootCmd.AddCommand(serveCmd)
+}
+
+// serveTLSConfig builds the server TLS settings from the command flags,
+// returning nil when neither flag was supplied.
+func serveTLSConfig() *server.TLS {
+	if serveTLSCert == "" && serveTLSKey == "" {
+		return nil
+	}
+	return &server.TLS{CertFile: serveTLSCert, KeyFile: serveTLSKey}
 }
 
 func runServeCmd(_ *cobra.Command, _ []string) error {
@@ -84,7 +98,17 @@ func runServeCmd(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	srv := server.New(mon, serveAddr, webAssets)
+	srv, err := server.NewWithConfig(server.Config{
+		Monitor: mon,
+		Addr:    serveAddr,
+		Assets:  webAssets,
+		TLS:     serveTLSConfig(),
+	})
+	if err != nil {
+		stopMonitor(mon)
+		return err
+	}
+
 	return serveUntilSignal(srv, mon)
 }
 
@@ -114,9 +138,9 @@ func serveUntilSignal(srv *server.Server, mon *monitor.Monitor) error {
 	}
 
 	// Stop the monitor first: closing each subscriber's Done channel lets the
-	// WebSocket handlers send a close frame before the process exits. Hijacked
-	// connections are not tracked by http.Server.Shutdown, so this is the only
-	// thing that gives streaming clients a clean disconnect.
+	// event-stream handlers emit a final "bye" event and return. Without it,
+	// Shutdown would block on those handlers until the timeout expires, since
+	// a stream that is working as intended never finishes on its own.
 	stopMonitor(mon)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)

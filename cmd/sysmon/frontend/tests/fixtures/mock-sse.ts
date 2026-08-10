@@ -2,7 +2,7 @@ import type { Page } from "@playwright/test";
 import snapshot from "./snapshot.json" with { type: "json" };
 
 /**
- * Serves a deterministic snapshot over a mocked /ws connection.
+ * Serves a deterministic snapshot over a mocked /api/events stream.
  *
  * The DataTable tests used to run against whatever the host happened to be
  * doing, on the assumption that "a host always has more than 25 processes".
@@ -38,7 +38,12 @@ export interface MockOptions {
 }
 
 /**
- * Intercepts the dashboard's WebSocket and pushes one snapshot.
+ * Intercepts the dashboard's event stream and serves one snapshot.
+ *
+ * The fulfilled body is a complete response rather than a live stream, so the
+ * browser sees the event, then EOF, and reconnects — at which point the route
+ * serves the same fixture again. The UI only needs one snapshot to render, and
+ * a fixed body keeps the test independent of any real server.
  *
  * Must be called before page.goto, since the app connects on load.
  */
@@ -60,11 +65,30 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
     },
   } as Snapshot;
 
-  await page.routeWebSocket(/\/ws$/, (ws) => {
-    // Never connect upstream: the point is to be independent of the server.
-    ws.send(JSON.stringify(payload));
-    // The client sends set_interval commands; accept and ignore them.
-    ws.onMessage(() => ws.send(JSON.stringify(payload)));
+  const body =
+    `retry: 1000\n\n` +
+    `event: snapshot\ndata: ${JSON.stringify(payload)}\n\n`;
+
+  await page.route(/\/api\/events$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+      },
+      body,
+    });
+  });
+
+  // The interval dropdown posts here; accept and ignore so the mocked page
+  // never reaches a real server.
+  await page.route(/\/api\/interval$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ interval_ms: 1000 }),
+    });
   });
 }
 
