@@ -1,67 +1,72 @@
 // Cinnamon panel applet for go-sysmon.
-// Connects to the sysmon WebSocket server and renders live system gauges
-// using Cairo on a St.DrawingArea embedded in the panel.
+//
+// The panel shows compact Cairo gauges. Everything the CLI and the web UI
+// report is in the popup menu, which is built from the shared section model in
+// extensions/shared/sections.js, installed alongside this file.
+//
+// Data arrives as server-sent events. GJS has no EventSource, so the applet
+// reads the response body through libsoup and feeds lines to the parser in
+// sse.js. All parsing, formatting and layout logic lives in those modules so it
+// can be unit tested without a desktop session; this file is GObject
+// Introspection glue.
 
 const Applet = imports.ui.applet;
 const St = imports.gi.St;
 const Mainloop = imports.mainloop;
 const Soup = imports.gi.Soup;
+const Gio = imports.gi.Gio;
 const GLib = imports.gi.GLib;
 const Lang = imports.lang;
+const PopupMenu = imports.ui.popupMenu;
 const Settings = imports.ui.settings;
 
+// Cinnamon's require() resolves against the applet directory only -- a path
+// with a subdirectory in it is reported as "Path does not exist" -- so the
+// shared modules are installed alongside this file rather than under lib/.
+const fmt = require("./format.js");
+const sse = require("./sse.js");
+const snapshotLib = require("./snapshot.js");
+const sections = require("./sections.js");
+
 // Color constants for gauge bars (RGBA).
-const COLOR_GREEN  = [0.21, 0.83, 0.60, 1.0];
+const COLOR_GREEN = [0.21, 0.83, 0.60, 1.0];
 const COLOR_YELLOW = [0.98, 0.74, 0.14, 1.0];
-const COLOR_RED    = [0.97, 0.45, 0.45, 1.0];
-const COLOR_BG     = [0.30, 0.30, 0.30, 0.3];
-const COLOR_TEXT   = [0.80, 0.80, 0.80, 1.0];
+const COLOR_RED = [0.97, 0.45, 0.45, 1.0];
+const COLOR_BG = [0.30, 0.30, 0.30, 0.3];
+const COLOR_TEXT = [0.80, 0.80, 0.80, 1.0];
+
+// LEVEL_COLORS maps the shared usage classification onto gauge colours, so the
+// applet and any other consumer agree on what counts as a warning.
+const LEVEL_COLORS = {
+    normal: COLOR_GREEN,
+    warn: COLOR_YELLOW,
+    critical: COLOR_RED,
+};
 
 // Layout constants (pixels).
-const BAR_WIDTH     = 3;
-const BAR_GAP       = 1;
-const SECTION_GAP   = 6;
+const BAR_WIDTH = 3;
+const BAR_GAP = 1;
+const SECTION_GAP = 6;
 const MEM_BAR_WIDTH = 8;
 const DISK_BAR_WIDTH = 8;
 const NET_TEXT_WIDTH = 55;
-const MIN_WIDTH     = 20;
-const FONT_SIZE     = 9;
-const PADDING       = 2;
+const MIN_WIDTH = 20;
+const FONT_SIZE = 9;
+const PADDING = 2;
 
-// Reconnect delay in milliseconds.
+// Reconnect delay in milliseconds, used until the stream advertises its own.
 const RECONNECT_DELAY_MS = 3000;
+const MAX_RECONNECT_DELAY_MS = 30000;
 
 /**
- * _usageColor returns the appropriate RGBA color array for a usage fraction.
- * Green below 50%, yellow between 50-80%, red above 80%.
+ * _usageColor returns the RGBA array for a usage fraction, using the shared
+ * classification so thresholds are defined in exactly one place.
  */
 function _usageColor(fraction) {
-    if (fraction < 0.5) {
-        return COLOR_GREEN;
-    }
-    if (fraction < 0.8) {
-        return COLOR_YELLOW;
-    }
-    return COLOR_RED;
+    return LEVEL_COLORS[snapshotLib.usageLevel(fraction)] || COLOR_GREEN;
 }
 
-/**
- * _formatRate converts a bytes-per-second rate to a compact string.
- */
-function _formatRate(bytesPerSec) {
-    if (bytesPerSec >= 1073741824) {
-        return (bytesPerSec / 1073741824).toFixed(1) + "G";
-    }
-    if (bytesPerSec >= 1048576) {
-        return (bytesPerSec / 1048576).toFixed(1) + "M";
-    }
-    if (bytesPerSec >= 1024) {
-        return (bytesPerSec / 1024).toFixed(0) + "K";
-    }
-    return bytesPerSec.toFixed(0) + "B";
-}
-
-class SysmonApplet extends Applet.Applet {
+class SysmonApplet extends Applet.TextIconApplet {
 
     _init(metadata, orientation, panelHeight, instanceId) {
         super._init(orientation, panelHeight, instanceId);
@@ -69,13 +74,15 @@ class SysmonApplet extends Applet.Applet {
         this.metadata = metadata;
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instanceId);
 
-        // Bind user-configurable settings to instance properties.
-        this.settings.bind("server-address", "serverAddress");
-        this.settings.bind("update-interval", "updateInterval");
-        this.settings.bind("show-cpu", "showCpu");
-        this.settings.bind("show-memory", "showMemory");
-        this.settings.bind("show-network", "showNetwork");
-        this.settings.bind("show-disk", "showDisk");
+        // Bind user-configurable settings to instance properties. The panel
+        // toggles only affect drawing, so they just queue a repaint; a changed
+        // server address or interval has to be pushed to the server.
+        this.settings.bind("server-address", "serverAddress", Lang.bind(this, this._onServerChanged));
+        this.settings.bind("update-interval", "updateInterval", Lang.bind(this, this._onIntervalChanged));
+        this.settings.bind("show-cpu", "showCpu", Lang.bind(this, this._queueRepaint));
+        this.settings.bind("show-memory", "showMemory", Lang.bind(this, this._queueRepaint));
+        this.settings.bind("show-network", "showNetwork", Lang.bind(this, this._queueRepaint));
+        this.settings.bind("show-disk", "showDisk", Lang.bind(this, this._queueRepaint));
 
         // Cairo drawing area for gauge rendering.
         this.drawingArea = new St.DrawingArea();
@@ -84,48 +91,145 @@ class SysmonApplet extends Applet.Applet {
 
         // Runtime state.
         this.snapshot = null;
-        this.wsConnection = null;
+        this.session = null;
+        this.stream = null;
+        this.cancellable = null;
+        this.parser = null;
+        this.pending = "";
         this.reconnectTimer = null;
+        this.reconnectDelay = RECONNECT_DELAY_MS;
+        this.stopped = false;
+
+        this._buildMenu();
 
         this.set_applet_tooltip("System Monitor - Connecting...");
-        this._connectWebSocket();
+        this._connect();
+    }
+
+    // ---- menu ------------------------------------------------------------
+
+    /**
+     * _buildMenu creates the popup and its per-section submenus. The structure
+     * is stable across snapshots; only the contents are rebuilt, so the menu
+     * does not collapse while the user has it open.
+     */
+    _buildMenu() {
+        this.menuManager = new PopupMenu.PopupMenuManager(this);
+        this.menu = new Applet.AppletPopupMenu(this, this._orientation);
+        this.menuManager.addMenu(this.menu);
+
+        this.statusItem = new PopupMenu.PopupMenuItem("Connecting...", { reactive: false });
+        this.menu.addMenuItem(this.statusItem);
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        // One submenu per section, created once and refilled on each snapshot.
+        this.sectionMenus = {};
+        this.sectionOrder = [];
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        const openItem = new PopupMenu.PopupMenuItem("Open full dashboard");
+        openItem.connect("activate", Lang.bind(this, this._openDashboard));
+        this.menu.addMenuItem(openItem);
     }
 
     /**
-     * _connectWebSocket opens a WebSocket connection to the sysmon server.
-     * On success it wires up the message and closed handlers. On failure
-     * it schedules a reconnect attempt.
+     * _refreshMenu rebuilds the section submenus from the latest snapshot.
      */
-    _connectWebSocket() {
+    _refreshMenu() {
+        const model = sections.buildSections(this.snapshot);
+
+        for (let i = 0; i < model.length; i++) {
+            const section = model[i];
+            let entry = this.sectionMenus[section.key];
+
+            if (!entry) {
+                entry = new PopupMenu.PopupSubMenuMenuItem(section.title);
+                this.sectionMenus[section.key] = entry;
+                this.sectionOrder.push(section.key);
+                // Insert before the trailing separator and dashboard item.
+                this.menu.addMenuItem(entry, this.menu.numMenuItems - 2);
+            }
+
+            entry.label.set_text(section.title + "   " + section.summary);
+
+            // Rebuilding the submenu wholesale keeps the code simple; a menu
+            // the user has not opened is not realised, so this is cheap.
+            entry.menu.removeAll();
+            for (let b = 0; b < section.blocks.length; b++) {
+                const block = section.blocks[b];
+                if (block.rows.length === 0) {
+                    continue;
+                }
+                if (block.title) {
+                    const header = new PopupMenu.PopupMenuItem(block.title, { reactive: false });
+                    header.actor.add_style_class_name("popup-subtitle-menu-item");
+                    entry.menu.addMenuItem(header);
+                }
+                for (let r = 0; r < block.rows.length; r++) {
+                    const rowData = block.rows[r];
+                    const text = rowData.label
+                        ? rowData.label + ":  " + rowData.value
+                        : rowData.value;
+                    entry.menu.addMenuItem(
+                        new PopupMenu.PopupMenuItem(text, { reactive: false })
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * _openDashboard launches the desktop GUI.
+     */
+    _openDashboard() {
+        GLib.spawn_command_line_async("sysmon");
+    }
+
+    // ---- event stream ----------------------------------------------------
+
+    /**
+     * _connect opens the server-sent events stream. On failure it schedules a
+     * reconnect attempt.
+     */
+    _connect() {
+        if (this.stopped) {
+            return;
+        }
+
+        this._teardownStream();
+        this.parser = new sse.Parser();
+        this.pending = "";
+
         try {
-            let session = new Soup.Session();
-            let uri = GLib.Uri.parse(
-                "ws://" + this.serverAddress + "/ws",
-                GLib.UriFlags.NONE
-            );
-            let msg = new Soup.Message({ method: "GET", uri: uri });
+            this.session = new Soup.Session();
+            this.cancellable = new Gio.Cancellable();
 
-            session.websocket_connect_async(
-                msg,
-                null,  // origin
-                null,  // protocols
+            const uri = "http://" + this.serverAddress + "/api/events";
+            const message = Soup.Message.new("GET", uri);
+            message.request_headers.append("Accept", "text/event-stream");
+            // The applet inflates nothing itself, so ask for the stream as-is.
+            message.request_headers.append("Accept-Encoding", "identity");
+
+            this.session.send_async(
+                message,
                 GLib.PRIORITY_DEFAULT,
-                null,  // cancellable
-                Lang.bind(this, function (sess, result) {
+                this.cancellable,
+                Lang.bind(this, function (session, result) {
                     try {
-                        this.wsConnection = sess.websocket_connect_finish(result);
-                        this.wsConnection.connect(
-                            "message",
-                            Lang.bind(this, this._onMessage)
-                        );
-                        this.wsConnection.connect(
-                            "closed",
-                            Lang.bind(this, this._onClosed)
-                        );
+                        const inputStream = session.send_finish(result);
+                        if (message.get_status() !== Soup.Status.OK) {
+                            this._scheduleReconnect();
+                            return;
+                        }
+                        this.stream = new Gio.DataInputStream({
+                            base_stream: inputStream,
+                            close_base_stream: true,
+                        });
                         this.set_applet_tooltip("System Monitor - Connected");
-
-                        // Send the configured interval to the server.
-                        this._sendInterval();
+                        this.statusItem.label.set_text("Connected to " + this.serverAddress);
+                        this._pushInterval();
+                        this._readNext();
                     } catch (e) {
                         this._scheduleReconnect();
                     }
@@ -137,64 +241,187 @@ class SysmonApplet extends Applet.Applet {
     }
 
     /**
-     * _sendInterval sends a set_interval command to the server so the
-     * stream rate matches the user's configured update interval.
+     * _readNext queues an asynchronous read of the next line from the stream.
+     * Each completed line is fed to the parser, and a dispatched event is
+     * applied to the applet.
      */
-    _sendInterval() {
-        if (!this.wsConnection) {
+    _readNext() {
+        if (this.stopped || !this.stream) {
             return;
         }
-        let cmd = JSON.stringify({
-            type: "set_interval",
-            interval_ms: this.updateInterval
-        });
-        this.wsConnection.send_text(cmd);
+
+        this.stream.read_line_async(
+            GLib.PRIORITY_DEFAULT,
+            this.cancellable,
+            Lang.bind(this, function (stream, result) {
+                let line;
+                try {
+                    const [data] = stream.read_line_finish_utf8(result);
+                    line = data;
+                } catch (e) {
+                    this._onDisconnected();
+                    return;
+                }
+
+                // A null line means end of stream: the server closed, so
+                // reconnect rather than spinning on an exhausted reader.
+                if (line === null) {
+                    this._onDisconnected();
+                    return;
+                }
+
+                const event = this.parser.push(line);
+                if (event) {
+                    this._onEvent(event);
+                }
+
+                this._readNext();
+            })
+        );
     }
 
     /**
-     * _onMessage handles an incoming WebSocket text frame containing a
-     * JSON snapshot. The snapshot is stored and the drawing area is
-     * queued for repaint.
+     * _onEvent applies a dispatched server-sent event.
      */
-    _onMessage(connection, type, data) {
-        if (type !== Soup.WebsocketDataType.TEXT) {
+    _onEvent(event) {
+        if (event.name === "bye") {
+            // The monitor stopped. Reconnecting would only hammer a server
+            // that has said it is done, so wait for the user to act.
+            this.set_applet_tooltip("System Monitor - Server stopped");
+            this.statusItem.label.set_text("Server stopped");
+            this._teardownStream();
+            this._scheduleReconnect();
             return;
         }
-        try {
-            let text = data.get_data().toString();
-            this.snapshot = JSON.parse(text);
-            this.drawingArea.queue_repaint();
-            this._updateTooltip();
-        } catch (e) {
-            // Malformed message; skip.
+
+        if (event.name !== "snapshot") {
+            return;
         }
+
+        const parsed = snapshotLib.parseSnapshot(event.data);
+        if (!parsed) {
+            return;
+        }
+
+        // Reset the backoff on data, not merely on a successful connect: a
+        // server that accepts the connection and closes it immediately would
+        // otherwise be retried every three seconds forever.
+        this.reconnectDelay = RECONNECT_DELAY_MS;
+
+        this.snapshot = parsed;
+        this._queueRepaint();
+        this._updateTooltip();
+        this._refreshMenu();
     }
 
     /**
-     * _onClosed handles WebSocket disconnection and triggers reconnect.
+     * _onDisconnected handles a stream that ended or failed.
      */
-    _onClosed() {
-        this.wsConnection = null;
+    _onDisconnected() {
+        this._teardownStream();
+        if (this.stopped) {
+            return;
+        }
         this.set_applet_tooltip("System Monitor - Disconnected");
+        this.statusItem.label.set_text("Disconnected");
         this._scheduleReconnect();
     }
 
     /**
-     * _scheduleReconnect queues a reconnect attempt after a delay.
-     * Only one pending reconnect timer is allowed at a time.
+     * _teardownStream closes the current stream and session without touching
+     * the reconnect timer.
+     */
+    _teardownStream() {
+        if (this.cancellable) {
+            this.cancellable.cancel();
+            this.cancellable = null;
+        }
+        if (this.stream) {
+            try {
+                this.stream.close(null);
+            } catch (e) {
+                // The peer may already be gone; nothing further to release.
+            }
+            this.stream = null;
+        }
+        this.session = null;
+    }
+
+    /**
+     * _scheduleReconnect queues a reconnect attempt, backing off so a server
+     * that stays down is not polled every few seconds indefinitely.
      */
     _scheduleReconnect() {
-        if (this.reconnectTimer) {
+        if (this.stopped || this.reconnectTimer) {
             return;
         }
+
+        // The server advertises its own reconnect hint; prefer it on the first
+        // attempt and back off from there.
+        const hint = this.parser && this.parser.retryMs > 0
+            ? this.parser.retryMs
+            : this.reconnectDelay;
+        const delay = Math.min(hint, MAX_RECONNECT_DELAY_MS);
+
         this.reconnectTimer = Mainloop.timeout_add(
-            RECONNECT_DELAY_MS,
+            delay,
             Lang.bind(this, function () {
                 this.reconnectTimer = null;
-                this._connectWebSocket();
+                this.reconnectDelay = Math.min(
+                    this.reconnectDelay * 2,
+                    MAX_RECONNECT_DELAY_MS
+                );
+                this._connect();
                 return false; // do not repeat
             })
         );
+    }
+
+    /**
+     * _pushInterval tells the server the poll rate this applet wants. The rate
+     * belongs to the server's single monitor, so it is a REST call rather than
+     * something carried on the stream.
+     */
+    _pushInterval() {
+        try {
+            const uri = "http://" + this.serverAddress + "/api/interval";
+            const message = Soup.Message.new("POST", uri);
+            const body = JSON.stringify({ interval_ms: this.updateInterval });
+            message.set_request_body_from_bytes(
+                "application/json",
+                new GLib.Bytes(body)
+            );
+
+            const session = new Soup.Session();
+            session.send_async(message, GLib.PRIORITY_DEFAULT, null,
+                function (sess, result) {
+                    try {
+                        sess.send_finish(result);
+                    } catch (e) {
+                        // Best effort: a dropped rate change leaves the server
+                        // on its previous interval and the stream unaffected.
+                    }
+                });
+        } catch (e) {
+            // As above: the stream matters, the rate hint does not.
+        }
+    }
+
+    // ---- settings callbacks ----------------------------------------------
+
+    _onServerChanged() {
+        this.reconnectDelay = RECONNECT_DELAY_MS;
+        this._connect();
+    }
+
+    _onIntervalChanged() {
+        this._pushInterval();
+    }
+
+    _queueRepaint() {
+        if (this.drawingArea) {
+            this.drawingArea.queue_repaint();
+        }
     }
 
     /**
@@ -205,30 +432,32 @@ class SysmonApplet extends Applet.Applet {
         if (!this.snapshot) {
             return;
         }
-        let cpus = this.snapshot.cpus || [];
-        let mem = this.snapshot.memory || {};
-        let avgCpu = 0;
-        if (cpus.length > 0) {
-            let sum = 0;
-            for (let i = 0; i < cpus.length; i++) {
-                sum += cpus[i].usage_percent || 0;
-            }
-            avgCpu = sum / cpus.length;
-        }
+
+        const avgCpu = snapshotLib.avgCpuUsage(this.snapshot.cpus);
+        const mem = this.snapshot.memory || {};
+        const rates = snapshotLib.netRates(this.snapshot.networks);
+        const maxTemp = snapshotLib.maxCpuTemp(
+            (this.snapshot.sensors || {}).core_temps
+        );
+
         this.set_applet_tooltip(
-            "CPU: " + avgCpu.toFixed(1) + "% | RAM: " +
-            (mem.used_percent || 0).toFixed(1) + "%"
+            "CPU: " + fmt.formatPercent(avgCpu) +
+            "   RAM: " + fmt.formatPercent(mem.used_percent) +
+            "   Temp: " + fmt.formatTemp(maxTemp) +
+            "\n↑ " + fmt.formatBits(rates.sent) + "   ↓ " + fmt.formatBits(rates.recv)
         );
     }
+
+    // ---- drawing ---------------------------------------------------------
 
     /**
      * _onRepaint renders the gauge bars and network text onto the Cairo
      * context provided by the St.DrawingArea.
      */
     _onRepaint(area) {
-        let ctx = area.get_context();
-        let [w, h] = area.get_surface_size();
-        let snap = this.snapshot;
+        const ctx = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const snap = this.snapshot;
 
         if (!snap) {
             // Draw a placeholder when no data is available.
@@ -269,14 +498,8 @@ class SysmonApplet extends Applet.Applet {
 
         // Disk bar: aggregate usage across all disks.
         if (this.showDisk && snap.disks) {
-            let totalBytes = 0;
-            let usedBytes = 0;
-            for (let i = 0; i < snap.disks.length; i++) {
-                totalBytes += snap.disks[i].total_bytes || 0;
-                usedBytes += snap.disks[i].used_bytes || 0;
-            }
-            let diskPct = totalBytes > 0 ? usedBytes / totalBytes : 0;
-            x = this._drawUsageBar(ctx, diskPct, x, h, DISK_BAR_WIDTH);
+            const usage = snapshotLib.diskUsage(snap.disks);
+            x = this._drawUsageBar(ctx, usage.percent / 100, x, h, DISK_BAR_WIDTH);
             x += PADDING;
         }
 
@@ -291,9 +514,9 @@ class SysmonApplet extends Applet.Applet {
      */
     _drawCpuBars(ctx, cpus, x, h) {
         for (let i = 0; i < cpus.length; i++) {
-            let pct = (cpus[i].usage_percent || 0) / 100;
-            let barH = Math.max(1, Math.floor(h * pct));
-            let color = _usageColor(pct);
+            const pct = (cpus[i].usage_percent || 0) / 100;
+            const barH = Math.max(1, Math.floor(h * pct));
+            const color = _usageColor(pct);
 
             // Filled portion (bottom-aligned).
             ctx.setSourceRGBA(color[0], color[1], color[2], color[3]);
@@ -315,8 +538,8 @@ class SysmonApplet extends Applet.Applet {
      * fraction is 0.0-1.0. Returns the new x offset.
      */
     _drawUsageBar(ctx, fraction, x, h, barWidth) {
-        let barH = Math.max(1, Math.floor(h * fraction));
-        let color = _usageColor(fraction);
+        const barH = Math.max(1, Math.floor(h * fraction));
+        const color = _usageColor(fraction);
 
         ctx.setSourceRGBA(color[0], color[1], color[2], color[3]);
         ctx.rectangle(x, h - barH, barWidth, barH);
@@ -334,50 +557,45 @@ class SysmonApplet extends Applet.Applet {
      * Returns the new x offset.
      */
     _drawNetworkText(ctx, networks, x, h) {
-        let totalSent = 0;
-        let totalRecv = 0;
-        for (let i = 0; i < networks.length; i++) {
-            totalSent += networks[i].bytes_sent_rate || 0;
-            totalRecv += networks[i].bytes_recv_rate || 0;
-        }
+        const rates = snapshotLib.netRates(networks);
 
         ctx.setSourceRGBA(COLOR_TEXT[0], COLOR_TEXT[1], COLOR_TEXT[2], COLOR_TEXT[3]);
         ctx.selectFontFace("monospace", 0, 0);
         ctx.setFontSize(FONT_SIZE);
 
-        let upStr = "\u2191" + _formatRate(totalSent);
-        let dnStr = "\u2193" + _formatRate(totalRecv);
-
         ctx.moveTo(x, h * 0.4);
-        ctx.showText(upStr);
+        ctx.showText("↑" + fmt.formatCompactRate(rates.sent));
         ctx.moveTo(x, h * 0.85);
-        ctx.showText(dnStr);
+        ctx.showText("↓" + fmt.formatCompactRate(rates.recv));
 
         return x + NET_TEXT_WIDTH;
     }
 
+    // ---- lifecycle -------------------------------------------------------
+
     /**
-     * on_applet_clicked launches the sysmon GUI application.
+     * on_applet_clicked opens the popup menu.
      */
     on_applet_clicked(event) {
-        GLib.spawn_command_line_async("sysmon");
+        this.menu.toggle();
     }
 
     /**
-     * on_applet_removed_from_panel cleans up timers and the WebSocket
-     * connection when the applet is removed from the panel.
+     * on_applet_removed_from_panel cleans up timers and the event stream when
+     * the applet is removed from the panel.
      */
     on_applet_removed_from_panel() {
+        this.stopped = true;
+
         if (this.reconnectTimer) {
             Mainloop.source_remove(this.reconnectTimer);
             this.reconnectTimer = null;
         }
-        if (this.wsConnection) {
-            this.wsConnection.close(
-                Soup.WebsocketCloseCode.NORMAL,
-                "applet removed"
-            );
-            this.wsConnection = null;
+        this._teardownStream();
+
+        if (this.settings) {
+            this.settings.finalize();
+            this.settings = null;
         }
     }
 }
