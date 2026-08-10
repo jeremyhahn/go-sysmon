@@ -1,0 +1,43 @@
+name: Desktop Tests
+
+# Tier 3 of the desktop test strategy: a real Cinnamon session under Xvfb,
+# driven through the org.Cinnamon D-Bus Eval method. Tiers 1 and 2 run on every
+# push in ci.yml; this one needs a Cinnamon install and software GL, so it takes
+# minutes and is not perfectly reliable. Nightly, plus on demand, plus whenever
+# the extension sources actually change.
+#
+# See docs/testing/desktop.md for what each tier proves.
+
+on:
+  schedule:
+    # 04:00 UTC daily, well clear of the working day.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'extensions/**'
+      - 'test/desktop/**'
+      - 'pkg/server/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cinnamon:
+    name: Cinnamon Applet (real session)
+    runs-on: ubuntu-latest
+    # Building the image pulls a full Cinnamon desktop; the run itself waits on
+    # a compositor starting under llvmpipe.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the desktop test image
+        run: make desktop-docker-build
+
+      - name: Run the Cinnamon applet tests
+        run: make test-extensions-desktop

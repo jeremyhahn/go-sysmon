@@ -37,6 +37,11 @@ ACTIONLINT ?= $(GOBIN_DIR)/actionlint
 APPLET_UUID := sysmon-go@sysmon
 APPLET_SRC := extensions/cinnamon/$(APPLET_UUID)
 APPLET_DEST := $(HOME)/.local/share/cinnamon/applets/$(APPLET_UUID)
+# The applet's pure logic lives in extensions/shared and is installed alongside
+# applet.js: Cinnamon's require() resolves against the applet directory only and
+# rejects a path containing a subdirectory.
+EXTENSION_SHARED := extensions/shared
+DESKTOP_IMAGE := go-sysmon-desktop-test
 
 ADDR ?= :8081
 INTERVAL ?= 1000
@@ -47,6 +52,7 @@ INTERVAL ?= 1000
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy \
         ci ci-fast vulncheck gosec audit release-build release-build-desktop clean-dist \
         install-extension-cinnamon uninstall-extension-cinnamon \
+        test-extensions test-extensions-desktop desktop-docker-build \
 
 all: build test lint
 
@@ -177,6 +183,24 @@ bench-server:
 test-e2e: build-server build-frontend
 	cd $(FRONTEND_DIR) && npx playwright install chromium && npx playwright test
 
+## Desktop extension tests
+
+# test-extensions is tier 1 and tier 2: the shared modules' unit tests plus a
+# harness that loads applet.js against stand-in GObject Introspection objects.
+# Both run in-process under Node, need no display, and are part of `make ci`.
+test-extensions:
+	node --test 'extensions/tests/*.test.js'
+
+# test-extensions-desktop is tier 3: a real Cinnamon session under Xvfb, driven
+# through the org.Cinnamon D-Bus Eval method. It needs a Cinnamon install and
+# software GL, so it is slow and is not part of `make ci` -- run it nightly or
+# before touching applet.js.
+test-extensions-desktop: desktop-docker-build
+	docker run --rm --shm-size=256m $(DESKTOP_IMAGE)
+
+desktop-docker-build:
+	docker build -t $(DESKTOP_IMAGE) -f test/desktop/Dockerfile .
+
 ## Integration tests
 
 # integration-test-cli runs the CLI integration suite directly on the host.
@@ -203,6 +227,7 @@ serve: build-server
 install-extension-cinnamon:
 	mkdir -p $(APPLET_DEST)
 	cp -r $(APPLET_SRC)/* $(APPLET_DEST)/
+	cp $(EXTENSION_SHARED)/*.js $(APPLET_DEST)/
 
 uninstall-extension-cinnamon:
 	rm -rf $(APPLET_DEST)
@@ -348,11 +373,11 @@ audit:
 #
 #   make ci          full pipeline
 #   make ci-fast     everything except the container and browser suites
-ci: fmt-check vet lint vulncheck gosec audit test build integration-test test-e2e
+ci: fmt-check vet lint vulncheck gosec audit test test-extensions build integration-test test-e2e
 	@echo ""
 	@echo "CI pipeline passed."
 
-ci-fast: fmt-check vet lint vulncheck gosec audit test build
+ci-fast: fmt-check vet lint vulncheck gosec audit test test-extensions build
 	@echo ""
 	@echo "CI (fast) passed. Container and browser suites were skipped."
 
