@@ -1,4 +1,32 @@
 import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+/**
+ * containersTable scopes to the container listing.
+ *
+ * The Containers tab also renders an "Images & Storage" table whenever a
+ * runtime socket is reachable, so a bare `table tbody tr` matches rows that
+ * have nothing to do with containers. That is exactly how CI broke: a runner
+ * with zero containers but a live docker socket sailed past the "no containers
+ * here" guard on the storage table's rows, then failed looking for a Name
+ * column that only the container table has.
+ */
+function containersTable(page: Page) {
+  return page.locator('table').filter({
+    has: page.getByRole('columnheader', { name: /^Name/ }),
+  });
+}
+
+/**
+ * runningContainers asks the server what it can see, rather than inferring it
+ * from whichever tables happen to be on the page. The API-based tests further
+ * down this file already work this way; the DOM tests now agree with them.
+ */
+async function runningContainers(page: Page): Promise<number> {
+  const resp = await page.request.get('/api/snapshot');
+  const snap = await resp.json();
+  return (snap.virtualization?.containers ?? []).length;
+}
 
 test.describe('Containers Tab', () => {
   test.beforeEach(async ({ page }) => {
@@ -14,27 +42,26 @@ test.describe('Containers Tab', () => {
   });
 
   test('table exposes the operational columns', async ({ page }) => {
-    const rows = page.locator('table tbody tr');
-    if ((await rows.count()) === 0) {
+    if ((await runningContainers(page)) === 0) {
       test.skip(true, 'no containers running on this host');
     }
+    const table = containersTable(page);
     // Headers carry a sort indicator when active, so anchor rather than
     // matching exactly. Sort state itself is asserted via aria-sort below.
     for (const col of ['Name', 'CPU', 'Limit', 'Throttled', 'Memory', 'Peak', 'PIDs', 'Uptime']) {
       await expect(
-        page.getByRole('columnheader', { name: new RegExp('^' + col) }).first()
+        table.getByRole('columnheader', { name: new RegExp('^' + col) }).first()
       ).toBeVisible();
     }
     // The active sort column must announce its direction to assistive tech.
-    await expect(page.locator('th[aria-sort="descending"]').first()).toBeVisible();
+    await expect(table.locator('th[aria-sort="descending"]').first()).toBeVisible();
   });
 
   test('selecting a row opens the detail drawer', async ({ page }) => {
-    const rows = page.locator('table tbody tr');
-    if ((await rows.count()) === 0) {
+    if ((await runningContainers(page)) === 0) {
       test.skip(true, 'no containers running on this host');
     }
-    await rows.first().click();
+    await containersTable(page).locator('tbody tr').first().click();
     await expect(page.getByText('CPU throttling')).toBeVisible();
     await expect(page.getByText('OOM kills / events')).toBeVisible();
     await expect(page.getByText(/Pressure stall/)).toBeVisible();
