@@ -112,8 +112,14 @@ test.describe('DataTable sorting', () => {
 
 // These two run against whatever the host actually has, because they are
 // checking that real collector output reaches the table. They skip rather than
-// fail when the host has nothing to show -- a CI container has no images and
-// no SMART-capable disk, and asserting otherwise would just be flaky.
+// fail when the host has nothing to show -- a CI container has no SMART-capable
+// disk, and asserting otherwise would just be flaky.
+//
+// The image listing is no longer one of those "CI has none" cases: a runner
+// with a docker socket has images, and this test now runs there. It stays
+// conditional because whether it runs at all depends on timing -- image sizes
+// come from a background /system/df query that takes many seconds on a host
+// with a large library, so a snapshot taken before it lands reports none.
 test.describe('Images table', () => {
   test('supports search, sort and pagination when images are present', async ({ page, request }) => {
     const snap = await (await request.get('/api/snapshot')).json();
@@ -127,8 +133,16 @@ test.describe('Images table', () => {
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
 
     await expect(page.getByPlaceholder(/Search tag or ID/)).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: /^Size/ })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: /^Tag/ })).toBeVisible();
+
+    // Scope to the image listing. The Containers tab also renders an
+    // "Images & Storage" summary whose columns are Type/Count/Size/Reclaimable,
+    // so a bare `Size` header matches two tables and trips strict mode. Tag is
+    // unique to the image listing, which makes it the anchor.
+    const imagesTable = page.locator('table').filter({
+      has: page.getByRole('columnheader', { name: /^Tag/ }),
+    });
+    await expect(imagesTable.getByRole('columnheader', { name: /^Size/ })).toBeVisible();
+    await expect(imagesTable.getByRole('columnheader', { name: /^Tag/ })).toBeVisible();
   });
 });
 
