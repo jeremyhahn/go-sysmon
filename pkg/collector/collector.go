@@ -171,14 +171,10 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 	snap.Sensors = s.sensor.Info()
 	snap.Virt = s.virt.Info()
 	snap.Virt.Runtime = s.runtime.Info()
-	snap.Virt.Capability.RuntimeAPIEnabled = s.runtime.Enabled()
 	snap.Virt.Capability.RuntimeAPIReachable = snap.Virt.Runtime.Available
-	if !snap.Virt.Capability.RuntimeAPIEnabled {
+	if !snap.Virt.Capability.RuntimeAPIReachable {
 		snap.Virt.Capability.Notes = append(snap.Virt.Capability.Notes,
-			"image inventory is off; start with --docker to enable it")
-	} else if !snap.Virt.Capability.RuntimeAPIReachable {
-		snap.Virt.Capability.Notes = append(snap.Virt.Capability.Notes,
-			"no container runtime socket answered; check that the daemon is running and that this user is in the docker group")
+			"no container runtime socket answered; image inventory is unavailable. Check that the daemon is running and that this user is in the docker group")
 	}
 
 	// Attribute tap-device throughput to the guest behind it. This runs after
@@ -219,13 +215,6 @@ func mergeSensorIntoCPUs(cpus []types.CPUInfo, sensors types.SensorData) {
 			cpus[i].VoltageV = vcoreV
 		}
 	}
-}
-
-// EnableRuntimeAPI turns on container runtime API queries. It is off by
-// default: the runtime socket grants control of the daemon, so contacting it
-// is an explicit choice rather than something a monitor does automatically.
-func (s *SystemCollector) EnableRuntimeAPI(on bool) {
-	s.runtime.Enable(on)
 }
 
 // WaitForRuntimeDiskUsage blocks until the container runtime's disk usage has

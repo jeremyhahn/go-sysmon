@@ -261,28 +261,26 @@ func TestInstallHint_PerFamilyCommands(t *testing.T) {
 
 // ---- SystemCollector wiring -----------------------------------------------
 
-// TestEnableRuntimeAPI_TogglesTheCollector verifies the opt-in reaches the
-// runtime collector, which is off by default because its socket is
-// root-equivalent access.
-func TestEnableRuntimeAPI_TogglesTheCollector(t *testing.T) {
+// TestRuntimeAPI_NeedsNoOptIn is the regression test for the flag that used to
+// gate this. A socket that can be opened is used; there is nothing to switch
+// on, so a snapshot must never claim image inventory is merely turned off.
+func TestRuntimeAPI_NeedsNoOptIn(t *testing.T) {
 	s := NewSystemCollector(quietLogger())
 
-	if s.runtime.Enabled() {
-		t.Error("the runtime API must start disabled")
+	snap, err := s.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
 	}
-	s.EnableRuntimeAPI(true)
-	if !s.runtime.Enabled() {
-		t.Error("EnableRuntimeAPI(true) did not take effect")
-	}
-	s.EnableRuntimeAPI(false)
-	if s.runtime.Enabled() {
-		t.Error("EnableRuntimeAPI(false) did not take effect")
+	for _, note := range snap.Virt.Capability.Notes {
+		if strings.Contains(note, "--docker") || strings.Contains(note, "is off") {
+			t.Errorf("capability note still describes an opt-in: %q", note)
+		}
 	}
 }
 
-// TestWaitForRuntimeDiskUsage_ReturnsWhenDisabled verifies the wait cannot
-// hang a one-shot command when the runtime API was never enabled.
-func TestWaitForRuntimeDiskUsage_ReturnsWhenDisabled(t *testing.T) {
+// TestWaitForRuntimeDiskUsage_ReturnsWhenNoRuntime verifies the wait cannot
+// hang a one-shot command on a host with no container runtime.
+func TestWaitForRuntimeDiskUsage_ReturnsWhenNoRuntime(t *testing.T) {
 	s := NewSystemCollector(quietLogger())
 
 	done := make(chan struct{})
@@ -294,15 +292,14 @@ func TestWaitForRuntimeDiskUsage_ReturnsWhenDisabled(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		t.Error("WaitForRuntimeDiskUsage hung with the collector disabled")
+		t.Error("WaitForRuntimeDiskUsage hung with no runtime present")
 	}
 }
 
 // TestWaitForRuntimeDiskUsage_HonoursContext verifies a cancelled context ends
-// the wait even when the collector is enabled and nothing ever answers.
+// the wait when nothing ever answers.
 func TestWaitForRuntimeDiskUsage_HonoursContext(t *testing.T) {
 	s := NewSystemCollector(quietLogger())
-	s.EnableRuntimeAPI(true)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -631,20 +628,27 @@ func TestFindRuntimeSocket_NoneReachable(t *testing.T) {
 	}
 }
 
-// TestRuntimeCollect_DisabledClearsPreviousData verifies turning the runtime
-// API off drops what it had gathered, rather than serving stale inventory.
-func TestRuntimeCollect_DisabledClearsPreviousData(t *testing.T) {
+// TestRuntimeCollect_VanishedSocketClearsPreviousData verifies a runtime that
+// goes away drops what it had gathered, rather than serving stale inventory
+// for the rest of the process's life.
+func TestRuntimeCollect_VanishedSocketClearsPreviousData(t *testing.T) {
+	original := runtimeSocketPaths
+	runtimeSocketPaths = []struct {
+		path   string
+		engine string
+	}{{filepath.Join(t.TempDir(), "absent.sock"), "docker"}}
+	t.Cleanup(func() { runtimeSocketPaths = original })
+
 	c := NewRuntimeCollector(quietLogger())
 
-	// Seed a previous result.
+	// Seed a previous result, as though the daemon had been up.
 	seeded := types.RuntimeInfo{Available: true, Engine: "docker", ImagesTotal: 5}
 	c.info.Store(&seeded)
 
-	c.Enable(false)
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
 	if got := c.Info(); got.Available || got.ImagesTotal != 0 {
-		t.Errorf("disabling left stale data behind: %+v", got)
+		t.Errorf("a vanished runtime left stale data behind: %+v", got)
 	}
 }

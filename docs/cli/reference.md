@@ -214,7 +214,6 @@ sysmon serve --addr :8080 --interval 1000
 |--------------|--------|---------|-------------------------------------|
 | `--addr`     | string | `:8080` | TCP listen address                  |
 | `--interval` | int    | `1000`  | Polling interval in milliseconds    |
-| `--docker`   | bool   | `false` | Query the container runtime API for image inventory and storage usage. Off by default because the runtime socket grants control of the daemon |
 
 ### version
 

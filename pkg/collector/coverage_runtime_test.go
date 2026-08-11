@@ -53,7 +53,6 @@ func TestRuntimeCollect_InfoRejected(t *testing.T) {
 	serveFakeDaemon(t, mux)
 
 	c := NewRuntimeCollector(quietLogger())
-	c.Enable(true)
 
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v, want nil: a refusing daemon is not a collector failure", err)
@@ -73,7 +72,6 @@ func TestRuntimeCollect_MalformedInfo(t *testing.T) {
 	serveFakeDaemon(t, mux)
 
 	c := NewRuntimeCollector(quietLogger())
-	c.Enable(true)
 
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v, want nil", err)
@@ -102,7 +100,6 @@ func TestRuntimeCollect_DiskUsageRejected(t *testing.T) {
 	serveFakeDaemon(t, mux)
 
 	c := NewRuntimeCollector(quietLogger())
-	c.Enable(true)
 
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v", err)
@@ -148,7 +145,6 @@ func TestRuntimeCollect_DiskUsageIsThrottled(t *testing.T) {
 	serveFakeDaemon(t, mux)
 
 	c := NewRuntimeCollector(quietLogger())
-	c.Enable(true)
 
 	for range 4 {
 		if err := c.Collect(); err != nil {

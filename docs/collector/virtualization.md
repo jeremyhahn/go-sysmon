@@ -190,7 +190,7 @@ and it is **disabled by default**: the runtime socket is effectively
 root-equivalent access, which a monitor should not take unasked.
 
 Enable it with `sysmon images` (running the command is the opt-in) or
-`sysmon serve --docker`.
+`sysmon serve`.
 
 ### What it reports
 

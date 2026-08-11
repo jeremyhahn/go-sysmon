@@ -24,7 +24,6 @@ const shutdownTimeout = 10 * time.Second
 var (
 	serveAddr       string
 	serveIntervalMs int
-	serveDockerAPI  bool
 	serveTLSCert    string
 	serveTLSKey     string
 )
@@ -40,9 +39,6 @@ var serveCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().StringVar(&serveAddr, "addr", ":8080", "HTTP listen address")
 	serveCmd.Flags().IntVar(&serveIntervalMs, "interval", 1000, "Polling interval in milliseconds")
-	serveCmd.Flags().BoolVar(&serveDockerAPI, "docker", false,
-		"Query the container runtime API for image inventory and storage usage. "+
-			"Off by default: the runtime socket grants control of the daemon.")
 	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "Path to a PEM certificate; enables HTTPS")
 	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "Path to the PEM private key matching --tls-cert")
 	rootCmd.AddCommand(serveCmd)
@@ -77,10 +73,6 @@ func runServeCmd(_ *cobra.Command, _ []string) error {
 	runStartupChecks()
 
 	sc := collector.NewSystemCollector(slog.Default())
-	sc.EnableRuntimeAPI(serveDockerAPI)
-	if serveDockerAPI {
-		slog.Info("container runtime API enabled", "note", "image inventory will be collected")
-	}
 	snap := newMonitorSnapshotter(sc)
 
 	mon, err := monitor.New(snap, interval)

@@ -20,8 +20,12 @@ import (
 // Unlike every other collector, this one talks to a daemon. Image inventory,
 // layer sizes and reclaimable space exist only in the runtime's own database:
 // its storage directory is root-owned, so there is no unprivileged filesystem
-// route to them. Because the socket is effectively root-equivalent access, the
-// collector is opt-in and disabled by default.
+// route to them.
+//
+// Reaching the socket requires membership of the runtime's group, or a
+// deliberate bind mount in a container. That grant is the decision; asking for
+// it a second time on the command line only made a populated tab look broken,
+// so the collector simply uses the socket when it can open one.
 var runtimeSocketPaths = []struct {
 	path   string
 	engine string
@@ -56,9 +60,8 @@ const maxImages = 500
 // RuntimeCollector reports container image inventory and storage usage from a
 // container runtime's API socket.
 type RuntimeCollector struct {
-	info    atomic.Pointer[types.RuntimeInfo]
-	logger  *slog.Logger
-	enabled atomic.Bool
+	info   atomic.Pointer[types.RuntimeInfo]
+	logger *slog.Logger
 
 	// Disk usage is refreshed on a background goroutine: /system/df routinely
 	// takes many seconds, and a snapshot must never block on it. Collect
@@ -68,41 +71,31 @@ type RuntimeCollector struct {
 	dfLastStart atomic.Int64
 }
 
-// NewRuntimeCollector returns a collector that is disabled until Enable is
-// called. A disabled collector performs no I/O and reports Available false.
+// NewRuntimeCollector returns a collector that probes for a runtime socket on
+// each collection. Where none is present or readable it performs no further
+// I/O and reports Available false.
 func NewRuntimeCollector(logger *slog.Logger) *RuntimeCollector {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	c := &RuntimeCollector{logger: logger}
-	c.info.Store(&types.RuntimeInfo{})
-	return c
+	// info stays nil until the first Collect concludes, which is what lets
+	// WaitForDiskUsage tell "no runtime here" apart from "not looked yet".
+	return &RuntimeCollector{logger: logger}
 }
 
-// Enable turns daemon queries on or off.
-func (c *RuntimeCollector) Enable(on bool) {
-	c.enabled.Store(on)
-}
-
-// Enabled reports whether daemon queries are turned on.
-func (c *RuntimeCollector) Enabled() bool {
-	return c.enabled.Load()
-}
-
-// Info returns the most recently collected runtime data.
+// Info returns the most recently collected runtime data, or the zero value
+// when no collection has completed yet.
 func (c *RuntimeCollector) Info() types.RuntimeInfo {
-	return *c.info.Load()
+	if info := c.info.Load(); info != nil {
+		return *info
+	}
+	return types.RuntimeInfo{}
 }
 
 // Collect queries the runtime for engine details and disk usage. A missing or
 // unreadable socket is not an error: it means the runtime is absent or this
 // user cannot reach it, and the rest of the snapshot is still valid.
 func (c *RuntimeCollector) Collect() error {
-	if !c.enabled.Load() {
-		c.info.Store(&types.RuntimeInfo{})
-		return nil
-	}
-
 	socket, engine := findRuntimeSocket()
 	if socket == "" {
 		c.info.Store(&types.RuntimeInfo{})
@@ -187,9 +180,17 @@ func mergeDiskUsage(dst *types.RuntimeInfo, src *types.RuntimeInfo) {
 // WaitForDiskUsage blocks until a disk usage result is available or the
 // context is done. One-shot commands use it so that "sysmon images" prints
 // sizes rather than an empty table on first run.
+//
+// It waits only while a result could still arrive: either a query is already
+// in flight, or a collection has found a reachable runtime that will start
+// one. Otherwise it returns at once, because nothing is coming — on a host
+// with no container runtime, or before any collection has run, the alternative
+// is waiting out the caller's entire timeout for a result that cannot exist.
 func (c *RuntimeCollector) WaitForDiskUsage(ctx context.Context) {
 	for c.diskUsage.Load() == nil {
-		if !c.enabled.Load() {
+		info := c.info.Load()
+		reachable := info != nil && info.Available
+		if !reachable && !c.dfInFlight.Load() {
 			return
 		}
 		select {
