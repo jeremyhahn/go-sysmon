@@ -54,20 +54,21 @@ embedded in the binary, so deploying it is copying one file.
 Download a binary from [Releases](https://github.com/jeremyhahn/go-sysmon/releases):
 
 ```bash
-curl -LO https://github.com/jeremyhahn/go-sysmon/releases/latest/download/sysmon-server-0.1.0-linux-amd64
-sudo install -m 0755 sysmon-server-0.1.0-linux-amd64 /usr/local/bin/sysmon-server
+curl -LO https://github.com/jeremyhahn/go-sysmon/releases/latest/download/sysmon-server-0.1.1-linux-amd64
+sudo install -m 0755 sysmon-server-0.1.1-linux-amd64 /usr/local/bin/sysmon-server
 sysmon-server serve --addr :8080
 ```
 
 Then open `http://localhost:8080/`.
 
-Or as a container:
+Or as a container, **on a Linux host**:
 
 ```bash
 docker run -d --name sysmon \
   --pid=host --network=host \
   -v /sys:/sys:ro -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
-  ghcr.io/jeremyhahn/go-sysmon:0.1.0 serve --addr :8080
+  -v /etc/os-release:/etc/os-release:ro \
+  ghcr.io/jeremyhahn/go-sysmon:0.1.1 serve --addr :8080
 ```
 
 The host flags are not optional. Without them the container reports *itself* --
@@ -75,6 +76,17 @@ one process, its own veth pair -- rather than the host. Add `--privileged` for
 SMART disk health; capabilities alone are not enough. There is a
 [docker-compose.yml](docker-compose.yml) with every setting explained, and
 [docs/server/container.md](docs/server/container.md) covers the trade-offs.
+
+Two things that catch people out:
+
+- **The host must be Linux.** On Docker Desktop for macOS or Windows the
+  container measures the Linux VM it runs in, not your laptop. It starts, and
+  the numbers are real -- they are just the VM's. Run the native binary on a
+  Linux machine and point a browser at it instead.
+- **`--network=host` means `--addr` picks the real host port**, so there is no
+  `-p` mapping and nothing warns you if the port is taken -- the container just
+  exits. Detached, that looks like nothing happened. `docker logs sysmon` has
+  the reason; `--addr :9090` moves it.
 
 ---
 
@@ -150,7 +162,7 @@ make build-desktop   # desktop binary only
 ```bash
 # Web dashboard
 sysmon-server serve --addr :8080
-sysmon-server serve --addr 10.0.0.5:8080 --interval 500 --docker
+sysmon-server serve --addr 10.0.0.5:8080 --interval 500
 
 # Desktop GUI
 sysmon
@@ -190,7 +202,7 @@ is unavailable and why:
 |---|---|
 | SMART / NVMe health, disk temperature | root, or membership of the `disk` group |
 | DIMM detail from SMBIOS | root |
-| Container image inventory | the `docker` group, plus `--docker` |
+| Container image inventory | the `docker` group |
 | Container metrics | cgroup v2 (no privileges) |
 | VM metrics | none |
 

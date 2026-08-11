@@ -8,6 +8,63 @@ That works, but it is worth understanding what it is doing, because a monitor
 in a container has a problem no other containerised service has: containers
 exist to hide the host, and this program's entire job is to see it.
 
+## The host has to be Linux
+
+Not "Docker has to be installed" — the *host kernel* has to be the one you want
+to measure. Everything sysmon reads is a Linux interface: `/proc`, `/sys`,
+hwmon, cgroups, SMART ioctls, DMI.
+
+On Docker Desktop for macOS or Windows, containers run inside a Linux virtual
+machine. `--pid=host` joins that VM's process table, `-v /sys:/sys` mounts that
+VM's sysfs, and `--network=host` refers to that VM's interfaces. The container
+starts and the dashboard fills with numbers — they are just the VM's numbers,
+not your laptop's. That is a worse outcome than an error, because nothing looks
+wrong.
+
+There is no workaround, because the data does not exist on the host to read.
+To monitor a Mac or a Windows machine, run the native binary on a Linux box and
+point a browser at it.
+
+WSL2 has the same caveat with a twist: you get the WSL VM's kernel, which is
+real and worth monitoring, but it is not Windows.
+
+## docker run, without compose
+
+The compose file is the supported path, but the equivalent one-liner is:
+
+```bash
+docker run -d --name sysmon \
+  --pid=host \
+  --network=host \
+  -v /sys:/sys:ro \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
+  -v /etc/os-release:/etc/os-release:ro \
+  ghcr.io/jeremyhahn/go-sysmon:0.1.1 \
+  serve --addr :8080
+```
+
+Add `-v /var/run/docker.sock:/var/run/docker.sock:ro` for image inventory, and
+`--privileged` for SMART — both are explained below. There is no flag for the
+socket: mounting it is the decision, and sysmon uses it when it can open it.
+
+**`--network=host` means `--addr` alone decides the port**, so there is no `-p`
+mapping and `--addr :8080` binds 8080 on the real host. If something already
+holds that port the container exits immediately:
+
+```
+Error: server start: listen tcp :8080: bind: address already in use
+```
+
+With `-d` you will not see that. The container is simply gone, and `docker run`
+only printed the pull progress and a container ID. **When a detached container
+does not come up, `docker logs sysmon` has the answer** — every startup failure
+is written there before the process exits. Pick another port with
+`--addr :9090` and nothing else changes.
+
+If your shell is zsh with `CORRECT_ALL` enabled it will offer to "fix" the bind
+mounts (`/sys:/sys:ro` → `/sys/sys:ro`). Answer `n`, or prefix the command with
+`nocorrect`.
+
 ## What a naive run gets you
 
 Without host access the container reports the container:
@@ -34,7 +91,7 @@ namespaced, so you get 24 cores and a process list of 1, and everything
 | `-v /sys:/sys:ro` | No CPU topology or frequencies, no hwmon temperatures, no fans, no thermal zones, no RAPL power, no disk queue stats |
 | `-v /sys/fs/cgroup:/sys/fs/cgroup:ro` | No container metrics. **This is a separate mount from `/sys`** — mounting `/sys` alone is not enough, which is the easiest thing here to get wrong |
 | `-v /etc/os-release:ro` | Distribution shows as Debian (the image), not the host |
-| `-v /var/run/docker.sock:ro` | No image inventory. Still only queried with `--docker`, since the socket grants control of the daemon |
+| `-v /var/run/docker.sock:ro` | No image inventory. Container CPU, memory and I/O still work: those come from cgroups |
 
 Run `docker compose exec sysmon sysmon-server doctor` at any time and it will
 tell you exactly what the current settings allow.
@@ -88,7 +145,7 @@ mapping.
 
 ## The image
 
-- `ghcr.io/jeremyhahn/go-sysmon:0.1.0`, and `:latest`
+- `ghcr.io/jeremyhahn/go-sysmon:0.1.1`, and `:latest`
 - linux/amd64 and linux/arm64
 - ~100 MB, Debian-based
 
@@ -110,7 +167,7 @@ spec:
   hostNetwork: true
   containers:
     - name: sysmon
-      image: ghcr.io/jeremyhahn/go-sysmon:0.1.0
+      image: ghcr.io/jeremyhahn/go-sysmon:0.1.1
       args: ["serve", "--addr", ":8080"]
       securityContext:
         privileged: true     # only if you want SMART; see above

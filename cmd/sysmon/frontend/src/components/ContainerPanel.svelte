@@ -195,8 +195,9 @@
             {:else if canObserve && !runtime?.available}
               <p class="text-xs text-base-content/50">
                 Detection is working (cgroup {virt.cgroup_version}); nothing is running.
-                Start the server with <span class="font-mono">--docker</span> to also see
-                containers that exist but are stopped.
+                No container runtime socket answered, so containers that exist but
+                are stopped cannot be listed &mdash; that needs membership of the
+                <span class="font-mono">docker</span> group.
               </p>
             {:else if canObserve}
               <p class="text-xs text-base-content/50">

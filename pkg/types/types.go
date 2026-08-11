@@ -49,9 +49,9 @@ type VirtCapability struct {
 	ContainersObservable bool `json:"containers_observable"`
 	// VMsObservable is true when the process list could be read.
 	VMsObservable bool `json:"vms_observable"`
-	// RuntimeAPIEnabled reports whether image inventory was asked for;
-	// RuntimeAPIReachable reports whether a socket answered.
-	RuntimeAPIEnabled   bool `json:"runtime_api_enabled"`
+	// RuntimeAPIReachable reports whether a container runtime socket answered.
+	// There is nothing to opt into: the socket is used whenever one can be
+	// opened, so unreachable means absent, not switched off.
 	RuntimeAPIReachable bool `json:"runtime_api_reachable"`
 	// Notes are human-readable explanations for anything unavailable.
 	Notes []string `json:"notes"`

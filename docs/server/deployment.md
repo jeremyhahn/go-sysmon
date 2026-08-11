@@ -141,7 +141,7 @@ bin/sysmon --no-tray        # window, no tray icon
 bin/sysmon-server serve --addr :8080                  # every interface
 bin/sysmon-server serve --addr 192.168.101.90:8080    # one interface
 bin/sysmon-server serve --addr :8080 --interval 500   # faster polling
-bin/sysmon-server serve --addr :8080 --docker         # include image inventory
+bin/sysmon-server serve --addr :8080                  # image inventory is automatic
 ```
 
 The desktop binary serves the identical dashboard, on a host that has the GUI

@@ -222,33 +222,22 @@ func TestShortImageID(t *testing.T) {
 // ---- collector lifecycle --------------------------------------------------
 
 // TestRuntimeCollector_DisabledDoesNoIO verifies the default is inert: the
-// runtime socket is root-equivalent access, so nothing may touch it unasked.
-func TestRuntimeCollector_DisabledDoesNoIO(t *testing.T) {
-	t.Parallel()
-	c := NewRuntimeCollector(slog.Default())
+// TestRuntimeCollector_NoSocketIsNotAnError verifies a host with no container
+// runtime yields no data and no error, rather than failing the snapshot.
+func TestRuntimeCollector_NoSocketIsNotAnError(t *testing.T) {
+	original := runtimeSocketPaths
+	runtimeSocketPaths = []struct {
+		path   string
+		engine string
+	}{{filepath.Join(t.TempDir(), "absent.sock"), "docker"}}
+	t.Cleanup(func() { runtimeSocketPaths = original })
 
-	if c.Enabled() {
-		t.Error("a new RuntimeCollector must start disabled")
-	}
+	c := NewRuntimeCollector(slog.Default())
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v, want nil", err)
 	}
 	if info := c.Info(); info.Available {
-		t.Errorf("a disabled collector reported data: %+v", info)
-	}
-}
-
-func TestRuntimeCollector_EnableToggles(t *testing.T) {
-	t.Parallel()
-	c := NewRuntimeCollector(nil)
-
-	c.Enable(true)
-	if !c.Enabled() {
-		t.Error("Enable(true) did not take effect")
-	}
-	c.Enable(false)
-	if c.Enabled() {
-		t.Error("Enable(false) did not take effect")
+		t.Errorf("reported a runtime with no socket present: %+v", info)
 	}
 }
 
@@ -263,7 +252,6 @@ func TestRuntimeCollector_UnreachableSocket(t *testing.T) {
 	t.Cleanup(func() { runtimeSocketPaths = original })
 
 	c := NewRuntimeCollector(slog.Default())
-	c.Enable(true)
 
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v, want nil for an absent socket", err)
@@ -312,7 +300,6 @@ func TestRuntimeCollector_AgainstFakeDaemon(t *testing.T) {
 	t.Cleanup(func() { runtimeSocketPaths = original })
 
 	c := NewRuntimeCollector(slog.Default())
-	c.Enable(true)
 
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v", err)
@@ -341,9 +328,10 @@ func TestRuntimeCollector_AgainstFakeDaemon(t *testing.T) {
 	}
 }
 
-// TestWaitForDiskUsage_ReturnsWhenDisabled verifies the wait cannot hang when
-// the collector is off.
-func TestWaitForDiskUsage_ReturnsWhenDisabled(t *testing.T) {
+// TestWaitForDiskUsage_ReturnsWhenNothingIsComing verifies the wait cannot
+// hang when no collection has run and no query is in flight, which is the
+// state on a host with no container runtime.
+func TestWaitForDiskUsage_ReturnsWhenNothingIsComing(t *testing.T) {
 	t.Parallel()
 	c := NewRuntimeCollector(nil)
 
@@ -356,6 +344,6 @@ func TestWaitForDiskUsage_ReturnsWhenDisabled(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		t.Error("WaitForDiskUsage hung on a disabled collector")
+		t.Error("WaitForDiskUsage hung when no result could arrive")
 	}
 }

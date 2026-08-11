@@ -238,7 +238,6 @@ func checkRuntimeSocket() checkResult {
 			Name:   "image inventory",
 			Status: "ok",
 			Detail: "runtime socket reachable at " + sock,
-			Fix:    "enable with: sysmon images, or sysmon serve --docker",
 		}
 	}
 

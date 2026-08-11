@@ -13,7 +13,7 @@
 
 services:
   sysmon:
-    image: ghcr.io/jeremyhahn/go-sysmon:0.1.0
+    image: ghcr.io/jeremyhahn/go-sysmon:0.1.1
     container_name: sysmon
     restart: unless-stopped
 
@@ -43,9 +43,11 @@ services:
       # Distribution name and version on the Host tab.
       - /etc/os-release:/etc/os-release:ro
 
-      # Container image inventory and reclaimable space. Read-only, and still
-      # only queried when --docker is passed, because the socket grants
-      # control of the daemon. Comment this out if you do not want that.
+      # Container image inventory and reclaimable space. Mounted read-only,
+      # and used whenever it can be opened -- mounting it here is the decision.
+      # Comment this line out if you would rather sysmon never contacted the
+      # daemon; everything else on the Containers tab comes from cgroups and
+      # keeps working without it.
       - /var/run/docker.sock:/var/run/docker.sock:ro
 
     command: ["serve", "--addr", ":8080", "--interval", "1000"]

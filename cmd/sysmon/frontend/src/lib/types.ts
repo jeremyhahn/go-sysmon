@@ -467,7 +467,6 @@ export interface RuntimeInfo {
 export interface VirtCapability {
   containers_observable: boolean;
   vms_observable: boolean;
-  runtime_api_enabled: boolean;
   runtime_api_reachable: boolean;
   notes: string[] | null;
 }

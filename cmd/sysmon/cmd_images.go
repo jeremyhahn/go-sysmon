@@ -73,12 +73,12 @@ func runImagesCmd(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// collectSnapshotWithRuntime takes a snapshot with runtime API queries turned
-// on. It is a variable so tests can supply a synthetic snapshot.
+// collectSnapshotWithRuntime takes a snapshot, waiting for the container
+// runtime's disk usage query. It is a variable so tests can supply a synthetic
+// snapshot.
 var collectSnapshotWithRuntime = func() (*types.Snapshot, error) {
 	sc := collector.NewSystemCollector(nil)
 	sc.SetTiering(false)
-	sc.EnableRuntimeAPI(true)
 
 	ctx, cancel := context.WithTimeout(cmdContext(), imagesTimeout)
 	defer cancel()
