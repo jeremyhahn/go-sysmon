@@ -265,6 +265,30 @@ jobs:
           cache-from: ${{ github.server_url == 'https://github.com' && 'type=gha' || '' }}
           cache-to: ${{ github.server_url == 'https://github.com' && 'type=gha,mode=max' || '' }}
 
+      # Trivy runs from its own image rather than an action: actions that
+      # install themselves through a nested checkout resolve against whichever
+      # server is running the job, so they work on GitHub and fail on a
+      # self-hosted runner. This behaves the same on both.
+      - name: Scan the image and its binaries
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+              --severity CRITICAL,HIGH \
+              --no-progress \
+              --format json \
+              go-sysmon:ci > trivy-results.json
+
+      # Findings with a fix available fail the build; findings the distribution
+      # has not patched are reported and do not. Blocking on unfixable CVEs
+      # would wedge every build on something no change of ours can resolve,
+      # which teaches everyone to ignore the scanner.
+      # Findings with a fix available fail the build; findings the distribution
+      # has not patched are reported and do not. Blocking on unfixable CVEs
+      # would wedge every build on something no change of ours can resolve,
+      # which teaches everyone to ignore the scanner.
+      - name: Fail on fixable findings
+        run: python3 scripts/trivy-gate.py trivy-results.json
+
       # A container that starts but cannot see the host is the failure mode
       # worth catching, so this asserts on what it actually reports.
       - name: Verify it sees the host

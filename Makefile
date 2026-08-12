@@ -51,7 +51,7 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy \
         ci ci-fast vulncheck gosec audit release-build release-build-desktop clean-dist \
-        install-extension-cinnamon uninstall-extension-cinnamon \
+        install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
 
 all: build test lint
@@ -366,6 +366,34 @@ vulncheck:
 # finding, which is the behaviour we want in CI.
 audit:
 	cd $(FRONTEND_DIR) && npm audit --audit-level=low
+
+# scan-image builds the container and scans it, plus the binaries inside it,
+# for known vulnerabilities. Trivy runs from its own image rather than an
+# action, so this behaves identically here, on GitHub and on a self-hosted
+# runner -- an action that installs itself through a nested checkout cannot.
+#
+# TRIVY_SEVERITY defaults to the two levels worth failing a build over.
+TRIVY_SEVERITY ?= CRITICAL,HIGH
+TRIVY_IMAGE ?= go-sysmon:scan
+
+scan-image:
+	docker build -t $(TRIVY_IMAGE) .
+	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+	    aquasec/trivy:latest image \
+	      --severity $(TRIVY_SEVERITY) \
+	      --no-progress \
+	      --format table \
+	      $(TRIVY_IMAGE)
+
+# scan-image-sarif emits machine-readable output for the Security tab.
+scan-image-sarif:
+	docker build -t $(TRIVY_IMAGE) .
+	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+	    aquasec/trivy:latest image \
+	      --severity $(TRIVY_SEVERITY) \
+	      --no-progress \
+	      --format sarif \
+	      $(TRIVY_IMAGE) > trivy-results.sarif
 
 # ci runs the full pipeline exactly as the GitHub workflow does, so a green
 # local run means a green CI run. Ordered cheapest-first: formatting and vet
