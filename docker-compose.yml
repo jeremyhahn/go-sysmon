@@ -13,7 +13,7 @@
 
 services:
   sysmon:
-    image: ghcr.io/jeremyhahn/go-sysmon:0.1.1
+    image: ghcr.io/jeremyhahn/go-sysmon:0.1.2
     container_name: sysmon
     restart: unless-stopped
 
