@@ -69,7 +69,7 @@ jobs:
   build:
     name: Build (${{ matrix.arch }})
     needs: verify
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ (github.server_url == 'https://github.com' && matrix.runner) || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       # arm64 builds natively on an ARM runner rather than cross-compiling: CGO
@@ -83,25 +83,39 @@ jobs:
       # published. So the matrix itself drops arm64 off GitHub rather than
       # queueing work nothing can pick up.
       matrix:
-        include: ${{ fromJSON(github.server_url == 'https://github.com'
-          && '[{"arch":"amd64","runner":"ubuntu-latest"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]'
-          || '[{"arch":"amd64","runner":"ubuntu-latest"}]') }}
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    # Whether this leg runs on the architecture it targets. Off GitHub there is
+    # no arm64 runner, so the arm64 leg lands on an amd64 host: installing
+    # arm64 GTK and executing the built binary would both be wrong, so its
+    # steps are skipped. A job-level `if` cannot express this -- GitHub does
+    # not expose the matrix context to one.
+    env:
+      NATIVE: ${{ matrix.arch == 'amd64' || github.server_url == 'https://github.com' }}
 
     steps:
       - uses: actions/checkout@v7
+        if: env.NATIVE == 'true'
 
       - uses: actions/setup-go@v7
+        if: env.NATIVE == 'true'
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
       - uses: actions/setup-node@v7
+        if: env.NATIVE == 'true'
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: cmd/sysmon/frontend/package-lock.json
 
       - name: Install desktop build dependencies
+        if: env.NATIVE == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -109,6 +123,7 @@ jobs:
 
       - name: Resolve version
         id: version
+        if: env.NATIVE == 'true'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
@@ -121,6 +136,7 @@ jobs:
       # a headless host. The desktop binary additionally links GTK and WebKit
       # and only runs where those are installed.
       - name: Build release binaries
+        if: env.NATIVE == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -128,6 +144,7 @@ jobs:
           make release-build-desktop VERSION="${VERSION}"
 
       - name: Verify the binaries run
+        if: env.NATIVE == 'true'
         run: |
           for b in dist/sysmon-server-*-linux-*; do
             case "$b" in *.sha256) continue;; esac
@@ -156,14 +173,19 @@ jobs:
     # On Gitea this job is skipped rather than failing the release.
     if: github.server_url == 'https://github.com'
     needs: verify
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ (github.server_url == 'https://github.com' && matrix.runner) || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
-      # Same reasoning as the build matrix above: no arm64 leg off GitHub.
+      # Written out literally for the same reason as the build matrix: Gitea
+      # does not expand a computed `include`. The whole job is GitHub-only,
+      # and runs-on resolves to a schedulable label elsewhere so the `if`
+      # above is actually reached and skips it.
       matrix:
-        include: ${{ fromJSON(github.server_url == 'https://github.com'
-          && '[{"arch":"amd64","runner":"ubuntu-latest"},{"arch":"arm64","runner":"ubuntu-24.04-arm"}]'
-          || '[{"arch":"amd64","runner":"ubuntu-latest"}]') }}
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
 
@@ -177,6 +199,7 @@ jobs:
 
       - name: Resolve version
         id: version
+        if: env.NATIVE == 'true'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
@@ -241,6 +264,7 @@ jobs:
 
       - name: Resolve version
         id: version
+        if: env.NATIVE == 'true'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
@@ -291,6 +315,7 @@ jobs:
 
       - name: Resolve version
         id: version
+        if: env.NATIVE == 'true'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ inputs.version }}"
