@@ -34,7 +34,7 @@ jobs:
     # a compositor starting under llvmpipe.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the desktop test image
         run: make desktop-docker-build
