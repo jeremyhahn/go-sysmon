@@ -54,8 +54,8 @@ embedded in the binary, so deploying it is copying one file.
 Download a binary from [Releases](https://github.com/jeremyhahn/go-sysmon/releases):
 
 ```bash
-curl -LO https://github.com/jeremyhahn/go-sysmon/releases/latest/download/sysmon-server-0.1.1-linux-amd64
-sudo install -m 0755 sysmon-server-0.1.1-linux-amd64 /usr/local/bin/sysmon-server
+curl -LO https://github.com/jeremyhahn/go-sysmon/releases/latest/download/sysmon-server-0.1.2-linux-amd64
+sudo install -m 0755 sysmon-server-0.1.2-linux-amd64 /usr/local/bin/sysmon-server
 sysmon-server serve --addr :8080
 ```
 
@@ -68,7 +68,7 @@ docker run -d --name sysmon \
   --pid=host --network=host \
   -v /sys:/sys:ro -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
   -v /etc/os-release:/etc/os-release:ro \
-  ghcr.io/jeremyhahn/go-sysmon:0.1.1 serve --addr :8080
+  ghcr.io/jeremyhahn/go-sysmon:0.1.2 serve --addr :8080
 ```
 
 The host flags are not optional. Without them the container reports *itself* --

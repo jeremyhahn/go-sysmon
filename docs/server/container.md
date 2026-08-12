@@ -39,7 +39,7 @@ docker run -d --name sysmon \
   -v /sys:/sys:ro \
   -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
   -v /etc/os-release:/etc/os-release:ro \
-  ghcr.io/jeremyhahn/go-sysmon:0.1.1 \
+  ghcr.io/jeremyhahn/go-sysmon:0.1.2 \
   serve --addr :8080
 ```
 
@@ -145,7 +145,7 @@ mapping.
 
 ## The image
 
-- `ghcr.io/jeremyhahn/go-sysmon:0.1.1`, and `:latest`
+- `ghcr.io/jeremyhahn/go-sysmon:0.1.2`, and `:latest`
 - linux/amd64 and linux/arm64
 - ~100 MB, Debian-based
 
@@ -167,7 +167,7 @@ spec:
   hostNetwork: true
   containers:
     - name: sysmon
-      image: ghcr.io/jeremyhahn/go-sysmon:0.1.1
+      image: ghcr.io/jeremyhahn/go-sysmon:0.1.2
       args: ["serve", "--addr", ":8080"]
       securityContext:
         privileged: true     # only if you want SMART; see above
