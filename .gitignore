@@ -1,4 +1,3 @@
-CLAUDE.md
 
 # Build output. The leading slashes matter: /dist/ is the release directory,
 # and must not also match the embedded frontend bundle at
