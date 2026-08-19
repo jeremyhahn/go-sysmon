@@ -49,7 +49,7 @@ INTERVAL ?= 1000
 .PHONY: all deps build build-desktop build-server build-frontend dev serve test test-cli test-collector test-monitor \
         test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
         bench-cli bench-collector bench-monitor bench-server integration-test integration-test-cli \
-        test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy \
+        test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit release-build release-build-desktop clean-dist \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -294,20 +294,67 @@ clean: clean-dist
 	rm -rf bin/ /tmp/coverage-*.out
 	rm -rf $(FRONTEND_DIR)/dist $(FRONTEND_DIR)/node_modules
 
-# deploy copies the server binary to another Linux host and reports how to run
-# it. The frontend is embedded, so this single file is the whole application.
+## Deployment
+
+# There are two ways to put sysmon on another host, and they are for different
+# situations:
 #
-#   make deploy HOST=198.51.100.90
-#   make deploy HOST=user@host DEST=/usr/local/bin
+#   make deploy         a supervised systemd service that survives reboot
+#   make deploy-binary  one file into /usr/local/bin, you arrange to run it
+#
+# `deploy` is the one to reach for. `deploy-binary` exists for dropping a build
+# onto a machine to run by hand.
+#
+# Full documentation: docs/deployment/
+
+SSH_OPTS ?= -o BatchMode=yes -o ConnectTimeout=10
+
+# deploy builds the server binary here, copies it to the target over SSH,
+# creates a dedicated service account, installs an environment file and a
+# hardened systemd unit, and starts the service. The target needs systemd, SSH
+# key access and sudo -- no container runtime, no registry, no Go and no Node.
+#
+#   make deploy HOST=host.example.com
+#   make deploy HOST=host.example.com USER=deploy
+#   make deploy HOST=host.example.com SYSMON_ADDR=:9090
+#   make deploy HOST=host.example.com SYSMON_ADDR=10.0.0.5:8081
+#
+# It is idempotent: re-running converges, and it will not overwrite the
+# target's /etc/go-sysmon/sysmon.env once that exists.
+#
+# USER defaults to the environment's $USER, which is what ssh would use anyway;
+# set it explicitly when the account on the target differs.
+CONF_DIR ?= /etc/go-sysmon
+BIN_DIR ?= /usr/local/bin
+SVC_USER ?= sysmon
+SUDO ?= sudo
+
+deploy: build-server
+	@HOST='$(HOST)' \
+	 SSH_USER='$(USER)' \
+	 CONF_DIR='$(CONF_DIR)' \
+	 BIN_DIR='$(BIN_DIR)' \
+	 SVC_USER='$(SVC_USER)' \
+	 SYSMON_ADDR='$(SYSMON_ADDR)' \
+	 VERSION='$(VERSION)' \
+	 SSH_OPTS='$(SSH_OPTS)' \
+	 SUDO='$(SUDO)' \
+	 bash scripts/deploy.sh
+
+# deploy-binary copies the server binary to another Linux host and reports how
+# to run it. The frontend is embedded, so this single file is the whole
+# application -- but nothing supervises it and nothing starts it at boot.
+#
+#   make deploy-binary HOST=host.example.com
+#   make deploy-binary HOST=user@host DEST=/usr/local/bin
 #
 # The binary is dynamically linked against glibc (CGO is required by the NVIDIA
 # NVML dependency), so the target needs a glibc at least as new as the build
 # host's. The target is checked before anything is copied.
 DEST ?= /usr/local/bin
-SSH_OPTS ?= -o BatchMode=yes -o ConnectTimeout=10
 
-deploy: build-server
-	@test -n "$(HOST)" || { echo "HOST is required, e.g. make deploy HOST=198.51.100.90"; exit 1; }
+deploy-binary: build-server
+	@test -n "$(HOST)" || { echo "HOST is required, e.g. make deploy-binary HOST=host.example.com"; exit 1; }
 	@echo "==> checking $(HOST)"
 	@ssh $(SSH_OPTS) $(HOST) 'test "$$(uname -m)" = x86_64 || { echo "target is not x86_64"; exit 1; }; echo "    arch  $$(uname -m)"; echo "    glibc $$(ldd --version | head -1)"'
 	@echo "==> copying bin/sysmon-server to $(HOST):$(DEST)"
@@ -319,7 +366,8 @@ deploy: build-server
 	@echo "Installed. Start the web service on the target with:"
 	@echo "    ssh $(HOST) '$(DEST)/sysmon-server serve --addr :8080'"
 	@echo ""
-	@echo "For a service that survives logout and reboot, see docs/server/deployment.md"
+	@echo "For a service that survives logout and reboot, use 'make deploy' instead"
+	@echo "(docs/deployment/), or write a unit by hand: docs/server/deployment.md"
 
 ## CI/CD
 

@@ -93,7 +93,8 @@ drift apart. Green locally means green in CI.
 |--------------------------------|-------------------------------------------------|
 | `make release-build`           | Stripped, trimmed server binary into `dist/`    |
 | `make release-build-desktop`   | The same for the desktop binary                 |
-| `make deploy HOST=<host>`      | Builds, checks the target, installs, verifies   |
+| `make deploy HOST=<host>`      | Installs a supervised systemd service — see [../deployment/](../deployment/user.md) |
+| `make deploy-binary HOST=<host>` | Builds, checks the target, copies the binary, verifies |
 | `make install-extension-cinnamon` | Installs the panel applet                    |
 | `make clean`                   | Removes build artifacts                         |
 
@@ -121,8 +122,9 @@ bin/sysmon: error while loading shared libraries:
             libglib-2.0.so.0: cannot open shared object file
 ```
 
-Workstations get `sysmon`. Servers get `sysmon-server`. `make deploy` copies
-the latter.
+Workstations get `sysmon`. Servers get `sysmon-server`. Both deployment paths
+ship the latter: `make deploy` installs it as a systemd service,
+`make deploy-binary` copies it as a file and stops there.
 
 Run `sysmon doctor` anywhere to see what that build can do on that machine.
 
@@ -139,7 +141,7 @@ bin/sysmon --no-tray        # window, no tray icon
 
 ```bash
 bin/sysmon-server serve --addr :8080                  # every interface
-bin/sysmon-server serve --addr 198.51.100.90:8080    # one interface
+bin/sysmon-server serve --addr 10.0.0.5:8080          # one interface
 bin/sysmon-server serve --addr :8080 --interval 500   # faster polling
 bin/sysmon-server serve --addr :8080                  # image inventory is automatic
 ```
@@ -204,26 +206,33 @@ growing.
 
 ## Deploying to another host
 
+This section covers copying the **bare binary**. For a supervised service that
+starts at boot, use `make deploy` instead — it installs the binary, a dedicated
+service account and a hardened systemd unit, and is documented in
+[../deployment/](../deployment/user.md). Everything below is the path for
+dropping a build somewhere to run by hand.
+
 ### The easy way
 
 ```bash
-make deploy HOST=198.51.100.90
+make deploy-binary HOST=metrics.example.com
 ```
 
 Builds the binary, checks the target's architecture and glibc, installs to
 `/usr/local/bin/sysmon-server`, and verifies it runs. `DEST=` overrides the
-path; `HOST=user@host` picks a user.
+path; `HOST=user@host` picks a user. Nothing supervises the result and nothing
+starts it at boot; see "Running it as a service" below.
 
 ### By hand
 
 ```bash
 make build-server
-scp bin/sysmon-server 198.51.100.90:/tmp/
-ssh 198.51.100.90 'sudo install -m 0755 /tmp/sysmon-server /usr/local/bin/'
-ssh 198.51.100.90 '/usr/local/bin/sysmon-server serve --addr :8080'
+scp bin/sysmon-server metrics.example.com:/tmp/
+ssh metrics.example.com 'sudo install -m 0755 /tmp/sysmon-server /usr/local/bin/'
+ssh metrics.example.com '/usr/local/bin/sysmon-server serve --addr :8080'
 ```
 
-Then open `http://198.51.100.90:8080/`.
+Then open `http://metrics.example.com:8080/`.
 
 ### What the target needs
 
@@ -246,7 +255,9 @@ toolchain, no Node, no runtime.
 ## Running it as a service
 
 `sysmon-server serve` from an SSH session dies with the session. For something
-persistent:
+persistent — if you would rather not write this by hand, `make deploy` installs
+a more thorough version of this unit for you, with a dedicated service account,
+resource caps and sandboxing ([../deployment/](../deployment/user.md)):
 
 ```ini
 # /etc/systemd/system/sysmon.service
@@ -341,7 +352,7 @@ The event stream is subject to the browser's same-origin policy, so a random
 web page cannot read it cross-origin. That is not authentication: anything that
 can route to the port and is not a browser reads everything.
 
-Bind it to a private interface (`--addr 198.51.100.90:8080`) or put an
+Bind it to a private interface (`--addr 10.0.0.5:8080`) or put an
 authenticating proxy in front of it. Binding to `:8080` listens on everything,
 which is convenient and, on an untrusted network, a mistake.
 

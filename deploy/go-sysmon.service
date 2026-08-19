@@ -1,0 +1,153 @@
+[Unit]
+# The headless sysmon web dashboard, run directly by systemd. There is no
+# container: this unit starts the binary that `make deploy` installed into
+# /usr/local/bin.
+Description=go-sysmon system metrics dashboard
+Documentation=https://github.com/jeremyhahn/go-sysmon
+Documentation=file:/etc/go-sysmon/sysmon.env
+
+# network-online rather than network.target: sysmon can be configured to bind
+# one address, and binding a specific address before the interface has it fails
+# the listener outright. On the default (all interfaces) this ordering costs
+# nothing.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+
+# A dedicated system account, created by the deploy. It owns nothing, has no
+# home and no login shell -- sysmon reads the host and writes only to the
+# journal, so there is nothing for the account to hold.
+User=sysmon
+Group=sysmon
+
+# Defaults live here so that a commented-out line in sysmon.env falls back to a
+# working value instead of passing an empty flag. The env file is read second
+# and therefore wins wherever it sets something.
+Environment=SYSMON_ADDR=:8081
+Environment=SYSMON_INTERVAL=2000
+Environment=SYSMON_LOG_LEVEL=info
+EnvironmentFile=-/etc/go-sysmon/sysmon.env
+
+ExecStart=/usr/local/bin/sysmon-server serve \
+	--addr ${SYSMON_ADDR} \
+	--interval ${SYSMON_INTERVAL} \
+	--log-level ${SYSMON_LOG_LEVEL}
+
+Restart=always
+RestartSec=5s
+
+SyslogIdentifier=sysmon
+
+# --- resource guards -------------------------------------------------------
+#
+# These are a runaway brake, not a reservation. sysmon shares this host with
+# the service it exists to watch, and a monitor that can crowd out the workload
+# is a liability.
+#
+# Measured on the deployment target (Atom D510, 4 threads at 1.66GHz, 3.8 GB),
+# over 60s samples with the dashboard idle:
+#
+#     --interval 1000    16.1% of one core     RSS ~19-22 MB
+#     --interval 2000     7.8% of one core     RSS ~20 MB
+#     --interval 5000     3.9% of one core     RSS ~20 MB
+#
+# Peak RSS across every run, including two attached event-stream clients, was
+# 23.4 MB. Memory is flat in the poll rate; CPU is very nearly linear in it.
+#
+# So MemoryMax=128M is about 5x the observed peak and CPUQuota=50% is about 6x
+# the cost of the shipped interval. Either one tripping means something is
+# wrong, not that the host got busy. Re-take the measurement with the procedure
+# in docs/deployment/engineering.md, "Resource footprint".
+#
+# MemoryHigh sits below MemoryMax deliberately: crossing it throttles the
+# process and reclaims, which shows up in the journal as a slow service. Only
+# MemoryMax kills. A monitor that dies silently at the moment the host runs
+# short of memory is a monitor that is missing for the one event worth seeing.
+MemoryHigh=96M
+MemoryMax=128M
+CPUQuota=50%
+TasksMax=64
+
+# Left at the default on purpose. Biasing sysmon to survive the OOM killer
+# would bias it ahead of whatever else this host runs, and a monitor does not
+# outrank the thing it monitors.
+# OOMScoreAdjust=
+
+# --- privileges ------------------------------------------------------------
+#
+# Empty, and measured rather than assumed: every metric surface sysmon collects
+# was compared as root and as an unprivileged user on the target and the output
+# was identical. CPU package temperatures, DIMM/SMBIOS detail, per-interface
+# counters, cgroup container metrics and the process list all read fine with no
+# capability at all.
+#
+# The one metric that is not identical is SMART disk health, and no capability
+# recovers it here: as root the HDIO_DRIVE_CMD(0xD0) ioctl on the target's SATA
+# SSD returns EIO, so the drive itself refuses the legacy ATA passthrough. See
+# docs/deployment/architecture.md, "Privileges", before granting anything.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+# --- filesystem ------------------------------------------------------------
+#
+# sysmon persists nothing, so the whole filesystem can be read-only. There is
+# deliberately no ReadWritePaths, no StateDirectory and no CacheDirectory: if
+# one appears here, something started keeping state and that is a design change,
+# not a deployment detail.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0077
+
+# PrivateDevices hides /dev/sda, which is where SMART would be read from. That
+# costs nothing on a host whose disks refuse the SMART ioctl anyway (see
+# "privileges" above). On a host with SMART-capable disks, remove this line and
+# add SupplementaryGroups=disk -- and confirm with `sysmon-server doctor` that
+# it actually bought data before leaving it that way.
+PrivateDevices=yes
+
+# --- /proc ------------------------------------------------------------------
+#
+# BOTH of these are load-bearing and both are set to their permissive value on
+# purpose. systemd's hardening defaults are wrong for a system monitor:
+#
+#   ProtectProc=invisible  hides every other process, so the process list and
+#                          the process count go to zero -- silently, with the
+#                          dashboard rendering an apparently idle machine.
+#   ProcSubset=pid         hides /proc/meminfo, /proc/stat, /proc/net/dev and
+#                          the rest, so memory, CPU and network collection all
+#                          stop returning data.
+#
+# Neither failure produces an error. Do not "harden" these.
+ProtectProc=default
+ProcSubset=all
+
+# --- kernel -----------------------------------------------------------------
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+
+# --- syscalls and sockets ---------------------------------------------------
+#
+# AF_NETLINK is required and easy to miss: Go's net.Interfaces() enumerates
+# interfaces over a netlink socket, so dropping it empties the network panel
+# rather than failing loudly. AF_UNIX is what the container-runtime probe dials;
+# it finds nothing on a host with no runtime, which is the expected state here.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

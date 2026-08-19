@@ -109,8 +109,15 @@ func (c *GPUCollector) Collect(ctx context.Context) error {
 			g := collectIntelGPU(card.cardPath, card.index)
 			gpus = append(gpus, g)
 		default:
-			c.logger.WarnContext(ctx, "unknown GPU vendor, skipping",
-				"card", card.name, "vendor", card.vendor)
+			// A card's PCI vendor cannot change while the process runs, so
+			// this is a permanent condition and belongs in warnOnce. It was
+			// previously logged every collection cycle, which on a server with
+			// a BMC display chip (a Matrox G200, vendor 0x102b, is the common
+			// one) produced a warning every few seconds forever.
+			warnOnce(c.logger, "gpu:vendor:"+card.name+":"+card.vendor,
+				"unknown GPU vendor, skipping",
+				"card", card.name, "vendor", card.vendor,
+				"note", "this is logged once per card per run")
 		}
 	}
 

@@ -72,7 +72,7 @@ Without host access the container reports the container:
 | | Plain `docker run` | With host access |
 |---|---|---|
 | Processes | **1** | 606 |
-| Hostname | `856d52b68c46` | `gpu-host` |
+| Hostname | `856d52b68c46` | `metrics.example.com` |
 | Interfaces | the container's veth | all 17, with bridges and bonds |
 | Containers | 0 | 7 |
 | Core temperatures | 0 | 24 |
