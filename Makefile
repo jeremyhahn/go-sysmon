@@ -400,7 +400,7 @@ gosec:
 		echo "  go install github.com/securego/gosec/v2/cmd/gosec@latest"; \
 		exit 1; \
 	fi
-	$(GOSEC) $(GOSEC_ARGS) ./...
+	$(GOSEC) -concurrency 4 $(GOSEC_ARGS) ./...
 
 vulncheck:
 	@if [ ! -x "$(GOVULNCHECK)" ] && ! command -v govulncheck >/dev/null 2>&1; then \
