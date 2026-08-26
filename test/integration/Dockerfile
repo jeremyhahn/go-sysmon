@@ -1,6 +1,6 @@
-# The image Go version must satisfy the "go" directive in go.mod, otherwise the
+# The image Go version is pinned to match go.mod's go directive exactly, so
 # toolchain has to be downloaded on every build.
-FROM golang:1.26-bookworm
+FROM golang:1.26.7-bookworm
 
 # Install runtime tools used by the collector (smartmontools, dmidecode).
 RUN apt-get update \
