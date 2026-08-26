@@ -721,6 +721,16 @@ func TestCLI_GPU_ContainsGPUDetails(t *testing.T) {
 	if strings.Contains(out, "No GPUs detected") {
 		t.Skip("no GPUs detected on this host")
 	}
+	// runCmd returns stdout+stderr, so the collector's NVML diagnostic lands
+	// here. When NVML cannot initialize (no driver library in the container, or
+	// a transient init failure on a shared GPU host) the Utilization/Memory/ECC
+	// sections below cannot be rendered, and asserting them makes the test pass
+	// or fail depending on which runner and GPU state happened to run it. The
+	// renderer is covered by pkg/cli unit tests with a synthetic snapshot; this
+	// integration case only makes sense when live NVML telemetry is present.
+	if strings.Contains(out, "NVML init failed") {
+		t.Skip("NVML telemetry unavailable in this environment; cannot assert GPU sections")
+	}
 	sections := []string{"GPU 0:", "Utilization:", "Memory:", "ECC:"}
 	for _, sec := range sections {
 		if !strings.Contains(out, sec) {
