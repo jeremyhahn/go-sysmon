@@ -14,6 +14,7 @@
     tempColor,
   } from "$lib/format";
   import { monitor } from "$stores/monitor.svelte";
+  import type { PSIResource } from "$lib/types";
 
   const snapshot = $derived(monitor.snapshot);
   const connected = $derived(monitor.connected);
@@ -34,6 +35,36 @@
   // Sensor summary values from the monitor store derived properties.
   const maxCpuTemp = $derived(monitor.maxCpuTemp);
   const totalPackagePowerW = $derived(monitor.totalPackagePowerW);
+  // Whole-box power: CPU package (RAPL) + every GPU's draw. Either source may be
+  // absent (old CPUs report no RAPL energy; headless hosts have no GPU), so the
+  // card shows whatever is measurable and breaks it down in the subtitle.
+  const totalGpuPowerW = $derived(
+    gpus.reduce((s, g) => s + (g.power_draw_w ?? 0), 0)
+  );
+  const totalSystemPowerW = $derived(totalPackagePowerW + totalGpuPowerW);
+  const hasSystemPower = $derived(totalSystemPowerW > 0);
+  const powerBreakdown = $derived(
+    [
+      totalPackagePowerW > 0 ? `CPU ${totalPackagePowerW.toFixed(0)} W` : null,
+      totalGpuPowerW > 0 ? `GPU ${totalGpuPowerW.toFixed(0)} W` : null,
+    ]
+      .filter(Boolean)
+      .join(" + ")
+  );
+
+  /**
+   * Name the card after exactly what is being summed. This is CPU package
+   * (RAPL) plus reported GPU draw — it excludes RAM outside the package domain,
+   * disks, board, fans and PSU losses, so calling it "system power" would state
+   * a whole-box figure the host never measured.
+   */
+  const powerLabel = $derived(
+    totalPackagePowerW > 0 && totalGpuPowerW > 0
+      ? "CPU + GPU Power"
+      : totalGpuPowerW > 0
+        ? "GPU Power"
+        : "CPU Package Power"
+  );
 
   const sensors = $derived(snapshot?.sensors ?? null);
   const hasSensorTemp = $derived(maxCpuTemp > 0);
@@ -45,6 +76,24 @@
   const hasThermalZoneData = $derived((sensors?.thermal_zones?.length ?? 0) > 0);
   const hasFanData = $derived((sensors?.fans?.length ?? 0) > 0);
   const hasPsiData = $derived(sensors?.psi != null);
+
+  /**
+   * psiRows lays out one PSI resource as "some" then "full".
+   *
+   * "some" is the share of time at least one task was stalled on the resource;
+   * "full" is the share of time *every* runnable task was stalled, which is the
+   * number that corresponds to real lost throughput.
+   */
+  function psiRows(resource: PSIResource) {
+    return [
+      { label: "avg10", value: resource.some_avg10, full: false },
+      { label: "avg60", value: resource.some_avg60, full: false },
+      { label: "avg300", value: resource.some_avg300, full: false },
+      { label: "avg10", value: resource.full_avg10, full: true },
+      { label: "avg60", value: resource.full_avg60, full: true },
+      { label: "avg300", value: resource.full_avg300, full: true },
+    ];
+  }
 
   const psiCpuHistory = $derived(monitor.psiCpuHistory);
   const psiMemHistory = $derived(monitor.psiMemHistory);
@@ -253,10 +302,11 @@
           colorClass={tempColor(maxCpuTemp, 0)}
         />
       {/if}
-      {#if hasSensorPower}
+      {#if hasSystemPower}
         <StatCard
-          label="Package Power"
-          value={formatWatts(totalPackagePowerW)}
+          label={powerLabel}
+          value={formatWatts(totalSystemPowerW)}
+          sub={powerBreakdown}
           colorClass="text-base-content"
         />
       {/if}
@@ -428,9 +478,15 @@
     {#if hasPsiData && sensors != null}
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-4">
-          <h3 class="card-title text-sm text-base-content/70 mb-3">
+          <h3 class="card-title text-sm text-base-content/70 mb-1">
             Pressure Stall Information (PSI)
           </h3>
+          <p class="text-xs text-base-content/50 mb-3">
+            <span class="font-medium">some</span> = at least one task was stalled
+            waiting for the resource &bull;
+            <span class="font-medium">full</span> = every task was stalled, so
+            nothing progressed at all.
+          </p>
 
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <!-- CPU PSI -->
@@ -441,11 +497,12 @@
                 >
                   CPU
                 </h4>
-                {#each [
-                  { label: "Some avg10", value: sensors.psi.cpu.some_avg10 },
-                  { label: "Some avg60", value: sensors.psi.cpu.some_avg60 },
-                  { label: "Some avg300", value: sensors.psi.cpu.some_avg300 },
-                ] as row (row.label)}
+                {#each psiRows(sensors.psi.cpu) as row, i (row.full + row.label)}
+                  {#if i === 0 || i === 3}
+                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/40 pt-1">
+                      {row.full ? "full" : "some"}
+                    </p>
+                  {/if}
                   <div class="space-y-0.5">
                     <div class="flex justify-between items-center text-xs">
                       <span class="text-base-content/60">{row.label}</span>
@@ -471,11 +528,12 @@
                 >
                   Memory
                 </h4>
-                {#each [
-                  { label: "Some avg10", value: sensors.psi.memory.some_avg10 },
-                  { label: "Some avg60", value: sensors.psi.memory.some_avg60 },
-                  { label: "Some avg300", value: sensors.psi.memory.some_avg300 },
-                ] as row (row.label)}
+                {#each psiRows(sensors.psi.memory) as row, i (row.full + row.label)}
+                  {#if i === 0 || i === 3}
+                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/40 pt-1">
+                      {row.full ? "full" : "some"}
+                    </p>
+                  {/if}
                   <div class="space-y-0.5">
                     <div class="flex justify-between items-center text-xs">
                       <span class="text-base-content/60">{row.label}</span>
@@ -501,11 +559,12 @@
                 >
                   I/O
                 </h4>
-                {#each [
-                  { label: "Some avg10", value: sensors.psi.io.some_avg10 },
-                  { label: "Some avg60", value: sensors.psi.io.some_avg60 },
-                  { label: "Some avg300", value: sensors.psi.io.some_avg300 },
-                ] as row (row.label)}
+                {#each psiRows(sensors.psi.io) as row, i (row.full + row.label)}
+                  {#if i === 0 || i === 3}
+                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/40 pt-1">
+                      {row.full ? "full" : "some"}
+                    </p>
+                  {/if}
                   <div class="space-y-0.5">
                     <div class="flex justify-between items-center text-xs">
                       <span class="text-base-content/60">{row.label}</span>

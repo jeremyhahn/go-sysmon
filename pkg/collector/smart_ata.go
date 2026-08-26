@@ -175,18 +175,132 @@ func readATASMART(devPath string, info *types.DiskInfo) error {
 
 	fd := f.Fd()
 
-	// Read SMART attribute data.
-	dataBuf, err := ataHDIOCommand(fd, devPath, smartCmdReadData)
+	// Read SMART attribute data. Try the legacy HDIO_DRIVE_CMD ioctl first (it
+	// is cheapest); if the controller rejects it, fall back to SCSI ATA
+	// PASS-THROUGH(16) over SG_IO, which covers AHCI/libata and USB-bridged
+	// disks that HDIO_DRIVE_CMD does not. read() reports which sub-command path
+	// succeeded so the threshold read can use the same one.
+	dataBuf, read, err := ataReadSMARTData(fd, devPath, smartCmdReadData)
 	if err != nil {
 		return err
 	}
 
-	// Read SMART threshold data (same structure, different sub-command).
-	threshBuf, threshErr := ataHDIOCommand(fd, devPath, smartCmdReadThresholds)
+	// Read SMART threshold data (same structure, different sub-command) via the
+	// method that just worked; thresholds are optional, so a failure here only
+	// drops the per-attribute threshold, not the whole reading.
+	threshBuf, threshErr := read(fd, devPath, smartCmdReadThresholds)
 
-	applyATASMARTAttrs(parseATASMARTAttrs(dataBuf, threshBuf, threshErr == nil), info)
+	if err := validateSMARTSector(devPath, dataBuf); err != nil {
+		return err
+	}
+
+	attrs := parseATASMARTAttrs(dataBuf, threshBuf, threshErr == nil)
+	if len(attrs) == 0 {
+		// No decodable attribute means we learned nothing about this drive.
+		// Applying the empty set would set SMARTEnabled and SMARTHealthy from
+		// an absence of evidence and quietly suppress the unhealthy alert.
+		return &ErrSMARTNoAttributes{DevPath: devPath}
+	}
+
+	applyATASMARTAttrs(attrs, info)
 	return nil
 }
+
+// validateSMARTSector rejects a 512-byte SMART payload that cannot be genuine.
+//
+// An all-zero sector is what a bridge returns when it answers the command
+// without asking the drive. The trailing checksum byte is defined so that the
+// whole sector sums to zero modulo 256; a mismatch means the bytes were not the
+// ones the drive sent.
+func validateSMARTSector(devPath string, data []byte) error {
+	if len(data) != smartDataSize {
+		return &ErrSMARTShortTransfer{DevPath: devPath, Op: "SMART READ DATA", Want: smartDataSize, Got: len(data)}
+	}
+
+	var sum byte
+	allZero := true
+	for _, b := range data {
+		sum += b
+		if b != 0 {
+			allZero = false
+		}
+	}
+	if allZero {
+		return &ErrSMARTEmptySector{DevPath: devPath}
+	}
+	if sum != 0 {
+		return &ErrSMARTChecksum{DevPath: devPath, Sum: sum}
+	}
+	return nil
+}
+
+// ErrSMARTNoAttributes reports a structurally valid sector that decoded to no
+// attributes, which tells us nothing about the drive's health.
+type ErrSMARTNoAttributes struct{ DevPath string }
+
+func (e *ErrSMARTNoAttributes) Error() string {
+	return "smart: no attributes decoded from " + e.DevPath
+}
+
+// ErrSMARTEmptySector reports an all-zero payload: a transfer that completed
+// without the drive ever answering.
+type ErrSMARTEmptySector struct{ DevPath string }
+
+func (e *ErrSMARTEmptySector) Error() string {
+	return "smart: empty SMART sector from " + e.DevPath
+}
+
+// ErrSMARTChecksum reports a payload whose trailing checksum does not clear.
+type ErrSMARTChecksum struct {
+	DevPath string
+	Sum     byte
+}
+
+func (e *ErrSMARTChecksum) Error() string {
+	return fmt.Sprintf("smart: SMART sector from %s failed its checksum (sum %d, want 0)", e.DevPath, e.Sum)
+}
+
+// ataSMARTReader issues one ATA SMART sub-command and returns its 512-byte
+// response. ataHDIOCommand and ataSGIOCommand both satisfy it.
+type ataSMARTReader func(fd uintptr, devPath string, subCmd uint8) ([]byte, error)
+
+// ataReadSMARTData reads a SMART sub-command, trying HDIO_DRIVE_CMD first and
+// falling back to SG_IO ATA PASS-THROUGH(16). It returns the data, the reader
+// that succeeded (so the caller can reuse it for the paired threshold read),
+// and an error only when both paths fail. A permission error from opening the
+// device short-circuits: no fallback recovers it.
+func ataReadSMARTData(fd uintptr, devPath string, subCmd uint8) ([]byte, ataSMARTReader, error) {
+	buf, hdioErr := ataHDIOCommand(fd, devPath, subCmd)
+	if hdioErr == nil {
+		return buf, ataHDIOCommand, nil
+	}
+
+	buf, sgErr := ataSGIOCommand(fd, devPath, subCmd)
+	if sgErr == nil {
+		return buf, ataSGIOCommand, nil
+	}
+
+	return nil, nil, &ErrSMARTUnavailable{DevPath: devPath, HDIOErr: hdioErr, SGIOErr: sgErr}
+}
+
+// ErrSMARTUnavailable reports that both ATA SMART transports failed for a
+// device: the legacy HDIO_DRIVE_CMD ioctl and the SG_IO ATA PASS-THROUGH(16)
+// fallback. Both underlying errors are retained and unwrappable so callers can
+// inspect either (e.g. errors.As for *ErrSMARTIoctl or *ErrSMARTPassthrough).
+type ErrSMARTUnavailable struct {
+	DevPath string
+	HDIOErr error
+	SGIOErr error
+}
+
+func (e *ErrSMARTUnavailable) Error() string {
+	return fmt.Sprintf("smart: no ATA transport succeeded on %s (hdio: %v; sg_io: %v)",
+		e.DevPath, e.HDIOErr, e.SGIOErr)
+}
+
+// Unwrap returns the SG_IO error, the more informative of the two on the
+// controllers this fallback exists for.
+func (e *ErrSMARTUnavailable) Unwrap() error { return e.SGIOErr }
 
 // applyATASMARTAttrs translates decoded ATA attributes into the disk record,
 // lifting the well-known IDs into their dedicated fields. It is separate from

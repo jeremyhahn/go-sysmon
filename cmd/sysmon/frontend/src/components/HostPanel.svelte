@@ -2,7 +2,7 @@
   import TimeSeriesChart from "./TimeSeriesChart.svelte";
   import StatCard from "./StatCard.svelte";
   import ProcessTable from "./ProcessTable.svelte";
-  import { formatDuration, formatPercent } from "$lib/format";
+  import { formatDuration, formatPercent, formatUnixTime } from "$lib/format";
   import { monitor } from "$stores/monitor.svelte";
 
   const snapshot = $derived(monitor.snapshot);
@@ -27,6 +27,11 @@
               {host.os} {host.platform_version} &bull; {host.kernel_version} &bull;
               {host.kernel_arch} &bull; Uptime: {formatDuration(host.uptime)}
             </p>
+            {#if host.boot_time > 0}
+              <p class="text-xs text-base-content/50">
+                Booted: {formatUnixTime(host.boot_time)}
+              </p>
+            {/if}
             {#if host.board_name}
               <p class="text-xs text-base-content/50">
                 {host.board_vendor ? host.board_vendor + " " : ""}{host.board_name}{host.board_version ? " (v" + host.board_version + ")" : ""}

@@ -14,6 +14,121 @@ export interface Snapshot {
   gpus: GPUInfo[];
   sensors: SensorData;
   virtualization: VirtInfo;
+  alerts: Alert[];
+}
+
+// ---------------------------------------------------------------------------
+// Alerts
+// ---------------------------------------------------------------------------
+
+export type Severity = "info" | "warning" | "critical";
+
+/**
+ * Alert is one firing rule against one resource. The backend evaluates the
+ * rules and ships the finished sentence, so the UI never re-derives thresholds.
+ */
+export interface Alert {
+  /** Stable per rule+resource, so "already seen" survives a reconnect. */
+  id: string;
+  rule: string;
+  severity: Severity;
+  /** Matches a dashboard tab id, which is what makes an alert row clickable. */
+  category: string;
+  /** "md2", "nvme0n1", "eno1" — empty when the alert is host-wide. */
+  resource: string;
+  message: string;
+  value: number;
+  threshold: number;
+  /** RFC3339 timestamp of when the rule started firing. */
+  since: string;
+}
+
+// ---------------------------------------------------------------------------
+// Fleet
+// ---------------------------------------------------------------------------
+
+export type NodeStatus = "healthy" | "warning" | "critical" | "unreachable";
+
+/** FleetNode is one peer's rolled-up health, as the local node last saw it. */
+/**
+ * PeerSnapshot is what GET /api/fleet/{name}/snapshot returns: a peer's
+ * snapshot together with the freshness of the poll behind it.
+ *
+ * `snapshot` may be present while `reachable` is false. That is the stale case:
+ * the aggregator keeps the last good reading when a peer stops answering, so
+ * the page does not blank on a blip. It must be shown as stale rather than
+ * folded into the live series, or the charts record measurements that were
+ * never taken.
+ */
+export interface PeerSnapshot {
+  snapshot: Snapshot | null;
+  reachable: boolean;
+  error?: string;
+  age_seconds: number;
+}
+
+export interface FleetNode {
+  name: string;
+  url: string;
+  self: boolean;
+  reachable: boolean;
+  error?: string;
+  age_seconds: number;
+  status: NodeStatus;
+  hostname: string;
+  version: string;
+  uptime_seconds: number;
+  critical_count: number;
+  warning_count: number;
+  cpu_percent: number;
+  memory_percent: number;
+  swap_percent: number;
+  load_per_core: number;
+  worst_disk_percent: number;
+  raid_degraded: boolean;
+  smart_unhealthy: number;
+  max_temp_c: number;
+  power_w: number;
+  net_rx_rate: number;
+  net_tx_rate: number;
+}
+
+export interface Fleet {
+  enabled: boolean;
+  nodes: FleetNode[];
+}
+
+// ---------------------------------------------------------------------------
+// Configuration (read-only view)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a setting's effective value came from. The first four are configuration
+ * layers in precedence order; "runtime" means the running service was changed
+ * after startup — the refresh-rate selector does this — so the value is real but
+ * no configuration layer accounts for it.
+ */
+export type ConfigSource =
+  | "default"
+  | "config file"
+  | "env"
+  | "flag"
+  | "runtime";
+
+export interface ConfigEntry {
+  section: string;
+  key: string;
+  value: string;
+  /**
+   * Which layer won for this key: default < config file < env < flag, or
+   * "runtime" when the running service was changed after startup.
+   */
+  source: ConfigSource | string;
+}
+
+export interface ConfigView {
+  config_file: string;
+  entries: ConfigEntry[];
 }
 
 export interface GPUInfo {
@@ -164,9 +279,20 @@ export interface DiskInfo {
   write_bytes: number;
   io_time_ms: number;
   weighted_io_ms: number;
+  read_bytes_rate: number;
+  write_bytes_rate: number;
+  queue_length: number;
+  avg_queue_length: number;
+  util_percent: number;
+  peak_read_bytes_rate: number;
+  peak_write_bytes_rate: number;
+  peak_queue_length: number;
+  peak_util_percent: number;
+  peak_used_percent: number;
   smart_enabled: boolean;
   smart_healthy: boolean;
   smart_attrs: SMARTAttr[];
+  raid?: RAIDInfo | null;
   temperature_celsius: number;
   power_on_hours: number;
   power_cycles: number;
@@ -194,6 +320,27 @@ export interface PartitionInfo {
   opts: string;
 }
 
+export interface RAIDMember {
+  name: string;
+  state: string;
+  slot: number;
+  errors: number;
+}
+
+export interface RAIDInfo {
+  level: string;
+  state: string;
+  degraded: boolean;
+  total_devices: number;
+  active_devices: number;
+  failed_devices: number;
+  spare_devices: number;
+  sync_action: string;
+  sync_progress_percent: number;
+  mismatch_count: number;
+  members: RAIDMember[];
+}
+
 export interface SMARTAttr {
   id: number;
   name: string;
@@ -217,6 +364,14 @@ export interface NetworkInfo {
   is_up: boolean;
   is_loopback: boolean;
   is_virtual: boolean;
+  kind: string;
+  oper_state: string;
+  bond_master: string;
+  bond_mode: string;
+  bond_slaves: string[] | null;
+  bridge_ports: string[] | null;
+  dns_servers: string[] | null;
+  dns_search: string[] | null;
   bytes_sent: number;
   bytes_recv: number;
   packets_sent: number;

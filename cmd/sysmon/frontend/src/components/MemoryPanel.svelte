@@ -2,6 +2,8 @@
   import GaugeChart from "./GaugeChart.svelte";
   import TimeSeriesChart from "./TimeSeriesChart.svelte";
   import StatCard from "./StatCard.svelte";
+  import AlertBanner from "./AlertBanner.svelte";
+  import { alertBorderClass } from "$lib/alerts";
   import {
     formatBytes,
     formatPercent,
@@ -15,6 +17,12 @@
 
   const mem = $derived(snapshot?.memory ?? null);
 
+  // Memory alerts are host-wide, so they are split by resource rather than by
+  // device: anything tagged "swap" belongs on the swap card, the rest on RAM.
+  const memoryAlerts = $derived(monitor.alertsFor("memory"));
+  const swapAlerts = $derived(memoryAlerts.filter((a) => a.resource === "swap"));
+  const ramAlerts = $derived(memoryAlerts.filter((a) => a.resource !== "swap"));
+
   const totalDimmCapacity = $derived(
     mem?.dimms != null && mem.dimms.length > 0
       ? mem.dimms.reduce((sum, d) => sum + d.size_bytes, 0)
@@ -24,9 +32,11 @@
 
 <div class="space-y-4">
   {#if mem != null}
+    <AlertBanner alerts={memoryAlerts} title="Memory Alert" />
+
     <!-- Summary gauges + stat cards -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <div class="card bg-base-200 shadow-sm">
+      <div class="card bg-base-200 shadow-sm {alertBorderClass(ramAlerts)}">
         <div class="card-body p-4 items-center">
           <h3 class="card-title text-sm text-base-content/70">RAM Usage</h3>
           <GaugeChart value={mem.used_percent} label="RAM" height="180px" />
@@ -115,7 +125,7 @@
 
     <!-- Swap -->
     {#if mem.swap_total_bytes > 0}
-      <div class="card bg-base-200 shadow-sm">
+      <div class="card bg-base-200 shadow-sm {alertBorderClass(swapAlerts)}">
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70 mb-3">Swap</h3>
           <div class="space-y-2">

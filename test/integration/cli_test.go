@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -731,13 +732,25 @@ func TestCLI_GPU_ContainsGPUDetails(t *testing.T) {
 	if strings.Contains(out, "NVML init failed") {
 		t.Skip("NVML telemetry unavailable in this environment; cannot assert GPU sections")
 	}
-	sections := []string{"GPU 0:", "Utilization:", "Memory:", "ECC:"}
-	for _, sec := range sections {
+
+	// Separately from whether NVML works at all: the index comes from driver
+	// enumeration and is not guaranteed to start at zero -- a host with onboard
+	// graphics plus a discrete card can report GPU 1 and GPU 2 and nothing else.
+	// Asserting a literal "GPU 0:" made this test pass or fail depending on
+	// which machine ran it. What the renderer promises is a numbered section
+	// per GPU, so that is what is asserted.
+	if !gpuSectionRE.MatchString(out) {
+		t.Errorf("gpu output has no numbered GPU section; got:\n%s", out)
+	}
+	for _, sec := range []string{"Utilization:", "Memory:", "ECC:"} {
 		if !strings.Contains(out, sec) {
 			t.Errorf("gpu output missing section %q; got:\n%s", sec, out)
 		}
 	}
 }
+
+// gpuSectionRE matches the per-GPU heading the renderer emits, for any index.
+var gpuSectionRE = regexp.MustCompile(`GPU \d+:`)
 
 // ── Rate control over REST ────────────────────────────────────────────────────
 

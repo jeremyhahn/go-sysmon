@@ -47,10 +47,17 @@ test.describe('Core Application', () => {
     }
   });
 
-  test('Overview tab is active by default', async ({ page }) => {
+  test('a landing tab is active by default', async ({ page }) => {
     await page.goto('/');
-    const overviewBtn = page.getByRole('button', { name: 'Overview' });
-    await expect(overviewBtn).toHaveClass(/tab-active/);
+    // Which tab lands depends on configuration: a node with fleet peers opens
+    // on Fleet, a standalone node on Overview. Assert the invariant (exactly
+    // one tab is active, and it is the expected one for this server) rather
+    // than hard-coding Overview, which silently couples this test to the
+    // harness running without peers.
+    const fleetBtn = page.getByRole('button', { name: 'Fleet' });
+    const expected = (await fleetBtn.count()) > 0 ? fleetBtn : page.getByRole('button', { name: 'Overview' });
+    await expect(expected).toHaveClass(/tab-active/);
+    await expect(page.locator('.tab-active')).toHaveCount(1);
   });
 
   test('dark theme is applied via data-theme attribute', async ({ page }) => {

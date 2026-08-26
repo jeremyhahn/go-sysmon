@@ -1,6 +1,8 @@
 <script lang="ts">
   import GaugeChart from "./GaugeChart.svelte";
   import DataTable from "./DataTable.svelte";
+  import AlertBanner from "./AlertBanner.svelte";
+  import { alertBorderClass } from "$lib/alerts";
   import type { Column } from "$lib/table";
   import type { SMARTAttr } from "$lib/types";
   import TimeSeriesChart from "./TimeSeriesChart.svelte";
@@ -59,6 +61,61 @@
     return disk.smart_healthy ? "Healthy" : "FAILING";
   }
 
+  /**
+   * md array_state values in which the array is not serving I/O. These are
+   * distinct from "degraded", which still works with reduced redundancy. An
+   * empty state means sysfs told us nothing, which is reported rather than
+   * assumed well — showing a stopped or unreadable array as green is a
+   * fail-open reading of the one signal this panel exists to surface.
+   */
+  const NON_OPERATIONAL_RAID_STATES = new Set([
+    "inactive",
+    "suspended",
+    "clear",
+    "broken",
+    "",
+  ]);
+
+  function raidNotOperational(r: NonNullable<DiskInfo["raid"]>): boolean {
+    return NON_OPERATIONAL_RAID_STATES.has(r.state ?? "");
+  }
+
+  function raidBadge(disk: DiskInfo): string {
+    const r = disk.raid;
+    if (r == null) return "badge-neutral";
+    if (raidNotOperational(r) || r.degraded) return "badge-error";
+    if (r.sync_action !== "idle" && r.sync_action !== "") return "badge-warning";
+    return "badge-success";
+  }
+
+  function raidLabel(disk: DiskInfo): string {
+    const r = disk.raid;
+    if (r == null) return "";
+    const lvl = r.level ? r.level.toUpperCase() : "RAID";
+    if (raidNotOperational(r)) {
+      return `${lvl} ${(r.state || "state unreadable").toUpperCase()}`;
+    }
+    if (r.degraded) return `${lvl} DEGRADED`;
+    if (r.sync_action !== "idle" && r.sync_action !== "") {
+      return `${lvl} ${r.sync_action.toUpperCase()} ${r.sync_progress_percent.toFixed(0)}%`;
+    }
+    return `${lvl} OK`;
+  }
+
+  function memberBadge(state: string): string {
+    if (state.includes("faulty")) return "badge-error";
+    if (state.includes("spare")) return "badge-warning";
+    if (state.includes("in_sync")) return "badge-success";
+    return "badge-neutral";
+  }
+
+  // %util colour: a disk pinned near 100% is the bottleneck.
+  function utilColor(pct: number): string {
+    if (pct >= 90) return "text-error";
+    if (pct >= 70) return "text-warning";
+    return "text-base-content";
+  }
+
   function getDiskHistory(name: string) {
     return diskHistory.find((h) => h.name === name);
   }
@@ -106,12 +163,20 @@
   }
 
   const alertDisks = $derived(disks.filter(diskHasAlert));
+
+  // Alerts the backend is firing for this panel. These are authoritative:
+  // they cover conditions the local heuristic cannot see (RAID state, a
+  // filesystem filling up) and they carry a ready-made sentence.
+  const storageAlerts = $derived(monitor.alertsFor("storage"));
 </script>
 
 <div class="space-y-4">
   {#if disks.length > 0}
-    <!-- Global alert banner -->
-    {#if alertDisks.length > 0}
+    <!-- Global alert banner. The backend's alerts win when it sends any; the
+         local heuristic below is the fallback for a backend that does not. -->
+    <AlertBanner alerts={storageAlerts} title="Storage Alert" />
+
+    {#if storageAlerts.length === 0 && alertDisks.length > 0}
       <div role="alert" class="alert alert-error shadow-sm">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0 stroke-current" fill="none" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.538-1.333-3.308 0L3.732 16c-.77 1.333.192 3 1.732 3z"/>
@@ -129,7 +194,14 @@
     {#each disks as disk (disk.name)}
       {@const dh = getDiskHistory(disk.name)}
       {@const hasAlert = diskHasAlert(disk)}
-      <div class="card bg-base-200 shadow-sm {hasAlert ? 'border border-error/40' : ''}">
+      {@const diskAlerts = monitor.alertsFor("storage", disk.name)}
+      {@const borderClass =
+        diskAlerts.length > 0
+          ? alertBorderClass(diskAlerts)
+          : hasAlert
+            ? "border border-error/40"
+            : ""}
+      <div class="card bg-base-200 shadow-sm {borderClass}">
         <div class="card-body p-4">
           <!-- Header -->
           <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -147,6 +219,12 @@
                   {/if}
                   {#if disk.nvme_version}
                     &bull; NVMe {disk.nvme_version}
+                  {/if}
+                  {#if disk.controller}
+                    &bull; {disk.controller}
+                  {/if}
+                  {#if disk.serial}
+                    &bull; S/N <span class="font-mono">{disk.serial}</span>
                   {/if}
                 </p>
               </div>
@@ -171,6 +249,11 @@
               <span class="badge {smartBadge(disk)} badge-sm">
                 {smartLabel(disk)}
               </span>
+              {#if disk.raid != null}
+                <span class="badge {raidBadge(disk)} badge-sm">
+                  {raidLabel(disk)}
+                </span>
+              {/if}
             </div>
           </div>
 
@@ -240,8 +323,100 @@
                   <div>Power cycles: {disk.power_cycles}</div>
                 {/if}
               </div>
+
+              <!-- Performance (iostat-style): the first things to check when a
+                   disk is the bottleneck. util% is the share of wall-clock the
+                   device was busy; avg queue is iostat's avgqu-sz. -->
+              <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
+                <div>
+                  <span class="text-base-content/50">Utilisation</span>
+                  <div class="font-semibold {utilColor(disk.util_percent)}">
+                    {disk.util_percent.toFixed(1)}%
+                    {#if disk.peak_util_percent > 0}
+                      <span class="text-base-content/40 font-normal">
+                        (peak {disk.peak_util_percent.toFixed(0)}%)
+                      </span>
+                    {/if}
+                  </div>
+                </div>
+                <div>
+                  <span class="text-base-content/50">Avg queue</span>
+                  <div class="font-semibold {disk.avg_queue_length >= 2 ? 'text-warning' : 'text-base-content'}">
+                    {disk.avg_queue_length.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <span class="text-base-content/50">Queue (now / peak)</span>
+                  <div class="font-semibold text-base-content">
+                    {disk.queue_length} / {disk.peak_queue_length}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
+
+          <!-- RAID array section -->
+          {#if disk.raid != null}
+            <div class="mt-4 border-t border-base-300 pt-4">
+              <h4 class="text-xs font-semibold text-base-content/70 mb-3 uppercase tracking-wider">
+                RAID Array
+              </h4>
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs mb-3">
+                <div>
+                  <span class="text-base-content/50">Level</span>
+                  <div class="font-medium">{disk.raid.level || "—"}</div>
+                </div>
+                <div>
+                  <span class="text-base-content/50">State</span>
+                  <div
+                    class="font-medium {disk.raid.degraded || raidNotOperational(disk.raid)
+                      ? 'text-error'
+                      : ''}"
+                  >
+                    {disk.raid.degraded ? "degraded" : disk.raid.state || "unreadable"}
+                  </div>
+                </div>
+                <div>
+                  <span class="text-base-content/50">Members in sync</span>
+                  <div class="font-medium {disk.raid.degraded ? 'text-error' : ''}">
+                    {disk.raid.active_devices}/{disk.raid.total_devices}
+                  </div>
+                </div>
+                <div>
+                  <span class="text-base-content/50">Mismatch</span>
+                  <div class="font-medium {disk.raid.mismatch_count > 0 ? 'text-warning' : ''}">
+                    {disk.raid.mismatch_count}
+                  </div>
+                </div>
+              </div>
+
+              {#if disk.raid.sync_action !== "idle" && disk.raid.sync_action !== ""}
+                <div class="mb-3">
+                  <div class="flex justify-between text-xs mb-1">
+                    <span class="text-base-content/60 capitalize">{disk.raid.sync_action}</span>
+                    <span class="font-medium">{disk.raid.sync_progress_percent.toFixed(1)}%</span>
+                  </div>
+                  <progress
+                    class="progress progress-warning w-full h-1.5"
+                    value={disk.raid.sync_progress_percent}
+                    max="100"
+                  ></progress>
+                </div>
+              {/if}
+
+              <div class="flex flex-wrap gap-1.5">
+                {#each disk.raid.members as m (m.name)}
+                  <span
+                    class="badge {memberBadge(m.state)} badge-sm gap-1"
+                    title="slot {m.slot}, errors {m.errors}"
+                  >
+                    {m.name}
+                    <span class="opacity-70">{m.state}</span>
+                  </span>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           <!-- NVMe / SMART Health Section -->
           {#if hasNvmeHealth(disk)}

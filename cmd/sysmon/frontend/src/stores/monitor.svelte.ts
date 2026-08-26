@@ -5,9 +5,56 @@
 
 import { connect } from "$lib/transport";
 import type { Transport } from "$lib/transport";
-import type { Snapshot, CPUInfo, NetworkInfo, DiskInfo, SensorData } from "$lib/types";
+import { sortBySeverity } from "$lib/alerts";
+import { readStoredJSON, writeStoredJSON } from "$lib/storage";
+import type {
+  Alert,
+  CPUInfo,
+  DiskInfo,
+  Fleet,
+  FleetNode,
+  NetworkInfo,
+  PeerSnapshot,
+  SensorData,
+  Snapshot,
+} from "$lib/types";
 
 const HISTORY_LENGTH = 60;
+
+const FLEET_URL = "/api/fleet";
+
+/**
+ * A peer snapshot and the fleet summary are plain HTTP round trips through the
+ * local node, so they are polled no faster than once a second however tight the
+ * local stream is set.
+ *
+ * Note what this does NOT control: the aggregator refreshes its peers on its
+ * own server-side schedule (fleet.poll_interval_ms), so fetching faster than
+ * that just re-reads the same cached figures. The refresh rate here decides how
+ * promptly the browser picks up what the server already has; each node card
+ * carries its own age so stale data is visible rather than implied.
+ */
+const MIN_PEER_POLL_MS = 1000;
+
+/** localStorage key holding the alert ids the user has already been shown. */
+const SEEN_ALERTS_KEY = "sysmon.alerts.seen";
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+/**
+ * loadSeenAlertIds reads the previously acknowledged alert ids. Losing this
+ * state is harmless — the badge simply restarts from empty — so any storage
+ * or shape problem falls back to no ids rather than propagating.
+ */
+function loadSeenAlertIds(): string[] {
+  return readStoredJSON(SEEN_ALERTS_KEY, isStringArray) ?? [];
+}
+
+function saveSeenAlertIds(ids: string[]): void {
+  writeStoredJSON(SEEN_ALERTS_KEY, ids);
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,6 +94,31 @@ class MonitorStore {
   snapshot = $state<Snapshot | null>(null);
   connected = $state(false);
   intervalMs = $state(1000);
+
+  /** Last successful /api/fleet response; null until the first poll lands. */
+  fleet = $state<Fleet | null>(null);
+
+  /**
+   * Name of the peer whose data every panel is showing, or null for this host.
+   * Selecting a peer swaps the source of `snapshot` and of every history
+   * buffer, so the panels themselves need no notion of a fleet.
+   */
+  selectedNode = $state<string | null>(null);
+
+  /**
+   * peerFreshness describes the LAST poll of the selected peer. It is null when
+   * this host is selected, whose data comes from the live stream and is current
+   * by construction.
+   */
+  peerFreshness = $state<{
+    reachable: boolean;
+    error: string;
+    ageSeconds: number;
+  } | null>(null);
+
+  /** Alert ids already surfaced to the user, persisted across reloads. */
+  seenAlertIds = $state<string[]>(loadSeenAlertIds());
+
   cpuHistory = $state<number[][]>([]);
   cpuOverallHistory = $state<number[]>(makeHistory(0));
   memHistory = $state<number[]>(makeHistory(0));
@@ -126,10 +198,100 @@ class MonitorStore {
       : 0
   );
 
+  // -------------------------------------------------------------------------
+  // Alerts
+  // -------------------------------------------------------------------------
+
+  /** Active alerts for the node being viewed, worst severity first. */
+  readonly alerts = $derived(sortBySeverity(this.snapshot?.alerts ?? []));
+
+  /**
+   * Alerts bucketed by category. Category values are dashboard tab ids, which
+   * is what lets a tab wear a dot and an alert row navigate to its panel.
+   */
+  readonly alertsByCategory = $derived.by(() => {
+    const byCategory: Record<string, Alert[]> = {};
+    for (const alert of this.alerts) {
+      (byCategory[alert.category] ??= []).push(alert);
+    }
+    return byCategory;
+  });
+
+  readonly criticalCount = $derived(
+    this.alerts.filter((a) => a.severity === "critical").length
+  );
+
+  readonly warningCount = $derived(
+    this.alerts.filter((a) => a.severity === "warning").length
+  );
+
+  /** Alerts that have appeared since the user last opened the alert list. */
+  readonly newAlerts = $derived.by(() => {
+    const seen = new Set(this.seenAlertIds);
+    return this.alerts.filter((a) => !seen.has(a.id));
+  });
+
+  /**
+   * alertsFor returns the alerts a panel or card should react to. Omit
+   * `resource` for every alert in the category; pass it to match one device.
+   */
+  alertsFor(category: string, resource?: string): Alert[] {
+    const inCategory = this.alertsByCategory[category] ?? [];
+    if (resource === undefined) return inCategory;
+    return inCategory.filter((a) => a.resource === resource);
+  }
+
+  /** markAlertsSeen acknowledges everything currently firing. */
+  markAlertsSeen(): void {
+    // Storing only the active ids prunes itself: an alert that clears drops
+    // out of the list and would count as new again if it ever came back.
+    const ids = this.alerts.map((a) => a.id);
+    this.seenAlertIds = ids;
+    saveSeenAlertIds(ids);
+  }
+
+  // -------------------------------------------------------------------------
+  // Fleet
+  // -------------------------------------------------------------------------
+
+  /** True only when the backend reports fleet mode configured and on. */
+  readonly fleetEnabled = $derived(this.fleet?.enabled === true);
+
+  /**
+   * Fleet members exactly as reported, in no guaranteed order. Ordering is
+   * deliberately not applied here: the Fleet view owns filter, sort and paging
+   * as one pipeline, and sorting in both places would run the comparator twice
+   * per poll for no benefit.
+   */
+  readonly fleetNodes = $derived(this.fleet?.nodes ?? []);
+
+  /** The local node's own version, used to spot version drift across peers. */
+  readonly localVersion = $derived(
+    this.fleet?.nodes?.find((n) => n.self)?.version ?? ""
+  );
+
+  /** The FleetNode currently selected, or null when viewing this host. */
+  readonly selectedNodeInfo = $derived<FleetNode | null>(
+    this.selectedNode == null
+      ? null
+      : this.fleet?.nodes?.find((n) => n.name === this.selectedNode) ?? null
+  );
+
   // Tracking maps for manual delta calculation between snapshots.
   #prevNetworkMap = new Map<string, { sent: number; recv: number }>();
   #prevDiskMap = new Map<string, { readBytes: number; writeBytes: number }>();
   #transport: Transport | null = null;
+  #fleetTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  #peerTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  #fleetPolling = false;
+
+  /**
+   * Monotonic token for the current node selection. Every peer request carries
+   * the value that was current when it was issued, and anything returning
+   * under a superseded token is discarded. A response that is merely late must
+   * never speak for the node the user has since chosen.
+   */
+  #selectionGeneration = 0;
 
   setTransport(t: Transport): void {
     this.#transport = t;
@@ -140,7 +302,155 @@ class MonitorStore {
     this.#transport?.setInterval(ms);
   }
 
-  applySnapshot(snap: Snapshot): void {
+  /**
+   * selectNode switches every panel to a peer's data, or back to this host
+   * when name is null.
+   */
+  selectNode(name: string | null): void {
+    if (this.selectedNode === name) return;
+    // Invalidate every in-flight peer request and any poll loop still running
+    // for the previous selection before anything else changes.
+    const generation = ++this.#selectionGeneration;
+    this.selectedNode = name;
+    // The previous peer's freshness must not linger over the new selection.
+    this.peerFreshness = null;
+    this.#stopPeerPolling();
+    // Two hosts must never share a history buffer: a 60-second chart that
+    // straddles a node switch would be a lie about both of them.
+    this.#resetSeries();
+    if (name != null) {
+      void this.#pollPeer(name, generation);
+    }
+    // Returning to the local node needs no fetch — the live stream is still
+    // running and repopulates the panels on its next tick.
+  }
+
+  /** startFleetPolling begins the /api/fleet poll loop. Idempotent. */
+  startFleetPolling(): void {
+    // Guarding on the timer alone was only accidentally correct: it stays null
+    // from the first call until the first response lands, so a second call in
+    // that window would have started a duplicate loop.
+    if (this.#fleetPolling) return;
+    this.#fleetPolling = true;
+    void this.#pollFleet();
+  }
+
+  async #pollFleet(): Promise<void> {
+    try {
+      const res = await fetch(FLEET_URL);
+      if (res.ok) {
+        const fleet = (await res.json()) as Fleet;
+        this.fleet = { enabled: fleet.enabled === true, nodes: fleet.nodes ?? [] };
+
+        // A node that leaves the fleet must not strand the UI on a dead
+        // selection with no way back.
+        const selected = this.selectedNode;
+        if (
+          selected != null &&
+          !this.fleet.nodes.some((n) => n.name === selected)
+        ) {
+          this.selectNode(null);
+        }
+      } else if (res.status === 404) {
+        // An older backend has no fleet endpoint at all, which is simply the
+        // standalone case.
+        this.fleet = { enabled: false, nodes: [] };
+      }
+    } catch {
+      // Keep the last known fleet rather than blanking the view on one
+      // dropped request.
+    }
+    // Follow the refresh selector like every other stream, rather than a fixed
+    // ten seconds that ignored it.
+    this.#fleetTimer = globalThis.setTimeout(() => {
+      void this.#pollFleet();
+    }, Math.max(this.intervalMs, MIN_PEER_POLL_MS));
+  }
+
+  async #pollPeer(name: string, generation: number): Promise<void> {
+    try {
+      const res = await fetch(
+        `/api/fleet/${encodeURIComponent(name)}/snapshot`
+      );
+      if (res.ok) {
+        // Parse first and let applySnapshot arbitrate. Checking the selection
+        // before awaiting the body is exactly the bug this replaces: the user
+        // can switch nodes while the JSON is still being parsed, and a check
+        // that has already passed cannot see it.
+        const peer = (await res.json()) as PeerSnapshot;
+        if (this.#selectionGeneration === generation) {
+          this.peerFreshness = {
+            reachable: peer.reachable,
+            error: peer.error ?? "",
+            ageSeconds: peer.age_seconds,
+          };
+          // Only a CURRENT reading is folded in. The aggregator keeps serving
+          // the last good snapshot after a peer goes away, and applying it on
+          // every cycle appended the same values to the history again and
+          // again -- a flat line that reads as "measured and steady" when
+          // nothing was measured at all. The panels keep showing the last
+          // reading; the stale badge is what says it is not live.
+          if (peer.reachable && peer.snapshot != null) {
+            this.applySnapshot(peer.snapshot, name);
+          }
+        }
+      }
+    } catch {
+      // A peer that stops answering keeps its last snapshot on screen; the
+      // fleet list and the stale badge are what report it unreachable.
+    }
+    // A superseded loop stops here instead of rescheduling, so switching
+    // A -> B -> A cannot leave two loops polling the same node.
+    if (this.#selectionGeneration !== generation) return;
+    this.#peerTimer = globalThis.setTimeout(() => {
+      void this.#pollPeer(name, generation);
+    }, Math.max(this.intervalMs, MIN_PEER_POLL_MS));
+  }
+
+  #stopPeerPolling(): void {
+    if (this.#peerTimer != null) {
+      globalThis.clearTimeout(this.#peerTimer);
+      this.#peerTimer = null;
+    }
+  }
+
+  /** #resetSeries clears the snapshot and every history buffer. */
+  #resetSeries(): void {
+    this.snapshot = null;
+    this.cpuHistory = [];
+    this.cpuOverallHistory = makeHistory(0);
+    this.memHistory = makeHistory(0);
+    this.networkHistory = [];
+    this.diskHistory = [];
+    this.loadHistory = makeHistory(0);
+    this.gpuUtilHistory = [];
+    this.gpuMemHistory = [];
+    this.gpuTempHistory = [];
+    this.gpuPowerHistory = [];
+    this.gpuPcieRxHistory = [];
+    this.gpuPcieTxHistory = [];
+    this.cpuTempHistory = [];
+    this.packagePowerHistory = makeHistory(0);
+    this.psiCpuHistory = makeHistory(0);
+    this.psiMemHistory = makeHistory(0);
+    this.psiIOHistory = makeHistory(0);
+    this.#prevNetworkMap.clear();
+    this.#prevDiskMap.clear();
+  }
+
+  /**
+   * applySnapshot folds one snapshot into the store. `fromNode` names the node
+   * that produced it — null for this host, a peer name otherwise — and it must
+   * equal the current selection or the snapshot is dropped.
+   *
+   * The comparison is deliberately against *which* node rather than merely
+   * whether some peer is selected. The weaker test let a response that landed
+   * after the user switched peers render one host's data, and history, under
+   * another host's name.
+   */
+  applySnapshot(snap: Snapshot, fromNode: string | null = null): void {
+    if (fromNode !== this.selectedNode) return;
+
     this.snapshot = snap;
 
     // CPU history
@@ -298,3 +608,7 @@ const transport = connect(
   }
 );
 monitor.setTransport(transport);
+
+// The fleet list decides whether the Fleet tab exists at all, so it is polled
+// from module initialisation rather than from a component that may never mount.
+monitor.startFleetPolling();

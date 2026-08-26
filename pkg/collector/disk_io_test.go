@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	psdisk "github.com/shirou/gopsutil/v4/disk"
+
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -188,4 +190,63 @@ func TestApplyIORates_ZeroValueCollector(t *testing.T) {
 
 	info := types.DiskInfo{Name: "sda"}
 	c.applyIORates(&info, time.Now())
+}
+
+// TestDiskNameFromPartition_WholeDeviceFamilies guards the mapping that decides
+// whether a filesystem's usage is attributed to a disk at all.
+//
+// Regression: md and mmcblk names end in digits, so stripping trailing digits
+// turned md0 into "md" and mmcblk0p2 into "mmcblk0p". Neither matched a disk,
+// so every md array reported 0 bytes of capacity — on a host whose array was
+// 97% full — and the SD card that is root on most single-board machines was
+// equally invisible.
+func TestDiskNameFromPartition_WholeDeviceFamilies(t *testing.T) {
+	cases := map[string]string{
+		// Whole devices carrying a filesystem directly.
+		"md0":     "md0",
+		"md127":   "md127",
+		"dm-0":    "dm-0",
+		"nvme0n1": "nvme0n1",
+		"mmcblk0": "mmcblk0",
+		// Partitions of those devices.
+		"md0p1":     "md0",
+		"nvme0n1p1": "nvme0n1",
+		"nvme0n1p2": "nvme0n1",
+		"mmcblk0p1": "mmcblk0",
+		"mmcblk0p2": "mmcblk0",
+		"loop0p1":   "loop0",
+		// Conventional SCSI/VirtIO naming, where trailing digits are the
+		// partition number.
+		"sda":  "sda",
+		"sda1": "sda",
+		"sdb2": "sdb",
+		"vda3": "vda",
+	}
+	for in, want := range cases {
+		if got := diskNameFromPartition(in); got != want {
+			t.Errorf("diskNameFromPartition(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestBuildPartitionIndex_MapsArrayToItself checks the end-to-end effect: an md
+// array mounted directly must land under its own name so its usage is counted.
+func TestBuildPartitionIndex_MapsArrayToItself(t *testing.T) {
+	idx := buildPartitionIndex([]psdisk.PartitionStat{
+		{Device: "/dev/md0", Mountpoint: "/data"},
+		{Device: "/dev/md2", Mountpoint: "/"},
+		{Device: "/dev/sda1", Mountpoint: "/boot"},
+	})
+	if got := len(idx["md0"]); got != 1 {
+		t.Errorf("md0 has %d partitions indexed, want 1 (/data)", got)
+	}
+	if got := len(idx["md2"]); got != 1 {
+		t.Errorf("md2 has %d partitions indexed, want 1 (/)", got)
+	}
+	if got := len(idx["sda"]); got != 1 {
+		t.Errorf("sda has %d partitions indexed, want 1 (/boot)", got)
+	}
+	if _, wrong := idx["md"]; wrong {
+		t.Error(`index contains a bogus "md" disk; array names must not be truncated`)
+	}
 }

@@ -17,6 +17,109 @@ type Snapshot struct {
 	Processes  ProcessSummary `json:"processes"`
 	Sensors    SensorData     `json:"sensors"`
 	Virt       VirtInfo       `json:"virtualization"`
+	// Version is the go-sysmon build serving this snapshot. It travels with the
+	// data so the fleet view can spot a node left behind on an older build.
+	Version string `json:"version"`
+	// Alerts are the threshold evaluations for this snapshot. Evaluated
+	// server-side so the dashboard, the API and the Prometheus endpoint all
+	// report the same conditions from the same rules.
+	Alerts []Alert `json:"alerts"`
+}
+
+// Alert severities, ordered by urgency.
+const (
+	SeverityInfo     = "info"
+	SeverityWarning  = "warning"
+	SeverityCritical = "critical"
+)
+
+// Alert is one firing threshold rule. ID is stable across snapshots for the
+// same rule and resource, which is what lets the UI track "new since last seen"
+// and the evaluator keep a first-seen timestamp.
+type Alert struct {
+	ID        string    `json:"id"`
+	Rule      string    `json:"rule"`
+	Severity  string    `json:"severity"`
+	Category  string    `json:"category"`
+	Resource  string    `json:"resource"`
+	Message   string    `json:"message"`
+	Value     float64   `json:"value"`
+	Threshold float64   `json:"threshold"`
+	Since     time.Time `json:"since"`
+}
+
+// PeerSnapshot is one peer's snapshot together with the freshness of the poll
+// that produced it.
+//
+// The snapshot alone is not enough to render honestly. The poller deliberately
+// keeps the last good reading when a peer stops answering, so a bare snapshot
+// looks identical whether it was collected a moment ago or hours before the
+// host went away. Serving that as an ordinary success let the drill-in view
+// show frozen numbers as live ones -- the fleet card reported the node
+// unreachable while the detail page beside it did not.
+//
+// Reachable describes the LATEST poll; Snapshot may still be present when it is
+// false, which is the stale case the client has to mark rather than hide.
+type PeerSnapshot struct {
+	Snapshot   *Snapshot `json:"snapshot"`
+	Reachable  bool      `json:"reachable"`
+	Error      string    `json:"error,omitempty"`
+	AgeSeconds float64   `json:"age_seconds"`
+}
+
+// FleetNode is one node's summary in the fleet view: enough to judge health at
+// a glance without opening the node.
+type FleetNode struct {
+	Name          string  `json:"name"`
+	URL           string  `json:"url"`
+	Self          bool    `json:"self"`
+	Reachable     bool    `json:"reachable"`
+	Error         string  `json:"error,omitempty"`
+	AgeSeconds    float64 `json:"age_seconds"`
+	Status        string  `json:"status"`
+	Hostname      string  `json:"hostname"`
+	Version       string  `json:"version"`
+	UptimeSeconds uint64  `json:"uptime_seconds"`
+
+	CriticalCount int `json:"critical_count"`
+	WarningCount  int `json:"warning_count"`
+
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryPercent float64 `json:"memory_percent"`
+	SwapPercent   float64 `json:"swap_percent"`
+	LoadPerCore   float64 `json:"load_per_core"`
+
+	WorstDiskPercent float64 `json:"worst_disk_percent"`
+	RAIDDegraded     bool    `json:"raid_degraded"`
+	SMARTUnhealthy   int     `json:"smart_unhealthy"`
+
+	MaxTempC  float64 `json:"max_temp_c"`
+	PowerW    float64 `json:"power_w"`
+	NetRxRate float64 `json:"net_rx_rate"`
+	NetTxRate float64 `json:"net_tx_rate"`
+}
+
+// Fleet is the aggregated view served at /api/fleet. Enabled is false when no
+// peers are configured, which is what keeps a standalone node behaving exactly
+// as it did before fleet mode existed.
+type Fleet struct {
+	Enabled bool        `json:"enabled"`
+	Nodes   []FleetNode `json:"nodes"`
+}
+
+// ConfigEntry is one effective setting and where its value came from, for the
+// read-only settings view.
+type ConfigEntry struct {
+	Section string `json:"section"`
+	Key     string `json:"key"`
+	Value   string `json:"value"`
+	Source  string `json:"source"`
+}
+
+// ConfigView is the effective configuration served at /api/config.
+type ConfigView struct {
+	ConfigFile string        `json:"config_file"`
+	Entries    []ConfigEntry `json:"entries"`
 }
 
 // VirtInfo describes the containerised and virtualised workloads running on
@@ -434,6 +537,53 @@ type DiskInfo struct {
 	FirmwareVersion string `json:"firmware_version"`
 	// NVMe protocol version
 	NVMeVersion string `json:"nvme_version"`
+	// RAID is non-nil only when this device is a Linux md array; it carries the
+	// array's level, health, member devices and any resync/recover progress.
+	RAID *RAIDInfo `json:"raid,omitempty"`
+}
+
+// RAIDInfo describes the state of a Linux md (software RAID) array. It is
+// attached to the DiskInfo of the array device (e.g. md0) and is nil for
+// devices that are not md arrays.
+type RAIDInfo struct {
+	// Level is the array personality, e.g. "raid1", "raid10", "raid5".
+	Level string `json:"level"`
+	// State is the md array_state, e.g. "clean", "active", "read-auto".
+	State string `json:"state"`
+	// Degraded is true when fewer than the configured members are in sync.
+	Degraded bool `json:"degraded"`
+	// TotalDevices is the number of member slots the array is configured for;
+	// ActiveDevices is how many are currently in sync.
+	TotalDevices  int `json:"total_devices"`
+	ActiveDevices int `json:"active_devices"`
+	// FailedDevices and SpareDevices count members in those roles.
+	FailedDevices int `json:"failed_devices"`
+	SpareDevices  int `json:"spare_devices"`
+	// SyncAction is the current background operation: "idle", "resync",
+	// "recover", "check" or "repair".
+	SyncAction string `json:"sync_action"`
+	// SyncProgressPercent is 0-100 while a resync/recover/check runs, or 100
+	// when the array is fully in sync (sync_action idle).
+	SyncProgressPercent float64 `json:"sync_progress_percent"`
+	// MismatchCount is the md mismatch_cnt: sectors that differed on the last
+	// check. Non-zero on a redundant array warrants a repair.
+	MismatchCount uint64 `json:"mismatch_count"`
+	// Members are the array's component devices in slot order.
+	Members []RAIDMember `json:"members"`
+}
+
+// RAIDMember is one component device of an md array.
+type RAIDMember struct {
+	// Name is the component block device, e.g. "sda2".
+	Name string `json:"name"`
+	// State is the md per-member state, e.g. "in_sync", "faulty", "spare",
+	// "writemostly". Multiple flags are joined with ",".
+	State string `json:"state"`
+	// Slot is the RAID role/slot number, or -1 for a device with no slot
+	// (spare or removed).
+	Slot int `json:"slot"`
+	// Errors is the md per-member read/corrected error count.
+	Errors uint64 `json:"errors"`
 }
 
 // PartitionInfo describes a disk partition.

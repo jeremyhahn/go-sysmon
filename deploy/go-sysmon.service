@@ -35,6 +35,14 @@ ExecStart=/usr/local/bin/sysmon-server serve \
 	--interval ${SYSMON_INTERVAL} \
 	--log-level ${SYSMON_LOG_LEVEL}
 
+# Reload re-reads /etc/go-sysmon/sysmon.yaml in place: alert thresholds, fleet
+# peers and the poll interval take effect without restarting. That matters
+# because a restart would reset the Prometheus counters, drop every connected
+# browser and empty the history buffers. The listen address and TLS files are
+# consumed when the socket binds, so changing those still needs a restart --
+# the daemon logs which settings it could not apply.
+ExecReload=/bin/kill -HUP $MAINPID
+
 Restart=always
 RestartSec=5s
 

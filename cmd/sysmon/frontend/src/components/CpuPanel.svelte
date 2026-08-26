@@ -1,6 +1,8 @@
 <script lang="ts">
   import TimeSeriesChart from "./TimeSeriesChart.svelte";
   import GaugeChart from "./GaugeChart.svelte";
+  import AlertBanner from "./AlertBanner.svelte";
+  import { alertBorderClass } from "$lib/alerts";
   import {
     formatPercent,
     formatMHz,
@@ -19,6 +21,8 @@
   const cpuHistory = $derived(monitor.cpuHistory);
   const cpuOverallHistory = $derived(monitor.cpuOverallHistory);
   const overallCpuPercent = $derived(monitor.overallCpuPercent);
+
+  const cpuAlerts = $derived(monitor.alertsFor("cpu"));
 
   // First CPU provides model info (all logical cores share the same model).
   const firstCpu = $derived(snapshot?.cpus[0] ?? null);
@@ -89,9 +93,11 @@
 </script>
 
 <div class="space-y-4">
+  <AlertBanner alerts={cpuAlerts} title="CPU Alert" />
+
   <!-- Overall usage + chart -->
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-    <div class="card bg-base-200 shadow-sm">
+    <div class="card bg-base-200 shadow-sm {alertBorderClass(cpuAlerts)}">
       <div class="card-body p-4 items-center">
         <h3 class="card-title text-sm text-base-content/70">Overall CPU</h3>
         <GaugeChart value={overallCpuPercent} label="CPU" height="180px" />

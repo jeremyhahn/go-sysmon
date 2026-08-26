@@ -24,6 +24,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -148,6 +150,15 @@ type Config struct {
 	// TLS is optional. When nil the server speaks plain HTTP.
 	TLS *TLS
 
+	// Fleet is optional. When set, the fleet endpoints serve its aggregated
+	// view; when nil the fleet reports itself disabled.
+	Fleet *fleet.Poller
+
+	// Config is optional. When set, the settings endpoint reports the
+	// effective configuration. It is read-only: reloads happen through SIGHUP
+	// or the file watcher, never over HTTP.
+	Config *config.Manager
+
 	// Version, GitCommit and BuildDate are the build metadata reported at
 	// GET /api/version. Empty values render as "dev"/"unknown" downstream.
 	Version   string
@@ -162,6 +173,12 @@ type Server struct {
 	assets    fs.FS
 	server    *http.Server
 	tlsConfig *tls.Config
+	// fleet and cfg are optional. When nil the corresponding endpoints report
+	// the feature as disabled rather than 404ing, so a standalone node and an
+	// old build are distinguishable by a client.
+	fleet *fleet.Poller
+	cfg   *config.Manager
+
 	version   string
 	gitCommit string
 	buildDate string
@@ -198,6 +215,8 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 		addr:      cfg.Addr,
 		assets:    cfg.Assets,
 		tlsConfig: tlsConfig,
+		fleet:     cfg.Fleet,
+		cfg:       cfg.Config,
 		version:   cfg.Version,
 		gitCommit: cfg.GitCommit,
 		buildDate: cfg.BuildDate,
@@ -208,7 +227,12 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/interval", s.handleGetInterval)
 	mux.HandleFunc("POST /api/interval", s.handleSetInterval)
+	mux.HandleFunc("GET /api/fleet", s.handleFleet)
+	mux.HandleFunc("GET /api/fleet/{name}/snapshot", s.handleFleetSnapshot)
+	mux.HandleFunc("GET /api/fleet/{name}/config", s.handleFleetConfig)
+	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/version", s.handleVersion)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	if cfg.Assets != nil {
 		mux.Handle("GET /", cacheControl(http.FileServerFS(cfg.Assets)))

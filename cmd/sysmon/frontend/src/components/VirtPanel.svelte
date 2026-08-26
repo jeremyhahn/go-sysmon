@@ -16,6 +16,10 @@
   const vms = $derived(virt?.vms ?? []);
   const capability = $derived(virt?.capability ?? null);
   const canObserve = $derived(capability?.vms_observable ?? false);
+  // VMs are found by walking processes, so a missing runtime socket does not
+  // hide them — but it does mean the libvirt/runtime side of the picture is
+  // absent, which is worth stating rather than leaving to be inferred.
+  const apiReachable = $derived(capability?.runtime_api_reachable ?? false);
 
   // VMs report configured guest RAM, which is what the host has committed.
   const totalMemory = $derived(vms.reduce((s, v) => s + v.memory_bytes, 0));
@@ -65,7 +69,17 @@
 
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-4">
-        <h3 class="card-title text-sm text-base-content/70">Virtual Machines</h3>
+        <div class="flex items-center gap-2">
+          <h3 class="card-title text-sm text-base-content/70">Virtual Machines</h3>
+          {#if capability != null && !apiReachable}
+            <span
+              class="badge badge-warning badge-sm"
+              title="No virtualization runtime API answered; VMs are reported from the process table alone."
+            >
+              runtime API unreachable
+            </span>
+          {/if}
+        </div>
 
         {#if vms.length === 0}
           <div class="py-4 space-y-1">

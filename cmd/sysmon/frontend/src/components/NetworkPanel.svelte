@@ -1,5 +1,7 @@
 <script lang="ts">
   import TimeSeriesChart from "./TimeSeriesChart.svelte";
+  import AlertBanner from "./AlertBanner.svelte";
+  import { alertBorderClass } from "$lib/alerts";
   import { formatBytes, formatBytesRate } from "$lib/format";
   import type { NetworkInfo } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
@@ -8,6 +10,17 @@
   const networkHistory = $derived(monitor.networkHistory);
 
   const networks = $derived(snapshot?.networks ?? []);
+
+  // DNS is host-level (the same resolv.conf attaches to every interface), so
+  // surface it once from whichever interface reports it.
+  const dnsServers = $derived(
+    networks.find((n) => n.dns_servers != null && n.dns_servers.length > 0)
+      ?.dns_servers ?? []
+  );
+  const dnsSearch = $derived(
+    networks.find((n) => n.dns_search != null && n.dns_search.length > 0)
+      ?.dns_search ?? []
+  );
 
   function getHistory(name: string) {
     return networkHistory.find((h) => h.name === name);
@@ -20,6 +33,8 @@
     return "badge-success";
   }
 
+  const networkAlerts = $derived(monitor.alertsFor("network"));
+
   function statusLabel(iface: NetworkInfo): string {
     if (!iface.is_up) return "DOWN";
     if (iface.is_loopback) return "loopback";
@@ -29,10 +44,24 @@
 </script>
 
 <div class="space-y-4">
+  <AlertBanner alerts={networkAlerts} title="Network Alert" />
+
+  {#if dnsServers.length > 0}
+    <div class="text-xs text-base-content/60">
+      <span class="text-base-content/50">DNS:</span>
+      {#each dnsServers as ns (ns)}
+        <span class="badge badge-ghost badge-xs font-mono ml-1">{ns}</span>
+      {/each}
+      {#if dnsSearch.length > 0}
+        <span class="text-base-content/50 ml-2">search:</span> {dnsSearch.join(" ")}
+      {/if}
+    </div>
+  {/if}
   {#if networks.length > 0}
     {#each networks as iface (iface.name)}
       {@const nh = getHistory(iface.name)}
-      <div class="card bg-base-200 shadow-sm">
+      {@const ifaceAlerts = monitor.alertsFor("network", iface.name)}
+      <div class="card bg-base-200 shadow-sm {alertBorderClass(ifaceAlerts)}">
         <div class="card-body p-4">
           <!-- Header -->
           <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -42,6 +71,12 @@
                 <span class="badge {statusBadge(iface)} badge-sm">
                   {statusLabel(iface)}
                 </span>
+                {#if iface.kind && iface.kind !== "ethernet" && iface.kind !== "loopback"}
+                  <span class="badge badge-outline badge-sm">{iface.kind}</span>
+                {/if}
+                {#if iface.oper_state && iface.oper_state !== "up" && iface.oper_state !== "unknown" && iface.is_up}
+                  <span class="badge badge-warning badge-sm">{iface.oper_state}</span>
+                {/if}
               </div>
               <p class="text-xs text-base-content/60">
                 {iface.hardware_addr || "no MAC"}
@@ -72,6 +107,31 @@
               {#each iface.addresses as addr (addr)}
                 <span class="badge badge-outline badge-xs font-mono">{addr}</span>
               {/each}
+            </div>
+          {/if}
+
+          <!-- Bonding / bridge topology -->
+          {#if iface.bond_mode || iface.bond_master || (iface.bridge_ports != null && iface.bridge_ports.length > 0)}
+            <div class="flex flex-wrap items-center gap-1 mb-3 text-xs">
+              {#if iface.bond_mode}
+                <span class="text-base-content/50">bond</span>
+                <span class="badge badge-outline badge-xs">{iface.bond_mode}</span>
+                {#if iface.bond_slaves != null}
+                  {#each iface.bond_slaves as sl (sl)}
+                    <span class="badge badge-ghost badge-xs font-mono">{sl}</span>
+                  {/each}
+                {/if}
+              {/if}
+              {#if iface.bond_master}
+                <span class="text-base-content/50">slave of</span>
+                <span class="badge badge-ghost badge-xs font-mono">{iface.bond_master}</span>
+              {/if}
+              {#if iface.bridge_ports != null && iface.bridge_ports.length > 0}
+                <span class="text-base-content/50">bridge</span>
+                {#each iface.bridge_ports as bp (bp)}
+                  <span class="badge badge-ghost badge-xs font-mono">{bp}</span>
+                {/each}
+              {/if}
             </div>
           {/if}
 

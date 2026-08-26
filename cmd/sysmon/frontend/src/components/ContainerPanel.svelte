@@ -21,6 +21,10 @@
   const capability = $derived(virt?.capability ?? null);
   // An empty list means different things depending on whether we could look.
   const canObserve = $derived(capability?.containers_observable ?? false);
+  // Without a reachable runtime socket the cgroup walk still finds running
+  // containers, but stopped ones, images and volumes are invisible. Saying so
+  // is the difference between "nothing here" and "we could not look".
+  const apiReachable = $derived(capability?.runtime_api_reachable ?? false);
   // Containers Docker knows about that are not running, and therefore have no
   // cgroup for us to measure.
   const notRunning = $derived(
@@ -150,18 +154,40 @@
       />
       {#if runtime?.available}
         <StatCard
-          label="Not Running"
-          value={notRunning}
+          label="Stopped"
+          value={runtime.containers_stopped}
           sub="exist but stopped"
-          colorClass={notRunning > 0 ? "text-base-content/70" : "text-base-content/50"}
+          colorClass={runtime.containers_stopped > 0
+            ? "text-base-content/70"
+            : "text-base-content/50"}
         />
+        {#if runtime.containers_paused > 0}
+          <!-- A paused container holds its memory and its cgroup but runs no
+               code, so it shows no CPU: worth calling out separately. -->
+          <StatCard
+            label="Paused"
+            value={runtime.containers_paused}
+            sub="frozen, memory held"
+            colorClass="text-warning"
+          />
+        {/if}
       {/if}
     </div>
 
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-4">
         <div class="flex items-baseline justify-between">
-          <h3 class="card-title text-sm text-base-content/70">Containers</h3>
+          <div class="flex items-center gap-2">
+            <h3 class="card-title text-sm text-base-content/70">Containers</h3>
+            {#if capability != null && !apiReachable}
+              <span
+                class="badge badge-warning badge-sm"
+                title="No container runtime socket answered, so stopped containers, images and volumes cannot be listed."
+              >
+                runtime API unreachable
+              </span>
+            {/if}
+          </div>
           {#if virt.cgroup_version}
             <span class="text-xs text-base-content/50">
               cgroup {virt.cgroup_version}
@@ -285,7 +311,14 @@
                 </tr>
                 <tr>
                   <td>Volumes</td>
-                  <td class="text-right">{runtime.volumes_count}</td>
+                  <td class="text-right">
+                    {runtime.volumes_count}
+                    {#if runtime.volumes_unused > 0}
+                      <span class="text-warning">
+                        ({runtime.volumes_unused} unused)
+                      </span>
+                    {/if}
+                  </td>
                   <td class="text-right">{formatBytes(runtime.volumes_bytes)}</td>
                   <td class="text-right">{formatBytes(runtime.volumes_reclaimable_bytes)}</td>
                 </tr>

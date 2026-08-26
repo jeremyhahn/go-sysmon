@@ -1,0 +1,622 @@
+package alert_test
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/alert"
+	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
+)
+
+// find returns the alert with the given rule, or nil.
+func find(alerts []types.Alert, rule string) *types.Alert {
+	for i := range alerts {
+		if alerts[i].Rule == rule {
+			return &alerts[i]
+		}
+	}
+	return nil
+}
+
+func defaults() config.Alerts { return config.Defaults().Alerts }
+
+// TestEvaluate_RAIDDegradedIsCritical covers the condition this whole feature
+// was built for: fs ran a degraded root mirror for nine months unnoticed.
+func TestEvaluate_RAIDDegradedIsCritical(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "md2",
+		RAID: &types.RAIDInfo{State: "clean", Level: "raid1", Degraded: true, ActiveDevices: 1, TotalDevices: 2},
+	}}}
+
+	got := alert.New().Evaluate(defaults(), snap, time.Now())
+	a := find(got, alert.RuleRAIDDegraded)
+	if a == nil {
+		t.Fatalf("no raid_degraded alert in %+v", got)
+	}
+	if a.Severity != types.SeverityCritical {
+		t.Errorf("severity = %q, want critical", a.Severity)
+	}
+	if a.Resource != "md2" || a.Category != "storage" {
+		t.Errorf("resource/category = %q/%q, want md2/storage", a.Resource, a.Category)
+	}
+}
+
+// TestEvaluate_HealthyArrayIsSilent is the other half: a healthy array must
+// produce nothing, or the bell becomes noise people learn to ignore.
+func TestEvaluate_HealthyArrayIsSilent(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "md0",
+		RAID: &types.RAIDInfo{State: "clean", Level: "raid10", ActiveDevices: 4, TotalDevices: 4, SyncAction: "idle"},
+	}}}
+	if got := alert.New().Evaluate(defaults(), snap, time.Now()); len(got) != 0 {
+		t.Errorf("healthy array produced %+v, want no alerts", got)
+	}
+}
+
+// TestEvaluate_PerResourceOverride covers the case that motivated overrides: a
+// filesystem expected to run nearly full should not alert at the global level.
+func TestEvaluate_PerResourceOverride(t *testing.T) {
+	cfg := defaults()
+	cfg.Overrides = []config.Override{{Resource: "md0", DiskFullPct: 98, DiskFullCritPct: 99}}
+
+	snap := &types.Snapshot{Disks: []types.DiskInfo{
+		{Name: "md0", TotalBytes: 100, UsedPercent: 97},
+		{Name: "md2", TotalBytes: 100, UsedPercent: 97},
+	}}
+
+	got := alert.New().Evaluate(cfg, snap, time.Now())
+	var forMD0, forMD2 bool
+	for _, a := range got {
+		if a.Rule != alert.RuleDiskFull {
+			continue
+		}
+		switch a.Resource {
+		case "md0":
+			forMD0 = true
+		case "md2":
+			forMD2 = true
+		}
+	}
+	if forMD0 {
+		t.Error("md0 has a 98% override and should not alert at 97%")
+	}
+	if !forMD2 {
+		t.Error("md2 uses the default 90% threshold and should alert at 97%")
+	}
+}
+
+// TestEvaluate_DisabledRule verifies a zero threshold turns a rule off, which
+// is how an operator silences a check they do not want.
+func TestEvaluate_DisabledRule(t *testing.T) {
+	cfg := defaults()
+	cfg.DiskFullPct, cfg.DiskFullCritPct = 0, 0
+
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{Name: "sda", TotalBytes: 100, UsedPercent: 99}}}
+	if a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleDiskFull); a != nil {
+		t.Errorf("disk_full fired with the rule disabled: %+v", a)
+	}
+}
+
+// TestEvaluate_InterfaceDownOnlyWhenConfigured guards against the noisiest
+// possible rule: hosts routinely carry unused NICs that are legitimately down.
+func TestEvaluate_InterfaceDownOnlyWhenConfigured(t *testing.T) {
+	snap := &types.Snapshot{Networks: []types.NetworkInfo{
+		{Name: "eno1", IsUp: false, Addresses: []string{"192.168.1.5/24"}},
+		{Name: "wlp2s0", IsUp: false},
+		{Name: "lo", IsUp: false, IsLoopback: true, Addresses: []string{"127.0.0.1/8"}},
+	}}
+
+	got := alert.New().Evaluate(defaults(), snap, time.Now())
+	var resources []string
+	for _, a := range got {
+		if a.Rule == alert.RuleIfaceDown {
+			resources = append(resources, a.Resource)
+		}
+	}
+	if len(resources) != 1 || resources[0] != "eno1" {
+		t.Errorf("iface_down fired for %v, want only eno1", resources)
+	}
+}
+
+// TestEvaluate_SinceIsStableWhileFiring checks the timestamp the UI uses to
+// show how long a condition has lasted: it must not reset every snapshot.
+func TestEvaluate_SinceIsStableWhileFiring(t *testing.T) {
+	e := alert.New()
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "md2",
+		RAID: &types.RAIDInfo{State: "clean", Level: "raid1", Degraded: true, ActiveDevices: 1, TotalDevices: 2},
+	}}}
+
+	t0 := time.Now()
+	first := e.Evaluate(defaults(), snap, t0)
+	second := e.Evaluate(defaults(), snap, t0.Add(30*time.Second))
+
+	if !first[0].Since.Equal(second[0].Since) {
+		t.Errorf("Since changed while the alert kept firing: %v then %v", first[0].Since, second[0].Since)
+	}
+}
+
+// TestEvaluate_SinceResetsAfterClearing confirms a flapping condition reports
+// the age of its current episode rather than the first one ever seen.
+func TestEvaluate_SinceResetsAfterClearing(t *testing.T) {
+	e := alert.New()
+	degraded := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "md2", RAID: &types.RAIDInfo{State: "clean", Level: "raid1", Degraded: true, ActiveDevices: 1, TotalDevices: 2},
+	}}}
+	healthy := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "md2", RAID: &types.RAIDInfo{State: "clean", Level: "raid1", ActiveDevices: 2, TotalDevices: 2, SyncAction: "idle"},
+	}}}
+
+	t0 := time.Now()
+	e.Evaluate(defaults(), degraded, t0)
+	e.Evaluate(defaults(), healthy, t0.Add(time.Minute))
+	again := e.Evaluate(defaults(), degraded, t0.Add(2*time.Minute))
+
+	if !again[0].Since.Equal(t0.Add(2 * time.Minute)) {
+		t.Errorf("Since = %v, want the time the condition returned", again[0].Since)
+	}
+}
+
+// TestEvaluate_ThrottleNeedsAnIncrease verifies throttling is reported from a
+// counter rising, not from a machine that throttled at some point in its past.
+func TestEvaluate_ThrottleNeedsAnIncrease(t *testing.T) {
+	e := alert.New()
+	snap := &types.Snapshot{Sensors: types.SensorData{
+		ThermalThrottle: []types.ThrottleInfo{{CPU: 0, CoreThrottleCount: 5}},
+	}}
+
+	if a := find(e.Evaluate(defaults(), snap, time.Now()), alert.RuleCPUThrottle); a != nil {
+		t.Error("a pre-existing throttle count should not alert on the first snapshot")
+	}
+
+	snap.Sensors.ThermalThrottle[0].CoreThrottleCount = 9
+	if a := find(e.Evaluate(defaults(), snap, time.Now()), alert.RuleCPUThrottle); a == nil {
+		t.Error("a rising throttle count should alert")
+	}
+}
+
+// TestEvaluate_NilSnapshot covers the degenerate input.
+func TestEvaluate_NilSnapshot(t *testing.T) {
+	if got := alert.New().Evaluate(defaults(), nil, time.Now()); got != nil {
+		t.Errorf("Evaluate(nil) = %+v, want nil", got)
+	}
+}
+
+// TestEvaluate_SortedBySeverity checks the order the dropdown relies on.
+func TestEvaluate_SortedBySeverity(t *testing.T) {
+	snap := &types.Snapshot{
+		Disks: []types.DiskInfo{
+			{Name: "sda", TotalBytes: 100, UsedPercent: 92},
+			{Name: "md2", RAID: &types.RAIDInfo{State: "clean", Level: "raid1", Degraded: true, ActiveDevices: 1, TotalDevices: 2}},
+		},
+	}
+	got := alert.New().Evaluate(defaults(), snap, time.Now())
+	if len(got) < 2 {
+		t.Fatalf("want at least two alerts, got %+v", got)
+	}
+	if got[0].Severity != types.SeverityCritical {
+		t.Errorf("first alert severity = %q, want critical first", got[0].Severity)
+	}
+}
+
+// TestEvaluate_DiskQueueDepth covers the saturation signal latency actually
+// follows: a device can sit at 100% utilisation and still be fine if nothing is
+// queued behind the requests.
+func TestEvaluate_DiskQueueDepth(t *testing.T) {
+	cfg := defaults()
+	snap := &types.Snapshot{Disks: []types.DiskInfo{
+		{Name: "sda", AvgQueueLength: cfg.DiskQueueLen + 2},
+		{Name: "sdb", AvgQueueLength: 0.2},
+	}}
+	got := alert.New().Evaluate(cfg, snap, time.Now())
+
+	var resources []string
+	for _, a := range got {
+		if a.Rule == alert.RuleDiskQueue {
+			resources = append(resources, a.Resource)
+		}
+	}
+	if len(resources) != 1 || resources[0] != "sda" {
+		t.Errorf("disk_queue fired for %v, want only sda", resources)
+	}
+}
+
+// TestEvaluate_CPUUsage checks the mean-across-threads rule, which must read
+// the same on a 4-thread and a 64-thread host.
+func TestEvaluate_CPUUsage(t *testing.T) {
+	cfg := defaults()
+	cfg.CPUPct = 90
+	snap := &types.Snapshot{CPUs: []types.CPUInfo{
+		{UsagePercent: 100}, {UsagePercent: 100}, {UsagePercent: 90}, {UsagePercent: 90},
+	}}
+	if a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleCPUHigh); a == nil {
+		t.Error("a host at 95% mean CPU should alert")
+	}
+
+	snap.CPUs = []types.CPUInfo{{UsagePercent: 100}, {UsagePercent: 10}, {UsagePercent: 10}, {UsagePercent: 10}}
+	if a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleCPUHigh); a != nil {
+		t.Errorf("one busy thread out of four should not alert: %+v", a)
+	}
+}
+
+// TestEvaluate_NetworkUtilisation verifies link saturation is measured only
+// where the link speed is known; a percentage of an unknown capacity is
+// meaningless.
+func TestEvaluate_NetworkUtilisation(t *testing.T) {
+	cfg := defaults()
+	cfg.NetUtilPct = 80
+
+	// 1 Gbps = 125 MB/s; 110 MB/s is 88% of it.
+	snap := &types.Snapshot{Networks: []types.NetworkInfo{
+		{Name: "eno1", IsUp: true, Speed: 1000, BytesRecvRate: 110_000_000},
+		{Name: "veth0", IsUp: true, Speed: 0, BytesRecvRate: 900_000_000},
+	}}
+	got := alert.New().Evaluate(cfg, snap, time.Now())
+
+	var resources []string
+	for _, a := range got {
+		if a.Rule == alert.RuleIfaceUtil {
+			resources = append(resources, a.Resource)
+		}
+	}
+	if len(resources) != 1 || resources[0] != "eno1" {
+		t.Errorf("iface_util fired for %v, want only the interface with a known speed", resources)
+	}
+}
+
+// TestEvaluate_GPU covers temperature, video memory and the power envelope.
+func TestEvaluate_GPU(t *testing.T) {
+	cfg := defaults()
+	snap := &types.Snapshot{GPUs: []types.GPUInfo{{
+		Index: 0, Name: "Test GPU",
+		TemperatureGPU: cfg.GPUTempCritC + 1,
+		MemoryTotalMiB: 8192, MemoryUsedMiB: 8000, MemoryPercent: 97,
+		PowerDrawW: 99, PowerLimitW: 100,
+	}}}
+	got := alert.New().Evaluate(cfg, snap, time.Now())
+
+	temp := find(got, alert.RuleGPUTemp)
+	if temp == nil || temp.Severity != types.SeverityCritical {
+		t.Errorf("gpu_temp = %+v, want critical above the crit threshold", temp)
+	}
+	if temp != nil && temp.Category != "gpu" {
+		t.Errorf("gpu alert category = %q, want gpu so it points at the GPU tab", temp.Category)
+	}
+	if find(got, alert.RuleGPUMemory) == nil {
+		t.Error("gpu memory at 97% should alert")
+	}
+	if find(got, alert.RuleGPUPower) == nil {
+		t.Error("a GPU at 99% of its power limit should alert")
+	}
+}
+
+// TestEvaluate_GPUBusyIsNotAnAlert guards a deliberate omission: a fully
+// utilised GPU is the card doing its job, not a fault.
+func TestEvaluate_GPUBusyIsNotAnAlert(t *testing.T) {
+	snap := &types.Snapshot{GPUs: []types.GPUInfo{{
+		Index: 0, GPUUtilPercent: 100, TemperatureGPU: 60,
+		MemoryTotalMiB: 8192, MemoryPercent: 20,
+		PowerDrawW: 50, PowerLimitW: 200,
+	}}}
+	if got := alert.New().Evaluate(defaults(), snap, time.Now()); len(got) != 0 {
+		t.Errorf("a busy but healthy GPU produced %+v, want no alerts", got)
+	}
+}
+
+// TestEvaluate_ContainerMemoryNeedsALimit checks that the percentage is only
+// used where it means something: without a limit it is a share of the whole
+// host and says nothing about the container hitting a wall.
+func TestEvaluate_ContainerMemoryNeedsALimit(t *testing.T) {
+	cfg := defaults()
+	snap := &types.Snapshot{Virt: types.VirtInfo{Containers: []types.ContainerInfo{
+		{Name: "limited", MemoryLimitBytes: 1 << 30, MemoryPercent: 95},
+		{Name: "unlimited", MemoryLimitBytes: 0, MemoryPercent: 95},
+	}}}
+	got := alert.New().Evaluate(cfg, snap, time.Now())
+
+	var resources []string
+	for _, a := range got {
+		if a.Rule == alert.RuleContainerMem {
+			resources = append(resources, a.Resource)
+		}
+	}
+	if len(resources) != 1 || resources[0] != "limited" {
+		t.Errorf("container_memory_high fired for %v, want only the limited container", resources)
+	}
+}
+
+// TestEvaluate_RuntimeUnreachable covers the case where a detected runtime
+// stops answering: without it the dashboard shows an idle host rather than an
+// unobservable one.
+func TestEvaluate_RuntimeUnreachable(t *testing.T) {
+	snap := &types.Snapshot{Virt: types.VirtInfo{
+		Runtime:    types.RuntimeInfo{Engine: "docker", SocketPath: "/var/run/docker.sock"},
+		Capability: types.VirtCapability{RuntimeAPIReachable: false},
+	}}
+	if a := find(alert.New().Evaluate(defaults(), snap, time.Now()), alert.RuleRuntimeDown); a == nil {
+		t.Error("a detected but unreachable runtime should alert")
+	}
+
+	snap.Virt.Capability.RuntimeAPIReachable = true
+	if a := find(alert.New().Evaluate(defaults(), snap, time.Now()), alert.RuleRuntimeDown); a != nil {
+		t.Errorf("a reachable runtime should not alert: %+v", a)
+	}
+}
+
+// TestEvaluate_PressureIsFiledUnderItsOwnTab checks that each pressure resource
+// points at the panel that explains it.
+func TestEvaluate_PressureIsFiledUnderItsOwnTab(t *testing.T) {
+	cfg := defaults()
+	snap := &types.Snapshot{Sensors: types.SensorData{PSI: types.PSIData{
+		CPU:    types.PSIResource{FullAvg10: 50},
+		Memory: types.PSIResource{FullAvg10: 50},
+		IO:     types.PSIResource{FullAvg10: 50},
+	}}}
+	want := map[string]string{"cpu": "cpu", "memory": "memory", "io": "storage"}
+	for _, a := range alert.New().Evaluate(cfg, snap, time.Now()) {
+		if a.Rule != alert.RulePSIFull {
+			continue
+		}
+		if got := want[a.Resource]; got != a.Category {
+			t.Errorf("psi %s filed under %q, want %q", a.Resource, a.Category, got)
+		}
+	}
+}
+
+// TestEvaluate_NonOperationalArrayIsNotHealthy covers the fail-open case the
+// review caught: an array that is not serving I/O has degraded == false and an
+// idle sync action, so the earlier rules would have called it healthy. These
+// states mean the array is unavailable, which is worse than degraded, not
+// better.
+func TestEvaluate_NonOperationalArrayIsNotHealthy(t *testing.T) {
+	for _, state := range []string{"inactive", "suspended", "clear", "broken"} {
+		snap := &types.Snapshot{Disks: []types.DiskInfo{{
+			Name: "md0",
+			RAID: &types.RAIDInfo{
+				State: state, Level: "raid1",
+				Degraded: false, SyncAction: "idle",
+				ActiveDevices: 2, TotalDevices: 2,
+			},
+		}}}
+		got := alert.New().Evaluate(defaults(), snap, time.Now())
+		a := find(got, alert.RuleRAIDNotActive)
+		if a == nil {
+			t.Errorf("array_state %q produced no raid_not_active alert: %+v", state, got)
+			continue
+		}
+		if a.Severity != types.SeverityCritical {
+			t.Errorf("array_state %q severity = %q, want critical", state, a.Severity)
+		}
+	}
+}
+
+// TestEvaluate_UnreadableArrayStateIsReported checks that sysfs telling us
+// nothing is surfaced rather than assumed well.
+func TestEvaluate_UnreadableArrayStateIsReported(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "md0",
+		RAID: &types.RAIDInfo{State: "", Level: "raid1", ActiveDevices: 2, TotalDevices: 2, SyncAction: "idle"},
+	}}}
+	if a := find(alert.New().Evaluate(defaults(), snap, time.Now()), alert.RuleRAIDNotActive); a == nil {
+		t.Error("an array whose state could not be read should be reported, not assumed healthy")
+	}
+}
+
+// TestEvaluate_OperationalArrayStatesStaySilent guards the other direction: the
+// ordinary running states must not trip the new rule.
+func TestEvaluate_OperationalArrayStatesStaySilent(t *testing.T) {
+	for _, state := range []string{"clean", "active", "active-idle", "write-pending", "read-auto", "readonly"} {
+		snap := &types.Snapshot{Disks: []types.DiskInfo{{
+			Name: "md0",
+			RAID: &types.RAIDInfo{
+				State: state, Level: "raid10", SyncAction: "idle",
+				ActiveDevices: 4, TotalDevices: 4,
+			},
+		}}}
+		if got := alert.New().Evaluate(defaults(), snap, time.Now()); len(got) != 0 {
+			t.Errorf("healthy array in state %q produced %+v, want no alerts", state, got)
+		}
+	}
+}
+
+// TestEvaluate_DiskQueueOverride covers the per-resource override the review
+// found declared but never applied: a device given a higher queue threshold
+// still fired at the global one.
+func TestEvaluate_DiskQueueOverride(t *testing.T) {
+	cfg := defaults()
+	cfg.DiskQueueLen = 8
+	cfg.Overrides = []config.Override{{Resource: "sda", DiskQueueLen: 32}}
+
+	snap := &types.Snapshot{Disks: []types.DiskInfo{
+		{Name: "sda", AvgQueueLength: 12}, // above global 8, below its own 32
+		{Name: "sdb", AvgQueueLength: 12}, // above the global threshold
+	}}
+	got := alert.New().Evaluate(cfg, snap, time.Now())
+
+	var resources []string
+	for _, a := range got {
+		if a.Rule == alert.RuleDiskQueue {
+			resources = append(resources, a.Resource)
+		}
+	}
+	if len(resources) != 1 || resources[0] != "sdb" {
+		t.Errorf("disk_queue fired for %v, want only sdb; sda's override of 32 should suppress it", resources)
+	}
+}
+
+// TestEvaluate_ZeroNVMeSpareAlerts is the regression this rule exists for. The
+// old guard required AvailableSparePercent > 0 to treat the reading as present,
+// which excluded the single most severe value: a drive with no spare blocks
+// left never fired the critical rule.
+func TestEvaluate_ZeroNVMeSpareAlerts(t *testing.T) {
+	cfg := defaults()
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "nvme0n1", SMARTEnabled: true, SMARTHealthy: true,
+		AvailableSparePercent: 0, SpareThresholdPercent: 10,
+	}}}
+
+	a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleNVMeSpareLow)
+	if a == nil {
+		t.Fatal("a drive with 0% spare must fire nvme_spare_low; that is the worst possible reading")
+	}
+	if a.Severity != types.SeverityCritical {
+		t.Errorf("severity = %q, want critical", a.Severity)
+	}
+}
+
+// TestEvaluate_HealthyNVMeSpareIsSilent guards the other direction so the fix
+// does not turn every healthy NVMe into an alert.
+func TestEvaluate_HealthyNVMeSpareIsSilent(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "nvme0n1", SMARTEnabled: true, SMARTHealthy: true,
+		AvailableSparePercent: 100, SpareThresholdPercent: 10, WearLevelPercent: 4,
+	}}}
+	if got := alert.New().Evaluate(defaults(), snap, time.Now()); len(got) != 0 {
+		t.Errorf("a healthy NVMe produced %+v, want no alerts", got)
+	}
+}
+
+// TestEvaluate_SATADriveHasNoEnduranceAlerts confirms the endurance rules are
+// scoped to NVMe. A SATA disk reports zero in these fields because they do not
+// apply, not because it has run out of spare blocks.
+func TestEvaluate_SATADriveHasNoEnduranceAlerts(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "sda", SMARTEnabled: true, SMARTHealthy: true,
+		AvailableSparePercent: 0, WearLevelPercent: 0,
+	}}}
+	got := alert.New().Evaluate(defaults(), snap, time.Now())
+	if a := find(got, alert.RuleNVMeSpareLow); a != nil {
+		t.Errorf("a SATA disk must not fire an NVMe endurance rule: %+v", a)
+	}
+}
+
+// TestEvaluate_ContainersWithTheSameNameStaySeparate is measured behaviour: a
+// real host was running two different containers both called "sleep". Keying
+// the alert on the name collided their ids, so the two conditions shared one
+// first-seen timestamp and were indistinguishable in the UI.
+func TestEvaluate_ContainersWithTheSameNameStaySeparate(t *testing.T) {
+	cfg := defaults()
+	cfg.ContainerCPUPct = 10
+	snap := &types.Snapshot{
+		CPUSummary: types.CPUSummary{TotalThreads: 4},
+		Virt: types.VirtInfo{Containers: []types.ContainerInfo{
+			{Name: "sleep", ShortID: "2e69cd5f4f72", CPUPercent: 200},
+			{Name: "sleep", ShortID: "99045576c4ca", CPUPercent: 300},
+		}},
+	}
+	got := alert.New().Evaluate(cfg, snap, time.Now())
+
+	ids := map[string]bool{}
+	for _, a := range got {
+		if a.Rule == alert.RuleContainerCPU {
+			ids[a.ID] = true
+		}
+	}
+	if len(ids) != 2 {
+		t.Errorf("two distinct containers produced %d unique alert ids (%v); each needs its own identity", len(ids), ids)
+	}
+}
+
+// TestEvaluate_ContainerCPUIsRelativeToTheHost guards the semantics fix.
+// CPUPercent sums across cores, so a container reading 504% on a 24-thread host
+// is using about a fifth of the machine, not five times it.
+func TestEvaluate_ContainerCPUIsRelativeToTheHost(t *testing.T) {
+	cfg := defaults()
+	cfg.ContainerCPUPct = 90
+
+	snap := &types.Snapshot{
+		CPUSummary: types.CPUSummary{TotalThreads: 24},
+		Virt: types.VirtInfo{Containers: []types.ContainerInfo{
+			{Name: "busy", ShortID: "aaaaaaaaaaaa", CPUPercent: 504},
+		}},
+	}
+	if a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleContainerCPU); a != nil {
+		t.Errorf("504%% across 24 threads is ~21%% of the host and must not alert at a 90%% threshold: %+v", a)
+	}
+
+	// Now genuinely saturating the machine.
+	snap.Virt.Containers[0].CPUPercent = 2300
+	a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleContainerCPU)
+	if a == nil {
+		t.Fatal("a container using nearly the whole host should alert")
+	}
+	if a.Value < 90 {
+		t.Errorf("reported value = %.0f, want the host share (~96)", a.Value)
+	}
+}
+
+// TestEvaluate_ReusedInterfaceNameStartsAFreshBaseline covers the lifecycle of
+// veth and tap devices, which a host running containers or VMs creates and
+// destroys constantly and which reuse names freely.
+//
+// Retaining a vanished interface's counters makes its successor look like the
+// same continuous series, so that interface's entire lifetime of errors gets
+// divided by one snapshot interval and reported as a burst that never happened.
+func TestEvaluate_ReusedInterfaceNameStartsAFreshBaseline(t *testing.T) {
+	cfg := defaults()
+	cfg.IfaceErrRate = 1
+	e := alert.New()
+	t0 := time.Now()
+
+	withVeth := func(errs uint64) *types.Snapshot {
+		return &types.Snapshot{Networks: []types.NetworkInfo{
+			{Name: "eno1", IsUp: true, Addresses: []string{"10.0.0.5/24"}},
+			{Name: "veth0", IsUp: true, ErrorsIn: errs},
+		}}
+	}
+	withoutVeth := &types.Snapshot{Networks: []types.NetworkInfo{
+		{Name: "eno1", IsUp: true, Addresses: []string{"10.0.0.5/24"}},
+	}}
+
+	// The interface exists and accumulates a long, quiet history.
+	e.Evaluate(cfg, withVeth(0), t0)
+	e.Evaluate(cfg, withVeth(5), t0.Add(10*time.Second))
+
+	// It goes away.
+	e.Evaluate(cfg, withoutVeth, t0.Add(20*time.Second))
+
+	// A different interface reuses the name, carrying its own accumulated
+	// counters. This must establish a baseline, not report the difference.
+	got := e.Evaluate(cfg, withVeth(100_000), t0.Add(30*time.Second))
+	if a := find(got, alert.RuleIfaceErrors); a != nil {
+		t.Errorf("a reused interface name reported %+v; its first sighting must only set a baseline", a)
+	}
+
+	// And from that baseline onward the rate is measured normally.
+	got = e.Evaluate(cfg, withVeth(100_100), t0.Add(40*time.Second))
+	if a := find(got, alert.RuleIfaceErrors); a == nil {
+		t.Error("100 errors in 10s should alert once a baseline exists")
+	}
+}
+
+// TestEvaluate_VanishedInterfacesAreForgotten pins the bounded-state half: an
+// interface that is gone must not be carried forward indefinitely.
+func TestEvaluate_VanishedInterfacesAreForgotten(t *testing.T) {
+	cfg := defaults()
+	e := alert.New()
+	t0 := time.Now()
+
+	many := &types.Snapshot{Networks: make([]types.NetworkInfo, 0, 50)}
+	for i := range 50 {
+		many.Networks = append(many.Networks, types.NetworkInfo{
+			Name: fmt.Sprintf("veth%d", i), IsUp: true,
+		})
+	}
+	e.Evaluate(cfg, many, t0)
+
+	// All of them disappear at once, as they do when a container host drains.
+	only := &types.Snapshot{Networks: []types.NetworkInfo{{Name: "eno1", IsUp: true}}}
+	e.Evaluate(cfg, only, t0.Add(time.Second))
+
+	// Nothing observable should remain of the 50: bringing one back is a first
+	// sighting again.
+	back := &types.Snapshot{Networks: []types.NetworkInfo{
+		{Name: "eno1", IsUp: true},
+		{Name: "veth7", IsUp: true, ErrorsIn: 1_000_000},
+	}}
+	if a := find(e.Evaluate(cfg, back, t0.Add(2*time.Second)), alert.RuleIfaceErrors); a != nil {
+		t.Errorf("a returning interface should be a fresh baseline, got %+v", a)
+	}
+}

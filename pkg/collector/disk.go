@@ -266,6 +266,10 @@ func (c *DiskCollector) buildDiskInfo(
 	// SMART (best-effort).
 	c.applySMART(name, &info)
 
+	// RAID (md array) status, best-effort. Reads world-readable sysfs, so it
+	// works even when the service is unprivileged and SMART is not.
+	c.applyRAID(name, &info)
+
 	// Temperature via hwmon sysfs (best-effort).
 	if info.Temperature == 0 {
 		info.Temperature = readHwmonTemp(name)
@@ -279,6 +283,11 @@ func (c *DiskCollector) buildDiskInfo(
 // Permission errors are logged as warnings; the disk entry is still returned
 // without SMART data so the rest of the system state is visible.
 func (c *DiskCollector) applySMART(devName string, info *types.DiskInfo) {
+	// md arrays are not SMART targets; skip the ioctls (which would fail on
+	// both the HDIO and SG_IO paths every cycle) and let applyRAID handle them.
+	if isMDName(devName) {
+		return
+	}
 	if strings.HasPrefix(devName, "nvme") {
 		c.applyNVMeSMART(devName, info)
 	} else {
@@ -377,32 +386,31 @@ func buildPartitionIndex(partitions []psdisk.PartitionStat) map[string][]psdisk.
 	return idx
 }
 
-// diskNameFromPartition derives the disk name from a partition device name.
-// Examples: nvme0n1p1 → nvme0n1, sda1 → sda, vda2 → vda.
-// NVMe partitions use the pattern nvme<ctrl>n<ns>p<part>, so we strip the
-// trailing "p<digits>" suffix.  All other device names (SCSI, VirtIO, etc.)
-// have trailing numeric characters that denote the partition number.
+// pSuffixFamilies are device families whose own names end in digits, so a
+// partition is marked with a "p<N>" suffix instead: nvme0n1p1, mmcblk0p2,
+// md0p1, dm-0, loop0p1. Stripping trailing digits from these would corrupt the
+// device name itself — md0 would become "md" and match no disk, which silently
+// hid the filesystem usage of every md array and of the SD card that is root on
+// most single-board machines.
+var pSuffixFamilies = []string{"nvme", "mmcblk", "md", "dm-", "loop"}
+
+// diskNameFromPartition derives the parent disk name from a partition device
+// name. Examples: nvme0n1p1 → nvme0n1, mmcblk0p2 → mmcblk0, sda1 → sda,
+// vda2 → vda. A whole device that carries a filesystem directly (md0, sdb)
+// maps to itself.
 func diskNameFromPartition(part string) string {
-	if strings.HasPrefix(part, "nvme") {
-		// Strip trailing p<digits> partition suffix (e.g. nvme0n1p1 → nvme0n1).
-		if idx := strings.LastIndex(part, "p"); idx > 0 {
-			// Confirm everything after the 'p' is numeric.
-			allDigits := true
-			for _, ch := range part[idx+1:] {
-				if ch < '0' || ch > '9' {
-					allDigits = false
-					break
-				}
-			}
-			if allDigits && idx+1 < len(part) {
-				return part[:idx]
-			}
+	for _, prefix := range pSuffixFamilies {
+		if !strings.HasPrefix(part, prefix) {
+			continue
 		}
-		// No partition suffix; the name is itself a disk (e.g. nvme0n1).
+		if base, ok := stripPartitionSuffix(part); ok {
+			return base
+		}
+		// No "p<N>" suffix: the name is itself a whole device.
 		return part
 	}
 
-	// SCSI/VirtIO/IDE: strip trailing digit characters (sda1 → sda, vda2 → vda).
+	// SCSI/VirtIO/IDE: trailing digits are the partition number (sda1 → sda).
 	i := len(part) - 1
 	for i >= 0 && part[i] >= '0' && part[i] <= '9' {
 		i--
@@ -411,6 +419,21 @@ func diskNameFromPartition(part string) string {
 		return part[:i+1]
 	}
 	return part
+}
+
+// stripPartitionSuffix removes a trailing "p<digits>" partition marker,
+// reporting whether one was present.
+func stripPartitionSuffix(part string) (string, bool) {
+	idx := strings.LastIndex(part, "p")
+	if idx <= 0 || idx+1 >= len(part) {
+		return part, false
+	}
+	for _, ch := range part[idx+1:] {
+		if ch < '0' || ch > '9' {
+			return part, false
+		}
+	}
+	return part[:idx], true
 }
 
 // isRotational reads the rotational flag from sysfs.

@@ -117,14 +117,16 @@ function connectEventSource(
       }
     });
 
-    // The server sends "bye" when the monitor stops. There is nothing left to
-    // stream, so retrying would just hammer a server that has told us it is
-    // done.
+    // The server sends "bye" when its monitor stops — most often because the
+    // service is being restarted, not shut down for good. Close this stream and
+    // reconnect on the normal backoff so the console re-attaches on its own when
+    // the backend comes back. (disconnect() still stops retries for a real
+    // teardown, since it sets `stopped`.)
     source.addEventListener("bye", () => {
-      stopped = true;
       source?.close();
       source = null;
       onStatus(false);
+      scheduleReconnect();
     });
 
     source.onerror = () => {

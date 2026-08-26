@@ -202,3 +202,39 @@ export function percentOfCapacity(
   if (capacityCores <= 0) return 0;
   return percentOfOneCore / capacityCores;
 }
+
+/**
+ * formatAge renders an age in seconds compactly — "4s", "3m", "2h 5m".
+ * Sub-second ages round to "0s" rather than showing a fraction.
+ */
+export function formatAge(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+  const whole = Math.floor(seconds);
+  if (whole < 60) return `${whole}s`;
+  return formatDuration(whole);
+}
+
+/**
+ * formatRelativeTime renders how long ago an RFC3339 timestamp was, e.g.
+ * "3m ago". An unparseable or absent timestamp yields "—" so a malformed
+ * field never breaks the row that contains it.
+ */
+export function formatRelativeTime(rfc3339: string): string {
+  if (!rfc3339) return "—";
+  const then = Date.parse(rfc3339);
+  if (Number.isNaN(then)) return "—";
+  const seconds = (Date.now() - then) / 1000;
+  // A clock skew between peer and browser can put "since" in the future;
+  // report that as "just now" rather than a negative age.
+  if (seconds < 1) return "just now";
+  return `${formatAge(seconds)} ago`;
+}
+
+/**
+ * formatUnixTime renders a Unix timestamp in seconds as a local date-time.
+ * Returns "—" for the zero value, which is how the backend spells "unknown".
+ */
+export function formatUnixTime(unixSeconds: number): string {
+  if (!unixSeconds) return "—";
+  return new Date(unixSeconds * 1000).toLocaleString();
+}

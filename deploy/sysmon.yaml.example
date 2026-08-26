@@ -1,0 +1,85 @@
+# go-sysmon configuration. Copy to /etc/go-sysmon/sysmon.yaml.
+#
+# Precedence, lowest to highest: built-in defaults, this file, SYSMON_*
+# environment variables, command-line flags. The dashboard's Settings tab shows
+# every effective value and which of those supplied it.
+#
+# Apply changes without restarting:   systemctl reload go-sysmon
+# (Reload covers alert thresholds, fleet peers and the poll interval. The listen
+# address and TLS files bind at startup and still need a restart.)
+
+server:
+  addr: ":8081"
+  interval_ms: 2000
+  # Re-read this file automatically when it changes on disk. Otherwise reload
+  # with `systemctl reload go-sysmon` (SIGHUP). There is no HTTP reload
+  # endpoint: this service carries no authentication of its own and sits behind
+  # an authenticating proxy, so nothing over HTTP changes its configuration.
+  watch: false
+
+alerts:
+  # A threshold of 0 disables its rule. A degraded RAID array and a failing
+  # SMART attribute are always evaluated and are not listed here: there is no
+  # sensible value at which those should be ignored.
+
+  # --- storage ---
+  disk_full_pct: 90        # filesystem usage, warning
+  disk_full_crit_pct: 95   # filesystem usage, critical
+  disk_util_pct: 90        # %util (device busy), warning
+  disk_queue_len: 8        # average requests queued -- what latency follows
+  temp_warn_c: 70
+  temp_crit_c: 85
+  nvme_wear_pct: 80        # NVMe wear level used, warning
+  nvme_spare_pct: 10       # NVMe spare blocks remaining, critical below this
+
+  # --- cpu and memory ---
+  cpu_pct: 90              # mean usage across logical CPUs
+  load_per_core: 2.0
+  memory_pct: 90
+  swap_pct: 50
+  psi_full_avg10: 10       # "full" pressure (cpu/memory/io): everything stalled
+
+  # --- network ---
+  iface_err_rate: 1        # interface errors+drops per second
+  net_util_pct: 80         # share of the link speed, where the speed is known
+
+  # --- gpu ---
+  # Looser than the CPU equivalents on purpose: an accelerator under load is
+  # designed to run hot and near its power limit. High utilisation is
+  # deliberately not an alert -- that is the card doing its job.
+  gpu_temp_warn_c: 85
+  gpu_temp_crit_c: 95
+  gpu_memory_pct: 90       # exhausted video memory fails work outright
+  gpu_power_pct: 95        # share of the card's power limit
+
+  # --- containers ---
+  container_mem_pct: 90    # share of the container's own memory limit
+  container_cpu_pct: 90
+
+  # Per-resource exceptions, for a device whose normal state would otherwise
+  # alert forever. Only the keys you set are overridden.
+  overrides:
+    - resource: md0
+      disk_full_pct: 98
+      disk_full_crit_pct: 99
+      # disk_util_pct / disk_queue_len / temp_warn_c / temp_crit_c also
+      # accepted here.
+
+# Peers turn this node into a fleet aggregator: the dashboard opens on a fleet
+# view of itself plus the nodes below, and any node can be drilled into without
+# the browser leaving this origin. Leave empty and the node behaves exactly as a
+# standalone dashboard.
+fleet:
+  # How this node names itself in the fleet view. Defaults to the hostname,
+  # which is usually right -- but a machine repurposed from an earlier role can
+  # carry a hostname that no longer describes it, and relabelling a dashboard is
+  # cheaper than renaming a running host.
+  # local_name: netmon
+  poll_interval_ms: 10000
+  timeout_ms: 3000
+  peers: []
+  # peers:
+  #   - name: fs
+  #     url: http://198.51.100.10:8081
+  #   - name: omega
+  #     url: http://198.51.100.90:8081
