@@ -147,6 +147,12 @@ type Config struct {
 
 	// TLS is optional. When nil the server speaks plain HTTP.
 	TLS *TLS
+
+	// Version, GitCommit and BuildDate are the build metadata reported at
+	// GET /api/version. Empty values render as "dev"/"unknown" downstream.
+	Version   string
+	GitCommit string
+	BuildDate string
 }
 
 // Server exposes system metrics over HTTP.
@@ -156,6 +162,9 @@ type Server struct {
 	assets    fs.FS
 	server    *http.Server
 	tlsConfig *tls.Config
+	version   string
+	gitCommit string
+	buildDate string
 }
 
 // New creates a Server that delegates to mon for metric data.
@@ -189,6 +198,9 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 		addr:      cfg.Addr,
 		assets:    cfg.Assets,
 		tlsConfig: tlsConfig,
+		version:   cfg.Version,
+		gitCommit: cfg.GitCommit,
+		buildDate: cfg.BuildDate,
 	}
 
 	mux := http.NewServeMux()
@@ -196,6 +208,7 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/interval", s.handleGetInterval)
 	mux.HandleFunc("POST /api/interval", s.handleSetInterval)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 
 	if cfg.Assets != nil {
 		mux.Handle("GET /", cacheControl(http.FileServerFS(cfg.Assets)))
@@ -254,6 +267,28 @@ func (s *Server) Start() error {
 // Stop gracefully shuts down the HTTP server within the deadline given by ctx.
 func (s *Server) Stop(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
+}
+
+// handleVersion returns the build metadata embedded at compile time so the
+// UI can display which release a node is running. The values are injected
+// via -ldflags at build time and fall back to dev/unknown for local builds.
+func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	v, c, d := s.version, s.gitCommit, s.buildDate
+	if v == "" {
+		v = "dev"
+	}
+	if c == "" {
+		c = "unknown"
+	}
+	if d == "" {
+		d = "unknown"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"version":    v,
+		"git_commit": c,
+		"build_date": d,
+	})
 }
 
 // handleStatus serves a minimal status page when no frontend assets are embedded.

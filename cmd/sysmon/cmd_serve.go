@@ -91,10 +91,13 @@ func runServeCmd(_ *cobra.Command, _ []string) error {
 	}
 
 	srv, err := server.NewWithConfig(server.Config{
-		Monitor: mon,
-		Addr:    serveAddr,
-		Assets:  webAssets,
-		TLS:     serveTLSConfig(),
+		Monitor:   mon,
+		Addr:      serveAddr,
+		Assets:    webAssets,
+		TLS:       serveTLSConfig(),
+		Version:   version,
+		GitCommit: gitCommit,
+		BuildDate: buildDate,
 	})
 	if err != nil {
 		stopMonitor(mon)

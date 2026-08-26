@@ -9,10 +9,24 @@
   import VirtPanel from "./components/VirtPanel.svelte";
   import HostPanel from "./components/HostPanel.svelte";
   import { monitor } from "./stores/monitor.svelte";
+  import { onMount } from "svelte";
 
   const connected = $derived(monitor.connected);
   const snapshot = $derived(monitor.snapshot);
   const currentInterval = $derived(monitor.intervalMs);
+
+  let buildVersion = $state("");
+  onMount(async () => {
+    try {
+      const r = await fetch("/api/version");
+      if (r.ok) {
+        const v = await r.json();
+        buildVersion = v.version ?? "";
+      }
+    } catch {
+      /* footer version is best-effort */
+    }
+  });
 
   const intervalOptions = [
     { value: 250, label: "250ms" },
@@ -141,6 +155,6 @@
 
   <!-- Footer -->
   <footer class="footer footer-center p-2 bg-base-100 text-base-content/40 text-xs border-t border-base-300">
-    <p>go-sysmon — real-time system monitor</p>
+    <p>go-sysmon{buildVersion ? ` v${buildVersion}` : ""} — real-time system monitor</p>
   </footer>
 </div>
