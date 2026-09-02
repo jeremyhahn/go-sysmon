@@ -15,6 +15,7 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
+	"github.com/jeremyhahn/go-sysmon/pkg/prom"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -154,6 +155,14 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	)
 	go fleetPoller.Run(done)
 
+	// The exporter runs whether or not remote write is configured, exactly as
+	// the fleet poller runs whether or not there are peers. With no
+	// remote_write_url it collects nothing, buffers nothing and makes no
+	// request; what it buys is that turning history on is a config reload
+	// rather than a restart that would drop every connected browser.
+	exporter := prom.NewExporter(promOptions(cfgMgr), snapshotSamples(mon), slog.Default())
+	go exporter.Run(done)
+
 	if err := mon.Start(); err != nil {
 		return err
 	}
@@ -171,6 +180,8 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		TLS:       serveTLSConfig(cfg),
 		Fleet:     fleetPoller,
 		Config:    cfgMgr,
+		Exporter:  exporter,
+		History:   prom.NewQuerier(promQueryOptions(cfgMgr)),
 		Version:   version,
 		GitCommit: gitCommit,
 		BuildDate: buildDate,

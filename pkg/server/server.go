@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
+	"github.com/jeremyhahn/go-sysmon/pkg/prom"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -159,6 +160,16 @@ type Config struct {
 	// or the file watcher, never over HTTP.
 	Config *config.Manager
 
+	// Exporter is optional. When set, its health is published on the scrape
+	// endpoint, so a node that has quietly stopped pushing history says so.
+	Exporter *prom.Exporter
+
+	// History is optional. When set, the history endpoints answer date-range
+	// queries from Prometheus; when nil they report history as unavailable and
+	// the dashboard offers no range picker, which is exactly the standalone
+	// node's behaviour.
+	History *prom.Querier
+
 	// Version, GitCommit and BuildDate are the build metadata reported at
 	// GET /api/version. Empty values render as "dev"/"unknown" downstream.
 	Version   string
@@ -178,6 +189,11 @@ type Server struct {
 	// old build are distinguishable by a client.
 	fleet *fleet.Poller
 	cfg   *config.Manager
+
+	// exporter and history are optional in the same way, and for the same
+	// reason: a node with neither is a standalone node, not a broken one.
+	exporter *prom.Exporter
+	history  *prom.Querier
 
 	version   string
 	gitCommit string
@@ -217,6 +233,8 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 		tlsConfig: tlsConfig,
 		fleet:     cfg.Fleet,
 		cfg:       cfg.Config,
+		exporter:  cfg.Exporter,
+		history:   cfg.History,
 		version:   cfg.Version,
 		gitCommit: cfg.GitCommit,
 		buildDate: cfg.BuildDate,
@@ -231,6 +249,8 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	mux.HandleFunc("GET /api/fleet/{name}/snapshot", s.handleFleetSnapshot)
 	mux.HandleFunc("GET /api/fleet/{name}/config", s.handleFleetConfig)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
+	mux.HandleFunc("GET /api/history", s.handleHistory)
+	mux.HandleFunc("GET /api/history/metrics", s.handleHistoryMetrics)
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 

@@ -13,7 +13,9 @@ import (
 
 	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/metrics"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
+	"github.com/jeremyhahn/go-sysmon/pkg/prom"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -151,4 +153,66 @@ func watchReloadSignals(mgr *config.Manager, done <-chan struct{}, logger *slog.
 			}
 		}
 	}()
+}
+
+// jobLabel is the Prometheus job every pushed series carries. A scrape gets its
+// job from the scrape config; a pushed sample has to bring one, and giving them
+// all the same value is what lets one query cover the whole fleet.
+const jobLabel = "go-sysmon"
+
+// promOptions reads the exporter's settings from the config manager on every
+// cycle, so remote write can be enabled, retargeted or switched off by
+// reloading rather than restarting.
+//
+// The instance label is the node's fleet name, not its hostname: it is the name
+// the fleet view already shows and the name the history API selects by, so a
+// node relabelled in one place cannot become two identities in the other.
+func promOptions(mgr *config.Manager) func() prom.Options {
+	return func() prom.Options {
+		p := mgr.Current().Prometheus
+		labels := []prom.Label{
+			{Name: "instance", Value: localNodeName(mgr)},
+			{Name: "job", Value: jobLabel},
+		}
+		// Operator labels cannot displace the two above. Letting an
+		// external_labels entry override instance would silently merge this
+		// node's history with another machine's, which no later query could
+		// untangle.
+		for name, value := range p.ExternalLabels {
+			if name == "instance" || name == "job" || name == "__name__" {
+				continue
+			}
+			labels = append(labels, prom.Label{Name: name, Value: value})
+		}
+		return prom.Options{
+			RemoteWriteURL: p.RemoteWriteURL,
+			SampleInterval: p.SampleInterval(),
+			FlushInterval:  p.FlushInterval(),
+			BatchSize:      p.BatchSize,
+			Timeout:        p.Timeout(),
+			Labels:         labels,
+		}
+	}
+}
+
+// promQueryOptions reads the history endpoint's settings the same way.
+func promQueryOptions(mgr *config.Manager) func() prom.QueryOptions {
+	return func() prom.QueryOptions {
+		p := mgr.Current().Prometheus
+		return prom.QueryOptions{BaseURL: p.QueryURL, Timeout: p.Timeout()}
+	}
+}
+
+// snapshotSamples is the exporter's collect step: the same description of a
+// snapshot that GET /metrics renders, stamped with one instant and handed to
+// the remote-write builder.
+func snapshotSamples(mon *monitor.Monitor) prom.Collect {
+	return func(b *prom.Builder, timeMs int64) error {
+		snap, err := mon.Snapshot()
+		if err != nil {
+			return err
+		}
+		metrics.Write(metrics.SampleSink{Builder: b, TimeMs: timeMs}, snap)
+		return nil
+	}
 }

@@ -634,3 +634,66 @@ export interface VirtInfo {
   runtime: RuntimeInfo;
   capability: VirtCapability;
 }
+
+// ---------------------------------------------------------------------------
+// History (Prometheus-backed date ranges)
+// ---------------------------------------------------------------------------
+
+/** How a history series' values are formatted. */
+export type HistoryUnit =
+  | "percent"
+  | "bytes_per_second"
+  | "celsius"
+  | "watts"
+  | "count";
+
+/** HistoryMetric is one series the history API can draw. */
+export interface HistoryMetric {
+  key: string;
+  label: string;
+  unit: HistoryUnit;
+  /** The label that separates one line from another — device, interface, gpu.
+   * Empty for a metric a node yields only one of. */
+  split_by: string;
+}
+
+/**
+ * HistoryCatalog is what history is available.
+ *
+ * `enabled: false` is a node with no Prometheus configured, which is a
+ * standalone node rather than a broken one: the date picker is hidden and the
+ * dashboard streams as it always has.
+ */
+export interface HistoryCatalog {
+  enabled: boolean;
+  metrics: HistoryMetric[];
+}
+
+export interface HistoryPoint {
+  t: number;
+  v: number;
+}
+
+export interface HistorySeries {
+  name: string;
+  points: HistoryPoint[];
+}
+
+/**
+ * History is one metric over one date range.
+ *
+ * step_ms comes back because the server may have chosen it: a range wide enough
+ * needs a coarser resolution to stay drawable, and a chart that does not know
+ * the step cannot tell a gap in the data from the space between samples.
+ */
+export interface History {
+  enabled: boolean;
+  node: string;
+  metric: string;
+  label: string;
+  unit: HistoryUnit;
+  start_ms: number;
+  end_ms: number;
+  step_ms: number;
+  series: HistorySeries[];
+}

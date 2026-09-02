@@ -273,6 +273,8 @@ cmd/sysmon/          CLI, GUI entry point, embedded frontend
   frontend/          Svelte 5 + Tailwind web dashboard
 pkg/collector/       Metric collection from /proc, /sys, cgroups and ioctls
 pkg/monitor/         Snapshot aggregation and subscriber broadcast
+pkg/metrics/         What a snapshot is as Prometheus metrics, scraped or pushed
+pkg/prom/            Remote write and range queries: the optional history path
 pkg/server/          HTTP server, event streaming and TLS
 pkg/cli/             Terminal rendering
 pkg/types/           Shared data structures and typed errors

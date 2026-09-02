@@ -18,6 +18,7 @@ when you need to know why a number says what it says.
 | [Server](server/architecture.md) | HTTP, server-sent events and TLS |
 | [Container](server/container.md) | Running in Docker, and what it needs from the host |
 | [Deployment](deployment/user.md) | Installing it on a remote host as a systemd service |
+| [Alerts, fleet, Prometheus](server/alerting-fleet-config.md) | Thresholds, aggregation, and the optional history path |
 | [API](server/api.md) | Connecting your own client |
 | [CLI](cli/reference.md) | Every command and flag |
 | [GUI](gui/architecture.md) | The Wails desktop app and table conventions |

@@ -123,6 +123,83 @@ there is one poll loop behind all of them — this endpoint changes the rate for
 every browser tab and every applet at once. And 250ms exists but is rarely worth
 it: most sub-collectors cannot produce genuinely new data that fast.
 
+## GET /api/history/metrics
+
+Lists the metrics history can be drawn for.
+
+```json
+{
+  "enabled": true,
+  "metrics": [
+    {"key": "cpu", "label": "CPU", "unit": "percent", "split_by": ""},
+    {"key": "disk_used", "label": "Filesystem used", "unit": "percent", "split_by": "device"}
+  ]
+}
+```
+
+`enabled: false` means no `prometheus.query_url` is configured. It is not a 404:
+a standalone node and a build without the endpoint would then be
+indistinguishable, and the dashboard has to tell them apart to know whether to
+hide the date picker or report a failure.
+
+`key` is not the metric name. Several keys share a metric and differ only by a
+label matcher — `psi_cpu` and `psi_memory` are both `sysmon_psi_full_avg10`.
+
+## GET /api/history
+
+Answers one metric over one date range, for one node.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `metric`  | A key from `/api/history/metrics`. Required; anything else is a 400. |
+| `node`    | The node to read, matching its fleet name. Defaults to this node. Must be this node or one of its configured peers. |
+| `start`   | Unix milliseconds. Defaults to an hour before `end`. |
+| `end`     | Unix milliseconds. Defaults to now. |
+| `step`    | Milliseconds. Defaults to a resolution chosen for the window. |
+
+```json
+{
+  "enabled": true,
+  "node": "fs",
+  "metric": "disk_used",
+  "label": "Filesystem used",
+  "unit": "percent",
+  "start_ms": 1788300000000,
+  "end_ms": 1788303600000,
+  "step_ms": 6000,
+  "series": [{"name": "sda", "points": [{"t": 1788300000000, "v": 41.2}]}]
+}
+```
+
+`step_ms` is echoed because the server may have chosen it: a chart that does not
+know the step cannot tell a gap in the data from the space between samples.
+
+Series carry only the label that separates them from each other — the device,
+the interface, the GPU. The rest of a Prometheus label set is either constant
+across the response or the operator's own labelling, and forwarding it would
+publish the fleet's Prometheus configuration to any browser that can reach the
+dashboard.
+
+**The query is built from a fixed catalog, never from the request.** This service
+has no authentication of its own; forwarding an expression would make it an open
+PromQL proxy for the whole time-series database. The node name is validated
+against a hostname pattern rather than escaped, **and** checked against this
+node's name and its configured peers: a whole fleet writes into one Prometheus,
+so a merely well-formed name would let anyone reaching one dashboard read the
+history of every machine in the database.
+
+A 502 says only that Prometheus could not be read. The address of the fleet's
+time-series database, and whatever it replied, stay in the server log — the same
+reason the settings view redacts the URL.
+
+Status codes:
+
+| Code | Meaning |
+|------|---------|
+| 200  | Answered. An empty `series` is a real answer: the node has no data for that window. |
+| 400  | Unknown metric, a node this dashboard does not serve, or a window it will not serve — an end at or before the start, more than 90 days, or a step needing over 11,000 points (counted inclusively: a sample at the start, at every step, and at the end). |
+| 502  | Prometheus could not be reached, or refused the query. The dashboard reached go-sysmon; go-sysmon did not reach Prometheus. The detail is in the server log, not the response. |
+
 ## Origins
 
 The event stream is an ordinary HTTP response, so it is subject to the browser's

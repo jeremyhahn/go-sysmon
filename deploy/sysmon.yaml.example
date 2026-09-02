@@ -5,8 +5,9 @@
 # every effective value and which of those supplied it.
 #
 # Apply changes without restarting:   systemctl reload go-sysmon
-# (Reload covers alert thresholds, fleet peers and the poll interval. The listen
-# address and TLS files bind at startup and still need a restart.)
+# (Reload covers alert thresholds, fleet peers, the poll interval and the whole
+# prometheus section. The listen address and TLS files bind at startup and still
+# need a restart.)
 
 server:
   addr: ":8081"
@@ -83,3 +84,64 @@ fleet:
   #     url: http://198.51.100.10:8081
   #   - name: omega
   #     url: http://198.51.100.90:8081
+
+# ---------------------------------------------------------------------------
+# Prometheus (optional)
+# ---------------------------------------------------------------------------
+#
+# Leave this section out entirely and the node behaves exactly as it always
+# has: real time only, with no dependency on a Prometheus running anywhere.
+# That is the expected shape for most of a fleet.
+#
+# The two halves are independent:
+#
+#   remote_write_url  this node PUSHES its own metrics, so a Prometheus that
+#                     cannot reach it still records its history. Set it on
+#                     every node whose past you want to keep.
+#   query_url         this node READS ranges back, which is what puts the
+#                     History tab in its dashboard. Usually set on the one node
+#                     an operator opens -- the aggregator.
+#
+# Each node pushing its own metrics is deliberate. Having the aggregator store
+# what it already polls would make one machine a time-series database whose
+# cost grows with nodes x metrics x retention, on a host chosen for being
+# small. Pushing is constant cost per node and adds nothing to the existing
+# ones as the fleet grows.
+#
+# The series are labelled instance=<fleet.local_name> and job=go-sysmon, so a
+# node relabelled in the fleet view is relabelled in its history too.
+#
+# prometheus:
+#   remote_write_url: http://mon0:9090/api/v1/write
+#   query_url: http://mon0:9090
+#
+#   # How often a sample set is taken. Deliberately separate from
+#   # server.interval_ms: that is the dashboard's stream rate, and a browser
+#   # watching at 250ms must not write four samples a second into a database.
+#   sample_interval_ms: 15000
+#
+#   # How long a sample may wait before being pushed, and how many buffered
+#   # samples force a push early. batch_size also bounds the backlog: ten
+#   # batches worth may accumulate while the receiver is unreachable before the
+#   # oldest are dropped.
+#   flush_interval_ms: 30000
+#   batch_size: 1000
+#   timeout_ms: 10000
+#
+#   # Labels only a deployment knows. A name go-sysmon already uses -- instance,
+#   # job, or any label its metrics carry (device, interface, resource, gpu,
+#   # core, source, array, level, rule, severity, category) -- is REJECTED at
+#   # load rather than ignored: a series carrying a label twice is refused by
+#   # Prometheus, and it refuses the whole write request with it.
+#   external_labels:
+#     site: rack_3
+#
+# Prometheus needs remote write enabled to receive these:
+#
+#   prometheus --web.enable-remote-write-receiver
+#
+# A node that is pushing also exports its own delivery health on /metrics --
+# sysmon_remote_write_{buffered_samples,consecutive_failures,
+# last_success_timestamp_seconds,samples_dropped_total_current}. Alert on them:
+# history that silently stops being recorded looks exactly like history that
+# has not happened yet.

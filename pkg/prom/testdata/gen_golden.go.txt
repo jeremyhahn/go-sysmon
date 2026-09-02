@@ -1,0 +1,57 @@
+package main
+
+import (
+	"encoding/hex"
+	"fmt"
+
+	"github.com/prometheus/prometheus/prompb"
+)
+
+func main() {
+	wr := &prompb.WriteRequest{
+		Timeseries: []prompb.TimeSeries{
+			{
+				Labels: []prompb.Label{
+					{Name: "__name__", Value: "sysmon_cpu_usage_percent"},
+					{Name: "instance", Value: "mon0"},
+					{Name: "job", Value: "go-sysmon"},
+				},
+				Samples: []prompb.Sample{
+					{Value: 12.5, Timestamp: 1788300000000},
+					{Value: 0, Timestamp: 1788300001000},
+				},
+			},
+			{
+				Labels: []prompb.Label{
+					{Name: "__name__", Value: "sysmon_disk_used_percent"},
+					{Name: "device", Value: "nvme0n1"},
+					{Name: "instance", Value: "mon0"},
+					{Name: "job", Value: "go-sysmon"},
+				},
+				Samples: []prompb.Sample{
+					{Value: 91.25, Timestamp: 1788300000000},
+				},
+			},
+		},
+	}
+	b, err := wr.Marshal()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(hex.EncodeToString(b))
+}
+
+// How write_request.golden.hex was produced.
+//
+// This file is .txt so the Go tool never builds it: compiling it would put
+// github.com/prometheus/prometheus into go.mod, which is the dependency
+// pkg/prom exists to avoid. To regenerate, copy it into an empty module as
+// main.go and run:
+//
+//	go mod init golden && go mod tidy && go run .
+//
+// Recorded against github.com/prometheus/prometheus v0.314.0 on 2026-09-01.
+// The bytes are fixed by the remote-write v1 wire format rather than by that
+// version, so a later prompb is expected to produce the same output; if it
+// does not, the specification changed and pkg/prom/encode.go has to change
+// with it.

@@ -41,6 +41,12 @@ func scalarKeys() []string {
 		"fleet.local_name",
 		"fleet.poll_interval_ms",
 		"fleet.timeout_ms",
+		"prometheus.remote_write_url",
+		"prometheus.query_url",
+		"prometheus.sample_interval_ms",
+		"prometheus.flush_interval_ms",
+		"prometheus.batch_size",
+		"prometheus.timeout_ms",
 	}
 }
 
@@ -76,6 +82,13 @@ func defaultMap(c Config) map[string]any {
 		"fleet.local_name":          c.Fleet.LocalName,
 		"fleet.poll_interval_ms":    c.Fleet.PollIntervalMs,
 		"fleet.timeout_ms":          c.Fleet.TimeoutMs,
+
+		"prometheus.remote_write_url":   c.Prometheus.RemoteWriteURL,
+		"prometheus.query_url":          c.Prometheus.QueryURL,
+		"prometheus.sample_interval_ms": c.Prometheus.SampleIntervalMs,
+		"prometheus.flush_interval_ms":  c.Prometheus.FlushIntervalMs,
+		"prometheus.batch_size":         c.Prometheus.BatchSize,
+		"prometheus.timeout_ms":         c.Prometheus.TimeoutMs,
 	}
 }
 
@@ -140,6 +153,23 @@ func (c *Config) value(key string) string {
 		return strconv.Itoa(c.Fleet.PollIntervalMs)
 	case "fleet.timeout_ms":
 		return strconv.Itoa(c.Fleet.TimeoutMs)
+	// The two URLs are reported as configured-or-not rather than verbatim, the
+	// same way TLS paths are. This endpoint has no authentication of its own,
+	// and the address of the fleet's time-series database is reconnaissance
+	// that anyone able to reach the dashboard should not be handed. Whether
+	// history is switched on is the part an operator actually needs here.
+	case "prometheus.remote_write_url":
+		return redactPath(c.Prometheus.RemoteWriteURL)
+	case "prometheus.query_url":
+		return redactPath(c.Prometheus.QueryURL)
+	case "prometheus.sample_interval_ms":
+		return strconv.Itoa(c.Prometheus.SampleIntervalMs)
+	case "prometheus.flush_interval_ms":
+		return strconv.Itoa(c.Prometheus.FlushIntervalMs)
+	case "prometheus.batch_size":
+		return strconv.Itoa(c.Prometheus.BatchSize)
+	case "prometheus.timeout_ms":
+		return strconv.Itoa(c.Prometheus.TimeoutMs)
 	}
 	return ""
 }

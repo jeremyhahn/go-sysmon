@@ -118,3 +118,49 @@ type ErrApply struct {
 func (e *ErrApply) Error() string {
 	return "config: reload applied with errors: " + strings.Join(e.Reasons, "; ")
 }
+
+// ErrPrometheusURL reports a prometheus URL that cannot be used. Key names the
+// setting so the message points at the line to fix; the URL itself is never
+// quoted, since the same string may be the thing that must not be echoed.
+type ErrPrometheusURL struct {
+	Key    string
+	Reason string
+}
+
+func (e *ErrPrometheusURL) Error() string {
+	return fmt.Sprintf("config: %s is unusable: %s", e.Key, e.Reason)
+}
+
+// ErrPrometheusCredentials reports a prometheus URL carrying embedded
+// credentials.
+//
+// This mirrors ErrPeerCredentials, and for the same reason: the settings view
+// has no authentication of its own, so a secret accepted here would live in
+// memory and be one code path away from being rendered. Sending it to a
+// Prometheus that a whole fleet writes to would spread it further than a peer
+// URL ever could. Only the host is named -- never the URL.
+type ErrPrometheusCredentials struct {
+	Key  string
+	Host string
+}
+
+func (e *ErrPrometheusCredentials) Error() string {
+	return fmt.Sprintf("config: %s must not carry credentials (host %s); "+
+		"put them in a reverse proxy or an authenticating sidecar instead", e.Key, e.Host)
+}
+
+// ErrPrometheusLabel reports an entry in prometheus.external_labels that
+// Prometheus would refuse, or that collides with a label go-sysmon sets itself.
+//
+// It is an error rather than a silently dropped entry: a label an operator
+// wrote down and did not get leaves them looking at a database that does not
+// have it, with nothing anywhere saying why. The value is never quoted -- only
+// the name is a mistake worth naming, and the value may be anything.
+type ErrPrometheusLabel struct {
+	Name   string
+	Reason string
+}
+
+func (e *ErrPrometheusLabel) Error() string {
+	return fmt.Sprintf("config: prometheus.external_labels %q is unusable: %s", e.Name, e.Reason)
+}

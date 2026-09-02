@@ -1,4 +1,4 @@
-package server
+package metrics
 
 import (
 	"strings"
@@ -9,14 +9,14 @@ import (
 
 // render runs the exposition writer over a snapshot.
 func render(snap *types.Snapshot) string {
-	m := &metricWriter{}
-	writeSnapshotMetrics(m, snap)
-	return m.b.String()
+	m := &TextWriter{}
+	Write(m, snap)
+	return m.String()
 }
 
-// TestWriteSnapshotMetrics_CoreSeries checks the shape Prometheus requires:
+// TestWrite_CoreSeries checks the shape Prometheus requires:
 // a HELP and TYPE line before each metric, emitted once, and labelled samples.
-func TestWriteSnapshotMetrics_CoreSeries(t *testing.T) {
+func TestWrite_CoreSeries(t *testing.T) {
 	snap := &types.Snapshot{
 		Host:       types.HostInfo{Uptime: 120},
 		CPUs:       []types.CPUInfo{{UsagePercent: 20}, {UsagePercent: 40}},
@@ -48,9 +48,9 @@ func TestWriteSnapshotMetrics_CoreSeries(t *testing.T) {
 	}
 }
 
-// TestWriteSnapshotMetrics_RAIDAndAlerts covers the two series that make this
+// TestWrite_RAIDAndAlerts covers the two series that make this
 // endpoint worth having: array health and the same alerts the dashboard shows.
-func TestWriteSnapshotMetrics_RAIDAndAlerts(t *testing.T) {
+func TestWrite_RAIDAndAlerts(t *testing.T) {
 	snap := &types.Snapshot{
 		Disks: []types.DiskInfo{{
 			Name: "md2",
@@ -76,10 +76,10 @@ func TestWriteSnapshotMetrics_RAIDAndAlerts(t *testing.T) {
 	}
 }
 
-// TestWriteSnapshotMetrics_HealthyArrayReportsZero verifies a healthy array is
+// TestWrite_HealthyArrayReportsZero verifies a healthy array is
 // still exported, as 0. A missing series and a healthy one must not look the
 // same to an alerting rule.
-func TestWriteSnapshotMetrics_HealthyArrayReportsZero(t *testing.T) {
+func TestWrite_HealthyArrayReportsZero(t *testing.T) {
 	snap := &types.Snapshot{Disks: []types.DiskInfo{{
 		Name: "md0",
 		RAID: &types.RAIDInfo{Level: "raid10", ActiveDevices: 4, TotalDevices: 4},
@@ -89,9 +89,9 @@ func TestWriteSnapshotMetrics_HealthyArrayReportsZero(t *testing.T) {
 	}
 }
 
-// TestWriteSnapshotMetrics_LoopbackExcluded keeps the series count down and
+// TestWrite_LoopbackExcluded keeps the series count down and
 // avoids a meaningless interface in every dashboard query.
-func TestWriteSnapshotMetrics_LoopbackExcluded(t *testing.T) {
+func TestWrite_LoopbackExcluded(t *testing.T) {
 	snap := &types.Snapshot{Networks: []types.NetworkInfo{
 		{Name: "lo", IsLoopback: true, IsUp: true},
 		{Name: "eno1", IsUp: true},
@@ -121,11 +121,11 @@ func TestEscapeLabel(t *testing.T) {
 	}
 }
 
-// TestWriteSnapshotMetrics_ZeroSpareIsExported pairs with the alerting fix: a
+// TestWrite_ZeroSpareIsExported pairs with the alerting fix: a
 // suppressed zero would remove sysmon_disk_spare_percent from the scrape at the
 // exact moment spare capacity is exhausted, so a Prometheus rule watching it
 // would see an absent series instead of a critical value.
-func TestWriteSnapshotMetrics_ZeroSpareIsExported(t *testing.T) {
+func TestWrite_ZeroSpareIsExported(t *testing.T) {
 	snap := &types.Snapshot{Disks: []types.DiskInfo{{
 		Name: "nvme0n1", SMARTEnabled: true, SMARTHealthy: true,
 		AvailableSparePercent: 0, WearLevelPercent: 0,
@@ -141,9 +141,9 @@ func TestWriteSnapshotMetrics_ZeroSpareIsExported(t *testing.T) {
 	}
 }
 
-// TestWriteSnapshotMetrics_EnduranceIsNVMeOnly keeps the endurance series off
+// TestWrite_EnduranceIsNVMeOnly keeps the endurance series off
 // devices where those fields have no meaning.
-func TestWriteSnapshotMetrics_EnduranceIsNVMeOnly(t *testing.T) {
+func TestWrite_EnduranceIsNVMeOnly(t *testing.T) {
 	snap := &types.Snapshot{Disks: []types.DiskInfo{{
 		Name: "sda", SMARTEnabled: true, SMARTHealthy: true,
 	}}}

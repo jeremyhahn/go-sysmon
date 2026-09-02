@@ -122,6 +122,57 @@ type ConfigView struct {
 	Entries    []ConfigEntry `json:"entries"`
 }
 
+// HistoryMetric is one series the history API can draw, as advertised by
+// GET /api/history/metrics.
+type HistoryMetric struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Unit    string `json:"unit"`
+	SplitBy string `json:"split_by"`
+}
+
+// HistoryCatalog lists what history is available. Enabled is false on a node
+// with no Prometheus configured, which is a standalone node rather than a
+// broken one -- the dashboard hides the date picker and streams as it always
+// has.
+type HistoryCatalog struct {
+	Enabled bool            `json:"enabled"`
+	Metrics []HistoryMetric `json:"metrics"`
+}
+
+// HistoryPoint is one instant of a history series. The names are short because
+// a full range carries hundreds of them per series.
+type HistoryPoint struct {
+	TimeMs int64   `json:"t"`
+	Value  float64 `json:"v"`
+}
+
+// HistorySeries is one line on a history chart. Name is the value of the
+// metric's splitting label -- the device, the interface, the GPU index -- and
+// is empty for a metric a node yields only one of.
+type HistorySeries struct {
+	Name   string         `json:"name"`
+	Points []HistoryPoint `json:"points"`
+}
+
+// History is a date range answered from Prometheus, served at GET /api/history.
+//
+// StepMs is reported back because the server may have chosen it: a caller that
+// asks for a month gets whatever resolution keeps the response drawable, and a
+// chart that does not know the step cannot tell a gap in the data from a gap
+// between samples.
+type History struct {
+	Enabled bool            `json:"enabled"`
+	Node    string          `json:"node"`
+	Metric  string          `json:"metric"`
+	Label   string          `json:"label"`
+	Unit    string          `json:"unit"`
+	StartMs int64           `json:"start_ms"`
+	EndMs   int64           `json:"end_ms"`
+	StepMs  int64           `json:"step_ms"`
+	Series  []HistorySeries `json:"series"`
+}
+
 // VirtInfo describes the containerised and virtualised workloads running on
 // the host. Both are observed from the host side only: container metrics come
 // from cgroup accounting and VM metrics from the hypervisor process, so no

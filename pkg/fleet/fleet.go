@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/outbound"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -72,67 +73,9 @@ func New(cfgFn ConfigFunc, localFn LocalFunc, localNameFn func() string, logger 
 		localFn:     localFn,
 		localNameFn: localNameFn,
 		logger:      logger,
-		client:      &http.Client{CheckRedirect: checkPeerRedirect},
+		client:      outbound.NewClient(0),
 		peers:       make(map[string]*peerState),
 	}
-}
-
-// maxPeerRedirects caps a redirect chain. Supplying CheckRedirect replaces the
-// client's own ten-hop limit, so the cap has to be reimposed here or a peer
-// could loop the poller indefinitely within its timeout.
-const maxPeerRedirects = 5
-
-// checkPeerRedirect keeps a poll on the peer the operator actually configured.
-//
-// The poller treats a decoded response as authoritative health data, so where
-// that response came from is a trust decision, not a detail. Without a policy
-// the default client follows redirects anywhere: an https:// peer can be walked
-// down to plaintext http, or pointed at another host entirely, and the snapshot
-// that comes back is still reported as that peer's. The dashboard would show a
-// healthy node while the real one is unreachable or failing -- monitoring
-// failing open on input it never verified.
-//
-// A scheme downgrade and a host change are therefore refused outright. Neither
-// is something a monitoring endpoint legitimately needs, and both are exactly
-// what an on-path attacker would use.
-func checkPeerRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) == 0 {
-		return nil
-	}
-	if len(via) >= maxPeerRedirects {
-		return &ErrPeerRedirect{
-			From:   via[0].URL.String(),
-			To:     req.URL.String(),
-			Reason: fmt.Sprintf("more than %d redirects", maxPeerRedirects),
-		}
-	}
-
-	orig := via[0].URL
-	switch {
-	case req.URL.Scheme != "http" && req.URL.Scheme != "https":
-		return &ErrPeerRedirect{From: orig.String(), To: req.URL.String(),
-			Reason: fmt.Sprintf("scheme %q is not http or https", req.URL.Scheme)}
-	case orig.Scheme == "https" && req.URL.Scheme != "https":
-		return &ErrPeerRedirect{From: orig.String(), To: req.URL.String(),
-			Reason: "refuses to downgrade https to " + req.URL.Scheme}
-	case req.URL.Host != orig.Host:
-		return &ErrPeerRedirect{From: orig.String(), To: req.URL.String(),
-			Reason: "redirect leaves the configured host"}
-	}
-	return nil
-}
-
-// ErrPeerRedirect reports a redirect that would have moved a poll off the
-// configured peer. It names the hop but is deliberately built from URLs the
-// operator already configured or the peer itself returned.
-type ErrPeerRedirect struct {
-	From   string
-	To     string
-	Reason string
-}
-
-func (e *ErrPeerRedirect) Error() string {
-	return fmt.Sprintf("fleet: refusing redirect from %s to %s: %s", e.From, e.To, e.Reason)
 }
 
 // Enabled reports whether any peers are configured.

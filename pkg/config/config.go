@@ -21,6 +21,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -143,11 +145,73 @@ type Server struct {
 	Watch bool `mapstructure:"watch"`
 }
 
+// Prometheus holds the optional time-series integration.
+//
+// Absent, it is off, and the node behaves exactly as it did before this section
+// existed: real time only, with no dependency on a Prometheus running anywhere.
+// That is the point of it being a section rather than a flag -- a fleet where
+// one node records history and the rest are standalone is the expected shape,
+// not a degraded one.
+//
+// The two URLs are independent. A node can push history without being able to
+// read it back (it need not know where the dashboard's Prometheus is), and a
+// node can read history it does not itself produce (an aggregator drawing a
+// peer's past).
+type Prometheus struct {
+	// RemoteWriteURL is the receiver this node pushes its own metrics to, e.g.
+	// http://mon0:9090/api/v1/write. Empty disables the exporter.
+	RemoteWriteURL string `mapstructure:"remote_write_url"`
+	// QueryURL is the base address of a Prometheus to read ranges back from,
+	// e.g. http://mon0:9090 -- the server, not one of its endpoints. Empty
+	// disables the history API, and the dashboard offers no date range.
+	QueryURL string `mapstructure:"query_url"`
+	// SampleIntervalMs is how often a set of samples is taken for pushing. It
+	// is deliberately separate from server.interval_ms: the dashboard's stream
+	// rate is a display choice, and a browser watching at 250ms must not write
+	// four samples a second into a time-series database.
+	SampleIntervalMs int `mapstructure:"sample_interval_ms"`
+	// FlushIntervalMs bounds how long a sample waits before being sent.
+	FlushIntervalMs int `mapstructure:"flush_interval_ms"`
+	// BatchSize is how many buffered samples force a flush early. It also sets
+	// the backlog bound: ten batches worth of samples may accumulate while the
+	// receiver is unreachable before the oldest are dropped.
+	BatchSize int `mapstructure:"batch_size"`
+	// TimeoutMs bounds one remote-write or query request.
+	TimeoutMs int `mapstructure:"timeout_ms"`
+	// ExternalLabels are attached to every series this node writes, alongside
+	// the instance label taken from the fleet name. They are for the labels a
+	// Prometheus deployment needs and a host cannot know: which site, which
+	// environment.
+	ExternalLabels map[string]string `mapstructure:"external_labels"`
+}
+
+// WriteEnabled reports whether this node pushes its metrics.
+func (p Prometheus) WriteEnabled() bool { return p.RemoteWriteURL != "" }
+
+// QueryEnabled reports whether history can be read back.
+func (p Prometheus) QueryEnabled() bool { return p.QueryURL != "" }
+
+// SampleInterval is the period between sample sets.
+func (p Prometheus) SampleInterval() time.Duration {
+	return time.Duration(p.SampleIntervalMs) * time.Millisecond
+}
+
+// FlushInterval is the period between pushes.
+func (p Prometheus) FlushInterval() time.Duration {
+	return time.Duration(p.FlushIntervalMs) * time.Millisecond
+}
+
+// Timeout bounds a single request.
+func (p Prometheus) Timeout() time.Duration {
+	return time.Duration(p.TimeoutMs) * time.Millisecond
+}
+
 // Config is the complete effective configuration.
 type Config struct {
-	Server Server `mapstructure:"server"`
-	Alerts Alerts `mapstructure:"alerts"`
-	Fleet  Fleet  `mapstructure:"fleet"`
+	Server     Server     `mapstructure:"server"`
+	Alerts     Alerts     `mapstructure:"alerts"`
+	Fleet      Fleet      `mapstructure:"fleet"`
+	Prometheus Prometheus `mapstructure:"prometheus"`
 }
 
 // Defaults returns the built-in configuration. These are chosen to be useful
@@ -184,6 +248,16 @@ func Defaults() Config {
 		Fleet: Fleet{
 			PollIntervalMs: 10000,
 			TimeoutMs:      3000,
+		},
+		// No URLs, so the integration is off. The rest are the cadences it uses
+		// once an operator turns it on: 15s of sampling is what a Prometheus
+		// scrape would have done anyway, and pushing every 30s keeps a request
+		// per node per half minute rather than per second.
+		Prometheus: Prometheus{
+			SampleIntervalMs: 15000,
+			FlushIntervalMs:  30000,
+			BatchSize:        1000,
+			TimeoutMs:        10000,
 		},
 	}
 }
@@ -317,6 +391,38 @@ func (c *Config) normalize(sources map[string]string) error {
 		c.Fleet.TimeoutMs = d.Fleet.TimeoutMs
 		repairedToDefault(sources, "fleet.timeout_ms")
 	}
+	if c.Prometheus.SampleIntervalMs <= 0 {
+		c.Prometheus.SampleIntervalMs = d.Prometheus.SampleIntervalMs
+		repairedToDefault(sources, "prometheus.sample_interval_ms")
+	}
+	if c.Prometheus.FlushIntervalMs <= 0 {
+		c.Prometheus.FlushIntervalMs = d.Prometheus.FlushIntervalMs
+		repairedToDefault(sources, "prometheus.flush_interval_ms")
+	}
+	if c.Prometheus.BatchSize <= 0 {
+		c.Prometheus.BatchSize = d.Prometheus.BatchSize
+		repairedToDefault(sources, "prometheus.batch_size")
+	}
+	if c.Prometheus.TimeoutMs <= 0 {
+		c.Prometheus.TimeoutMs = d.Prometheus.TimeoutMs
+		repairedToDefault(sources, "prometheus.timeout_ms")
+	}
+
+	// Both URLs are held to the same standard as a peer URL, and for the same
+	// reasons. A credential embedded in one would be stored in memory and
+	// rendered into the settings view, which has no authentication of its own;
+	// a string that parses but cannot be fetched -- "mon0:9090", whose scheme
+	// is "mon0" -- would leave the service starting cleanly while every push
+	// silently failed.
+	if err := checkPromURL("prometheus.remote_write_url", c.Prometheus.RemoteWriteURL); err != nil {
+		return err
+	}
+	if err := checkPromURL("prometheus.query_url", c.Prometheus.QueryURL); err != nil {
+		return err
+	}
+	if err := checkExternalLabels(c.Prometheus.ExternalLabels); err != nil {
+		return err
+	}
 
 	// A peer's name is its identity everywhere downstream: the poller stores
 	// results under it, the fleet view renders one card per name and the
@@ -420,6 +526,101 @@ func (c *Config) LocalName() string {
 		return h
 	}
 	return "local"
+}
+
+// labelNamePattern is what Prometheus accepts as a label name.
+var labelNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// reservedLabels are the label names go-sysmon attaches itself: the two that
+// identify the node, and every label its own metrics carry.
+//
+// An external label reusing one of these would put the same name on a series
+// twice. Prometheus rejects a series with a repeated label and rejects the
+// whole write request with it, so one entry here would silently stop the node's
+// entire history -- and it would do so only for the metrics that happen to use
+// that label, which is the hardest version of the bug to find.
+//
+// It is spelled out here rather than imported from pkg/metrics, because
+// configuration loading must not depend on the metric layer. A test in
+// pkg/metrics checks the two against each other, which is where the drift would
+// actually happen.
+var reservedLabels = map[string]bool{
+	"instance":  true,
+	"job":       true,
+	"array":     true,
+	"category":  true,
+	"core":      true,
+	"device":    true,
+	"gpu":       true,
+	"interface": true,
+	"level":     true,
+	"resource":  true,
+	"rule":      true,
+	"severity":  true,
+	"source":    true,
+}
+
+// ReservedLabelNames returns the label names an external label may not use.
+func ReservedLabelNames() []string {
+	out := make([]string, 0, len(reservedLabels))
+	for name := range reservedLabels {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkExternalLabels rejects operator labels that Prometheus would refuse, or
+// that would collide with go-sysmon's own.
+//
+// Rejected rather than dropped. Silently ignoring a label an operator wrote
+// down leaves them looking at a Prometheus that does not have it, with nothing
+// anywhere saying why.
+func checkExternalLabels(labels map[string]string) error {
+	for _, name := range sortedLabelNames(labels) {
+		switch {
+		case strings.HasPrefix(name, "__"):
+			return &ErrPrometheusLabel{Name: name, Reason: "names beginning __ are reserved by Prometheus"}
+		case !labelNamePattern.MatchString(name):
+			return &ErrPrometheusLabel{Name: name,
+				Reason: "must match [a-zA-Z_][a-zA-Z0-9_]*"}
+		case reservedLabels[name]:
+			return &ErrPrometheusLabel{Name: name,
+				Reason: "go-sysmon sets this label itself; a series carrying it twice is rejected whole"}
+		}
+	}
+	return nil
+}
+
+// sortedLabelNames gives the checks a stable order, so a file with two bad
+// labels always names the same one first.
+func sortedLabelNames(labels map[string]string) []string {
+	out := make([]string, 0, len(labels))
+	for name := range labels {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// checkPromURL validates one Prometheus URL, treating empty as "not configured"
+// rather than as a mistake: absent is how the integration is turned off.
+func checkPromURL(key, raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return &ErrPrometheusURL{Key: key, Reason: urlParseReason(err)}
+	}
+	// Credentials first, before anything copies or quotes the URL.
+	if u.User != nil {
+		return &ErrPrometheusCredentials{Key: key, Host: u.Host}
+	}
+	if reason := peerURLReason(u); reason != "" {
+		return &ErrPrometheusURL{Key: key, Reason: reason}
+	}
+	return nil
 }
 
 // peerURLReason reports why a syntactically valid URL still cannot be polled,

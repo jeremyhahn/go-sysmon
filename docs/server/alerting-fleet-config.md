@@ -243,7 +243,8 @@ plaintext or pointed at another host entirely -- and the dashboard would still
 label the answer with the configured peer's name, showing a healthy node while
 the real one is failing. A redirect that downgrades `https` to `http`, changes
 host or port, or leaves http/https altogether is refused and the poll fails;
-same-host redirects are followed, up to five hops.
+same-host redirects that keep the request's method are followed, up to five
+hops.
 
 This narrows the window rather than closing it: a peer polled over plaintext
 `http` is still unauthenticated, which is tracked in the repository issues
@@ -314,3 +315,150 @@ healthy one must not look the same to an alerting rule.
 The exposition is written directly rather than through the client library: every
 value is a plain gauge already held in finished form, so the library would add a
 large dependency tree for no gain on hosts this is deployed to.
+
+### Remote write and history
+
+`GET /metrics` answers "what is true now". To keep a past, add a `prometheus`
+section. **Absent, it is off**, and the node behaves exactly as it did before
+the section existed — no dependency on a Prometheus running anywhere. A fleet
+where one node records history and the rest are standalone is the expected
+shape, not a degraded one.
+
+```yaml
+prometheus:
+  remote_write_url: http://mon0:9090/api/v1/write   # this node pushes
+  query_url: http://mon0:9090                       # this node reads back
+  sample_interval_ms: 15000
+  flush_interval_ms: 30000
+  batch_size: 1000
+  timeout_ms: 10000
+  external_labels:
+    site: rack-3
+```
+
+The two halves are independent. `remote_write_url` makes the node push its own
+metrics, so a Prometheus that cannot route to it still records its history;
+`query_url` makes the node able to read ranges back, which is what puts the
+**History** tab in its dashboard. Usually every node pushes and only the
+aggregator reads.
+
+**Each node pushes its own metrics.** Having the aggregator store what it
+already polls would make one machine a time-series database whose cost grows
+with nodes × metrics × retention, on a host chosen for being small — and it
+would put the fleet's history behind the one box most likely to be busy. Pushing
+is constant cost per node and adds nothing to the existing ones as the fleet
+grows. Fleet polling stays what it is: an answer to "is this healthy right now",
+never to "what happened on Tuesday".
+
+Series are labelled `instance=<fleet.local_name>` and `job=go-sysmon`, so a node
+relabelled in the fleet view is relabelled in its history too. `external_labels`
+adds what only a deployment knows. A name that collides with one go-sysmon sets
+itself — `instance`, `job`, or any label its metrics carry (`device`,
+`interface`, `resource`, `gpu`, …) — is **rejected at load** rather than
+ignored: a series carrying a label twice is refused by Prometheus, and it
+refuses the whole write request with it, so one such entry would silently stop
+the node's entire history.
+
+Retargeting or renaming discards the buffer rather than carrying it over. A
+backlog accumulated while endpoint A was unreachable belongs to A, and
+delivering it to B would write one deployment's data into another's database
+across whatever boundary the operator just moved the node over. Discarded
+samples are counted in `sysmon_remote_write_samples_dropped_total_current`, so a
+gap always has a number beside it.
+
+Everything in the section is reloadable — `systemctl reload go-sysmon` turns
+history on, retargets it, or switches it off without dropping a connected
+browser. The sample interval is deliberately separate from `server.interval_ms`:
+that one is the dashboard's stream rate, and a browser watching at 250ms must
+not write four samples a second into a database.
+
+The receiver needs `--web.enable-remote-write-receiver`.
+
+Both clients refuse a redirect that leaves the configured host or steps https
+down to plaintext, the same policy the fleet poller applies to peers
+(`pkg/outbound`). A receiver that answers 302 could otherwise move a node's
+metrics somewhere the operator never configured, with the write still reported
+as succeeding. An upgrade to https on the same host is allowed, since that is an
+ingress enforcing TLS.
+
+They also refuse a redirect that **changes the request's method**, which is the
+same-host case the two rules above do not cover. Go implements RFC 9110 §15.4:
+a 301, 302 or 303 answering a `POST` is followed with a `GET` and no body. So a
+proxy answering `/api/v1/write` with `302 -> /` turns a batch of samples into a
+fetch of a landing page; the page returns 200, the write is reported as
+successful and the batch is deleted. Same host, same scheme, no error recorded
+anywhere — the only symptom is a gap in the graph. 307 and 308 preserve the
+method and body and are still followed, so an ingress that moves the write path
+keeps working.
+
+A rejected write is retried or dropped according to its status, and the rule is
+the protocol's rather than a judgement call. Remote-Write 1.0 says senders
+"MUST retry write requests on HTTP 5xx responses" and "MUST NOT retry write
+requests on HTTP 2xx and 4xx responses other than 429", and says receivers send
+4xx only for a request that "will never be able to succeed and should not be
+retried". So **429 and every 5xx keep the batch buffered; every other status
+drops it** and counts it in `sysmon_remote_write_samples_dropped_total_current`.
+
+408 is the one worth naming, because it reads like a timeout and is not treated
+as one. A conforming receiver that wants a write retried sends 503; if it sends
+408 it has said the request will never succeed, and holding the batch would
+block newer ones behind it for nothing.
+
+A node that is pushing also exports its own delivery health, and **that is worth
+alerting on**: history that silently stops being recorded looks exactly like
+history that has not happened yet.
+
+```
+sysmon_remote_write_enabled 1
+sysmon_remote_write_buffered_samples 0
+sysmon_remote_write_consecutive_failures 0
+sysmon_remote_write_last_success_timestamp_seconds 1788300000
+sysmon_remote_write_samples_written_total_current 41820
+sysmon_remote_write_samples_dropped_total_current 0
+```
+
+Nothing is exported on a node that is not pushing, so a standalone node's
+exposition is byte-for-byte what it always was.
+
+The remote-write protobuf is written by hand, for the same reason the exposition
+format is. Importing `prometheus/prompb` brings the whole Prometheus server
+module — 257 modules in the build graph against this repository's 137 — for four
+messages and six fields whose shape is fixed by the remote-write specification.
+The encoder is pinned against golden bytes produced by the real `prompb`
+encoder, so the oracle is the library rather than a second copy of the same
+logic (`pkg/prom/testdata/`).
+
+### History: reading a range back
+
+With `query_url` set, the dashboard gains a **History** tab: a range picker (15
+minutes to 30 days, or an explicit start and end) over a set of metrics chosen
+from a catalog. It is the only view whose data does not come from the event
+stream. With no range selected nothing changes — every other panel is the live
+stream it always was.
+
+The endpoint maps a **fixed catalog of keys** to PromQL rather than forwarding an
+expression. This service carries no authentication of its own, so a pass-through
+would make it an open query proxy for everything in the time-series database,
+including whatever else writes to it. The node name is the one caller-supplied
+part of the expression and is validated against a hostname pattern rather than
+escaped — escaping alone would leave the safety of every future call site
+depending on someone remembering to do it. It is also checked against this
+node's name and its configured peers, since a whole fleet writes into one
+Prometheus and a merely well-formed name would otherwise read any of them.
+
+```
+GET /api/history/metrics
+GET /api/history?metric=disk_used&node=fs&start=<ms>&end=<ms>[&step=<ms>]
+```
+
+Both answer `{"enabled": false}` on a node with no `query_url`, rather than 404:
+a standalone node is not a broken one, and the dashboard needs to tell those
+apart to know whether to hide the picker or show a failure. A range that matched
+nothing is `200` with no series — a node that was switched off for the window
+genuinely has no data, and that is an answer rather than an error.
+
+The server chooses the step when the caller does not, because it owns the
+ceiling that makes one necessary: Prometheus returns at most 11000 points, and a
+client picking its own would start failing on exactly the widest ranges. It is
+reported back in the response, since a chart that does not know the step cannot
+tell a gap in the data from the space between samples.
