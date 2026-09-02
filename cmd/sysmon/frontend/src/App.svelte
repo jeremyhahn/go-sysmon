@@ -1,10 +1,11 @@
 <script lang="ts">
   import Overview from "./views/Overview.svelte";
   import Fleet from "./views/Fleet.svelte";
-  import History from "./views/History.svelte";
   import AlertBell from "./components/AlertBell.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
   import ThemeToggle from "./components/ThemeToggle.svelte";
+  import RangePicker from "./components/RangePicker.svelte";
+  import HistoryBanner from "./components/HistoryBanner.svelte";
   import CpuPanel from "./components/CpuPanel.svelte";
   import GpuPanel from "./components/GpuPanel.svelte";
   import MemoryPanel from "./components/MemoryPanel.svelte";
@@ -15,8 +16,7 @@
   import HostPanel from "./components/HostPanel.svelte";
   import { severityDotClass, worstSeverity } from "$lib/alerts";
   import { monitor } from "./stores/monitor.svelte";
-  import { fetchCatalog } from "$lib/history";
-  import type { HistoryMetric } from "$lib/types";
+  import { history } from "./stores/history.svelte";
   import { onMount } from "svelte";
 
   const connected = $derived(monitor.connected);
@@ -39,13 +39,6 @@
 
   let buildVersion = $state("");
 
-  // The history catalog decides whether the History tab exists at all. A node
-  // with no prometheus.query_url answers enabled:false, and the tab is left out
-  // rather than offering a picker with nothing behind it. Asked once, on load:
-  // it changes only when the config file does.
-  let historyMetrics = $state<HistoryMetric[]>([]);
-  let historyEnabled = $state(false);
-
   onMount(async () => {
     try {
       const r = await fetch("/api/version");
@@ -57,15 +50,16 @@
       /* footer version is best-effort */
     }
 
-    try {
-      const catalog = await fetchCatalog();
-      historyEnabled = catalog.enabled && catalog.metrics.length > 0;
-      historyMetrics = catalog.metrics ?? [];
-    } catch {
-      // An older node, or one that cannot answer: no history, no tab. The live
-      // dashboard is unaffected, which is the point of it being a separate
-      // request from the event stream.
-    }
+    // Whether this node can answer a date range at all. Asked once, on load:
+    // it changes only when the config file does. A node that cannot leaves the
+    // picker out entirely and is the dashboard it always was.
+    await history.loadCatalog();
+  });
+
+  // The range follows the node being viewed, so drilling into a peer and
+  // picking a window draws that peer's past rather than the aggregator's.
+  $effect(() => {
+    history.setNode(selectedNode);
   });
 
   const intervalOptions = [
@@ -87,7 +81,6 @@
   type Tab =
     | "fleet"
     | "overview"
-    | "history"
     | "host"
     | "cpu"
     | "gpu"
@@ -121,8 +114,6 @@
   const tabs = $derived<{ id: Tab; label: string }[]>([
     ...(fleetEnabled ? [{ id: "fleet" as Tab, label: "Fleet" }] : []),
     ...baseTabs,
-    // Last, because it is the only tab that is not about right now.
-    ...(historyEnabled ? [{ id: "history" as Tab, label: "History" }] : []),
   ]);
 
   // Settings live in a dialog, not a tab: they are a reference you consult
@@ -142,13 +133,10 @@
 
   // A standalone node has no Fleet tab, so never leave the user stranded on
   // one if fleet mode is turned off while the page is open.
-  // Never leave the user stranded on a tab the node does not have -- fleet mode
-  // turned off while the page is open, or a history catalog that never arrived.
+  // Never leave the user stranded on a tab the node does not have, which
+  // happens when fleet mode is turned off while the page is open.
   const effectiveTab = $derived<Tab>(
-    (activeTab === "fleet" && !fleetEnabled) ||
-      (activeTab === "history" && !historyEnabled)
-      ? "overview"
-      : activeTab
+    activeTab === "fleet" && !fleetEnabled ? "overview" : activeTab
   );
 
   // Fleet is the landing tab when the node has peers — but only until the user
@@ -261,6 +249,7 @@
           <option value={opt.value}>{opt.label}</option>
         {/each}
       </select>
+      <RangePicker />
       <ThemeToggle />
       <AlertBell onNavigate={navigateToCategory} />
       <button
@@ -323,6 +312,9 @@
     </div>
   </div>
 
+  <!-- Says, unmistakably, when the charts below are not live. -->
+  <HistoryBanner />
+
   <!-- Main content -->
   <main class="flex-1 p-4">
     {#if effectiveTab === "fleet"}
@@ -345,13 +337,11 @@
       <VirtPanel />
     {:else if effectiveTab === "containers"}
       <ContainerPanel />
-    {:else if effectiveTab === "history"}
-      <History metrics={historyMetrics} />
     {/if}
   </main>
 
   <!-- Footer -->
-  <footer class="footer footer-center p-2 bg-base-100 text-base-content/40 text-xs border-t border-base-300">
+  <footer class="footer footer-center p-2 bg-base-100 text-base-content/60 text-xs border-t border-base-300">
     <p>go-sysmon{buildVersion ? ` v${buildVersion}` : ""} — real-time system monitor</p>
   </footer>
 

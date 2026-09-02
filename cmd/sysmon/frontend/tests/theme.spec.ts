@@ -23,6 +23,31 @@ import { mockSnapshotFeed } from './fixtures/mock-sse';
 
 const THEME_KEY = 'sysmon.theme';
 
+/**
+ * The theme control is one icon button that flips, matching go-netmon's.
+ *
+ * It is found by role and accessible name rather than by a test attribute: the
+ * name is "<current> theme. Switch to: <other> theme", which is the only thing
+ * on screen that names the state, so asserting on it is asserting on what a
+ * user (or a screen reader) is actually told.
+ */
+const themeButton = (page: Page) => page.getByRole('button', { name: /Switch to:/ });
+
+/** The theme the control says it is in. */
+async function shownMode(page: Page): Promise<string> {
+  const label = (await themeButton(page).getAttribute('aria-label')) ?? '';
+  return label.split('.')[0].trim().toLowerCase();
+}
+
+/** Clicks until the control reports the wanted theme, at most one flip. */
+async function chooseMode(page: Page, wanted: string) {
+  for (let i = 0; i < 2; i++) {
+    if ((await shownMode(page)) === wanted) return;
+    await themeButton(page).click();
+  }
+  throw new Error(`could not reach ${wanted}`);
+}
+
 interface ThemeWrite {
   value: string;
   bodyExisted: boolean;
@@ -86,14 +111,17 @@ async function breakStorageReads(page: Page) {
 }
 
 test.describe('theme', () => {
-  test('follows the OS preference when nothing is stored', async ({ page }) => {
+  test('the first load follows the OS when nothing is stored', async ({ page }) => {
+    // There is no "system" mode any more -- a user could not tell which of the
+    // three states they were in without changing their operating system, so a
+    // third of the control was invisible. What survives is the sensible part:
+    // a machine in dark mode opens dark, without that being a mode.
     await page.emulateMedia({ colorScheme: 'light' });
     await page.goto('/');
     await expect.poll(() => appliedTheme(page)).toBe('light');
 
-    // Same page, no reload, no stored choice: an OS flip has to carry through,
-    // which a one-shot read at startup would miss.
     await page.emulateMedia({ colorScheme: 'dark' });
+    await page.reload();
     await expect.poll(() => appliedTheme(page)).toBe('dark');
   });
 
@@ -104,17 +132,43 @@ test.describe('theme', () => {
     await page.goto('/');
     await expect.poll(() => appliedTheme(page)).toBe('dark');
 
-    await page.getByLabel('Theme').selectOption('light');
+    await chooseMode(page, 'light theme');
     await expect.poll(() => appliedTheme(page)).toBe('light');
 
     await page.reload();
     await expect.poll(() => appliedTheme(page)).toBe('light');
-    await expect(page.getByLabel('Theme')).toHaveValue('light');
+    expect(await shownMode(page)).toBe('light theme');
 
-    // And back to Auto: the OS preference must take over again, which a plain
-    // two-state toggle could never express.
-    await page.getByLabel('Theme').selectOption('system');
+    // And the choice keeps winning: the OS is only consulted when nothing is
+    // stored, so a light choice survives a dark machine indefinitely.
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.reload();
+    await expect.poll(() => appliedTheme(page)).toBe('light');
+  });
+
+  test('the control flips between two states and shows which it is in', async ({ page }) => {
+    // One icon button, two states, one click between them -- the same control
+    // go-netmon has, so the two products do not disagree about what a theme
+    // toggle is.
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.goto('/');
+
+    expect(await shownMode(page)).toBe('dark theme');
     await expect.poll(() => appliedTheme(page)).toBe('dark');
+    const darkIcon = await themeButton(page).innerHTML();
+
+    await themeButton(page).click();
+    expect(await shownMode(page)).toBe('light theme');
+    await expect.poll(() => appliedTheme(page)).toBe('light');
+    const lightIcon = await themeButton(page).innerHTML();
+
+    await themeButton(page).click();
+    expect(await shownMode(page)).toBe('dark theme');
+    await expect.poll(() => appliedTheme(page)).toBe('dark');
+
+    // The icon is the state. One icon for two states would leave the control
+    // saying nothing about which one is active.
+    expect(darkIcon, 'both themes show the same icon').not.toBe(lightIcon);
   });
 
   /**
@@ -141,6 +195,10 @@ test.describe('theme', () => {
     // would catch it; a bootstrap that always chose dark would only be caught
     // by the light-OS case.
     { name: 'an unreadable value follows a dark OS', stored: 'chartreuse', os: 'dark', want: 'dark' },
+    // "system" was a real mode in an earlier build. A browser that still has
+    // it stored must fall back to the OS, not to a mode that no longer exists.
+    { name: 'a stored "system" from an older build follows a dark OS', stored: 'system', os: 'dark', want: 'dark' },
+    { name: 'a stored "system" from an older build follows a light OS', stored: 'system', os: 'light', want: 'light' },
     { name: 'an unreadable value follows a light OS', stored: 'chartreuse', os: 'light', want: 'light' },
     { name: 'unreadable storage follows the OS', os: 'light', brokenStorage: true, want: 'light' },
   ];
@@ -234,7 +292,7 @@ test.describe('theme', () => {
       })
       .toBe(true);
 
-    await page.getByLabel('Theme').selectOption('light');
+    await chooseMode(page, 'light theme');
     await expect.poll(() => appliedTheme(page)).toBe('light');
 
     await expect

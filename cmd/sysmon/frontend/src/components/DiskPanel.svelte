@@ -1,11 +1,12 @@
 <script lang="ts">
-  import GaugeChart from "./GaugeChart.svelte";
+
+  import { history } from "$stores/history.svelte";  import GaugeChart from "./GaugeChart.svelte";
   import DataTable from "./DataTable.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
   import type { Column } from "$lib/table";
   import type { SMARTAttr } from "$lib/types";
-  import TimeSeriesChart from "./TimeSeriesChart.svelte";
+  import MetricChart from "./MetricChart.svelte";
   import {
     formatBytes,
     formatBytesRate,
@@ -16,6 +17,11 @@
   import type { DiskInfo } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
+
+  // Every heading below says which window it is drawing. With a range
+  // applied that is no longer 60 seconds, and a specific wrong answer reads
+  // worse than none.
+  const windowLabel = $derived(history.windowLabel);
   const snapshot = $derived(monitor.snapshot);
   const diskHistory = $derived(monitor.diskHistory);
 
@@ -274,16 +280,18 @@
                 </div>
               </div>
             {:else}
-              <div class="flex items-center justify-center text-xs text-base-content/50">
+              <div class="flex items-center justify-center text-xs text-base-content/60">
                 No filesystem usage data
               </div>
             {/if}
 
             <!-- IO chart -->
             <div class="md:col-span-2">
-              <p class="text-xs text-base-content/60 mb-1">I/O Rate (60s)</p>
+              <p class="text-xs text-base-content/60 mb-1">I/O Rate ({windowLabel})</p>
               {#if dh != null}
-                <TimeSeriesChart
+                <MetricChart
+                  metrics={["disk_read", "disk_write"]}
+                  splitValue={disk.name}
                   series={[
                     {
                       label: "Read",
@@ -301,7 +309,7 @@
                   height="150px"
                 />
               {:else}
-                <div class="h-32 flex items-center justify-center text-xs text-base-content/50">
+                <div class="h-32 flex items-center justify-center text-xs text-base-content/60">
                   Waiting for data...
                 </div>
               {/if}
@@ -329,24 +337,24 @@
                    device was busy; avg queue is iostat's avgqu-sz. -->
               <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
                 <div>
-                  <span class="text-base-content/50">Utilisation</span>
+                  <span class="text-base-content/60">Utilisation</span>
                   <div class="font-semibold {utilColor(disk.util_percent)}">
                     {disk.util_percent.toFixed(1)}%
                     {#if disk.peak_util_percent > 0}
-                      <span class="text-base-content/40 font-normal">
+                      <span class="text-base-content/60 font-normal">
                         (peak {disk.peak_util_percent.toFixed(0)}%)
                       </span>
                     {/if}
                   </div>
                 </div>
                 <div>
-                  <span class="text-base-content/50">Avg queue</span>
+                  <span class="text-base-content/60">Avg queue</span>
                   <div class="font-semibold {disk.avg_queue_length >= 2 ? 'text-warning' : 'text-base-content'}">
                     {disk.avg_queue_length.toFixed(2)}
                   </div>
                 </div>
                 <div>
-                  <span class="text-base-content/50">Queue (now / peak)</span>
+                  <span class="text-base-content/60">Queue (now / peak)</span>
                   <div class="font-semibold text-base-content">
                     {disk.queue_length} / {disk.peak_queue_length}
                   </div>
@@ -363,11 +371,11 @@
               </h4>
               <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs mb-3">
                 <div>
-                  <span class="text-base-content/50">Level</span>
+                  <span class="text-base-content/60">Level</span>
                   <div class="font-medium">{disk.raid.level || "—"}</div>
                 </div>
                 <div>
-                  <span class="text-base-content/50">State</span>
+                  <span class="text-base-content/60">State</span>
                   <div
                     class="font-medium {disk.raid.degraded || raidNotOperational(disk.raid)
                       ? 'text-error'
@@ -377,13 +385,13 @@
                   </div>
                 </div>
                 <div>
-                  <span class="text-base-content/50">Members in sync</span>
+                  <span class="text-base-content/60">Members in sync</span>
                   <div class="font-medium {disk.raid.degraded ? 'text-error' : ''}">
                     {disk.raid.active_devices}/{disk.raid.total_devices}
                   </div>
                 </div>
                 <div>
-                  <span class="text-base-content/50">Mismatch</span>
+                  <span class="text-base-content/60">Mismatch</span>
                   <div class="font-medium {disk.raid.mismatch_count > 0 ? 'text-warning' : ''}">
                     {disk.raid.mismatch_count}
                   </div>
@@ -464,7 +472,7 @@
                       {disk.available_spare_percent}%
                     </p>
                     {#if disk.spare_threshold_percent > 0}
-                      <p class="text-xs text-base-content/50">
+                      <p class="text-xs text-base-content/60">
                         Threshold: {disk.spare_threshold_percent}%
                       </p>
                     {/if}
@@ -570,7 +578,7 @@
                         <td class="font-mono text-xs">{part.device}</td>
                         <td class="font-mono text-xs">{part.mountpoint}</td>
                         <td>{part.fstype}</td>
-                        <td class="text-xs text-base-content/50 max-w-xs truncate">
+                        <td class="text-xs text-base-content/60 max-w-xs truncate">
                           {part.opts}
                         </td>
                       </tr>

@@ -198,7 +198,7 @@
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-4">
         <p class="text-sm text-base-content/70">No fleet members reported.</p>
-        <p class="text-xs text-base-content/50">
+        <p class="text-xs text-base-content/60">
           Fleet mode is enabled but the peer list is empty — check the
           <span class="font-mono">fleet.nodes</span> section of the configuration.
         </p>
@@ -232,7 +232,7 @@
           <span class="badge badge-success badge-sm">
             {totals.healthy} healthy
           </span>
-          <span class="text-base-content/50">
+          <span class="text-base-content/60">
             {totals.criticalAlerts} critical / {totals.warningAlerts} warning alerts
           </span>
           {#if totals.drifted > 0}
@@ -273,7 +273,7 @@
           <span class="text-xs text-base-content/60 ml-auto">
             Showing {rangeLabel}
             {#if sorted.length !== totals.nodes}
-              <span class="text-base-content/40">
+              <span class="text-base-content/60">
                 (filtered from {totals.nodes})
               </span>
             {/if}
@@ -342,7 +342,7 @@
                 </div>
                 <div class="text-right text-xs shrink-0">
                   {#if node.version}
-                    <div class={drift ? "text-warning font-medium" : "text-base-content/50"}>
+                    <div class={drift ? "text-warning font-medium" : "text-base-content/60"}>
                       {node.version}
                       {#if drift}
                         <span
@@ -354,7 +354,7 @@
                       {/if}
                     </div>
                   {/if}
-                  <div class="text-base-content/40">
+                  <div class="text-base-content/60">
                     updated {formatAge(node.age_seconds)} ago
                   </div>
                 </div>
@@ -373,25 +373,25 @@
                 <!-- Core utilisation -->
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                   <div>
-                    <p class="text-xs text-base-content/50">CPU</p>
+                    <p class="text-xs text-base-content/60">CPU</p>
                     <p class="font-mono {usageColor(node.cpu_percent)}">
                       {formatPercent(node.cpu_percent)}
                     </p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Memory</p>
+                    <p class="text-xs text-base-content/60">Memory</p>
                     <p class="font-mono {usageColor(node.memory_percent)}">
                       {formatPercent(node.memory_percent)}
                     </p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Load / core</p>
+                    <p class="text-xs text-base-content/60">Load / core</p>
                     <p class="font-mono {loadColor(node.load_per_core)}">
                       {node.load_per_core.toFixed(2)}
                     </p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Worst filesystem</p>
+                    <p class="text-xs text-base-content/60">Worst filesystem</p>
                     <p class="font-mono {usageColor(node.worst_disk_percent)}">
                       {formatPercent(node.worst_disk_percent)}
                     </p>
@@ -401,20 +401,20 @@
                 <!-- Storage health, thermals and traffic -->
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                   <div>
-                    <p class="text-xs text-base-content/50">RAID</p>
+                    <p class="text-xs text-base-content/60">RAID</p>
                     <p class="font-mono {node.raid_degraded ? 'text-error' : 'text-success'}">
                       {node.raid_degraded ? "degraded" : "ok"}
                     </p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">SMART unhealthy</p>
+                    <p class="text-xs text-base-content/60">SMART unhealthy</p>
                     <p class="font-mono {node.smart_unhealthy > 0 ? 'text-error' : 'text-success'}">
                       {node.smart_unhealthy}
                     </p>
                   </div>
                   {#if node.swap_percent > 0}
                     <div>
-                      <p class="text-xs text-base-content/50">Swap</p>
+                      <p class="text-xs text-base-content/60">Swap</p>
                       <p class="font-mono {usageColor(node.swap_percent)}">
                         {formatPercent(node.swap_percent)}
                       </p>
@@ -422,18 +422,18 @@
                   {/if}
                   {#if node.max_temp_c > 0}
                     <div>
-                      <p class="text-xs text-base-content/50">Max temp</p>
+                      <p class="text-xs text-base-content/60">Max temp</p>
                       <p class="font-mono">{formatTemp(node.max_temp_c)}</p>
                     </div>
                   {/if}
                   {#if node.power_w > 0}
                     <div>
-                      <p class="text-xs text-base-content/50">Power</p>
+                      <p class="text-xs text-base-content/60">Power</p>
                       <p class="font-mono">{formatWatts(node.power_w)}</p>
                     </div>
                   {/if}
                   <div>
-                    <p class="text-xs text-base-content/50">Network</p>
+                    <p class="text-xs text-base-content/60">Network</p>
                     <p class="font-mono text-xs">
                       <span class="text-info">↓ {formatBytesRate(node.net_rx_rate)}</span>
                       <span class="text-success ml-1">↑ {formatBytesRate(node.net_tx_rate)}</span>
@@ -491,7 +491,7 @@
         {/if}
       </div>
 
-      <p class="text-xs text-base-content/40">
+      <p class="text-xs text-base-content/60">
         Select a node to view its full dashboard in the other tabs.
       </p>
     {/if}

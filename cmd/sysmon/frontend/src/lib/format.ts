@@ -83,11 +83,19 @@ export function usageProgressColor(percent: number): string {
 
 /**
  * usageEchartsColor returns an ECharts color string for a usage percentage.
+ *
+ * The colours come from the chart palette rather than being fixed here,
+ * because a gauge letters its percentage in this colour: it is text, and the
+ * values that read on a black chart are the least readable thing on a white
+ * one. See ChartPalette.usage.
  */
-export function usageEchartsColor(percent: number): string {
-  if (percent >= 80) return "#f87272"; // DaisyUI error red
-  if (percent >= 50) return "#fbbd23"; // DaisyUI warning yellow
-  return "#36d399"; // DaisyUI success green
+export function usageEchartsColor(
+  percent: number,
+  usage: { ok: string; warn: string; crit: string }
+): string {
+  if (percent >= 80) return usage.crit;
+  if (percent >= 50) return usage.warn;
+  return usage.ok;
 }
 
 /**

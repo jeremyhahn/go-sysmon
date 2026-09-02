@@ -117,7 +117,7 @@
     {#if title}
       <h3 class="card-title text-sm text-base-content/70">
         {title}
-        <span class="text-xs font-normal text-base-content/50">({sorted.length})</span>
+        <span class="text-xs font-normal text-base-content/60">({sorted.length})</span>
       </h3>
     {/if}
 
@@ -170,7 +170,7 @@
           </tr>
         {:else}
           <tr>
-            <td colspan={columns.length} class="text-center text-base-content/50 py-6 text-sm">
+            <td colspan={columns.length} class="text-center text-base-content/60 py-6 text-sm">
               {query.trim() !== "" ? `No match for "${query}".` : emptyMessage}
             </td>
           </tr>

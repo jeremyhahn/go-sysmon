@@ -9,4 +9,58 @@
    hashes. Excluding it keeps the output a function of src/ alone. */
 @source not "../dist";
 
+/* Tests are not UI source, and scanning them emits utilities nothing renders.
+   The contrast test names `text-base-content/50` in a comment explaining why
+   that level is banned -- and Tailwind duly generated the class, so the test
+   could never pass while describing the thing it forbids. A test that mentions
+   a class must not thereby ship it. */
+@source not "../tests";
+
 @plugin "daisyui";
+
+/* The light theme's semantic colours, darkened until they are readable.
+ *
+ * daisyUI's stock light theme picks these for a coloured surface, not for text
+ * on white, and every one of them fails WCAG AA there. Measured against
+ * base-200 (#f8f8f8), which is the card background this dashboard puts most of
+ * its text on:
+ *
+ *     success  #00d390  1.85:1
+ *     warning  #fcb700  1.66:1
+ *     error    #ff627d  2.71:1
+ *     info     #00bafe  2.10:1
+ *
+ * AA wants 4.5:1 for body text. These are not decorative: usageColor() and
+ * tempColor() return text-success / text-warning / text-error, so the figure
+ * telling an operator a disk is at 94% was rendered in the least readable
+ * colour on the page.
+ *
+ * The hues are unchanged, so a reading still reads as green, amber or red --
+ * only the lightness moves, and only in the light theme. The dark theme is
+ * untouched: these colours were chosen for it and pass there.
+ *
+ * The -content tokens go to white because they were dark, for dark text on a
+ * light chip; against these they would be dark on dark.
+ *
+ * tests/contrast.spec.ts measures what the browser actually renders, so a
+ * future daisyUI upgrade that moves these cannot quietly undo it.
+ */
+/* Overridden as plain CSS rather than through @plugin "daisyui/theme".
+ *
+ * The plugin form emits its block with a selector whose specificity daisyUI's
+ * own default-theme rule can still beat, so the override was present in the
+ * stylesheet and lost at runtime -- the built value was there, and
+ * getComputedStyle still returned the stock one. `:root[data-theme=light]` is
+ * unambiguous: higher specificity, later in the file, and it says plainly what
+ * it applies to.
+ */
+:root[data-theme="light"] {
+  --color-success: oklch(52% 0.15 163.223);          /* #00824f  4.60:1 */
+  --color-success-content: oklch(100% 0 0);
+  --color-warning: oklch(55% 0.189 84.429);          /* #a36200  4.61:1 */
+  --color-warning-content: oklch(100% 0 0);
+  --color-error: oklch(57% 0.194 13.428);            /* #d03155  4.67:1 */
+  --color-error-content: oklch(100% 0 0);
+  --color-info: oklch(53.5% 0.136 232.661);          /* #0078ae  4.61:1 */
+  --color-info-content: oklch(100% 0 0);
+}

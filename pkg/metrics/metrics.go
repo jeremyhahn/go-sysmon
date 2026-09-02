@@ -167,6 +167,11 @@ func Write(m Sink, snap *types.Snapshot) {
 			"source", fmt.Sprintf("gpu:%d", g.Index))
 		m.Gauge("sysmon_gpu_utilization_percent", "GPU utilisation.", g.GPUUtilPercent,
 			"gpu", fmt.Sprintf("%d", g.Index))
+		// Exported because there is an alert threshold on it -- exhausted video
+		// memory fails work outright -- and a rule that fires in the dashboard
+		// with no series behind it cannot be corroborated or graphed.
+		m.Gauge("sysmon_gpu_memory_percent", "Video memory in use.", g.MemoryPercent,
+			"gpu", fmt.Sprintf("%d", g.Index))
 		m.Gauge("sysmon_gpu_temperature_celsius", "GPU temperature.", g.TemperatureGPU,
 			"gpu", fmt.Sprintf("%d", g.Index))
 	}

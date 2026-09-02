@@ -1,5 +1,6 @@
 <script lang="ts">
-  import TimeSeriesChart from "./TimeSeriesChart.svelte";
+
+  import { history } from "$stores/history.svelte";  import MetricChart from "./MetricChart.svelte";
   import GaugeChart from "./GaugeChart.svelte";
   import {
     formatPercent,
@@ -11,6 +12,17 @@
   } from "$lib/format";
   import type { GPUInfo } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
+  import { chartPalette } from "$lib/echarts";
+  import { theme } from "$lib/theme.svelte";
+
+
+  // Every heading below says which window it is drawing. With a range
+  // applied that is no longer 60 seconds, and a specific wrong answer reads
+  // worse than none.
+  const windowLabel = $derived(history.windowLabel);
+  // Chart colours follow the theme: these values letter a gauge and stroke a
+  // line, and the ones that read on black are the least readable on white.
+  const palette = $derived(chartPalette(theme.resolved));
 
   const snapshot = $derived(monitor.snapshot);
   const gpuUtilHistory = $derived(monitor.gpuUtilHistory);
@@ -42,9 +54,9 @@
   }
 
   function powerEchartsColor(drawW: number, limitW: number): string {
-    if (limitW <= 0) return "#36d399";
+    if (limitW <= 0) return palette.usage.ok;
     const pct = (drawW / limitW) * 100;
-    return usageEchartsColor(pct);
+    return usageEchartsColor(pct, palette.usage);
   }
 
   function pcieLinkLabel(current: number, max: number): string {
@@ -71,8 +83,8 @@
         <rect x="2" y="6" width="20" height="12" rx="2" />
         <path d="M6 10h.01M10 10h4M10 14h4M18 10h.01" stroke-linecap="round" />
       </svg>
-      <p class="text-base-content/50 text-sm">No GPUs detected</p>
-      <p class="text-base-content/30 text-xs">
+      <p class="text-base-content/60 text-sm">No GPUs detected</p>
+      <p class="text-base-content/60 text-xs">
         NVIDIA Management Library (NVML) may not be available on this system.
       </p>
     </div>
@@ -206,14 +218,16 @@
             <div class="card bg-base-300 shadow-none">
               <div class="card-body p-3">
                 <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  GPU Usage (60s)
+                  GPU Usage ({windowLabel})
                 </h4>
-                <TimeSeriesChart
+                <MetricChart
+                  metrics={["gpu_util"]}
+                  splitValue={String(gpu.index)}
                   series={[
                     {
                       label: "GPU %",
                       data: utilHistData,
-                      color: usageEchartsColor(gpu.gpu_util_percent),
+                      color: usageEchartsColor(gpu.gpu_util_percent, palette.usage),
                       formatter: (v) => `${v.toFixed(1)}%`,
                     },
                   ]}
@@ -225,9 +239,11 @@
             <div class="card bg-base-300 shadow-none">
               <div class="card-body p-3">
                 <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  Memory Usage (60s)
+                  Memory Usage ({windowLabel})
                 </h4>
-                <TimeSeriesChart
+                <MetricChart
+                  metrics={["gpu_memory"]}
+                  splitValue={String(gpu.index)}
                   series={[
                     {
                       label: "VRAM %",
@@ -244,9 +260,11 @@
             <div class="card bg-base-300 shadow-none">
               <div class="card-body p-3">
                 <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  Temperature (60s)
+                  Temperature ({windowLabel})
                 </h4>
-                <TimeSeriesChart
+                <MetricChart
+                  metrics={["gpu_temperature"]}
+                  splitValue={String(gpu.index)}
                   series={[
                     {
                       label: "Temp °C",
@@ -263,9 +281,11 @@
             <div class="card bg-base-300 shadow-none">
               <div class="card-body p-3">
                 <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  Power Draw (60s)
+                  Power Draw ({windowLabel})
                 </h4>
-                <TimeSeriesChart
+                <MetricChart
+                  metrics={["gpu_power"]}
+                  splitValue={`gpu:${gpu.index}`}
                   series={[
                     {
                       label: "Power W",
@@ -282,9 +302,11 @@
             <div class="card bg-base-300 shadow-none lg:col-span-2">
               <div class="card-body p-3">
                 <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  PCIe Throughput (60s)
+                  PCIe Throughput ({windowLabel})
                 </h4>
-                <TimeSeriesChart
+                <!-- PCIe throughput is not exported as a series, so there is
+                     no history for it. -->
+                <MetricChart
                   series={[
                     {
                       label: "TX MB/s",
@@ -308,14 +330,14 @@
           <!-- Metrics footer row -->
           <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-2 text-xs text-base-content/80">
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/50">Temp (GPU)</span>
+              <span class="text-base-content/60">Temp (GPU)</span>
               <span class="font-semibold {tempColor(gpu.temperature_gpu)}">
                 {gpu.temperature_gpu}°C
               </span>
             </div>
             {#if gpu.temperature_memory > 0}
               <div class="flex justify-between gap-2">
-                <span class="text-base-content/50">Temp (Mem)</span>
+                <span class="text-base-content/60">Temp (Mem)</span>
                 <span class="font-semibold {tempColor(gpu.temperature_memory)}">
                   {gpu.temperature_memory}°C
                 </span>
@@ -323,12 +345,12 @@
             {/if}
             {#if gpu.fan_speed_percent >= 0}
               <div class="flex justify-between gap-2">
-                <span class="text-base-content/50">Fan</span>
+                <span class="text-base-content/60">Fan</span>
                 <span class="font-semibold">{formatPercent(gpu.fan_speed_percent)}</span>
               </div>
             {/if}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/50">Power</span>
+              <span class="text-base-content/60">Power</span>
               <span class="font-semibold {powerColor(gpu.power_draw_w, powerLimitW)}">
                 {formatWatts(gpu.power_draw_w)}
                 {#if powerLimitW > 0}
@@ -338,7 +360,7 @@
             </div>
             {#if gpu.clock_graphics_mhz > 0}
               <div class="flex justify-between gap-2">
-                <span class="text-base-content/50">GFX Clock</span>
+                <span class="text-base-content/60">GFX Clock</span>
                 <span class="font-semibold">
                   {formatMHz(gpu.clock_graphics_mhz)}
                   {#if gpu.clock_max_gfx_mhz > 0}
@@ -349,31 +371,31 @@
             {/if}
             {#if gpu.clock_memory_mhz > 0}
               <div class="flex justify-between gap-2">
-                <span class="text-base-content/50">Mem Clock</span>
+                <span class="text-base-content/60">Mem Clock</span>
                 <span class="font-semibold">{formatMHz(gpu.clock_memory_mhz)}</span>
               </div>
             {/if}
             {#if gpu.clock_video_mhz > 0}
               <div class="flex justify-between gap-2">
-                <span class="text-base-content/50">Video Clock</span>
+                <span class="text-base-content/60">Video Clock</span>
                 <span class="font-semibold">{formatMHz(gpu.clock_video_mhz)}</span>
               </div>
             {/if}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/50">PCIe TX</span>
+              <span class="text-base-content/60">PCIe TX</span>
               <span class="font-semibold">{gpu.pcie_tx_mbps.toFixed(1)} MB/s</span>
             </div>
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/50">PCIe RX</span>
+              <span class="text-base-content/60">PCIe RX</span>
               <span class="font-semibold">{gpu.pcie_rx_mbps.toFixed(1)} MB/s</span>
             </div>
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/50">Processes</span>
+              <span class="text-base-content/60">Processes</span>
               <span class="font-semibold">{gpu.process_count}</span>
             </div>
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/50">ECC</span>
-              <span class="font-semibold {gpu.ecc_enabled ? (gpu.ecc_double_bit > 0 ? 'text-error' : gpu.ecc_single_bit > 0 ? 'text-warning' : 'text-success') : 'text-base-content/50'}">
+              <span class="text-base-content/60">ECC</span>
+              <span class="font-semibold {gpu.ecc_enabled ? (gpu.ecc_double_bit > 0 ? 'text-error' : gpu.ecc_single_bit > 0 ? 'text-warning' : 'text-success') : 'text-base-content/60'}">
                 {#if !gpu.ecc_enabled}
                   Disabled
                 {:else if gpu.ecc_double_bit > 0}

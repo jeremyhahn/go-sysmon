@@ -1,7 +1,8 @@
 <script lang="ts">
-  import StatCard from "$components/StatCard.svelte";
+
+  import { history } from "$stores/history.svelte";  import StatCard from "$components/StatCard.svelte";
   import GaugeChart from "$components/GaugeChart.svelte";
-  import TimeSeriesChart from "$components/TimeSeriesChart.svelte";
+  import MetricChart from "$components/MetricChart.svelte";
   import {
     formatBytes,
     formatBytesRate,
@@ -16,8 +17,18 @@
   import { monitor } from "$stores/monitor.svelte";
   import type { PSIResource } from "$lib/types";
 
+
+  // Every heading below says which window it is drawing. With a range
+  // applied that is no longer 60 seconds, and a specific wrong answer reads
+  // worse than none.
+  const windowLabel = $derived(history.windowLabel);
   const snapshot = $derived(monitor.snapshot);
-  const connected = $derived(monitor.connected);
+  // Not monitor.connected: that is the local stream, and this badge labels
+  // whatever node is SELECTED. A reachable peer read "Disconnected" whenever
+  // the local stream was down, and an unreachable one read "Live" whenever it
+  // was up. See showingLiveData -- one question, asked in one place, so this
+  // badge and the historical banner cannot disagree about the same data.
+  const connected = $derived(monitor.showingLiveData);
   const overallCpuPercent = $derived(monitor.overallCpuPercent);
   const cpuOverallHistory = $derived(monitor.cpuOverallHistory);
   const memHistory = $derived(monitor.memHistory);
@@ -130,12 +141,12 @@
               {host.kernel_arch} &bull; Uptime: {formatDuration(host.uptime)}
             </p>
             {#if host.board_name}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 {host.board_vendor ? host.board_vendor + " " : ""}{host.board_name}{host.board_version ? " (v" + host.board_version + ")" : ""}
               </p>
             {/if}
             {#if host.bios_version}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 BIOS: {host.bios_vendor ? host.bios_vendor + " " : ""}{host.bios_version}{host.bios_date ? " (" + host.bios_date + ")" : ""}
               </p>
             {/if}
@@ -187,7 +198,7 @@
               GPU {gpus.length > 1 ? gpu.index : ""}
             </p>
             <GaugeChart value={gpu.gpu_util_percent} label="GPU" height="140px" />
-            <p class="text-xs text-base-content/50 -mt-1">
+            <p class="text-xs text-base-content/60 -mt-1">
               VRAM {formatPercent(gpu.memory_percent)}
               {#if gpu.temperature_gpu > 0}
                 &bull; {gpu.temperature_gpu}°C
@@ -220,9 +231,10 @@
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70 mb-2">
-            CPU Usage (60s)
+            CPU Usage ({windowLabel})
           </h3>
-          <TimeSeriesChart
+          <MetricChart
+            metrics={["cpu"]}
             series={[
               {
                 label: "CPU %",
@@ -239,9 +251,10 @@
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70 mb-2">
-            Memory Usage (60s)
+            Memory Usage ({windowLabel})
           </h3>
-          <TimeSeriesChart
+          <MetricChart
+            metrics={["memory"]}
             series={[
               {
                 label: "Mem %",
@@ -325,9 +338,11 @@
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70 mb-2">
-            Network — {topIface.name} Traffic (60s)
+            Network — {topIface.name} Traffic ({windowLabel})
           </h3>
-          <TimeSeriesChart
+          <MetricChart
+            metrics={["net_tx", "net_rx"]}
+            splitValue={topIface.name}
             series={[
               {
                 label: "Send",
@@ -401,7 +416,7 @@
                     <td class="font-semibold {tempColor(tz.temp_celsius, 0)}">
                       {formatTemp(tz.temp_celsius)}
                     </td>
-                    <td class="text-base-content/50 text-xs">{tz.policy}</td>
+                    <td class="text-base-content/60 text-xs">{tz.policy}</td>
                   </tr>
                 {/each}
               </tbody>
@@ -443,10 +458,10 @@
                     <td class="font-semibold font-mono">
                       {fan.rpm.toLocaleString()}
                     </td>
-                    <td class="text-base-content/50">
+                    <td class="text-base-content/60">
                       {fan.min_rpm > 0 ? fan.min_rpm.toLocaleString() : "-"}
                     </td>
-                    <td class="text-base-content/50">
+                    <td class="text-base-content/60">
                       {fan.max_rpm > 0 ? fan.max_rpm.toLocaleString() : "-"}
                     </td>
                     <td>
@@ -457,10 +472,10 @@
                           max="100"
                         ></progress>
                       {:else}
-                        <span class="text-base-content/30 text-xs">N/A</span>
+                        <span class="text-base-content/60 text-xs">N/A</span>
                       {/if}
                     </td>
-                    <td class="text-base-content/50 font-mono text-xs">
+                    <td class="text-base-content/60 font-mono text-xs">
                       {fan.hwmon_name}
                     </td>
                   </tr>
@@ -481,7 +496,7 @@
           <h3 class="card-title text-sm text-base-content/70 mb-1">
             Pressure Stall Information (PSI)
           </h3>
-          <p class="text-xs text-base-content/50 mb-3">
+          <p class="text-xs text-base-content/60 mb-3">
             <span class="font-medium">some</span> = at least one task was stalled
             waiting for the resource &bull;
             <span class="font-medium">full</span> = every task was stalled, so
@@ -499,7 +514,7 @@
                 </h4>
                 {#each psiRows(sensors.psi.cpu) as row, i (row.full + row.label)}
                   {#if i === 0 || i === 3}
-                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/40 pt-1">
+                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/60 pt-1">
                       {row.full ? "full" : "some"}
                     </p>
                   {/if}
@@ -530,7 +545,7 @@
                 </h4>
                 {#each psiRows(sensors.psi.memory) as row, i (row.full + row.label)}
                   {#if i === 0 || i === 3}
-                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/40 pt-1">
+                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/60 pt-1">
                       {row.full ? "full" : "some"}
                     </p>
                   {/if}
@@ -561,7 +576,7 @@
                 </h4>
                 {#each psiRows(sensors.psi.io) as row, i (row.full + row.label)}
                   {#if i === 0 || i === 3}
-                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/40 pt-1">
+                    <p class="text-[0.65rem] uppercase tracking-wider text-base-content/60 pt-1">
                       {row.full ? "full" : "some"}
                     </p>
                   {/if}
@@ -588,9 +603,10 @@
             <h4
               class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2"
             >
-              PSI Stall History — CPU / Memory / I/O (60s)
+              PSI Stall History — CPU / Memory / I/O ({windowLabel})
             </h4>
-            <TimeSeriesChart
+            <MetricChart
+              metrics={["psi_cpu_some", "psi_memory_some", "psi_io_some"]}
               series={[
                 {
                   label: "CPU some%",

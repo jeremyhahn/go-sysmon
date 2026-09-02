@@ -108,6 +108,102 @@ Two things about it are easy to break:
 theme from the app's module script also ends up correct, just one painted frame
 later.
 
+## The date range
+
+`src/stores/history.svelte.ts` holds the selected range for the whole
+dashboard, and `MetricChart` is the only component that knows there are two
+modes. A panel declares what its chart IS — which catalogued metrics its series
+correspond to, and which device or interface it is drawing — and never which
+mode it is in.
+
+That is deliberate. Eight panels each holding their own range would not be
+comparable with each other, and would put state into the real-time path that it
+does not need: with no range selected, `MetricChart` renders exactly the
+`TimeSeriesChart` it always did.
+
+One invariant holds the control together: **whenever a range is applied, the
+picker's inputs describe that range.** Choosing `Custom…` therefore carries the
+applied window into the inputs and leaves it applied — nothing moves, and the
+control, the banner and the charts all say the same thing. Choosing it with
+nothing applied opens the inputs on the last hour and stays live, because
+`Custom…` is the state of specifying a window rather than a request for one
+nobody has typed. Editing the pair into something that is not a window — an
+emptied field, an end before its start — **un-applies whatever was applied**:
+the charts go back to live and the picker says why. Breaking that invariant has
+produced a bug in each of its three directions: applying a seeded window moved
+the dashboard without being asked; leaving a preset applied under a `Custom`
+label had it claim to have moved when it had not; and holding an applied window
+through the edit that invalidated it left the charts drawing 24 hours that no
+control on the page still described.
+
+The banner says two things: that the charts are not live, and what the rest of
+the page is showing instead — because a gauge has no historical value to
+display, so it keeps rendering whatever the dashboard last received. That second
+sentence **follows the actual freshness** rather than asserting it. It read
+"still show live values" flatly, which is false in two states this dashboard
+already reports elsewhere: a dropped stream, where every panel is frozen on its
+last frame, and an unreachable peer, whose last snapshot keeps rendering under a
+`stale` badge. A banner whose purpose is to stop a chart being mistaken for live
+printing "live" beside data that is not is the failure it exists to prevent,
+self-inflicted.
+
+**One question, asked in one place.** `monitor.showingLiveData` answers "is what
+is on screen current?" for the whole dashboard, and both the Overview's
+Live/Disconnected badge and this banner consult it. They did not: the banner was
+made selection-aware while the badge still read the local stream, so a reachable
+peer showed "Disconnected" whenever that stream was down and an unreachable one
+showed "Live" whenever it was up — two answers to one question, on one screen.
+
+**Which fact settles it depends on the selection** — on `selectedNode`, not on
+whether `peerFreshness` happens to be null, since selecting a peer clears the
+freshness and leaves it null until the first poll returns. A selected peer with
+nothing back yet is not live, and neither is one whose poll **fails outright** —
+a non-2xx from the aggregator, a refused connection, a body that is not JSON.
+That last case used to update nothing at all, so the last successful reading
+kept its `reachable: true`, the `stale` badge never appeared, and the page
+presented a frozen snapshot as live in exactly the state the badge exists for. Combining the two facts is wrong in both
+directions. This host's panels are fed by the event stream, so `connected`
+is the question. A selected peer's are refreshed by an independent HTTP poll,
+so the stream being down says nothing about them — requiring both would tell an
+operator their reachable peer's gauges were stale while they updated in front
+of them, which is the same defect inverted.
+
+Every chart heading carries the window it draws — `CPU Usage (60s)` — and that
+wording comes from `history.windowLabel` rather than from each panel. It was
+written when sixty seconds was the only answer, and left fixed it became a
+thirty-day series under a heading claiming a minute: a specific wrong answer,
+which reads worse than none because nothing invites doubt. Sixteen headings
+share the one source so they cannot drift from each other or from what is
+applied. An explicit window says `custom range` rather than spelling out two
+dates in a heading; the dates are already in the picker and the banner.
+
+A range or node change **aborts** the requests it makes stale, rather than only
+discarding what they return. Discarding the answer was enough for correctness —
+nothing wrong was ever rendered — but the request carried on: the server went
+on running a Prometheus range query for a window nobody is looking at, and the
+browser's per-origin connection limit stayed occupied by it. On a panel with
+nine charts, two quick range changes left the requests for what is actually on
+screen queued behind eighteen abandoned ones, and the charts sat on "Loading"
+for a reason that had nothing to do with Prometheus.
+
+**Every line or none, and that is about the RESULT rather than the requests.**
+A chart built from more than one metric — disk read and write, network in and
+out — waits for all of them to settle, and then requires each to have actually
+contributed a line. Only the first half was enforced: a metric that returned no
+series matching the chart's device drew nothing while its sibling drew normally,
+producing a one-line chart under a heading naming two, with nothing on the page
+to say the second line was missing rather than flat. A partial chart says so
+instead; a window with nothing in it at all keeps its own separate message,
+because "no history here" and "half a chart" are different facts.
+
+Charts ask for what they need through `history.need()` rather than fetching, so
+a metric wanted by nine disk cards is fetched once. `history.get()` returns what
+arrived. The store discards everything it holds whenever the window or the node
+changes, and **replaces the range object when it does** — that replacement is
+the single thing that makes every chart's effect re-run and ask again. Without
+it the data would be cleared and never re-fetched, and every chart would sit on
+"Loading…" looking exactly like a slow Prometheus.
+
 ## Tables
 
 Every table that can grow without bound uses the shared `DataTable` component,

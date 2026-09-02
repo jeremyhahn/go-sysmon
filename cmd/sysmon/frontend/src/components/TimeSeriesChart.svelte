@@ -38,14 +38,6 @@
   let container: HTMLDivElement;
   let chart: ECharts | null = null;
 
-  const DEFAULT_COLORS = [
-    "#36d399", // success green
-    "#38bdf8", // sky blue
-    "#fb923c", // orange
-    "#a78bfa", // purple
-    "#f472b6", // pink
-  ];
-
   // Build 60-point X-axis labels: "-59s" … "0s"
   const xLabels = Array.from({ length: 60 }, (_, i) => `${i - 59}s`);
 
@@ -108,11 +100,11 @@
         smooth,
         symbol: "none",
         lineStyle: {
-          color: ser.color ?? DEFAULT_COLORS[idx % DEFAULT_COLORS.length],
+          color: ser.color ?? p.series[idx % p.series.length],
           width: 2,
         },
         itemStyle: {
-          color: ser.color ?? DEFAULT_COLORS[idx % DEFAULT_COLORS.length],
+          color: ser.color ?? p.series[idx % p.series.length],
         },
         areaStyle: areaStyle
           ? {
@@ -120,7 +112,7 @@
                 {
                   offset: 0,
                   color:
-                    (ser.color ?? DEFAULT_COLORS[idx % DEFAULT_COLORS.length]) +
+                    (ser.color ?? p.series[idx % p.series.length]) +
                     "40",
                 },
                 { offset: 1, color: "transparent" },

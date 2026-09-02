@@ -28,7 +28,7 @@ func richSnapshot() *types.Snapshot {
 				IO:     types.PSIResource{SomeAvg10: 3, FullAvg10: 1.5},
 			},
 		},
-		GPUs: []types.GPUInfo{{Index: 0, GPUUtilPercent: 55, TemperatureGPU: 60, PowerDrawW: 120}},
+		GPUs: []types.GPUInfo{{Index: 0, GPUUtilPercent: 55, MemoryPercent: 70, TemperatureGPU: 60, PowerDrawW: 120}},
 		Disks: []types.DiskInfo{
 			{
 				Name: "nvme0n1", TotalBytes: 1000, UsedPercent: 40, UtilPercent: 12,

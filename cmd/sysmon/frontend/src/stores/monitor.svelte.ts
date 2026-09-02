@@ -116,6 +116,35 @@ class MonitorStore {
     ageSeconds: number;
   } | null>(null);
 
+  /** When the last peer reading actually arrived, and the age it carried, so a
+   * failed poll can report an age that keeps moving rather than one frozen at
+   * the last success. Both are reset on every selection change: a new peer must
+   * not inherit the previous one's clock. */
+  #peerReadingAt: number | null = null;
+  #peerBaseAge = 0;
+
+  /**
+   * showingLiveData answers one question for the whole dashboard: is what is on
+   * screen current?
+   *
+   * Which fact settles it depends on WHERE the data comes from. This host's
+   * panels are fed by the event stream, so `connected` is the question. A
+   * selected peer's are refreshed by an independent HTTP poll, so the stream
+   * says nothing about them -- and a peer that has been selected but has not
+   * answered yet is not live either, because peerFreshness is cleared on
+   * selection and stays null until the first poll returns.
+   *
+   * It lives here because two places ask it -- the Overview's Live badge and
+   * the historical banner's claim about the gauges -- and they answered it
+   * differently: the banner was fixed to be selection-aware while the badge
+   * still read the local stream, so a reachable peer showed "Disconnected"
+   * with the stream down, and an unreachable one showed "Live" with it up.
+   * Two answers to one question is how a dashboard contradicts itself.
+   */
+  readonly showingLiveData = $derived(
+    this.selectedNode == null ? this.connected : this.peerFreshness?.reachable === true
+  );
+
   /** Alert ids already surfaced to the user, persisted across reloads. */
   seenAlertIds = $state<string[]>(loadSeenAlertIds());
 
@@ -312,8 +341,12 @@ class MonitorStore {
     // for the previous selection before anything else changes.
     const generation = ++this.#selectionGeneration;
     this.selectedNode = name;
-    // The previous peer's freshness must not linger over the new selection.
+    // The previous peer's freshness must not linger over the new selection,
+    // and neither must its clock: a new peer whose first poll fails would
+    // otherwise inherit however long the last one had been unreachable.
     this.peerFreshness = null;
+    this.#peerReadingAt = null;
+    this.#peerBaseAge = 0;
     this.#stopPeerPolling();
     // Two hosts must never share a history buffer: a 60-second chart that
     // straddles a node switch would be a lie about both of them.
@@ -372,7 +405,9 @@ class MonitorStore {
       const res = await fetch(
         `/api/fleet/${encodeURIComponent(name)}/snapshot`
       );
-      if (res.ok) {
+      if (!res.ok) {
+        this.#peerPollFailed(generation, `the aggregator answered ${res.status}`);
+      } else {
         // Parse first and let applySnapshot arbitrate. Checking the selection
         // before awaiting the body is exactly the bug this replaces: the user
         // can switch nodes while the JSON is still being parsed, and a check
@@ -390,14 +425,29 @@ class MonitorStore {
           // again -- a flat line that reads as "measured and steady" when
           // nothing was measured at all. The panels keep showing the last
           // reading; the stale badge is what says it is not live.
+          // The base for a later failure's age: what the aggregator said, and
+          // when it said it. Recorded for any envelope that arrives, not only
+          // one carrying a snapshot -- a reachable:false answer is still a
+          // reading whose age this side knows.
+          this.#peerReadingAt = Date.now();
+          this.#peerBaseAge = peer.age_seconds;
           if (peer.reachable && peer.snapshot != null) {
             this.applySnapshot(peer.snapshot, name);
           }
         }
       }
     } catch {
-      // A peer that stops answering keeps its last snapshot on screen; the
-      // fleet list and the stale badge are what report it unreachable.
+      // A poll that fails outright -- refused connection, a body that is not
+      // JSON, the aggregator itself down -- says the same thing as an envelope
+      // carrying reachable:false, and used to say nothing at all.
+      //
+      // The old comment here claimed "the fleet list and the stale badge are
+      // what report it unreachable", and the badge is driven by peerFreshness,
+      // which this path left untouched. So the last SUCCESSFUL reading kept
+      // its reachable:true and the page went on presenting a frozen snapshot
+      // as live, with no badge -- the exact state the badge exists for, in the
+      // one case that never reached it.
+      this.#peerPollFailed(generation, "the last poll of this node failed");
     }
     // A superseded loop stops here instead of rescheduling, so switching
     // A -> B -> A cannot leave two loops polling the same node.
@@ -405,6 +455,30 @@ class MonitorStore {
     this.#peerTimer = globalThis.setTimeout(() => {
       void this.#pollPeer(name, generation);
     }, Math.max(this.intervalMs, MIN_PEER_POLL_MS));
+  }
+
+  /**
+   * peerPollFailed marks the selected peer unreachable when a poll does not
+   * come back at all.
+   *
+   * The age is carried forward from the last reading that did arrive rather
+   * than frozen at its value: a badge stuck on "12m old" while an hour passes
+   * is a smaller version of the same lie the badge exists to prevent.
+   */
+  #peerPollFailed(generation: number, error: string): void {
+    if (this.#selectionGeneration !== generation) return;
+    // Computed from the last envelope that arrived, never accumulated onto the
+    // previous answer. Adding the elapsed time to an age that already contains
+    // it double-counts: failures at +1s, +2s and +3s reported 1s, 3s and 6s.
+    const since =
+      this.#peerReadingAt == null
+        ? 0
+        : (Date.now() - this.#peerReadingAt) / 1000;
+    this.peerFreshness = {
+      reachable: false,
+      error,
+      ageSeconds: this.#peerBaseAge + since,
+    };
   }
 
   #stopPeerPolling(): void {

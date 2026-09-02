@@ -89,12 +89,12 @@
                 : "Virtual machines cannot be detected on this host."}
             </p>
             {#if canObserve}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 Detection is working; no qemu, cloud-hypervisor, VirtualBox or
                 VMware process is running.
               </p>
             {:else}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 The process list could not be read, so their absence is not confirmed.
               </p>
             {/if}
@@ -106,7 +106,7 @@
                 <div class="flex flex-wrap items-baseline justify-between gap-2">
                   <div>
                     <span class="font-semibold">{vm.name}</span>
-                    <span class="text-xs text-base-content/50 ml-2">
+                    <span class="text-xs text-base-content/60 ml-2">
                       {vm.hypervisor}{vm.accelerator ? ` (${vm.accelerator})` : ""}
                       &bull; pid {vm.pid}
                       {#if vm.uptime_seconds > 0}
@@ -116,7 +116,7 @@
                   </div>
                   <span class="font-mono text-sm text-right {usageColor(percentOfCapacity(vm.cpu_percent, vm.vcpus))}">
                     {formatPercent(percentOfCapacity(vm.cpu_percent, vm.vcpus))} of {vm.vcpus} vCPUs
-                    <span class="block text-xs text-base-content/50">
+                    <span class="block text-xs text-base-content/60">
                       {formatCores(vm.cpu_percent)} busy
                     </span>
                   </span>
@@ -124,7 +124,7 @@
 
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-sm">
                   <div>
-                    <p class="text-xs text-base-content/50">vCPUs</p>
+                    <p class="text-xs text-base-content/60">vCPUs</p>
                     <p class="font-mono">
                       {vm.vcpus}
                       {#if vm.vcpu_threads > 0 && vm.vcpu_threads !== vm.vcpus}
@@ -135,28 +135,28 @@
                     </p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Guest RAM</p>
+                    <p class="text-xs text-base-content/60">Guest RAM</p>
                     <p class="font-mono">{formatBytes(vm.memory_bytes)}</p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Resident on host</p>
+                    <p class="text-xs text-base-content/60">Resident on host</p>
                     <p class="font-mono">{formatBytes(vm.rss_bytes)}</p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Threads</p>
+                    <p class="text-xs text-base-content/60">Threads</p>
                     <p class="font-mono">{vm.thread_count}</p>
                   </div>
 
                   <div>
-                    <p class="text-xs text-base-content/50">Network in</p>
+                    <p class="text-xs text-base-content/60">Network in</p>
                     <p class="font-mono">{formatBytesRate(vm.net_rx_rate)}</p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Network out</p>
+                    <p class="text-xs text-base-content/60">Network out</p>
                     <p class="font-mono">{formatBytesRate(vm.net_tx_rate)}</p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Host NICs</p>
+                    <p class="text-xs text-base-content/60">Host NICs</p>
                     <p class="font-mono">
                       {vm.tap_interfaces && vm.tap_interfaces.length > 0
                         ? vm.tap_interfaces.join(", ")
@@ -164,7 +164,7 @@
                     </p>
                   </div>
                   <div>
-                    <p class="text-xs text-base-content/50">Disk image</p>
+                    <p class="text-xs text-base-content/60">Disk image</p>
                     <p class="font-mono">
                       {vm.disk_image_bytes > 0 ? formatBytes(vm.disk_image_bytes) : "–"}
                     </p>
@@ -174,19 +174,19 @@
                 {#if vm.cgroup_path}
                   <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-sm border-t border-base-300 pt-3">
                     <div>
-                      <p class="text-xs text-base-content/50">Disk read</p>
+                      <p class="text-xs text-base-content/60">Disk read</p>
                       <p class="font-mono">{formatBytesRate(vm.disk_read_rate)}</p>
                     </div>
                     <div>
-                      <p class="text-xs text-base-content/50">Disk write</p>
+                      <p class="text-xs text-base-content/60">Disk write</p>
                       <p class="font-mono">{formatBytesRate(vm.disk_write_rate)}</p>
                     </div>
                     <div>
-                      <p class="text-xs text-base-content/50">Guest memory (cgroup)</p>
+                      <p class="text-xs text-base-content/60">Guest memory (cgroup)</p>
                       <p class="font-mono">{formatBytes(vm.memory_current_bytes)}</p>
                     </div>
                     <div>
-                      <p class="text-xs text-base-content/50">Stalled CPU / I/O</p>
+                      <p class="text-xs text-base-content/60">Stalled CPU / I/O</p>
                       <p class="font-mono">
                         {formatPercent(vm.cpu_pressure)} / {formatPercent(vm.io_pressure)}
                       </p>
@@ -195,15 +195,15 @@
                 {/if}
 
                 {#if vm.uuid}
-                  <p class="text-xs text-base-content/40 mt-2 font-mono">{vm.uuid}</p>
+                  <p class="text-xs text-base-content/60 mt-2 font-mono">{vm.uuid}</p>
                 {/if}
                 {#if vm.mac_addresses && vm.mac_addresses.length > 0}
-                  <p class="text-xs text-base-content/40 mt-1 font-mono">
+                  <p class="text-xs text-base-content/60 mt-1 font-mono">
                     {vm.mac_addresses.join(", ")}
                   </p>
                 {/if}
                 {#if vm.disk_images && vm.disk_images.length > 0}
-                  <p class="text-xs text-base-content/50 mt-1 break-all">
+                  <p class="text-xs text-base-content/60 mt-1 break-all">
                     {vm.disk_images.join(", ")}
                   </p>
                 {/if}

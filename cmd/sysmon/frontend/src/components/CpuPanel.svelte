@@ -1,5 +1,6 @@
 <script lang="ts">
-  import TimeSeriesChart from "./TimeSeriesChart.svelte";
+
+  import { history } from "$stores/history.svelte";  import MetricChart from "./MetricChart.svelte";
   import GaugeChart from "./GaugeChart.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
@@ -17,6 +18,11 @@
   import type { CPUInfo } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
+
+  // Every heading below says which window it is drawing. With a range
+  // applied that is no longer 60 seconds, and a specific wrong answer reads
+  // worse than none.
+  const windowLabel = $derived(history.windowLabel);
   const snapshot = $derived(monitor.snapshot);
   const cpuHistory = $derived(monitor.cpuHistory);
   const cpuOverallHistory = $derived(monitor.cpuOverallHistory);
@@ -107,9 +113,10 @@
     <div class="card bg-base-200 shadow-sm lg:col-span-2">
       <div class="card-body p-4">
         <h3 class="card-title text-sm text-base-content/70 mb-2">
-          CPU Usage (60s)
+          CPU Usage ({windowLabel})
         </h3>
-        <TimeSeriesChart
+        <MetricChart
+          metrics={["cpu"]}
           series={[
             {
               label: "Overall %",
@@ -222,9 +229,12 @@
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70 mb-3">
-            Per-Core History (60s)
+            Per-Core History ({windowLabel})
           </h3>
-          <TimeSeriesChart
+          <!-- Per-core usage is collected but not exported as a series, so
+               this chart has no history to draw. MetricChart says so rather
+               than streaming on beside charts showing last week. -->
+          <MetricChart
             series={snapshot.cpus.map((cpu, i) => ({
               label: `Core ${cpu.index}`,
               data: cpuHistory[i] ?? [],
@@ -295,7 +305,7 @@
         <div class="card-body p-4">
           <div class="flex items-center justify-between mb-3">
             <h3 class="card-title text-sm text-base-content/70">CPU Flags</h3>
-            <span class="text-xs text-base-content/50">
+            <span class="text-xs text-base-content/60">
               Showing {filteredFlags.length} of {allFlags.length} flags
             </span>
           </div>
@@ -310,7 +320,7 @@
               <span class="badge badge-outline badge-xs font-mono">{flag}</span>
             {/each}
             {#if filteredFlags.length === 0 && flagSearch.trim() !== ""}
-              <span class="text-xs text-base-content/50">
+              <span class="text-xs text-base-content/60">
                 No flags match "{flagSearch}"
               </span>
             {/if}
@@ -388,9 +398,10 @@
               <h4
                 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2"
               >
-                Temperature History (60s)
+                Temperature History ({windowLabel})
               </h4>
-              <TimeSeriesChart
+              <MetricChart
+                metrics={["cpu_temperature"]}
                 series={sensors.core_temps.map((ct, i) => ({
                   label: ct.label || `Core ${ct.core_id}`,
                   data: cpuTempHistory[i] ?? [],
@@ -468,7 +479,7 @@
                   <span class="font-semibold">
                     {formatWatts(pkg.power_w)}
                     {#if pkg.max_power_w > 0}
-                      <span class="text-base-content/50 font-normal">
+                      <span class="text-base-content/60 font-normal">
                         / {formatWatts(pkg.max_power_w)}
                       </span>
                     {/if}
@@ -482,7 +493,7 @@
                   ></progress>
                 {/if}
                 {#if pkg.energy_joules > 0}
-                  <p class="text-xs text-base-content/40">
+                  <p class="text-xs text-base-content/60">
                     Energy: {pkg.energy_joules.toFixed(1)} J
                   </p>
                 {/if}
@@ -494,9 +505,10 @@
             <h4
               class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2"
             >
-              Total Power Draw (60s)
+              Total Power Draw ({windowLabel})
             </h4>
-            <TimeSeriesChart
+            <MetricChart
+              metrics={["cpu_power"]}
               series={[
                 {
                   label: "Power W",
@@ -550,14 +562,14 @@
                     <td
                       class={tt.core_throttle_count > 0
                         ? "text-warning font-semibold"
-                        : "text-base-content/50"}
+                        : "text-base-content/60"}
                     >
                       {tt.core_throttle_count.toLocaleString()}
                     </td>
                     <td
                       class={tt.package_throttle_count > 0
                         ? "text-error font-semibold"
-                        : "text-base-content/50"}
+                        : "text-base-content/60"}
                     >
                       {tt.package_throttle_count.toLocaleString()}
                     </td>

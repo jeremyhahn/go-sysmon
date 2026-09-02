@@ -27,15 +27,14 @@
       } catch (e) {
         // Storage unavailable: no stored choice, so follow the OS below.
       }
-      var mode =
-        stored === "light" || stored === "dark" || stored === "system"
-          ? stored
-          : "system";
+      // A stored choice wins. With none -- including the "system" value an
+      // older build may have left behind -- the OS preference decides the
+      // first load, and the first explicit choice replaces it for good.
       var dark =
-        mode === "system"
-          ? !window.matchMedia ||
-            window.matchMedia("(prefers-color-scheme: dark)").matches
-          : mode === "dark";
+        stored === "light" || stored === "dark"
+          ? stored === "dark"
+          : !window.matchMedia ||
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
       document.documentElement.setAttribute(
         "data-theme",
         dark ? "dark" : "light"

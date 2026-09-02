@@ -178,7 +178,7 @@
                  instead of each table sizing itself to its own longest key. -->
             <table class="table table-xs table-fixed w-full">
               <thead>
-                <tr class="text-base-content/50">
+                <tr class="text-base-content/60">
                   <th class="w-[52%] font-medium">Setting</th>
                   <th class="w-[28%] font-medium">Value</th>
                   <th class="w-[20%] font-medium">Source</th>

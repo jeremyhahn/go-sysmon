@@ -1,11 +1,17 @@
 <script lang="ts">
-  import TimeSeriesChart from "./TimeSeriesChart.svelte";
+
+  import { history } from "$stores/history.svelte";  import MetricChart from "./MetricChart.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
   import { formatBytes, formatBytesRate } from "$lib/format";
   import type { NetworkInfo } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
+
+  // Every heading below says which window it is drawing. With a range
+  // applied that is no longer 60 seconds, and a specific wrong answer reads
+  // worse than none.
+  const windowLabel = $derived(history.windowLabel);
   const snapshot = $derived(monitor.snapshot);
   const networkHistory = $derived(monitor.networkHistory);
 
@@ -48,12 +54,12 @@
 
   {#if dnsServers.length > 0}
     <div class="text-xs text-base-content/60">
-      <span class="text-base-content/50">DNS:</span>
+      <span class="text-base-content/60">DNS:</span>
       {#each dnsServers as ns (ns)}
         <span class="badge badge-ghost badge-xs font-mono ml-1">{ns}</span>
       {/each}
       {#if dnsSearch.length > 0}
-        <span class="text-base-content/50 ml-2">search:</span> {dnsSearch.join(" ")}
+        <span class="text-base-content/60 ml-2">search:</span> {dnsSearch.join(" ")}
       {/if}
     </div>
   {/if}
@@ -114,7 +120,7 @@
           {#if iface.bond_mode || iface.bond_master || (iface.bridge_ports != null && iface.bridge_ports.length > 0)}
             <div class="flex flex-wrap items-center gap-1 mb-3 text-xs">
               {#if iface.bond_mode}
-                <span class="text-base-content/50">bond</span>
+                <span class="text-base-content/60">bond</span>
                 <span class="badge badge-outline badge-xs">{iface.bond_mode}</span>
                 {#if iface.bond_slaves != null}
                   {#each iface.bond_slaves as sl (sl)}
@@ -123,11 +129,11 @@
                 {/if}
               {/if}
               {#if iface.bond_master}
-                <span class="text-base-content/50">slave of</span>
+                <span class="text-base-content/60">slave of</span>
                 <span class="badge badge-ghost badge-xs font-mono">{iface.bond_master}</span>
               {/if}
               {#if iface.bridge_ports != null && iface.bridge_ports.length > 0}
-                <span class="text-base-content/50">bridge</span>
+                <span class="text-base-content/60">bridge</span>
                 {#each iface.bridge_ports as bp (bp)}
                   <span class="badge badge-ghost badge-xs font-mono">{bp}</span>
                 {/each}
@@ -138,8 +144,10 @@
           <!-- Traffic chart -->
           {#if nh != null}
             <div class="mb-3">
-              <p class="text-xs text-base-content/60 mb-1">Traffic Rate (60s)</p>
-              <TimeSeriesChart
+              <p class="text-xs text-base-content/60 mb-1">Traffic Rate ({windowLabel})</p>
+              <MetricChart
+                metrics={["net_tx", "net_rx"]}
+                splitValue={iface.name}
                 series={[
                   {
                     label: "Send",
@@ -180,7 +188,7 @@
           </div>
 
           <!-- Details row -->
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-base-content/50 mt-1">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-base-content/60 mt-1">
             <div>MTU: {iface.mtu}</div>
             {#if iface.flags != null && iface.flags.length > 0}
               <div class="col-span-3 truncate">

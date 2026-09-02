@@ -715,4 +715,141 @@ test.describe('the delta stream', () => {
     });
     await expect.poll(() => shownHostname(page)).toBe('patched');
   });
+
+  test('the banner claims live values only while the stream is up', async ({ page }) => {
+    // The other half of the banner assertion. history.spec.ts covers the
+    // disconnected case, where its mocked feed serves one frame and closes;
+    // here the fake EventSource stays open, so "connected" is genuinely true
+    // and the claim the banner makes about the gauges is genuinely correct.
+    //
+    // Both halves are needed. A banner hard-coded to either sentence passes one
+    // of them, and the failure this guards -- printing "live" beside data that
+    // is not -- is only visible when the two states are told apart.
+    await page.route(/\/api\/history\/metrics$/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          enabled: true,
+          metrics: [{ key: 'cpu', label: 'CPU', unit: 'percent', split_by: '' }],
+        }),
+      })
+    );
+    await page.route(/\/api\/history\?/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          enabled: true, node: 'mon0', metric: 'cpu', unit: 'percent',
+          start_ms: 1, end_ms: 2, step_ms: 1, series: [],
+        }),
+      })
+    );
+
+    await openHostTab(page);
+    await send(page, 'full', { seq: 1, snapshot: snapshotWith('live-host') });
+    await expect.poll(() => shownHostname(page)).toBe('live-host');
+    await expect(page.locator('nav').getByText('Connected', { exact: true })).toBeVisible();
+
+    await page.locator('select[aria-label="Date range"]').selectOption('24h');
+    const bar = page.getByRole('status').first();
+    await expect(bar).toBeVisible();
+    await expect(bar).toContainText('still show live values');
+    await expect(bar).not.toContainText('last snapshot received');
+  });
+
+  test('a peer with nothing back yet is not called live', async ({ page }) => {
+    // The window between selecting a peer and its first poll returning.
+    // selectNode clears peerFreshness immediately, so for that moment a
+    // selected peer looks exactly like the local host -- and a banner that
+    // branched on "freshness is null" would answer with the LOCAL stream's
+    // state and call the peer's widgets live before the peer had supplied
+    // anything.
+    //
+    // This lives here rather than in history.spec.ts because it only
+    // distinguishes anything while the STREAM IS UP. Written there first, it
+    // passed against the wrong implementation: the mocked feed is disconnected,
+    // so both branches answer "not live" and the test cannot tell them apart.
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await page.route(/\/api\/history\/metrics$/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          enabled: true,
+          metrics: [{ key: 'cpu', label: 'CPU', unit: 'percent', split_by: '' }],
+        }),
+      })
+    );
+    await page.route(/\/api\/history\?/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          enabled: true, node: 'alpha', metric: 'cpu', unit: 'percent',
+          start_ms: 1, end_ms: 2, step_ms: 1, series: [],
+        }),
+      })
+    );
+    await page.route(/\/api\/fleet$/, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          enabled: true,
+          nodes: [
+            {
+              name: 'alpha', url: 'http://alpha:8081', self: false, reachable: true,
+              error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
+              version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
+              cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
+              worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
+              max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
+            },
+          ],
+        }),
+      })
+    );
+    // Held open, so the selection sits in the window under test.
+    await page.route(/\/api\/fleet\/alpha\/snapshot$/, async (route) => {
+      await held;
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          snapshot: { ...snapshot, host: { ...snapshot.host, hostname: 'alpha-host' } },
+          reachable: true,
+          age_seconds: 0,
+        }),
+      });
+    });
+
+    await openHostTab(page);
+    await send(page, 'full', { seq: 1, snapshot: snapshotWith('local-host') });
+    await expect.poll(() => shownHostname(page)).toBe('local-host');
+    // The stream is genuinely up -- which is what makes this test able to fail.
+    await expect(page.locator('nav').getByText('Connected', { exact: true })).toBeVisible();
+
+    await page.locator('select[aria-label="Date range"]').selectOption('24h');
+    const bar = page.getByRole('status').first();
+    await expect(bar).toBeVisible();
+    await expect(bar).toContainText('still show live values');
+
+    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await page.getByRole('button', { name: /alpha/ }).first().click();
+
+    // Selected, and it has answered nothing. The local stream is still up.
+    await expect(bar).toContainText('last snapshot received');
+    await expect(bar).not.toContainText('still show live values');
+
+
+
+    // And once it answers, it is live -- the window, not a permanent refusal.
+    release!();
+    await expect(bar).toContainText('still show live values');
+  });
 });

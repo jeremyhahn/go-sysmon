@@ -1,10 +1,15 @@
 <script lang="ts">
-  import TimeSeriesChart from "./TimeSeriesChart.svelte";
+
+  import { history } from "$stores/history.svelte";  import MetricChart from "./MetricChart.svelte";
   import StatCard from "./StatCard.svelte";
   import ProcessTable from "./ProcessTable.svelte";
   import { formatDuration, formatPercent, formatUnixTime } from "$lib/format";
   import { monitor } from "$stores/monitor.svelte";
 
+
+  // The heading names the window it draws. With a range applied that is no
+  // longer 60 seconds, and a specific wrong answer reads worse than none.
+  const windowLabel = $derived(history.windowLabel);
   const snapshot = $derived(monitor.snapshot);
   const loadHistory = $derived(monitor.loadHistory);
   const overallCpuPercent = $derived(monitor.overallCpuPercent);
@@ -28,23 +33,23 @@
               {host.kernel_arch} &bull; Uptime: {formatDuration(host.uptime)}
             </p>
             {#if host.boot_time > 0}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 Booted: {formatUnixTime(host.boot_time)}
               </p>
             {/if}
             {#if host.board_name}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 {host.board_vendor ? host.board_vendor + " " : ""}{host.board_name}{host.board_version ? " (v" + host.board_version + ")" : ""}
               </p>
             {/if}
             {#if host.bios_version}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 BIOS: {host.bios_vendor ? host.bios_vendor + " " : ""}{host.bios_version}{host.bios_date ? " (" + host.bios_date + ")" : ""}
               </p>
             {/if}
           </div>
           <div class="text-right">
-            <p class="text-xs text-base-content/50">Platform</p>
+            <p class="text-xs text-base-content/60">Platform</p>
             <p class="font-medium">{host.platform}</p>
           </div>
         </div>
@@ -56,9 +61,10 @@
       <div class="card bg-base-200 shadow-sm lg:col-span-2">
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70 mb-2">
-            Load Average (1m) — 60s history
+            Load Average (1m) — {windowLabel} history
           </h3>
-          <TimeSeriesChart
+          <MetricChart
+            metrics={["load1"]}
             series={[
               {
                 label: "Load 1m",
@@ -138,7 +144,7 @@
       <StatCard
         label="Zombie"
         value={procs.zombie}
-        colorClass={procs.zombie > 0 ? "text-warning" : "text-base-content/50"}
+        colorClass={procs.zombie > 0 ? "text-warning" : "text-base-content/60"}
       />
     </div>
 

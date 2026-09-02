@@ -34,17 +34,6 @@
   let container: HTMLDivElement;
   let chart: ECharts | null = null;
 
-  const COLORS = [
-    "#36d399",
-    "#38bdf8",
-    "#fb923c",
-    "#a78bfa",
-    "#f472b6",
-    "#facc15",
-    "#f87272",
-    "#2dd4bf",
-  ];
-
   function buildOption(
     s: HistorySeries[],
     p: ChartPalette,
@@ -117,8 +106,8 @@
         data: line.points.map((pt) => [pt.t, pt.v] as [number, number]),
         smooth: false,
         symbol: "none",
-        lineStyle: { color: COLORS[idx % COLORS.length], width: 1.5 },
-        itemStyle: { color: COLORS[idx % COLORS.length] },
+        lineStyle: { color: p.series[idx % p.series.length], width: 1.5 },
+        itemStyle: { color: p.series[idx % p.series.length] },
       })),
     };
   }

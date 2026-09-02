@@ -114,3 +114,60 @@ func TestMetric_Expr_RejectsInjection(t *testing.T) {
 		}
 	}
 }
+
+// TestMetric_Expr_Aggregates. A chart whose live line is a sum must keep
+// meaning the same thing when it is drawn from history.
+func TestMetric_Expr_Aggregates(t *testing.T) {
+	m := Metric{
+		Name:      "sysmon_power_watts",
+		Matchers:  []string{`source=~"cpu:.*"`},
+		Aggregate: "sum",
+	}
+	got, err := m.Expr("mon0")
+	if err != nil {
+		t.Fatalf("Expr() = %v", err)
+	}
+	if want := `sum(sysmon_power_watts{instance="mon0",source=~"cpu:.*"})`; got != want {
+		t.Fatalf("Expr() = %q, want %q", got, want)
+	}
+}
+
+// TestCatalog_CPUPowerIsATotal pins the entry rather than the mechanism,
+// because the mechanism is not what was wrong.
+//
+// The chart is headed "Total Power Draw" and its live line is the sum of every
+// CPU package. The historical entry returned one series per package, so on a
+// two-socket host choosing a date range silently replaced the total with its
+// parts under an unchanged heading -- a chart that means something different
+// in historical mode, which is worse than a chart with no history.
+func TestCatalog_CPUPowerIsATotal(t *testing.T) {
+	m, err := Lookup("cpu_power")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if m.Aggregate != "sum" {
+		t.Errorf("cpu_power aggregate = %q, want sum: the chart it feeds is a total", m.Aggregate)
+	}
+	if m.SplitBy != "" {
+		t.Errorf("cpu_power splits by %q; a total has no parts to split into", m.SplitBy)
+	}
+
+	expr, err := m.Expr("mon0")
+	if err != nil {
+		t.Fatalf("Expr: %v", err)
+	}
+	if !strings.HasPrefix(expr, "sum(") {
+		t.Errorf("cpu_power query = %q, want it summed", expr)
+	}
+
+	// The per-source chart is a different entry and must stay split, so this
+	// is not a blanket change to every power series.
+	whole, err := Lookup("power")
+	if err != nil {
+		t.Fatalf("Lookup power: %v", err)
+	}
+	if whole.Aggregate != "" || whole.SplitBy != "source" {
+		t.Errorf("the per-source power entry = aggregate %q split %q, want it split by source",
+			whole.Aggregate, whole.SplitBy)
+	}
+}

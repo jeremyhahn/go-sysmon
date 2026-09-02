@@ -29,7 +29,7 @@
       {/if}
     </div>
     {#if sub}
-      <p class="text-xs text-base-content/50 mt-0.5">{sub}</p>
+      <p class="text-xs text-base-content/60 mt-0.5">{sub}</p>
     {/if}
   </div>
 </div>

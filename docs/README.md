@@ -23,6 +23,7 @@ when you need to know why a number says what it says.
 | [API](server/api.md) | Connecting your own client |
 | [CLI](cli/reference.md) | Every command and flag |
 | [GUI](gui/architecture.md) | The Wails desktop app and table conventions |
+| [House style](gui/house-style.md) | Colour, type, spacing and theming — the reference a sibling project implements against |
 | [Types](types/reference.md) | The shared structures everything speaks in |
 
 ## Desktop extensions

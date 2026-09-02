@@ -1,6 +1,7 @@
 <script lang="ts">
-  import GaugeChart from "./GaugeChart.svelte";
-  import TimeSeriesChart from "./TimeSeriesChart.svelte";
+
+  import { history } from "$stores/history.svelte";  import GaugeChart from "./GaugeChart.svelte";
+  import MetricChart from "./MetricChart.svelte";
   import StatCard from "./StatCard.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
@@ -12,6 +13,11 @@
   } from "$lib/format";
   import { monitor } from "$stores/monitor.svelte";
 
+
+  // Every heading below says which window it is drawing. With a range
+  // applied that is no longer 60 seconds, and a specific wrong answer reads
+  // worse than none.
+  const windowLabel = $derived(history.windowLabel);
   const snapshot = $derived(monitor.snapshot);
   const memHistory = $derived(monitor.memHistory);
 
@@ -46,9 +52,10 @@
       <div class="card bg-base-200 shadow-sm lg:col-span-2">
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70 mb-2">
-            Memory Usage (60s)
+            Memory Usage ({windowLabel})
           </h3>
-          <TimeSeriesChart
+          <MetricChart
+            metrics={["memory"]}
             series={[
               {
                 label: "Used %",
@@ -141,7 +148,7 @@
               value={mem.swap_percent}
               max="100"
             ></progress>
-            <p class="text-xs text-base-content/50">
+            <p class="text-xs text-base-content/60">
               Free: {formatBytes(mem.swap_free_bytes)}
             </p>
           </div>
@@ -233,7 +240,7 @@
                         </span>
                       {:else if !mem.temp_sensor_detected}
                         <span class="tooltip tooltip-left" data-tip="No DIMM thermal sensor detected. Ensure jc42 (DDR3/DDR4) or spd5118 (DDR5) kernel modules are loaded. DDR5 may require CONFIG_SENSORS_SPD5118_DETECT=y.">
-                          <span class="badge badge-ghost badge-xs gap-1 text-base-content/40">
+                          <span class="badge badge-ghost badge-xs gap-1 text-base-content/60">
                             No sensor
                           </span>
                         </span>

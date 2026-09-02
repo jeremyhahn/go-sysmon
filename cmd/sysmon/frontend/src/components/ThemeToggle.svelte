@@ -1,36 +1,45 @@
 <script lang="ts">
-  // Theme control for the navbar.
-  //
-  // A select rather than a two-state switch, because the choice has three
-  // values: a switch can express light and dark but has nowhere to put "follow
-  // the operating system", so once it is touched there is no way back to
-  // following the OS. It is also the same control the polling interval beside
-  // it uses, which keeps the navbar's two preferences looking like one idea.
+  /**
+   * Theme control: one icon button that flips between light and dark.
+   *
+   * The sun and moon are go-netmon's, path for path, and so is the behaviour:
+   * two states, one click between them. The icon shows the theme you are in,
+   * and the accessible name says what clicking will do -- an icon alone cannot.
+   */
 
-  import { theme, isThemeMode } from "$lib/theme.svelte";
-
-  const options: { value: "system" | "light" | "dark"; label: string }[] = [
-    { value: "system", label: "Auto" },
-    { value: "light", label: "Light" },
-    { value: "dark", label: "Dark" },
-  ];
+  import { theme } from "$lib/theme.svelte";
 
   const mode = $derived(theme.mode);
-
-  function onChange(e: Event) {
-    const value = (e.target as HTMLSelectElement).value;
-    if (isThemeMode(value)) theme.setMode(value);
-  }
+  const other = $derived(theme.other);
 </script>
 
-<select
-  class="select select-xs select-bordered bg-base-200 text-base-content/80 font-medium"
-  aria-label="Theme"
-  title="Theme"
-  value={mode}
-  onchange={onChange}
+<button
+  type="button"
+  class="btn btn-ghost btn-xs btn-circle"
+  aria-label="{mode === 'dark' ? 'Dark' : 'Light'} theme. Switch to: {other} theme"
+  title="Switch to the {other} theme"
+  onclick={() => theme.toggle()}
 >
-  {#each options as opt (opt.value)}
-    <option value={opt.value}>{opt.label}</option>
-  {/each}
-</select>
+  {#if mode === "light"}
+    <!-- go-netmon's sun. -->
+    <svg class="h-4 w-4" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.5" />
+      <path
+        d="M8 1v1.8M8 13.2V15M15 8h-1.8M2.8 8H1M12.9 3.1l-1.3 1.3M4.4 11.6l-1.3 1.3M12.9 12.9l-1.3-1.3M4.4 4.4 3.1 3.1"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+      />
+    </svg>
+  {:else}
+    <!-- go-netmon's moon. -->
+    <svg class="h-4 w-4" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linejoin="round"
+      />
+    </svg>
+  {/if}
+</button>

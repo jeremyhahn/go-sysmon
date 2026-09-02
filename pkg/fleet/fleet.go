@@ -171,7 +171,7 @@ func (p *Poller) fetch(peer config.Peer, timeout time.Duration) (*types.Snapshot
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &ErrPeerStatus{Peer: peer.Name, Status: resp.StatusCode}
+		return nil, &ErrPeerStatus{Peer: peer.Name, Endpoint: "/api/snapshot", Status: resp.StatusCode}
 	}
 
 	var snap types.Snapshot
@@ -352,12 +352,54 @@ func summarize(name, url string, self bool, snap *types.Snapshot, fetchedAt time
 }
 
 // ErrPeerStatus reports a peer that answered with a non-OK HTTP status.
+//
+// Endpoint is the path that was asked for, so the message can say what the
+// node could not do rather than only what it returned.
 type ErrPeerStatus struct {
-	Peer   string
-	Status int
+	Peer     string
+	Endpoint string
+	Status   int
+}
+
+// endpointsAddedLater are the paths a node can legitimately not serve because
+// its build predates them. A 404 on one of these is a version statement.
+//
+// /api/snapshot is deliberately NOT here, and the distinction is the point: it
+// is the endpoint the fleet has always polled, so a 404 on it is a wrong peer
+// URL or a proxy that does not forward the path -- never an old build. Telling
+// an operator to "check its /api/version" in that case sends them to an
+// endpoint that will fail the same way, for the same reason, and delays finding
+// the real cause.
+//
+// Add a path here when it is introduced, not when someone reports the
+// confusing message.
+var endpointsAddedLater = map[string]bool{
+	"/api/config": true,
 }
 
 func (e *ErrPeerStatus) Error() string {
+	// A 404 from a node that is otherwise answering CAN be a version statement
+	// rather than a fault: the endpoint was added after the build it is
+	// running. Saying "returned HTTP 404" leaves an operator looking for a
+	// broken node; saying what it means turns a bug report into a known state
+	// with an obvious remedy.
+	//
+	// Only for endpoints that postdate the original API, though -- see
+	// endpointsAddedLater.
+	//
+	// Deliberately hedged even then. A reverse proxy that does not forward the
+	// path produces the same 404, so this says what was observed and what
+	// usually explains it rather than asserting a version.
+	if e.Status == http.StatusNotFound && endpointsAddedLater[e.Endpoint] {
+		endpoint := e.Endpoint
+		if endpoint == "" {
+			endpoint = "that endpoint"
+		}
+		return fmt.Sprintf(
+			"peer %s does not serve %s (HTTP 404) — it is most likely running a "+
+				"version older than the one that added it; check its /api/version",
+			e.Peer, endpoint)
+	}
 	return fmt.Sprintf("peer %s returned HTTP %d", e.Peer, e.Status)
 }
 
@@ -401,7 +443,7 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 		}
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return nil, &ErrPeerStatus{Peer: name, Status: resp.StatusCode}
+		return nil, &ErrPeerStatus{Peer: name, Endpoint: "/api/config", Status: resp.StatusCode}
 	}
 
 	var view types.ConfigView

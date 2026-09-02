@@ -2,10 +2,12 @@ package fleet_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -470,5 +472,83 @@ func TestView_OrdersByNameNotSeverity(t *testing.T) {
 			t.Fatalf("nodes = %v, want %v (alphabetical; the unreachable node "+
 				"must not be promoted to the front)", got, want)
 		}
+	}
+}
+
+// TestPeerConfig_OldPeerExplainsItself.
+//
+// The owner hit "The server returned 502 for /api/fleet/ci-node-1/config" and
+// reported it as a bug. It was not one: the node was reachable, serving
+// snapshots, and simply running a build from before /api/config existed, so the
+// aggregator was faithfully reporting an upstream 404.
+//
+// "peer ci-node-1 returned HTTP 404" gives an operator nothing to act on. A
+// 404 from a node that is otherwise answering is a version statement, and
+// saying so turns a bug report into a known state with an obvious remedy.
+func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
+	// A peer that serves snapshots but has no /api/config: exactly an older
+	// build, rather than a node that is down.
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/snapshot" {
+			if err := json.NewEncoder(w).Encode(healthySnapshot("ci-node-1")); err != nil {
+				t.Errorf("encoding snapshot: %v", err)
+			}
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer old.Close()
+
+	cfg := config.Fleet{
+		Peers:          []config.Peer{{Name: "ci-node-1", URL: old.URL}},
+		PollIntervalMs: 10000,
+		TimeoutMs:      2000,
+	}
+	p := fleet.New(
+		func() config.Fleet { return cfg },
+		func() *types.Snapshot { return nil },
+		func() string { return "mon0" }, quiet(),
+	)
+
+	_, err := p.PeerConfig("ci-node-1")
+	if err == nil {
+		t.Fatal("PeerConfig() = nil error for a peer with no /api/config")
+	}
+
+	var status *fleet.ErrPeerStatus
+	if !errors.As(err, &status) {
+		t.Fatalf("PeerConfig() = %v, want *ErrPeerStatus", err)
+	}
+	if status.Status != http.StatusNotFound || status.Endpoint != "/api/config" {
+		t.Fatalf("ErrPeerStatus = %+v, want a 404 on /api/config", status)
+	}
+
+	message := err.Error()
+	for _, want := range []string{"ci-node-1", "/api/config", "404", "older", "/api/version"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the message does not mention %q, so an operator cannot act on it: %s",
+				want, message)
+		}
+	}
+
+	// Every other status keeps the plain wording. A 500 is a fault, and
+	// telling someone it is a version problem would send them the wrong way.
+	plain := (&fleet.ErrPeerStatus{Peer: "fs", Endpoint: "/api/config", Status: 500}).Error()
+	if strings.Contains(plain, "older") {
+		t.Errorf("a 500 is reported as a version problem: %s", plain)
+	}
+
+	// And neither does a 404 on an endpoint that has ALWAYS existed.
+	//
+	// /api/snapshot is what the fleet has always polled, so a 404 on it is a
+	// wrong peer URL or a proxy that does not forward the path -- never an old
+	// build. The version wording would send an operator to /api/version, which
+	// fails the same way for the same reason, and delays finding the cause.
+	core := (&fleet.ErrPeerStatus{Peer: "fs", Endpoint: "/api/snapshot", Status: 404}).Error()
+	if strings.Contains(core, "older") || strings.Contains(core, "/api/version") {
+		t.Errorf("a 404 on the core endpoint is reported as version skew: %s", core)
+	}
+	if !strings.Contains(core, "404") {
+		t.Errorf("a 404 on the core endpoint does not say so: %s", core)
 	}
 }

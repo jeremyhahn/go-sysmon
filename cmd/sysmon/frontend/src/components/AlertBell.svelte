@@ -123,7 +123,7 @@
                 <span class="block text-sm {severityTextClass(alert.severity)}">
                   {alert.message}
                 </span>
-                <span class="block text-xs text-base-content/50">
+                <span class="block text-xs text-base-content/60">
                   {#if alert.resource}
                     <span class="font-mono">{alert.resource}</span> &bull;
                   {/if}

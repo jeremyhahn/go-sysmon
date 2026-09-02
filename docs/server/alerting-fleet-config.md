@@ -339,7 +339,7 @@ prometheus:
 The two halves are independent. `remote_write_url` makes the node push its own
 metrics, so a Prometheus that cannot route to it still records its history;
 `query_url` makes the node able to read ranges back, which is what puts the
-**History** tab in its dashboard. Usually every node pushes and only the
+range picker in its dashboard. Usually every node pushes and only the
 aggregator reads.
 
 **Each node pushes its own metrics.** Having the aggregator store what it
@@ -430,11 +430,32 @@ logic (`pkg/prom/testdata/`).
 
 ### History: reading a range back
 
-With `query_url` set, the dashboard gains a **History** tab: a range picker (15
-minutes to 30 days, or an explicit start and end) over a set of metrics chosen
-from a catalog. It is the only view whose data does not come from the event
-stream. With no range selected nothing changes — every other panel is the live
-stream it always was.
+With `query_url` set, the dashboard gains a **date range control** in the header,
+beside the polling interval: `Live`, six presets from 15 minutes to 30 days, and
+an explicit start and end.
+
+It is one control for the whole dashboard, and that shape is the point. Select a
+range and the charts on the panel you are looking at redraw for that window,
+together, so they stay comparable. Select `Live` and everything is the stream it
+always was — there is no historical mode to leave, only a range that is or is
+not set.
+
+Two consequences are stated on screen rather than left to be inferred:
+
+- A **full-width banner** says the charts are not live, and names the window.
+  A chart that has silently stopped updating is the same lie as a frozen peer
+  reading, and here it would be self-inflicted.
+- The banner also says what is **still** live. Gauges, tables and counters show
+  an instantaneous value and have no historical equivalent, so they keep
+  streaming.
+
+A chart with no counterpart in the catalog — per-core CPU usage and GPU link
+throughput are collected but not exported as series — says so instead of
+carrying on streaming beside charts showing last week.
+
+Several charts share a metric: nine disks all draw `disk_read`. The request is
+made once per metric per window, not once per chart, and each chart selects its
+own device from the response.
 
 The endpoint maps a **fixed catalog of keys** to PromQL rather than forwarding an
 expression. This service carries no authentication of its own, so a pass-through

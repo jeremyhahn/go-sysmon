@@ -22,7 +22,7 @@
   let chart: ECharts | null = null;
 
   function buildOption(pct: number, p: ChartPalette): ChartOption {
-    const color = usageEchartsColor(pct);
+    const color = usageEchartsColor(pct, p.usage);
     return {
       darkMode: p.darkMode,
       backgroundColor: "transparent",

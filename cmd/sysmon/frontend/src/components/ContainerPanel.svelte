@@ -72,7 +72,7 @@
   function throttleColor(pct: number): string {
     if (pct >= 25) return "text-error";
     if (pct > 0) return "text-warning";
-    return "text-base-content/40";
+    return "text-base-content/60";
   }
 
   const containerColumns: Column<ContainerInfo>[] = [
@@ -125,7 +125,7 @@
   function pressureColor(pct: number): string {
     if (pct >= 20) return "text-error";
     if (pct >= 5) return "text-warning";
-    return "text-base-content/40";
+    return "text-base-content/60";
   }
 </script>
 
@@ -145,12 +145,12 @@
         label="Throttled"
         value={throttledCount}
         sub={throttledCount > 0 ? "CPU-capped" : "none"}
-        colorClass={throttledCount > 0 ? "text-warning" : "text-base-content/50"}
+        colorClass={throttledCount > 0 ? "text-warning" : "text-base-content/60"}
       />
       <StatCard
         label="OOM Kills"
         value={totalOomKills}
-        colorClass={totalOomKills > 0 ? "text-error" : "text-base-content/50"}
+        colorClass={totalOomKills > 0 ? "text-error" : "text-base-content/60"}
       />
       {#if runtime?.available}
         <StatCard
@@ -159,7 +159,7 @@
           sub="exist but stopped"
           colorClass={runtime.containers_stopped > 0
             ? "text-base-content/70"
-            : "text-base-content/50"}
+            : "text-base-content/60"}
         />
         {#if runtime.containers_paused > 0}
           <!-- A paused container holds its memory and its cgroup but runs no
@@ -189,7 +189,7 @@
             {/if}
           </div>
           {#if virt.cgroup_version}
-            <span class="text-xs text-base-content/50">
+            <span class="text-xs text-base-content/60">
               cgroup {virt.cgroup_version}
               {#if virt.runtimes && virt.runtimes.length > 0}
                 &bull; {virt.runtimes.join(", ")}
@@ -214,25 +214,25 @@
                 container{runtime?.containers_total === 1 ? "" : "s"} on this host,
                 {notRunning} of which {notRunning === 1 ? "is" : "are"} not running.
               </p>
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 A stopped container has no processes and no cgroup, so it reports
                 no CPU, memory or I/O. Start one to see it here.
               </p>
             {:else if canObserve && !runtime?.available}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 Detection is working (cgroup {virt.cgroup_version}); nothing is running.
                 No container runtime socket answered, so containers that exist but
                 are stopped cannot be listed &mdash; that needs membership of the
                 <span class="font-mono">docker</span> group.
               </p>
             {:else if canObserve}
-              <p class="text-xs text-base-content/50">
+              <p class="text-xs text-base-content/60">
                 Detection is working (cgroup {virt.cgroup_version}); there is
                 simply nothing running.
               </p>
             {/if}
             {#if capability?.notes && capability.notes.length > 0}
-              <ul class="text-xs text-base-content/50 list-disc list-inside">
+              <ul class="text-xs text-base-content/60 list-disc list-inside">
                 {#each capability.notes as note (note)}
                   <li>{note}</li>
                 {/each}
@@ -240,7 +240,7 @@
             {/if}
           </div>
         {:else}
-          <p class="text-xs text-base-content/40">Select a row for detail.</p>
+          <p class="text-xs text-base-content/60">Select a row for detail.</p>
           <DataTable
             rows={containers}
             columns={containerColumns}
@@ -264,7 +264,7 @@
         <div class="card-body p-4">
           <div class="flex flex-wrap items-baseline justify-between gap-2">
             <h3 class="card-title text-sm text-base-content/70">Images &amp; Storage</h3>
-            <span class="text-xs text-base-content/50 font-mono">
+            <span class="text-xs text-base-content/60 font-mono">
               {runtime.engine} {runtime.version} &bull; {runtime.storage_driver} on
               {runtime.backing_filesystem} &bull; {runtime.root_dir}
             </span>
@@ -288,7 +288,7 @@
               label="Reclaimable"
               value={formatBytes(reclaimable)}
               sub="prune would free"
-              colorClass={reclaimable > 0 ? "text-warning" : "text-base-content/50"}
+              colorClass={reclaimable > 0 ? "text-warning" : "text-base-content/60"}
             />
           </div>
 
@@ -347,7 +347,7 @@
                 emptyMessage="No images on this host."
                 truncated={runtime.images_truncated}
               />
-              <p class="text-xs text-base-content/40 mt-1">
+              <p class="text-xs text-base-content/60 mt-1">
                 Sizes include shared layers, so they do not sum to the total.
               </p>
             </div>
@@ -362,52 +362,52 @@
         <div class="card-body p-4">
           <h3 class="card-title text-sm text-base-content/70">
             {selected.name}
-            <span class="font-mono text-xs text-base-content/50">{selected.short_id}</span>
+            <span class="font-mono text-xs text-base-content/60">{selected.short_id}</span>
           </h3>
 
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-2 text-sm">
             <div>
-              <p class="text-xs text-base-content/50">CPU throttling</p>
+              <p class="text-xs text-base-content/60">CPU throttling</p>
               <p class="font-mono {throttleColor(selected.throttled_percent)}">
                 {selected.nr_throttled} / {selected.nr_periods} periods
               </p>
-              <p class="text-xs text-base-content/40">
+              <p class="text-xs text-base-content/60">
                 {(selected.throttled_usec / 1e6).toFixed(1)}s stopped
               </p>
             </div>
             <div>
-              <p class="text-xs text-base-content/50">CPU affinity</p>
+              <p class="text-xs text-base-content/60">CPU affinity</p>
               <p class="font-mono">{selected.cpu_set || "–"}</p>
             </div>
             <div>
-              <p class="text-xs text-base-content/50">Anonymous / cache</p>
+              <p class="text-xs text-base-content/60">Anonymous / cache</p>
               <p class="font-mono">
                 {formatBytes(selected.anon_bytes)} / {formatBytes(selected.file_bytes)}
               </p>
             </div>
             <div>
-              <p class="text-xs text-base-content/50">Swap</p>
+              <p class="text-xs text-base-content/60">Swap</p>
               <p class="font-mono">{formatBytes(selected.swap_bytes)}</p>
             </div>
 
             <div>
-              <p class="text-xs text-base-content/50">OOM kills / events</p>
+              <p class="text-xs text-base-content/60">OOM kills / events</p>
               <p class="font-mono {selected.oom_kills > 0 ? 'text-error' : ''}">
                 {selected.oom_kills} / {selected.oom_events}
               </p>
             </div>
             <div>
-              <p class="text-xs text-base-content/50">Major faults</p>
+              <p class="text-xs text-base-content/60">Major faults</p>
               <p class="font-mono">{selected.major_faults.toLocaleString()}</p>
             </div>
             <div>
-              <p class="text-xs text-base-content/50">PIDs peak / limit</p>
+              <p class="text-xs text-base-content/60">PIDs peak / limit</p>
               <p class="font-mono">
                 {selected.pids_peak} / {selected.pids_max > 0 ? selected.pids_max : "∞"}
               </p>
             </div>
             <div>
-              <p class="text-xs text-base-content/50">IOPS read / write</p>
+              <p class="text-xs text-base-content/60">IOPS read / write</p>
               <p class="font-mono">
                 {selected.read_iops.toLocaleString()} / {selected.write_iops.toLocaleString()}
               </p>
@@ -415,24 +415,24 @@
           </div>
 
           <div class="mt-3">
-            <p class="text-xs text-base-content/50 mb-1">
+            <p class="text-xs text-base-content/60 mb-1">
               Pressure stall (share of the last 10s spent waiting)
             </p>
             <div class="grid grid-cols-3 gap-4 text-sm">
               <div>
-                <span class="text-xs text-base-content/50">CPU</span>
+                <span class="text-xs text-base-content/60">CPU</span>
                 <p class="font-mono {pressureColor(selected.cpu_pressure)}">
                   {formatPercent(selected.cpu_pressure)}
                 </p>
               </div>
               <div>
-                <span class="text-xs text-base-content/50">Memory</span>
+                <span class="text-xs text-base-content/60">Memory</span>
                 <p class="font-mono {pressureColor(selected.memory_pressure)}">
                   {formatPercent(selected.memory_pressure)}
                 </p>
               </div>
               <div>
-                <span class="text-xs text-base-content/50">I/O</span>
+                <span class="text-xs text-base-content/60">I/O</span>
                 <p class="font-mono {pressureColor(selected.io_pressure)}">
                   {formatPercent(selected.io_pressure)}
                 </p>
@@ -441,7 +441,7 @@
           </div>
 
           {#if selected.command}
-            <p class="text-xs text-base-content/40 mt-3 break-all font-mono">
+            <p class="text-xs text-base-content/60 mt-3 break-all font-mono">
               {selected.command}
             </p>
           {/if}
@@ -457,7 +457,7 @@
 
 {#snippet imageCells(img: ImageInfo)}
   <td class="font-mono text-xs">{img.short_id}</td>
-  <td class={img.dangling ? "text-base-content/50 italic" : ""}>
+  <td class={img.dangling ? "text-base-content/60 italic" : ""}>
     {img.tags && img.tags.length > 0 ? img.tags[0] : "<none>"}
   </td>
   <td class="text-right">{formatBytes(img.size_bytes)}</td>
@@ -482,7 +482,7 @@
   <td class="text-right">
     {formatBytes(c.memory_bytes)}
     {#if c.memory_limit_bytes > 0}
-      <span class="text-base-content/50">/ {formatBytes(c.memory_limit_bytes)}</span>
+      <span class="text-base-content/60">/ {formatBytes(c.memory_limit_bytes)}</span>
     {/if}
   </td>
   <td class="text-right text-base-content/60">{formatBytes(c.memory_peak_bytes)}</td>
