@@ -297,31 +297,26 @@ func (p *Poller) View() types.Fleet {
 	}
 	p.mu.RUnlock()
 
-	// Worst first, then alphabetical. Sorting on status alone left nodes of
-	// equal status in map/config order, so the list reshuffled between polls
-	// and the same fleet never looked the same twice.
+	// Alphabetical by name (owner ruling 2026-09-01). Names are unique within a
+	// fleet, so this is a total order and the list cannot reshuffle between
+	// polls -- which was the original reason for sorting here at all, since map
+	// and config order left equal nodes moving around.
+	//
+	// This used to put the worst status first so a fault led the list. That
+	// reads as "unsorted" to someone looking for a host: a warning node sorts
+	// ahead of a healthy one whose name comes first, so on this fleet `fs` and
+	// `vm-host-1` appeared above `ci-node-1`. A fleet list is used far more
+	// often to find a named host than to discover an unknown fault, and the
+	// fault is not hidden by name order -- every node carries its Status, and
+	// the UI counts unreachable and degraded nodes separately from the list.
+	//
+	// The UI sorts the same way. It owns its own filter/sort/page pipeline, so
+	// the two must be changed together or the API and the screen disagree about
+	// what "the fleet" looks like.
 	sort.SliceStable(nodes, func(i, j int) bool {
-		ri, rj := statusRank(nodes[i].Status), statusRank(nodes[j].Status)
-		if ri != rj {
-			return ri < rj
-		}
-		return nodes[i].Name < nodes[j].Name
+		return CompareNodeNames(nodes[i].Name, nodes[j].Name) < 0
 	})
 	return types.Fleet{Enabled: true, Nodes: nodes}
-}
-
-// statusRank orders unreachable and critical nodes ahead of healthy ones.
-func statusRank(s string) int {
-	switch s {
-	case StatusUnreachable:
-		return 0
-	case StatusCritical:
-		return 1
-	case StatusWarning:
-		return 2
-	default:
-		return 3
-	}
 }
 
 // summarize reduces a full snapshot to the handful of figures the fleet view

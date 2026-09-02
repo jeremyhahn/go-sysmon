@@ -351,12 +351,19 @@ func TestMonitorBinding_SetIntervalRestartsMonitor(t *testing.T) {
 	})
 
 	// The replacement monitor must be running and serving snapshots.
-	deadline := time.Now().Add(3 * time.Second)
+	//
+	// Generous for the same reason as TestSetInterval_ValidValue: SetInterval
+	// replaces the monitor with one built on the real SystemCollector, so this
+	// waits on a genuine collection of the whole machine, not on the stub above.
+	// Three seconds survived on a developer machine and is not a safe margin
+	// under the race detector on a shared runner -- this one simply won the
+	// race that its sibling lost.
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, snapErr := b.mon.Snapshot(); snapErr == nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Error("SetInterval did not leave a running monitor behind")
+	t.Error("SetInterval left no monitor that produced a snapshot within 30s")
 }

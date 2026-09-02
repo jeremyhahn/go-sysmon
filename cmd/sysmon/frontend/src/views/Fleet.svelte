@@ -9,8 +9,8 @@
   import {
     nodeStatusBadgeClass,
     nodeStatusBorderClass,
-    nodeStatusRank,
   } from "$lib/alerts";
+  import { compareNodeNames } from "$lib/nodeorder";
   import {
     formatAge,
     formatBytesRate,
@@ -72,14 +72,21 @@
     );
   });
 
-  // Status first, then name. Names are unique within a fleet, so this is a
-  // total order: equal-status nodes cannot reshuffle between polls.
+  // Alphabetical by name (owner ruling 2026-09-01). Names are unique within a
+  // fleet, so this is a total order: nodes cannot reshuffle between polls.
+  //
+  // This used to sort worst-status-first so problems surfaced on page one. That
+  // reads as "not sorted" to anyone looking for a host, because a warning node
+  // sorts ahead of a healthy one whose name comes first alphabetically -- with
+  // fs, gpu-host and omega listed above ci-node-1, the list looks shuffled. A
+  // fleet view is used far more often to FIND a named host than to discover an
+  // unknown fault, and the faults are not hidden by this: the summary line
+  // above the table counts unreachable and degraded nodes whatever the order,
+  // and the search box narrows to a host directly.
+  // compareNodeNames rather than localeCompare: the backend sorts this list
+  // too, and localeCompare cannot agree with it. See $lib/nodeorder.
   const sorted = $derived.by(() =>
-    [...filtered].sort((a, b) => {
-      const byStatus = nodeStatusRank(a.status) - nodeStatusRank(b.status);
-      if (byStatus !== 0) return byStatus;
-      return a.name.localeCompare(b.name);
-    })
+    [...filtered].sort((a, b) => compareNodeNames(a.name, b.name))
   );
 
   const pageCount = $derived(Math.max(1, Math.ceil(sorted.length / perPage)));

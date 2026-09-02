@@ -161,8 +161,30 @@ func TestSetInterval_ValidValue(t *testing.T) {
 	if err := b.SetInterval(500); err != nil {
 		t.Errorf("SetInterval(500) error = %v, want nil", err)
 	}
-	// Let the new monitor produce a snapshot then confirm the binding is live.
-	deadline := time.Now().Add(2 * time.Second)
+	// Wait for the new monitor to produce a snapshot, then confirm the binding
+	// is live.
+	//
+	// The wait is deliberately generous, and this is the reason: SetInterval
+	// REPLACES the monitor, and the replacement is built on the real
+	// SystemCollector rather than on this test's stub. So what is being waited
+	// for is a genuine collection -- SMBIOS, every GPU, every disk, the whole
+	// process table -- taking its first tick 500ms in.
+	//
+	// Two seconds was enough on an idle developer machine and not on CI, where
+	// the race detector slows everything several-fold and two runners share the
+	// host. That is a flake in the test, not in the binding: it passed or
+	// failed on how busy the machine was.
+	//
+	// The loop still exits the moment the snapshot appears, so a passing run
+	// costs no more than it did.
+	//
+	// This is a stopgap, not the fix: it removes the flake without removing the
+	// host dependency that causes it. The design fix is a seam --
+	// MonitorBinding takes a concrete *collector.SystemCollector, so a test
+	// cannot inject a stub -- tracked as issue #34. Until then, do not trim it
+	// back to make the suite look faster; it will only fail somewhere it is
+	// harder to read.
+	deadline := time.Now().Add(30 * time.Second)
 	var snap *types.Snapshot
 	var err error
 	for time.Now().Before(deadline) {
@@ -173,7 +195,11 @@ func TestSetInterval_ValidValue(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if err != nil {
-		t.Fatalf("GetSnapshot after SetInterval: %v", err)
+		// The monitor IS running; Snapshot reports "not running" when it has
+		// simply not collected yet, which reads as a lifecycle bug and is not
+		// one. Say what actually happened.
+		t.Fatalf("the replacement monitor produced no snapshot within 30s "+
+			"(last error from GetSnapshot: %v)", err)
 	}
 	if snap == nil {
 		t.Fatal("GetSnapshot returned nil after SetInterval")

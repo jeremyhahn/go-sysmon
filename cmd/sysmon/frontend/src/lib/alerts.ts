@@ -112,18 +112,6 @@ export function alertClass(alerts: Alert[]): string {
 
 // --- Fleet node status -----------------------------------------------------
 
-/** Worst-first ordering for the fleet list: an unreachable node leads. */
-const STATUS_RANK: Record<NodeStatus, number> = {
-  unreachable: 0,
-  critical: 1,
-  warning: 2,
-  healthy: 3,
-};
-
-export function nodeStatusRank(status: NodeStatus): number {
-  return STATUS_RANK[status] ?? STATUS_RANK.healthy;
-}
-
 export function nodeStatusBadgeClass(status: NodeStatus): string {
   switch (status) {
     case "unreachable":

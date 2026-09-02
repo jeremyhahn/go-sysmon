@@ -410,3 +410,65 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 			"a failed retry must not reset it", node.AgeSeconds)
 	}
 }
+
+// TestView_OrdersByNameNotSeverity is the owner ruling of 2026-09-01.
+//
+// View() used to return worst-status-first so a fault led the list. That reads
+// as "unsorted" to anyone looking for a host: a warning node sorts ahead of a
+// healthy one whose name comes first, so on the real fleet `fs` and
+// `vm-host-1` appeared above `ci-node-1` and the list looked shuffled.
+//
+// The peers are configured in an order that is NEITHER alphabetical nor
+// severity-ordered, and the unreachable node is given the name that sorts
+// LAST. A fixture whose config order or severity order happens to match the
+// alphabet would pass against the old comparator too and prove nothing.
+func TestView_OrdersByNameNotSeverity(t *testing.T) {
+	// zulu is never served, so it comes back unreachable -- the status that
+	// used to jump to the front of the list.
+	alpha := peerServer(t, healthySnapshot("alpha"))
+	mike := peerServer(t, healthySnapshot("mike"))
+
+	cfg := config.Fleet{
+		Peers: []config.Peer{
+			{Name: "zulu", URL: "http://127.0.0.1:1"}, // unreachable, sorts last
+			{Name: "mike", URL: mike.URL},
+			{Name: "alpha", URL: alpha.URL},
+		},
+		PollIntervalMs: 10000, TimeoutMs: 2000,
+	}
+
+	p := fleet.New(
+		func() config.Fleet { return cfg },
+		func() *types.Snapshot { return healthySnapshot("bravo") },
+		func() string { return "bravo" }, quiet(),
+	)
+
+	done := make(chan struct{})
+	go p.Run(done)
+	waitFor(t, func() bool {
+		reachable := 0
+		for _, n := range p.View().Nodes {
+			if n.Reachable {
+				reachable++
+			}
+		}
+		return reachable >= 3 // alpha, mike and the local node
+	})
+	close(done)
+
+	var got []string
+	for _, n := range p.View().Nodes {
+		got = append(got, n.Name)
+	}
+
+	want := []string{"alpha", "bravo", "mike", "zulu"}
+	if len(got) != len(want) {
+		t.Fatalf("nodes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("nodes = %v, want %v (alphabetical; the unreachable node "+
+				"must not be promoted to the front)", got, want)
+		}
+	}
+}
