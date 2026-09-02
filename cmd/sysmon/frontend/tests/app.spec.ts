@@ -60,10 +60,16 @@ test.describe('Core Application', () => {
     await expect(page.locator('.tab-active')).toHaveCount(1);
   });
 
-  test('dark theme is applied via data-theme attribute', async ({ page }) => {
+  // Which theme is chosen, and when it is applied, is tests/theme.spec.ts.
+  // What survives here is the invariant every daisyUI surface depends on: the
+  // attribute is always present and always names a theme that exists in the
+  // bundle. Without it the page renders with no theme variables at all.
+  test('a daisyUI theme is always applied via data-theme', async ({ page }) => {
     await page.goto('/');
-    const html = page.locator('html');
-    await expect(html).toHaveAttribute('data-theme', 'dark');
+    await expect(page.locator('html')).toHaveAttribute(
+      'data-theme',
+      /^(light|dark)$/
+    );
   });
 
   test('footer is visible', async ({ page }) => {

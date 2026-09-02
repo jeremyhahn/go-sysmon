@@ -1,9 +1,47 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>System Monitor</title>
+  <script>
+    // Pre-paint theme bootstrap.
+    //
+    // The application's module script runs after first paint, so applying the
+    // theme from there alone would flash the wrong one on every load -- most
+    // visibly a white page for a user who chose dark. This is the one place
+    // that has to run before the body renders, so it is inline and duplicates
+    // the storage key and the resolution rule from src/lib/theme.svelte.ts.
+    // Keep the two in step; tests/theme.spec.ts asserts the first frame.
+    //
+    // The try/catch wraps the storage read ALONE. localStorage throws outright
+    // in a sandboxed frame or with cookies blocked, and a catch around the
+    // whole block would answer that by forcing dark -- disagreeing with the
+    // application store, which treats the same failure as "no choice stored"
+    // and follows the OS. On a light-preferring machine that is precisely the
+    // flash this script exists to prevent, just in the other direction.
+    (function () {
+      var stored = null;
+      try {
+        stored = localStorage.getItem("sysmon.theme");
+      } catch (e) {
+        // Storage unavailable: no stored choice, so follow the OS below.
+      }
+      var mode =
+        stored === "light" || stored === "dark" || stored === "system"
+          ? stored
+          : "system";
+      var dark =
+        mode === "system"
+          ? !window.matchMedia ||
+            window.matchMedia("(prefers-color-scheme: dark)").matches
+          : mode === "dark";
+      document.documentElement.setAttribute(
+        "data-theme",
+        dark ? "dark" : "light"
+      );
+    })();
+  </script>
 </head>
 <body class="bg-base-300 min-h-screen">
   <div id="app"></div>

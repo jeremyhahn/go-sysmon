@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import {
+    chartPalette,
     init,
-    DARK_MODE,
     type ChartOption,
+    type ChartPalette,
     type ECharts,
   } from "$lib/echarts";
   import { usageEchartsColor } from "$lib/format";
+  import { theme } from "$lib/theme.svelte";
 
   interface Props {
     value: number;     // 0–100
@@ -19,10 +21,10 @@
   let container: HTMLDivElement;
   let chart: ECharts | null = null;
 
-  function buildOption(pct: number): ChartOption {
+  function buildOption(pct: number, p: ChartPalette): ChartOption {
     const color = usageEchartsColor(pct);
     return {
-      darkMode: DARK_MODE,
+      darkMode: p.darkMode,
       backgroundColor: "transparent",
       series: [
         {
@@ -38,7 +40,7 @@
               width: 12,
               color: [
                 [pct / 100, color],
-                [1, "#2a323c"],
+                [1, p.track],
               ],
             },
           },
@@ -57,7 +59,7 @@
           title: {
             offsetCenter: [0, "40%"],
             fontSize: 11,
-            color: "#a6adbb",
+            color: p.mutedText,
           },
           data: [{ value: Math.round(pct), name: label }],
         },
@@ -65,17 +67,20 @@
     };
   }
 
+  const palette = $derived(chartPalette(theme.resolved));
+
   onMount(() => {
     chart = init(container, null, { renderer: "canvas" });
-    chart.setOption(buildOption(value));
+    chart.setOption(buildOption(value, palette));
 
     const ro = new ResizeObserver(() => chart?.resize());
     ro.observe(container);
     return () => ro.disconnect();
   });
 
+  // Reads palette as well as value, so a theme change repaints the gauge.
   $effect(() => {
-    chart?.setOption(buildOption(value), { notMerge: false });
+    chart?.setOption(buildOption(value, palette), { notMerge: false });
   });
 
   onDestroy(() => {

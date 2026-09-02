@@ -172,7 +172,7 @@ async function seenHostnames(page: Page): Promise<string[]> {
  * during the measurement window.
  */
 async function slowPolling(page: Page) {
-  await page.locator('nav select').selectOption('60000');
+  await page.getByLabel('Polling interval').selectOption('60000');
 }
 
 test.describe('Fleet peer selection race', () => {

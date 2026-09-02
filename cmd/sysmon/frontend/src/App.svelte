@@ -3,6 +3,7 @@
   import Fleet from "./views/Fleet.svelte";
   import AlertBell from "./components/AlertBell.svelte";
   import SettingsDialog from "./components/SettingsDialog.svelte";
+  import ThemeToggle from "./components/ThemeToggle.svelte";
   import CpuPanel from "./components/CpuPanel.svelte";
   import GpuPanel from "./components/GpuPanel.svelte";
   import MemoryPanel from "./components/MemoryPanel.svelte";
@@ -222,6 +223,8 @@
       {/if}
       <select
         class="select select-xs select-bordered bg-base-200 text-base-content/80 font-medium"
+        aria-label="Polling interval"
+        title="Polling interval"
         value={currentInterval}
         onchange={onIntervalChange}
       >
@@ -229,6 +232,7 @@
           <option value={opt.value}>{opt.label}</option>
         {/each}
       </select>
+      <ThemeToggle />
       <AlertBell onNavigate={navigateToCategory} />
       <button
         type="button"

@@ -75,9 +75,38 @@ it. Vendor code is emitted as its own content-hashed chunk, so redeploying the
 app does not invalidate the charting library in returning browsers.
 
 The stock `dark` theme is not used: it ships as a UMD bundle that re-imports the
-full ECharts build, which would undo the tree shaking. The chart options already
-state every colour they draw, so the theme only ever contributed `darkMode` and
-the axis pointer colour, and both are now set explicitly.
+full ECharts build, which would undo the tree shaking. Instead `chartPalette()`
+in the same module returns the surface colours — axes, gridlines, tooltip
+chrome, the gauge track — for the current theme, and the chart components read
+it rather than spelling hex codes inline. Series colours are not in the palette:
+they encode meaning (green healthy, red saturated) and are legible on either
+surface.
+
+## Theming
+
+`src/lib/theme.svelte.ts` owns the choice; the control is the `Theme` select in
+the navbar. Three modes, not two — `system`, `light`, `dark` — because "follow
+the operating system" is a state the user can be in, and a two-way switch has
+nowhere to put it: once flipped, there is no way back to following the OS. In
+`system` mode the preference is tracked live, so an OS that flips at sunset
+flips the dashboard with it.
+
+Two things about it are easy to break:
+
+- **It is applied before first paint.** The bootstrap that sets `data-theme`
+  is an inline script in the `<head>` of `index.html`, because a module script
+  runs after first paint and would flash the wrong theme on every load. That
+  script duplicates the storage key and the resolution rule from
+  `theme.svelte.ts`; the two have to change together.
+- **Canvases inherit nothing from the stylesheet.** A theme switch repaints
+  every daisyUI surface and leaves an ECharts axis exactly as it was, so the
+  chart components take the palette as an input and rebuild their option when
+  it changes.
+
+`tests/theme.spec.ts` covers both, including the timing of the first
+`data-theme` write, which is the part that regresses invisibly: applying the
+theme from the app's module script also ends up correct, just one painted frame
+later.
 
 ## Tables
 

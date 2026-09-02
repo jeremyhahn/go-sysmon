@@ -1,13 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import {
+    chartPalette,
     init,
     graphic,
-    AXIS_POINTER_COLOR,
-    DARK_MODE,
     type ChartOption,
+    type ChartPalette,
     type ECharts,
   } from "$lib/echarts";
+  import { theme } from "$lib/theme.svelte";
 
   export interface SeriesConfig {
     label: string;
@@ -48,21 +49,21 @@
   // Build 60-point X-axis labels: "-59s" … "0s"
   const xLabels = Array.from({ length: 60 }, (_, i) => `${i - 59}s`);
 
-  function buildOption(s: SeriesConfig[]): ChartOption {
+  function buildOption(s: SeriesConfig[], p: ChartPalette): ChartOption {
     const firstFormatter = s[0]?.formatter;
     return {
-      darkMode: DARK_MODE,
+      darkMode: p.darkMode,
       backgroundColor: "transparent",
       animation: false,
       grid: { top: 8, right: 8, bottom: showXAxis ? 24 : 8, left: 48 },
       tooltip: {
         trigger: "axis",
-        backgroundColor: "#1d232a",
-        borderColor: "#3d4451",
-        textStyle: { color: "#a6adbb", fontSize: 11 },
+        backgroundColor: p.surface,
+        borderColor: p.border,
+        textStyle: { color: p.mutedText, fontSize: 11 },
         axisPointer: {
-          lineStyle: { color: AXIS_POINTER_COLOR },
-          crossStyle: { color: AXIS_POINTER_COLOR },
+          lineStyle: { color: p.axisPointer },
+          crossStyle: { color: p.axisPointer },
         },
         formatter: (params: unknown) => {
           const items = params as Array<{
@@ -83,22 +84,22 @@
         type: "category",
         data: xLabels,
         show: showXAxis,
-        axisLabel: { color: "#6b7280", fontSize: 10 },
-        axisLine: { lineStyle: { color: "#3d4451" } },
+        axisLabel: { color: p.axisLabel, fontSize: 10 },
+        axisLine: { lineStyle: { color: p.border } },
         splitLine: { show: false },
       },
       yAxis: {
         type: "value",
         min: 0,
         axisLabel: {
-          color: "#6b7280",
+          color: p.axisLabel,
           fontSize: 10,
           formatter: firstFormatter
             ? (v: number) => firstFormatter(v)
             : undefined,
         },
         axisLine: { show: false },
-        splitLine: { lineStyle: { color: "#2a323c" } },
+        splitLine: { lineStyle: { color: p.track } },
       },
       series: s.map((ser, idx) => ({
         name: ser.label,
@@ -130,17 +131,22 @@
     };
   }
 
+  const palette = $derived(chartPalette(theme.resolved));
+
   onMount(() => {
     chart = init(container, null, { renderer: "canvas" });
-    chart.setOption(buildOption(series));
+    chart.setOption(buildOption(series, palette));
 
     const ro = new ResizeObserver(() => chart?.resize());
     ro.observe(container);
     return () => ro.disconnect();
   });
 
+  // Reads palette as well as series, so a theme change repaints the chart. A
+  // merging setOption is enough: every colour the palette supplies is stated
+  // outright in the option above, so each one is overwritten by name.
   $effect(() => {
-    chart?.setOption(buildOption(series), { notMerge: false });
+    chart?.setOption(buildOption(series, palette), { notMerge: false });
   });
 
   onDestroy(() => {
