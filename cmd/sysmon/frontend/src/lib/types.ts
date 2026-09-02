@@ -85,7 +85,15 @@ export interface FleetNode {
   swap_percent: number;
   load_per_core: number;
   worst_disk_percent: number;
+  /** How many arrays and SMART-capable disks the node has. Without these,
+   * `raid_degraded: false` and `smart_unhealthy: 0` cannot be told apart from
+   * "this host has none to report on". */
+  raid_arrays: number;
+  /** Arrays that are degraded OR not serving I/O at all. `raid_degraded` is
+   * kept as it was, degraded only, for consumers that already read it. */
+  raid_unhealthy: number;
   raid_degraded: boolean;
+  smart_capable: number;
   smart_unhealthy: number;
   max_temp_c: number;
   power_w: number;

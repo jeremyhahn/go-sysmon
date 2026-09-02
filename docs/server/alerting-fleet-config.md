@@ -269,9 +269,45 @@ the dashboard looked complete. A peer with no `name` is identified by its
 different hosts are fine, and the same URL listed twice is not.
 
 - `GET /api/fleet` — one summary per node: status, alert counts, CPU, memory,
-  load per core, worst filesystem, RAID degraded, unhealthy SMART count,
-  temperature, power, throughput, uptime and **the go-sysmon version** (so a
-  node left behind on an old build is visible).
+  load per core, worst filesystem, RAID, SMART, temperature, power, throughput,
+  uptime and **the go-sysmon version** (so a node left behind on an old build is
+  visible).
+
+  The two health figures carry a **denominator** — `raid_arrays` beside
+  `raid_unhealthy`, `smart_capable` beside `smart_unhealthy` — and without them
+  neither can be read.
+
+  `raid_unhealthy` counts arrays that are degraded **or not serving I/O at
+  all**. Those are different faults: a degraded array still works with reduced
+  redundancy, while an `inactive`, `suspended`, `broken` or unreadable one does
+  not work at all and raises a critical `raid_not_active` alert. The roll-up
+  carried only `degraded`, so such a host read `ok` on the fleet card while its
+  own alert said critical and its node page showed it red. The predicate is
+  `alert.RAIDNotOperational`, shared with the rule, so there cannot be a second
+  list of states to drift from the first. `raid_degraded` is unchanged —
+  degraded only — for anything already reading it. `raid_degraded: false` is produced both by "this host has
+  no arrays" and by "its arrays are fine"; `smart_unhealthy: 0` both by "no disk
+  reported SMART" and by "every disk is healthy". The fleet view rendered each
+  pair as a green `ok`, so a node with no RAID advertised a healthy RAID
+  subsystem it does not have, and a host whose controller reports nothing
+  advertised healthy SMART while its own node page said `N/A` for every device.
+
+  Everything else already made this distinction — `DiskPanel` shows `SMART N/A`
+  for a disk with `smart_enabled` false and omits the RAID badge entirely when
+  there is no array, and the Prometheus exposition emits `sysmon_raid_degraded`
+  only when an array exists and `sysmon_disk_smart_healthy` only when SMART is
+  readable, on the stated principle that *"a missing series and a healthy one
+  must not look the same to an alerting rule"*. The roll-up was the one surface
+  that collapsed them, and the card now omits each cell when its count is zero,
+  the same treatment swap, temperature and power already use.
+
+  **A fault is shown even without a denominator.** The frontend is embedded in
+  the binary that serves `/api/fleet`, so the two normally match — but a tab
+  left open across a *rollback* holds a new bundle against an older server that
+  sends no counts, and gating purely on the denominator would hide a genuinely
+  degraded array behind a missing field. A missing denominator is a reason to
+  say less about a healthy host, never a reason to stay quiet about a broken
+  one.
 - `GET /api/fleet/{name}/snapshot` — that node's full snapshot from the cache,
   wrapped with the freshness of the poll behind it:
   `{snapshot, reachable, error, age_seconds}`.

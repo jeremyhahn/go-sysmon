@@ -400,18 +400,58 @@
 
                 <!-- Storage health, thermals and traffic -->
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
-                  <div>
-                    <p class="text-xs text-base-content/60">RAID</p>
-                    <p class="font-mono {node.raid_degraded ? 'text-error' : 'text-success'}">
-                      {node.raid_degraded ? "degraded" : "ok"}
-                    </p>
-                  </div>
-                  <div>
-                    <p class="text-xs text-base-content/60">SMART unhealthy</p>
-                    <p class="font-mono {node.smart_unhealthy > 0 ? 'text-error' : 'text-success'}">
-                      {node.smart_unhealthy}
-                    </p>
-                  </div>
+                  <!-- Omitted when there is nothing to report on, the same
+                       treatment swap, temperature and power already use below.
+                       A green "ok" for a host with no arrays is a health
+                       statement about hardware it does not have, and a green
+                       "0" for a host whose disks report no SMART says every
+                       disk is well when none of them answered.
+
+                       A FAULT IS ALWAYS SHOWN, even with no denominator. The
+                       assets are embedded so this page and its /api/fleet
+                       normally come from one binary -- but a tab left open
+                       across a rollback would hold this bundle against an
+                       older server that sends no counts, and gating on the
+                       count alone would then hide a real degraded array. A
+                       missing denominator is a reason to say less about a
+                       healthy host, never a reason to stay quiet about a
+                       broken one. -->
+                  {#if node.raid_arrays > 0 || node.raid_unhealthy > 0 || node.raid_degraded}
+                    <div>
+                      <p class="text-xs text-base-content/60">RAID</p>
+                      <!-- "unhealthy" rather than "degraded": an inactive,
+                           suspended, broken or unreadable array is not
+                           degraded -- it is not serving I/O at all -- and it
+                           raises a CRITICAL alert while this cell said ok. -->
+                      <p
+                        class="font-mono {node.raid_unhealthy > 0 || node.raid_degraded
+                          ? 'text-error'
+                          : 'text-success'}"
+                      >
+                        {#if node.raid_unhealthy > 0}
+                          {node.raid_arrays > 0
+                            ? `${node.raid_unhealthy} of ${node.raid_arrays} unhealthy`
+                            : "unhealthy"}
+                        {:else if node.raid_degraded}
+                          degraded
+                        {:else}
+                          ok
+                        {/if}
+                      </p>
+                    </div>
+                  {/if}
+                  {#if node.smart_capable > 0 || node.smart_unhealthy > 0}
+                    <div>
+                      <p class="text-xs text-base-content/60">SMART unhealthy</p>
+                      <p class="font-mono {node.smart_unhealthy > 0 ? 'text-error' : 'text-success'}">
+                        <!-- "N of M" needs an M. Without one, report the fault
+                             plainly rather than inventing "1 of 0". -->
+                        {node.smart_capable > 0
+                          ? `${node.smart_unhealthy} of ${node.smart_capable}`
+                          : node.smart_unhealthy}
+                      </p>
+                    </div>
+                  {/if}
                   {#if node.swap_percent > 0}
                     <div>
                       <p class="text-xs text-base-content/60">Swap</p>

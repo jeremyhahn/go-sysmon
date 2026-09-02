@@ -90,8 +90,30 @@ type FleetNode struct {
 	LoadPerCore   float64 `json:"load_per_core"`
 
 	WorstDiskPercent float64 `json:"worst_disk_percent"`
-	RAIDDegraded     bool    `json:"raid_degraded"`
-	SMARTUnhealthy   int     `json:"smart_unhealthy"`
+
+	// RAIDArrays and SMARTCapable are the DENOMINATORS, and without them the
+	// two fields below cannot be read.
+	//
+	// RAIDDegraded false is produced both by "this host has no arrays" and by
+	// "its arrays are fine". SMARTUnhealthy zero is produced both by "no disk
+	// reported SMART at all" and by "every disk is healthy". The fleet view
+	// rendered both pairs as a green ok, so a node with no RAID advertised a
+	// healthy RAID subsystem it does not have, and ci-node-1 -- whose PERC and
+	// SAS devices report nothing -- advertised healthy SMART while its own node
+	// page said N/A for every one of them.
+	//
+	// The per-disk model already distinguishes all of this: DiskPanel shows
+	// "SMART N/A" for a disk with SMARTEnabled false and omits the RAID badge
+	// when Disk.RAID is nil. It was the roll-up that discarded it, so these
+	// carry it through rather than inventing anything new.
+	RAIDArrays int `json:"raid_arrays"`
+	// RAIDUnhealthy counts arrays that are degraded OR not serving I/O at all.
+	// RAIDDegraded is kept as it was -- degraded only -- so an older consumer
+	// reading it still gets what it expects.
+	RAIDUnhealthy  int  `json:"raid_unhealthy"`
+	RAIDDegraded   bool `json:"raid_degraded"`
+	SMARTCapable   int  `json:"smart_capable"`
+	SMARTUnhealthy int  `json:"smart_unhealthy"`
 
 	MaxTempC  float64 `json:"max_temp_c"`
 	PowerW    float64 `json:"power_w"`

@@ -66,6 +66,16 @@ var nonOperationalArrayStates = map[string]bool{
 	"": true,
 }
 
+// RAIDNotOperational reports an md array that is not serving I/O.
+//
+// Exported because the fleet roll-up needs the same answer and there must not
+// be a second list: an array state counted as a fault by the alert rules and as
+// healthy by the fleet card is a disagreement an operator sees as the dashboard
+// contradicting its own alerts.
+func RAIDNotOperational(state string) bool {
+	return nonOperationalArrayStates[state]
+}
+
 // UI categories, which map to dashboard tabs.
 const (
 	catStorage    = "storage"

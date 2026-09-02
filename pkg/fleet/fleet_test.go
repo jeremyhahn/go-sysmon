@@ -552,3 +552,147 @@ func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 		t.Errorf("a 404 on the core endpoint does not say so: %s", core)
 	}
 }
+
+// TestView_HealthCountsCarryTheirDenominator.
+//
+// RAIDDegraded false and SMARTUnhealthy zero are each produced by two
+// different realities: "this host has none" and "this host's are fine". The
+// fleet view rendered both as a green ok, so a node with no arrays advertised
+// a healthy RAID subsystem it does not have, and a node whose disks report no
+// SMART at all advertised healthy SMART -- which is what ci-node-1 does today
+// while its own node page says N/A for every one of its devices.
+//
+// The per-disk model already distinguishes these; only the roll-up did not.
+// The counts are what let a consumer tell them apart.
+func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
+	cases := []struct {
+		name              string
+		disks             []types.DiskInfo
+		wantArrays        int
+		wantRAIDUnhealthy int
+		wantDegraded      bool
+		wantCapable       int
+		wantSMARTBad      int
+	}{
+		{
+			// The case the owner reported: nothing to report on, and the old
+			// fields say "fine" about all of it.
+			name:  "no arrays and no SMART",
+			disks: []types.DiskInfo{{Name: "sda", TotalBytes: 100, UsedPercent: 10}},
+		},
+		{
+			// State matters: "" is deliberately non-operational, because an
+			// array whose state could not be read is reported rather than
+			// assumed well. A fixture omitting it is not a healthy array, which
+			// is what the first version of this case got wrong.
+			name: "arrays present and healthy",
+			disks: []types.DiskInfo{
+				{Name: "md0", TotalBytes: 100, RAID: &types.RAIDInfo{Level: "raid1", State: "clean"}},
+			},
+			wantArrays: 1,
+		},
+		{
+			// Not degraded -- not serving I/O at all. It raises a CRITICAL
+			// raid_not_active alert and the node page shows it red, while the
+			// roll-up called it ok because Degraded was false.
+			name: "an array that is not operational is unhealthy, not ok",
+			disks: []types.DiskInfo{
+				{Name: "md0", TotalBytes: 100, RAID: &types.RAIDInfo{Level: "raid1", State: "inactive"}},
+			},
+			wantArrays: 1, wantRAIDUnhealthy: 1,
+		},
+		{
+			// The state sysfs gives us when it gives us nothing. Reported
+			// rather than assumed well.
+			name: "an array whose state cannot be read is unhealthy",
+			disks: []types.DiskInfo{
+				{Name: "md0", TotalBytes: 100, RAID: &types.RAIDInfo{Level: "raid1", State: ""}},
+			},
+			wantArrays: 1, wantRAIDUnhealthy: 1,
+		},
+		{
+			name: "an active array is not unhealthy",
+			disks: []types.DiskInfo{
+				{Name: "md0", TotalBytes: 100, RAID: &types.RAIDInfo{Level: "raid1", State: "active"}},
+			},
+			wantArrays: 1,
+		},
+		{
+			name: "arrays present and one degraded",
+			disks: []types.DiskInfo{
+				{Name: "md0", TotalBytes: 100, RAID: &types.RAIDInfo{Level: "raid1", State: "clean"}},
+				{Name: "md1", TotalBytes: 100, RAID: &types.RAIDInfo{Level: "raid5", State: "active", Degraded: true}},
+			},
+			wantArrays: 2, wantDegraded: true, wantRAIDUnhealthy: 1,
+		},
+		{
+			name: "SMART readable and healthy",
+			disks: []types.DiskInfo{
+				{Name: "sda", TotalBytes: 100, SMARTEnabled: true, SMARTHealthy: true},
+				{Name: "sdb", TotalBytes: 100, SMARTEnabled: true, SMARTHealthy: true},
+			},
+			wantCapable: 2,
+		},
+		{
+			name: "SMART readable and one failing",
+			disks: []types.DiskInfo{
+				{Name: "sda", TotalBytes: 100, SMARTEnabled: true, SMARTHealthy: true},
+				{Name: "sdb", TotalBytes: 100, SMARTEnabled: true, SMARTHealthy: false},
+			},
+			wantCapable: 2, wantSMARTBad: 1,
+		},
+		{
+			// ci-node-1: devices present, none of them answering SMART. The
+			// unhealthy count is zero for the same reason it is zero on a
+			// perfectly healthy host, which is exactly why zero alone is not
+			// an answer.
+			name: "devices present but none report SMART",
+			disks: []types.DiskInfo{
+				{Name: "sda", TotalBytes: 100, SMARTEnabled: false},
+				{Name: "dm-0", TotalBytes: 100, SMARTEnabled: false},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			snap := healthySnapshot("local")
+			snap.Disks = tc.disks
+
+			p := fleet.New(
+				func() config.Fleet {
+					return config.Fleet{Peers: []config.Peer{{Name: "peer", URL: "http://127.0.0.1:1"}}}
+				},
+				func() *types.Snapshot { return snap },
+				func() string { return "local" }, quiet(),
+			)
+
+			var local *types.FleetNode
+			for i := range p.View().Nodes {
+				if p.View().Nodes[i].Self {
+					local = &p.View().Nodes[i]
+					break
+				}
+			}
+			if local == nil {
+				t.Fatal("the local node is missing from the view")
+			}
+
+			if local.RAIDArrays != tc.wantArrays {
+				t.Errorf("RAIDArrays = %d, want %d", local.RAIDArrays, tc.wantArrays)
+			}
+			if local.RAIDUnhealthy != tc.wantRAIDUnhealthy {
+				t.Errorf("RAIDUnhealthy = %d, want %d", local.RAIDUnhealthy, tc.wantRAIDUnhealthy)
+			}
+			if local.RAIDDegraded != tc.wantDegraded {
+				t.Errorf("RAIDDegraded = %v, want %v", local.RAIDDegraded, tc.wantDegraded)
+			}
+			if local.SMARTCapable != tc.wantCapable {
+				t.Errorf("SMARTCapable = %d, want %d", local.SMARTCapable, tc.wantCapable)
+			}
+			if local.SMARTUnhealthy != tc.wantSMARTBad {
+				t.Errorf("SMARTUnhealthy = %d, want %d", local.SMARTUnhealthy, tc.wantSMARTBad)
+			}
+		})
+	}
+}

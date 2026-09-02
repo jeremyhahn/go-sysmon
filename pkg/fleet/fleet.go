@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/outbound"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -300,11 +301,29 @@ func summarize(name, url string, self bool, snap *types.Snapshot, fetchedAt time
 		if d.TotalBytes > 0 && d.UsedPercent > n.WorstDiskPercent {
 			n.WorstDiskPercent = d.UsedPercent
 		}
-		if d.RAID != nil && d.RAID.Degraded {
-			n.RAIDDegraded = true
+		// Counted whether or not it is degraded: a numerator with no
+		// denominator cannot say whether zero means "all well" or "nothing to
+		// look at", and those are different answers for an operator.
+		if d.RAID != nil {
+			n.RAIDArrays++
+			// Degraded is not the whole of "unhealthy". An inactive, suspended,
+			// broken or unreadable array is not serving I/O at all, raises a
+			// CRITICAL raid_not_active alert, and had Degraded false -- so the
+			// roll-up called it ok while the alert called it critical, and the
+			// node page showed it red. The predicate is alert's, so there
+			// cannot be a second list of states to drift from the first.
+			if d.RAID.Degraded || alert.RAIDNotOperational(d.RAID.State) {
+				n.RAIDUnhealthy++
+			}
+			if d.RAID.Degraded {
+				n.RAIDDegraded = true
+			}
 		}
-		if d.SMARTEnabled && !d.SMARTHealthy {
-			n.SMARTUnhealthy++
+		if d.SMARTEnabled {
+			n.SMARTCapable++
+			if !d.SMARTHealthy {
+				n.SMARTUnhealthy++
+			}
 		}
 		if d.Temperature > n.MaxTempC {
 			n.MaxTempC = d.Temperature
