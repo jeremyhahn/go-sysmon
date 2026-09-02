@@ -1,0 +1,655 @@
+[
+  {
+    "name": "a scalar moved",
+    "why": "the ordinary case: one number changed and nothing else may be touched",
+    "before": {
+      "host": {
+        "hostname": "mon0",
+        "uptime": 100
+      },
+      "load_avg": {
+        "load1": 0.5
+      }
+    },
+    "patch": {
+      "o": {
+        "host": {
+          "o": {
+            "uptime": {
+              "r": 101
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "host": {
+        "hostname": "mon0",
+        "uptime": 101
+      },
+      "load_avg": {
+        "load1": 0.5
+      }
+    }
+  },
+  {
+    "name": "a value became null",
+    "why": "null is a value, not an absence; a receiver that reads the patch as 'no replacement' keeps the old one",
+    "before": {
+      "disk": {
+        "raid": {
+          "level": "raid1"
+        }
+      }
+    },
+    "patch": {
+      "o": {
+        "disk": {
+          "o": {
+            "raid": {
+              "r": null
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "disk": {
+        "raid": null
+      }
+    }
+  },
+  {
+    "name": "a value stopped being null",
+    "why": "the other direction, which a receiver special-casing null can get wrong on its own",
+    "before": {
+      "disk": {
+        "raid": null
+      }
+    },
+    "patch": {
+      "o": {
+        "disk": {
+          "o": {
+            "raid": {
+              "r": {
+                "level": "raid1"
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "disk": {
+        "raid": {
+          "level": "raid1"
+        }
+      }
+    }
+  },
+  {
+    "name": "a value changed type",
+    "why": "there is nothing smaller to send than the whole node",
+    "before": {
+      "value": 42
+    },
+    "patch": {
+      "o": {
+        "value": {
+          "r": "42"
+        }
+      }
+    },
+    "after": {
+      "value": "42"
+    }
+  },
+  {
+    "name": "an object gained a field",
+    "why": "the key set changed, so the object is replaced rather than patched",
+    "before": {
+      "a": {
+        "x": 1
+      }
+    },
+    "patch": {
+      "o": {
+        "a": {
+          "r": {
+            "x": 1,
+            "y": 2
+          }
+        }
+      }
+    },
+    "after": {
+      "a": {
+        "x": 1,
+        "y": 2
+      }
+    }
+  },
+  {
+    "name": "an array changed in place",
+    "why": "equal lengths with no configured identity: patched by position",
+    "before": {
+      "sensors": {
+        "thermal_throttle": [
+          {
+            "count": 1
+          },
+          {
+            "count": 2
+          }
+        ]
+      }
+    },
+    "patch": {
+      "o": {
+        "sensors": {
+          "o": {
+            "thermal_throttle": {
+              "i": {
+                "1": {
+                  "o": {
+                    "count": {
+                      "r": 9
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "sensors": {
+        "thermal_throttle": [
+          {
+            "count": 1
+          },
+          {
+            "count": 9
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "an array changed length",
+    "why": "positions no longer refer to the same elements, so the array is replaced",
+    "before": {
+      "cpus": [
+        {
+          "index": 0
+        }
+      ]
+    },
+    "patch": {
+      "o": {
+        "cpus": {
+          "a": {
+            "k": "index",
+            "ord": [
+              "0",
+              "1"
+            ],
+            "n": {
+              "1": {
+                "index": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "cpus": [
+        {
+          "index": 0
+        },
+        {
+          "index": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "identities that are JavaScript prototype members",
+    "why": "the browser looks these up by property access, where \"constructor\" and \"toString\" resolve to inherited functions rather than to nothing; Go looks them up in a map, where they are ordinary strings. A network interface or thermal zone is named by the host, so this is data, not a bug",
+    "before": {
+      "networks": [
+        {
+          "name": "constructor",
+          "rx": 1
+        },
+        {
+          "name": "toString",
+          "rx": 2
+        },
+        {
+          "name": "eth0",
+          "rx": 3
+        }
+      ]
+    },
+    "patch": {
+      "o": {
+        "networks": {
+          "a": {
+            "k": "name",
+            "p": {
+              "constructor": {
+                "o": {
+                  "rx": {
+                    "r": 9
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "networks": [
+        {
+          "name": "constructor",
+          "rx": 9
+        },
+        {
+          "name": "toString",
+          "rx": 2
+        },
+        {
+          "name": "eth0",
+          "rx": 3
+        }
+      ]
+    }
+  },
+  {
+    "name": "a keyed array lost its last element",
+    "why": "an empty order is a real membership -- the array is now empty -- and a receiver reading the absent field as \"membership unchanged\" keeps the element it has and renders it as current",
+    "before": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1,
+            "name": "a"
+          }
+        ]
+      }
+    },
+    "patch": {
+      "o": {
+        "processes": {
+          "o": {
+            "process_list": {
+              "a": {
+                "k": "pid",
+                "ord": []
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "processes": {
+        "process_list": []
+      }
+    }
+  },
+  {
+    "name": "a keyed element changed",
+    "why": "the common case for the process list: one field of one element",
+    "before": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1,
+            "cpu_percent": 0
+          },
+          {
+            "pid": 2,
+            "cpu_percent": 0
+          }
+        ]
+      }
+    },
+    "patch": {
+      "o": {
+        "processes": {
+          "o": {
+            "process_list": {
+              "a": {
+                "k": "pid",
+                "p": {
+                  "2": {
+                    "o": {
+                      "cpu_percent": {
+                        "r": 50
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1,
+            "cpu_percent": 0
+          },
+          {
+            "pid": 2,
+            "cpu_percent": 50
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a keyed array reordered",
+    "why": "nothing changed but the order; a receiver applying patches by position would corrupt every element",
+    "before": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1,
+            "cpu_percent": 1
+          },
+          {
+            "pid": 2,
+            "cpu_percent": 2
+          },
+          {
+            "pid": 3,
+            "cpu_percent": 3
+          }
+        ]
+      }
+    },
+    "patch": {
+      "o": {
+        "processes": {
+          "o": {
+            "process_list": {
+              "a": {
+                "k": "pid",
+                "ord": [
+                  "3",
+                  "1",
+                  "2"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 3,
+            "cpu_percent": 3
+          },
+          {
+            "pid": 1,
+            "cpu_percent": 1
+          },
+          {
+            "pid": 2,
+            "cpu_percent": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a keyed element disappeared",
+    "why": "the order is the authoritative membership; anything not named in it is gone",
+    "before": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1
+          },
+          {
+            "pid": 2
+          },
+          {
+            "pid": 3
+          }
+        ]
+      }
+    },
+    "patch": {
+      "o": {
+        "processes": {
+          "o": {
+            "process_list": {
+              "a": {
+                "k": "pid",
+                "ord": [
+                  "1",
+                  "3"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1
+          },
+          {
+            "pid": 3
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a keyed element appeared",
+    "why": "a new element travels whole, and has to land in the right position",
+    "before": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1,
+            "name": "a"
+          }
+        ]
+      }
+    },
+    "patch": {
+      "o": {
+        "processes": {
+          "o": {
+            "process_list": {
+              "a": {
+                "k": "pid",
+                "ord": [
+                  "7",
+                  "1"
+                ],
+                "n": {
+                  "7": {
+                    "name": "g",
+                    "pid": 7
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 7,
+            "name": "g"
+          },
+          {
+            "pid": 1,
+            "name": "a"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "a keyed array reordered, changed, gained and lost at once",
+    "why": "the four operations interacting, which is what a real tick looks like",
+    "before": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 1,
+            "cpu_percent": 1
+          },
+          {
+            "pid": 2,
+            "cpu_percent": 2
+          },
+          {
+            "pid": 3,
+            "cpu_percent": 3
+          }
+        ]
+      }
+    },
+    "patch": {
+      "o": {
+        "processes": {
+          "o": {
+            "process_list": {
+              "a": {
+                "k": "pid",
+                "ord": [
+                  "3",
+                  "9",
+                  "1"
+                ],
+                "p": {
+                  "3": {
+                    "o": {
+                      "cpu_percent": {
+                        "r": 30
+                      }
+                    }
+                  }
+                },
+                "n": {
+                  "9": {
+                    "cpu_percent": 9,
+                    "pid": 9
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "processes": {
+        "process_list": [
+          {
+            "pid": 3,
+            "cpu_percent": 30
+          },
+          {
+            "pid": 9,
+            "cpu_percent": 9
+          },
+          {
+            "pid": 1,
+            "cpu_percent": 1
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "an array keyed by a string",
+    "why": "identities are rendered as text, so a numeric key and a string key must behave the same",
+    "before": {
+      "disks": [
+        {
+          "name": "sda",
+          "used_percent": 10
+        },
+        {
+          "name": "sdb",
+          "used_percent": 20
+        }
+      ]
+    },
+    "patch": {
+      "o": {
+        "disks": {
+          "a": {
+            "k": "name",
+            "ord": [
+              "sdb",
+              "sda"
+            ],
+            "p": {
+              "sdb": {
+                "o": {
+                  "used_percent": {
+                    "r": 21
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "after": {
+      "disks": [
+        {
+          "name": "sdb",
+          "used_percent": 21
+        },
+        {
+          "name": "sda",
+          "used_percent": 10
+        }
+      ]
+    }
+  },
+  {
+    "name": "nothing moved",
+    "why": "there is no patch to send, and a receiver must treat that as 'keep what you have'",
+    "before": {
+      "host": {
+        "uptime": 1
+      }
+    },
+    "patch": null,
+    "after": {
+      "host": {
+        "uptime": 1
+      }
+    }
+  }
+]

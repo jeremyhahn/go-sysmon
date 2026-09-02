@@ -65,11 +65,20 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
     },
   } as Snapshot;
 
+  // A "full" frame of the delta protocol, which is what the dashboard opens
+  // the stream in. One frame is all the UI needs to render; the sequence number
+  // matters only to a test that goes on to send deltas, which delta.spec.ts
+  // does with its own feed.
   const body =
     `retry: 1000\n\n` +
-    `event: snapshot\ndata: ${JSON.stringify(payload)}\n\n`;
+    `event: full\ndata: ${JSON.stringify({ seq: 1, snapshot: payload })}\n\n`;
 
-  await page.route(/\/api\/events$/, async (route) => {
+  // The path may carry a query string -- the dashboard opens the stream with
+  // ?deltas=1 -- so the pattern must not be anchored at the end of the path. It
+  // was, and the mock silently stopped matching the moment the parameter was
+  // added: every test went on running against whatever the real host was doing,
+  // which is precisely the fragility this fixture exists to remove.
+  await page.route(/\/api\/events(\?|$)/, async (route) => {
     await route.fulfill({
       status: 200,
       headers: {

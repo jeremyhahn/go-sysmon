@@ -195,6 +195,10 @@ type Server struct {
 	exporter *prom.Exporter
 	history  *prom.Querier
 
+	// deltas diffs once per tick for every client that asked for the delta
+	// protocol. It runs only while at least one has.
+	deltas *deltaHub
+
 	version   string
 	gitCommit string
 	buildDate string
@@ -239,6 +243,7 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 		gitCommit: cfg.GitCommit,
 		buildDate: cfg.BuildDate,
 	}
+	s.deltas = newDeltaHub(cfg.Monitor, slog.Default())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
@@ -429,12 +434,50 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Two protocols on one endpoint. Without the parameter the stream is what
+	// it has always been: one whole snapshot per tick, event "snapshot", the
+	// payload the bare snapshot. Any client written against the documented API
+	// keeps working unchanged.
+	//
+	// With ?deltas=1 the client declares it can apply patches, and gets "full"
+	// and "delta" frames carrying sequence numbers. The names differ from
+	// "snapshot" on purpose: a client that negotiated one protocol and is
+	// reading the other fails at once rather than parsing an envelope as a
+	// snapshot and rendering a page of undefined values.
+	if wantsDeltas(r) {
+		s.streamDeltas(w, r, stream)
+		return
+	}
+
 	sub := s.mon.Subscribe()
 	defer s.mon.Unsubscribe(sub.ID)
 
+	// The same guard the delta path makes, on the protocol that has been here
+	// longer -- and it was missing here for exactly as long.
+	//
+	// A stopped monitor still answers Snapshot with the last thing it collected
+	// and still hands out subscriptions, but Stop has already walked the
+	// subscriber map, so this one's Done will never close. A client connecting
+	// after shutdown was therefore sent that pre-stop reading below and then
+	// keepalives for as long as it stayed: a measurement from before the
+	// service stopped, presented as live, for ever. Checked AFTER subscribing,
+	// because Stop clears its flag before it walks the map -- a subscription
+	// taken before the walk has its Done closed, and one taken after sees the
+	// flag already false here.
+	if !s.mon.Running() {
+		if err := stream.send("bye", "monitor stopped"); err != nil {
+			slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+		}
+		return
+	}
+
 	// Send the most recent snapshot immediately so a reconnecting client is
-	// not blank until the next poll tick.
-	if snap, err := s.mon.Snapshot(); err == nil {
+	// not blank until the next poll tick -- unless the subscription has closed
+	// in the meantime. Running() was true a moment ago and Stop can have
+	// completed since; re-asking here narrows that to the write itself, which
+	// is as far as a check can go, and is the same thing the delta path does
+	// before its initial frame.
+	if snap, err := s.mon.Snapshot(); err == nil && !closed(sub.Done) {
 		if err := stream.send("snapshot", snap); err != nil {
 			slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
 			return
@@ -461,6 +504,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			// A closed subscription wins over a queued snapshot. Both cases can
+			// be ready at once and Go picks between them at random, so without
+			// this a collection from before the stop could be sent after the
+			// stream was already over -- rendered as current, then contradicted
+			// by the bye that follows it.
+			if closed(sub.Done) {
+				if err := stream.send("bye", "monitor stopped"); err != nil {
+					slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+				}
+				return
+			}
 			if err := stream.send("snapshot", snap); err != nil {
 				slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
 				return
@@ -472,6 +526,119 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+}
+
+// wantsDeltas reports whether the client asked for the delta protocol.
+//
+// Opt-in rather than negotiated by content type, because it is a change of
+// payload shape rather than of encoding, and because an operator who suspects
+// the delta path can drop the parameter and get the old stream back without
+// deploying anything.
+func wantsDeltas(r *http.Request) bool {
+	switch r.URL.Query().Get("deltas") {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
+}
+
+// streamDeltas serves the sequence-numbered protocol.
+//
+// The client is sent a whole snapshot whenever it is not exactly one frame
+// behind: on connection, after a missed frame, and on the periodic resync. It
+// is never sent a patch against a base it does not have, which is the one way
+// this stream could leave a reading on screen that looks measured and is not.
+func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *eventStream) {
+	sub := s.deltas.subscribe()
+	defer s.deltas.unsubscribe(sub)
+
+	var (
+		last uint64
+		// sent is the frame delivered below, kept so the copy that arrives on
+		// the channel a moment later can be recognised and dropped. Comparing
+		// sequence numbers instead would also drop a frame that legitimately
+		// carries an older number -- which happens when the counter restarts --
+		// and the client would then be frozen on this snapshot indefinitely.
+		sent *deltaFrame
+	)
+
+	// The frame already published, so a client connecting between ticks is not
+	// blank until the next one.
+	//
+	// Only while the monitor is actually collecting. The cached frame outlives
+	// the run that produced it -- deliberately, so a client arriving between
+	// ticks is not blank -- and after a stop that makes it a reading from
+	// before the service stopped. The hub clears it when a run ends for that
+	// reason, and this is the other half: the two together mean a client
+	// connecting after a stop is sent "bye" and nothing else, rather than one
+	// stale snapshot marked current and then "bye".
+	if frame := s.deltas.initialFrame(sub); frame != nil && !closed(sub.done) {
+		if err := stream.sendRaw("full", frame.full); err != nil {
+			slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
+			return
+		}
+		last, sent = frame.seq, frame
+	}
+
+	keepalive := time.NewTicker(keepaliveInterval)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+
+		case <-sub.done:
+			if err := stream.send("bye", "monitor stopped"); err != nil {
+				slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+			}
+			return
+
+		case frame := <-sub.frames:
+			if frame == sent {
+				continue // the frame already sent on connection
+			}
+			// A closed subscription wins over a queued frame. Both cases can be
+			// ready at once and Go picks between them at random, so without
+			// this a frame published before the stop could be written after the
+			// stream was already over -- rendered and marked current, then
+			// followed by the bye that says it is not.
+			if closed(sub.done) {
+				if err := stream.send("bye", "monitor stopped"); err != nil {
+					slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+				}
+				return
+			}
+			name, payload := frameFor(last, frame)
+			if err := stream.sendRaw(name, payload); err != nil {
+				slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
+				return
+			}
+			last = frame.seq
+
+		case <-keepalive.C:
+			if err := stream.comment("keepalive"); err != nil {
+				slog.Debug("event stream keepalive", "err", err, "remote", r.RemoteAddr)
+				return
+			}
+		}
+	}
+}
+
+// closed reports whether a done channel has been closed, without waiting.
+//
+// The cached frame is validated and then written, and a stop can complete
+// between the two. Re-asking immediately before the write narrows that to the
+// write itself, which is as far as a check can go: a frame that was current
+// when it was handed to the socket is not the failure this stream guards
+// against, while one from a stop that had already finished is.
+func closed(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -546,6 +713,28 @@ func (s *eventStream) send(name string, v any) error {
 		return err
 	}
 	if _, err := io.WriteString(s.out, "\n"); err != nil {
+		return err
+	}
+	return s.flush()
+}
+
+// sendRaw writes a named event whose payload is already encoded.
+//
+// It exists so a frame is encoded once for the whole fleet of connections
+// rather than once per connection, which is the saving this protocol is for.
+// The payload must be compact JSON: SSE terminates a data field at a newline,
+// and encoding/json never emits a raw one.
+func (s *eventStream) sendRaw(name string, payload []byte) error {
+	if err := s.deadline(); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(s.out, "event: "+name+"\ndata: "); err != nil {
+		return err
+	}
+	if _, err := s.out.Write(payload); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(s.out, "\n\n"); err != nil {
 		return err
 	}
 	return s.flush()

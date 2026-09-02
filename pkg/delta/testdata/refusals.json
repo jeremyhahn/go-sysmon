@@ -1,0 +1,620 @@
+[
+  {
+    "name": "an object patch on an array",
+    "tree": [
+      1,
+      2
+    ],
+    "patch": {
+      "o": {
+        "a": {
+          "r": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "a field that is not there",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "o": {
+        "b": {
+          "r": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "a positional patch on an object",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "i": {
+        "0": {
+          "r": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "a position past the end",
+    "tree": [
+      1,
+      2
+    ],
+    "patch": {
+      "i": {
+        "5": {
+          "r": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "a position spelled in exponent notation",
+    "tree": [
+      0,
+      1
+    ],
+    "patch": {
+      "i": {
+        "1e0": {
+          "r": 9
+        }
+      }
+    }
+  },
+  {
+    "name": "a position spelled in hexadecimal",
+    "tree": [
+      0,
+      1
+    ],
+    "patch": {
+      "i": {
+        "0x1": {
+          "r": 9
+        }
+      }
+    }
+  },
+  {
+    "name": "a position that is the empty string",
+    "tree": [
+      0,
+      1
+    ],
+    "patch": {
+      "i": {
+        "": {
+          "r": 9
+        }
+      }
+    }
+  },
+  {
+    "name": "a position padded with a space",
+    "tree": [
+      0,
+      1
+    ],
+    "patch": {
+      "i": {
+        " 1": {
+          "r": 9
+        }
+      }
+    }
+  },
+  {
+    "name": "two positions that are the same index",
+    "tree": [
+      0,
+      1
+    ],
+    "patch": {
+      "i": {
+        "+0": {
+          "r": 9
+        },
+        "0": {
+          "r": 8
+        }
+      }
+    }
+  },
+  {
+    "name": "a position with a leading zero",
+    "tree": [
+      0,
+      1
+    ],
+    "patch": {
+      "i": {
+        "01": {
+          "r": 9
+        }
+      }
+    }
+  },
+  {
+    "name": "a keyed patch on an object",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "a": {
+        "k": "pid"
+      }
+    }
+  },
+  {
+    "name": "a keyed patch with no key",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": ""
+      }
+    }
+  },
+  {
+    "name": "elements that do not carry the key",
+    "tree": [
+      {
+        "name": "a"
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid"
+      }
+    }
+  },
+  {
+    "name": "elements sharing an identity",
+    "tree": [
+      {
+        "pid": 1
+      },
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid"
+      }
+    }
+  },
+  {
+    "name": "an order naming an element that was never sent",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1",
+          "2"
+        ]
+      }
+    }
+  },
+  {
+    "name": "a field that only the prototype has",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "o": {
+        "toString": {
+          "r": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "a patch naming no operation",
+    "tree": {
+      "a": 1
+    },
+    "patch": {}
+  },
+  {
+    "name": "a replacement and an object patch",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "r": {
+        "a": 2
+      },
+      "o": {
+        "a": {
+          "r": 3
+        }
+      }
+    }
+  },
+  {
+    "name": "a replacement and a positional patch",
+    "tree": [
+      1,
+      2
+    ],
+    "patch": {
+      "r": [
+        3,
+        4
+      ],
+      "i": {
+        "0": {
+          "r": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "a replacement and a keyed patch",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "r": [],
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1"
+        ]
+      }
+    }
+  },
+  {
+    "name": "an object patch and a positional patch",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "o": {
+        "a": {
+          "r": 2
+        }
+      },
+      "i": {
+        "0": {
+          "r": 3
+        }
+      }
+    }
+  },
+  {
+    "name": "an object patch and a keyed patch",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "o": {
+        "a": {
+          "r": 2
+        }
+      },
+      "a": {
+        "k": "pid"
+      }
+    }
+  },
+  {
+    "name": "a positional patch and a keyed patch",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "i": {
+        "0": {
+          "r": 2
+        }
+      },
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1"
+        ]
+      }
+    }
+  },
+  {
+    "name": "a null replacement and an object patch",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "r": null,
+      "o": {
+        "a": {
+          "r": 2
+        }
+      }
+    }
+  },
+  {
+    "name": "a nested node naming two operations",
+    "tree": {
+      "a": {
+        "b": 1
+      }
+    },
+    "patch": {
+      "o": {
+        "a": {
+          "r": {
+            "b": 2
+          },
+          "o": {
+            "b": {
+              "r": 3
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element changed that this array does not contain",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "p": {
+          "999": {
+            "o": {
+              "pid": {
+                "r": 2
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element changed that an explicit order drops",
+    "tree": [
+      {
+        "pid": 1
+      },
+      {
+        "pid": 2
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1"
+        ],
+        "p": {
+          "2": {
+            "o": {
+              "pid": {
+                "r": 3
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element supplied that the order never places",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1"
+        ],
+        "n": {
+          "2": {
+            "pid": 2
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element supplied with no order at all",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "n": {
+          "2": {
+            "pid": 2
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element supplied under an identity that is not its own",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1",
+          "2"
+        ],
+        "n": {
+          "2": {
+            "pid": 999,
+            "cpu": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element supplied with no key field at all",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1",
+          "2"
+        ],
+        "n": {
+          "2": {
+            "cpu": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element supplied as new that the array already has",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1"
+        ],
+        "n": {
+          "1": {
+            "pid": 1,
+            "cpu": 9
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "a survivor patched into a different identity",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "p": {
+          "1": {
+            "o": {
+              "pid": {
+                "r": 2
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "a survivor patched into one with no key field",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "p": {
+          "1": {
+            "r": {
+              "cpu": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an element both supplied and changed",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "2"
+        ],
+        "p": {
+          "2": {
+            "o": {
+              "pid": {
+                "r": 3
+              }
+            }
+          }
+        },
+        "n": {
+          "2": {
+            "pid": 2
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "an order naming the same element twice",
+    "tree": [
+      {
+        "pid": 1
+      }
+    ],
+    "patch": {
+      "a": {
+        "k": "pid",
+        "ord": [
+          "1",
+          "1"
+        ]
+      }
+    }
+  }
+]

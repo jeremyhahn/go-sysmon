@@ -94,6 +94,18 @@ retrying. Non-browser clients should implement their own reconnect with
 backoff; the Cinnamon applet doubles its delay up to 30s and resets it once
 data arrives.
 
+### Delta mode
+
+`GET /api/events?deltas=1` sends what changed instead of a whole snapshot: a
+`full` frame on connection and after any gap, `delta` frames in between, each
+carrying a monotonic `seq`. It is a saving of roughly 4–7x on the wire.
+
+Without the parameter the stream is exactly what it was — `snapshot` events
+carrying the bare snapshot — so an existing client needs no change.
+
+The format, the resync rules and the measurements are in
+[delta-streaming.md](delta-streaming.md).
+
 ## GET /api/interval
 
 The monitor's current polling interval.

@@ -19,6 +19,7 @@ when you need to know why a number says what it says.
 | [Container](server/container.md) | Running in Docker, and what it needs from the host |
 | [Deployment](deployment/user.md) | Installing it on a remote host as a systemd service |
 | [Alerts, fleet, Prometheus](server/alerting-fleet-config.md) | Thresholds, aggregation, and the optional history path |
+| [Delta streaming](server/delta-streaming.md) | Sending what changed, and never showing a stale number |
 | [API](server/api.md) | Connecting your own client |
 | [CLI](cli/reference.md) | Every command and flag |
 | [GUI](gui/architecture.md) | The Wails desktop app and table conventions |

@@ -54,6 +54,25 @@ type Monitor struct {
 	// stopped is closed by the poll goroutine as it exits, letting Stop wait
 	// for the loop to finish instead of returning while it is mid-broadcast.
 	stopped chan struct{}
+	// stopping is true from the moment a Stop begins until it has finished
+	// closing subscribers. Start waits it out on settled rather than
+	// proceeding, so a new generation cannot exist while the outgoing sweep is
+	// still running and cannot have its subscribers closed by it.
+	//
+	// A flag and a condition rather than simply holding mu across the whole of
+	// Stop: the wait is for a collection to finish, which is a syscall into
+	// /proc, SMART or NVML and can hang. Holding the lock through it would
+	// make one wedged collector block every Start, Stop and Running in the
+	// process -- including the delta hub's check, which would stall the stream
+	// rather than end it.
+	stopping bool
+	settled  *sync.Cond
+
+	// generation advances on every Start. Read without the lock, so it is
+	// atomic rather than guarded: a consumer comparing it against a value it
+	// stamped earlier only needs to see a change, not to see it at any
+	// particular instant.
+	generation atomic.Uint64
 
 	// subscribers holds *Subscriber values keyed by uint64 ID.
 	subscribers sync.Map
@@ -79,6 +98,7 @@ func New(s Snapshotter, interval time.Duration) (*Monitor, error) {
 		snapshotter: s,
 		intervalCh:  make(chan time.Duration, 1),
 	}
+	m.settled = sync.NewCond(&m.mu)
 	m.intervalNs.Store(int64(interval))
 	return m, nil
 }
@@ -91,6 +111,11 @@ func (m *Monitor) Interval() time.Duration {
 // Start begins the poll loop. Returns MonitorAlreadyRunningError if already started.
 func (m *Monitor) Start() error {
 	m.mu.Lock()
+	// A stop in progress is finished first. Wait releases mu, so this blocks
+	// this caller and nothing else.
+	for m.stopping {
+		m.settled.Wait()
+	}
 	if m.running {
 		m.mu.Unlock()
 		return &types.MonitorAlreadyRunningError{}
@@ -99,6 +124,17 @@ func (m *Monitor) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	m.running = true
+	m.generation.Add(1)
+	// A new run has not collected anything yet, so it has no latest snapshot.
+	//
+	// The reading from the previous run is deliberately left in place by Stop,
+	// so a caller can read the final state of a monitor that has finished. It
+	// must not survive into the next one: Snapshot() means "the most recent
+	// collection", and after a restart the most recent collection of THIS run
+	// has not happened. Leaving it made the delta hub publish a pre-restart
+	// reading as the first frame of the new stream, stamped with the new
+	// generation, and marked current.
+	m.latest.Store(nil)
 	m.cancel = cancel
 	m.stopped = stopped
 	m.mu.Unlock()
@@ -109,6 +145,24 @@ func (m *Monitor) Start() error {
 
 // Stop halts the poll loop and closes all subscriber Done channels.
 // Returns MonitorNotRunningError if not started.
+//
+// A stop is one step as far as any other caller is concerned: no new
+// generation can exist until this one has finished closing its subscribers.
+//
+// It used to release the lock and then wait, which let a concurrent Start
+// establish a new running monitor in the middle. A subscriber taken against
+// that new generation -- correctly, with Running() true -- was then closed by
+// the outgoing sweep, which does not know one generation from another. The
+// delta hub reads a closed subscription as "the monitor stopped", so it ended
+// the stream and dropped every dashboard on a monitor that was running.
+//
+// The exclusion is a flag rather than the lock held throughout, because the
+// wait is for a collection to finish and a collection is a syscall into /proc,
+// SMART or NVML that can hang. Holding mu across it would make one wedged
+// collector block every Start, Stop and Running in the process -- including
+// the delta hub's check, which would stall the stream instead of ending it.
+// With the flag, a hung collector blocks only this Stop and any Start behind
+// it; Running answers false throughout, which is the truth.
 func (m *Monitor) Stop() error {
 	m.mu.Lock()
 	if !m.running {
@@ -116,9 +170,19 @@ func (m *Monitor) Stop() error {
 		return &types.MonitorNotRunningError{}
 	}
 	m.running = false
+	m.stopping = true
 	cancel, stopped := m.cancel, m.stopped
 	m.cancel, m.stopped = nil, nil
 	m.mu.Unlock()
+
+	// Cleared however this returns, so a hung collector cannot leave every
+	// later Start waiting on a stop that will never announce itself finished.
+	defer func() {
+		m.mu.Lock()
+		m.stopping = false
+		m.settled.Broadcast()
+		m.mu.Unlock()
+	}()
 
 	cancel()
 
@@ -139,6 +203,32 @@ func (m *Monitor) Stop() error {
 	})
 
 	return nil
+}
+
+// Generation counts the runs of the poll loop: it advances on every Start, so
+// two readings taken across a stop and a start carry different numbers.
+//
+// It exists because "the monitor is running" is not the same question as "the
+// monitor is running the same collection it was". A consumer that caches
+// anything derived from a snapshot -- the delta hub caches a published frame,
+// to serve a client that connects between ticks -- needs the second one:
+// Running() is true again the instant a restart completes, while the cached
+// value is from before the stop and as old as the gap between them.
+func (m *Monitor) Generation() uint64 {
+	return m.generation.Load()
+}
+
+// Running reports whether the poll loop is collecting.
+//
+// A stopped monitor still answers Snapshot with the last thing it collected --
+// that is deliberate, so a caller can read the final state -- and still hands
+// out subscriptions that nothing will ever write to or close, because Stop has
+// already walked the subscriber map. Both are traps for a consumer that
+// restarts on demand, so it needs to be able to ask.
+func (m *Monitor) Running() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.running
 }
 
 // Subscribe registers a new consumer and returns its Subscriber.

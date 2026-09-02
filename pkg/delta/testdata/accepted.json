@@ -1,0 +1,66 @@
+[
+  {
+    "name": "a replacement beside a null object patch",
+    "why": "null is not an operation. The exactly-one rule refuses a node that names two THINGS TO DO; \"o\": null says there is nothing to do, so nothing is discarded by applying the replacement",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "r": 1,
+      "o": null
+    },
+    "want": 1
+  },
+  {
+    "name": "a positional patch beside a null object patch",
+    "why": "the same, with the surviving operation second in the dispatch order",
+    "tree": [
+      1,
+      2
+    ],
+    "patch": {
+      "o": null,
+      "i": {
+        "0": {
+          "r": 9
+        }
+      }
+    },
+    "want": [
+      9,
+      2
+    ]
+  },
+  {
+    "name": "an object patch beside a null keyed patch",
+    "why": "and again for the keyed field, which is a pointer in Go and an object here",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "o": {
+        "a": {
+          "r": 2
+        }
+      },
+      "a": null
+    },
+    "want": {
+      "a": 2
+    }
+  },
+  {
+    "name": "a null replacement beside every other field null",
+    "why": "\"r\" present and holding null IS an operation -- that distinction is the reason the Go type carries a value rather than a pointer -- while the other three being null are not",
+    "tree": {
+      "a": 1
+    },
+    "patch": {
+      "r": null,
+      "o": null,
+      "i": null,
+      "a": null
+    },
+    "want": null
+  }
+]
