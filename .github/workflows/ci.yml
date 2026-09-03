@@ -28,10 +28,44 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      - name: Install linters
+      # The analysis tools are BAKED INTO OUR RUNNER IMAGE, pinned, verified at
+      # image build time, and recorded in /etc/ci-runner-tools.txt. Installing
+      # them fetched them over the network on every run, failed this job twice
+      # in one day on a sum.golang.org checksum timeout with nothing wrong with
+      # the code (#39), and DOWNGRADED the linter the image provides (#21).
+      #
+      # `ubuntu-latest` names OUR image on Gitea and GITHUB'S HOSTED IMAGE on
+      # github.com -- one label, two different machines. So the manifest is a
+      # test, not an assumption: where it exists nothing is fetched, and where
+      # it does not the same pinned versions are installed. Both environments
+      # then run identical tools, which is what stops a workflow and an image
+      # disagreeing about which linter gates the repository.
+      - name: Analysis tools
         run: |
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2  # PINNED (devops.md §9, documented): v2.13.0 (2026-08-19) ships honnef.co/go/tools v0.8.0-rc.1 whose nilness pass panics ("unhandled builtin recover", crashes on sentry-go) — red gate with zero findings. Unpin when golangci-lint ships a non-rc staticcheck that passes on main.
-          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          # Assert, do not assume. The manifest exists so a job can say what
+          # analysed it -- printing it proves only that the FILE is there, not
+          # that the binaries on PATH are the ones it names. A drifted image or
+          # a package shadowing a tool would otherwise pass silently.
+          verify() {
+            name="$1"; flag="$2"
+            want=$(awk -v n="$name" '$1 == n { print $2 }' /etc/ci-runner-tools.txt)
+            [ -n "$want" ] || { echo "::error::$name is not listed in /etc/ci-runner-tools.txt"; exit 1; }
+            command -v "$name" >/dev/null 2>&1 || { echo "::error::$name is not on PATH"; exit 1; }
+            got=$("$name" "$flag" 2>&1 || true)
+            case "$got" in
+              *"${want#v}"*) echo "ok   $name $want   $(command -v "$name")" ;;
+              *) echo "::error::$name on PATH is not $want (self-reports: $got)"; exit 1 ;;
+            esac
+          }
+
+          if [ -f /etc/ci-runner-tools.txt ]; then
+            verify golangci-lint --version
+            verify actionlint -version
+            exit 0
+          fi
+          echo "No /etc/ci-runner-tools.txt: not our runner image. Installing the same versions."
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
 
       # gofmt and vet are separate targets so a formatting failure is
       # distinguishable from a lint finding in the job log.
@@ -51,8 +85,42 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # gosec and govulncheck come from the runner image too. They were
+      # installed with @latest, which is what made scan results
+      # unreproducible: a scan that cannot say which version produced it
+      # cannot be compared with the one before it. The versions below are the
+      # image's, so a scan on either runner is the same scan.
+      #
+      # AFTER setup-go, not before: on the fallback path this runs `go install`,
+      # and before setup-go that is whatever Go the host happens to carry --
+      # or none. A security gate must not depend on an unmanaged toolchain, and
+      # the lint and release jobs already had this order.
+      - name: Analysis tools
+        run: |
+          # Assert, do not assume. The manifest exists so a job can say what
+          # analysed it -- printing it proves only that the FILE is there, not
+          # that the binaries on PATH are the ones it names. A drifted image or
+          # a package shadowing a tool would otherwise pass silently.
+          verify() {
+            name="$1"; flag="$2"
+            want=$(awk -v n="$name" '$1 == n { print $2 }' /etc/ci-runner-tools.txt)
+            [ -n "$want" ] || { echo "::error::$name is not listed in /etc/ci-runner-tools.txt"; exit 1; }
+            command -v "$name" >/dev/null 2>&1 || { echo "::error::$name is not on PATH"; exit 1; }
+            got=$("$name" "$flag" 2>&1 || true)
+            case "$got" in
+              *"${want#v}"*) echo "ok   $name $want   $(command -v "$name")" ;;
+              *) echo "::error::$name on PATH is not $want (self-reports: $got)"; exit 1 ;;
+            esac
+          }
+
+          if [ -f /etc/ci-runner-tools.txt ]; then
+            verify govulncheck -version
+            verify gosec --version
+            exit 0
+          fi
+          echo "No /etc/ci-runner-tools.txt: not our runner image. Installing the same versions."
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
 
       # Covers dependencies and the standard library the project links against.
       # A regression in the go.mod toolchain pin fails here.
@@ -76,9 +144,7 @@ jobs:
       # (which exclusions, and why) lives in one place that `make ci` also uses.
       # With the action, CI and local runs drift the moment either changes.
       - name: Static analysis (gosec)
-        run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          make gosec
+        run: make gosec
 
   test:
     name: Unit Tests (race)

@@ -24,14 +24,28 @@ PKG_CMD := ./cmd/sysmon/...
 FRONTEND_DIR := cmd/sysmon/frontend
 DOCKER_IMAGE := go-sysmon-test
 
-# Tools installed via "go install" land in GOBIN (or GOPATH/bin) which is not
-# on the PATH make uses, so resolve golangci-lint explicitly.
+# Analysis tools are resolved from PATH FIRST, then from GOBIN.
+#
+# The order matters and it is the root of #39/#21. The CI runner image bakes
+# every one of these, pinned and verified, into /usr/local/bin -- but these
+# variables pointed only at GOBIN, so `make lint` ran a path that did not
+# exist there. The workflows worked around it by installing the tools over the
+# network on every run, which downgraded the linter the image provides and
+# failed the gate twice in one day on a checksum-server timeout.
+#
+# The existence checks below already consulted PATH, so the check passed and
+# the invocation then failed -- a check and its subject disagreeing.
+#
+# PATH first also does the right thing locally: `go install` puts the binary in
+# GOBIN, which is normally on PATH, so both resolve to the same file.
 GOBIN_DIR := $(shell go env GOBIN)
 ifeq ($(GOBIN_DIR),)
   GOBIN_DIR := $(shell go env GOPATH)/bin
 endif
-GOLANGCI_LINT ?= $(GOBIN_DIR)/golangci-lint
-ACTIONLINT ?= $(GOBIN_DIR)/actionlint
+tool = $(shell command -v $(1) 2>/dev/null || echo $(GOBIN_DIR)/$(1))
+
+GOLANGCI_LINT ?= $(call tool,golangci-lint)
+ACTIONLINT ?= $(call tool,actionlint)
 
 # Cinnamon applet paths
 APPLET_UUID := sysmon-go@sysmon
@@ -380,8 +394,8 @@ deploy-binary: build-server
 
 # GOVULNCHECK is resolved from GOBIN like golangci-lint; "go install"-ed tools
 # are not on the PATH make uses.
-GOVULNCHECK ?= $(GOBIN_DIR)/govulncheck
-GOSEC ?= $(GOBIN_DIR)/gosec
+GOVULNCHECK ?= $(call tool,govulncheck)
+GOSEC ?= $(call tool,gosec)
 
 # vulncheck reports known vulnerabilities in dependencies *and* in the Go
 # standard library the project is built against. The toolchain directive in
