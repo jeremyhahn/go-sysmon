@@ -2,8 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,8 +21,10 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/memlimit"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/prom"
+	"github.com/jeremyhahn/go-sysmon/pkg/sdnotify"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
+	"github.com/jeremyhahn/go-sysmon/pkg/watchdog"
 )
 
 // shutdownTimeout bounds how long the server waits for in-flight HTTP requests
@@ -198,7 +204,119 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Bind before serving so a bad address fails here rather than inside the
+	// goroutine below, and so the watchdog has a real address to dial.
+	if _, err := srv.Listen(); err != nil {
+		stopMonitor(mon)
+		return err
+	}
+
 	return serveUntilSignal(srv, mon)
+}
+
+// watchdogFor builds the systemd watchdog for a running server, or a Watchdog
+// that does nothing when the manager did not ask for one.
+//
+// Both signals are required, and each covers what the other cannot. The probe
+// makes a real request over the socket the server actually bound: accept is
+// what failed on vm-host-2, where 2929 connections queued against a listener
+// nothing was draining while every handler was parked, and a check that does
+// not cross the listener cannot see that. Collection freshness covers the
+// opposite case, a server answering promptly with readings from before its
+// poll loop stalled -- to the probe that looks perfect.
+func watchdogFor(srv *server.Server, mon *monitor.Monitor, n *sdnotify.Notifier) *watchdog.Watchdog {
+	interval := n.WatchdogInterval()
+	if interval <= 0 {
+		return watchdog.New(nil, 0, nil, nil, slog.Default())
+	}
+
+	return watchdog.New(n, interval, selfRequest(srv), collectionIsCurrent(mon), slog.Default())
+}
+
+// selfRequest returns a probe that fetches /api/version from the server's own
+// listener.
+//
+// The address comes from the listener rather than from configuration because
+// the configured string is frequently not dialable -- ":8081" has no host, and
+// a specific bind address is not loopback. The endpoint is the cheapest one
+// that still crosses accept, the mux and a response write; it deliberately does
+// not collect anything, because collection is the other signal's job.
+func selfRequest(srv *server.Server) watchdog.Probe {
+	client := &http.Client{
+		Transport: &http.Transport{
+			// Talking to our own socket, at the address our own listener is
+			// bound to, which nothing else can bind while we hold it. The
+			// question this probe asks is whether this process answers, not
+			// who it is -- and the deployed certificate is routinely
+			// self-signed or issued for a name that is not the bind address,
+			// so verification would fail a liveness check for reasons that
+			// have nothing to do with liveness.
+			//
+			// Annotated for gosec rather than suppressed for the linter alone:
+			// the standalone scanner does not read //nolint, so a nolint here
+			// silences `make lint` and leaves CI failing, which is the worst of
+			// both -- a suppression that hides the finding from the developer
+			// and not from the gate.
+			// #nosec G402 -- self-dial to our own listener; identity is not the question
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			// One connection, never pooled: a pooled connection would let a
+			// later probe succeed on a socket accepted before the stall began.
+			DisableKeepAlives: true,
+		},
+	}
+
+	return func(ctx context.Context) error {
+		addr := srv.Addr()
+		if addr == "" {
+			return &types.ServerStartError{Cause: errors.New("no listener bound")}
+		}
+
+		scheme := "http"
+		if srv.UsesTLS() {
+			scheme = "https"
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+addr+"/api/version", nil)
+		if err != nil {
+			return err
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close() //nolint:errcheck
+		// Read the body rather than only the status: a response whose headers
+		// arrived before the stall and whose body never followed is a served
+		// request only if nobody looks.
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			return err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return &types.SelfRequestError{Addr: addr, Status: resp.StatusCode}
+		}
+		return nil
+	}
+}
+
+// collectionIsCurrent returns a check that fails when the monitor's latest
+// snapshot is older than three polling intervals.
+//
+// Three rather than one: a single missed tick is ordinary on a loaded host, and
+// restarting for it would make the watchdog a source of outages. The interval
+// is read on every check because it is settable at runtime -- a threshold
+// computed once at startup would restart the service the moment somebody
+// changed the poll rate.
+func collectionIsCurrent(mon *monitor.Monitor) watchdog.Collecting {
+	return func() error {
+		snap, err := mon.Snapshot()
+		if err != nil {
+			return err
+		}
+		if age, limit := time.Since(snap.Timestamp), 3*mon.Interval(); age > limit {
+			return &types.StaleCollectionError{Age: age, Limit: limit}
+		}
+		return nil
+	}
 }
 
 // serveUntilSignal runs srv until it fails or the process receives SIGINT or
@@ -215,6 +333,37 @@ func serveUntilSignal(srv *server.Server, mon *monitor.Monitor) error {
 		errCh <- srv.Start()
 	}()
 
+	// Notification is set up after the listener is bound, so READY=1 is not a
+	// claim the server cannot yet honour, and torn down before the shutdown
+	// path so no ping outlives the decision to stop.
+	notifier, err := sdnotify.New(os.Getenv, os.Getpid())
+	if err != nil {
+		// A socket the manager named and we cannot open is worth saying out
+		// loud, but it is not a reason to refuse to serve: the service is
+		// useful unwatched, and failing here would turn a notification problem
+		// into an outage.
+		slog.Warn("watchdog: notification socket unusable, running unwatched", "err", err)
+	}
+	defer func() {
+		if err := notifier.Close(); err != nil {
+			slog.Warn("watchdog: closing notification socket", "err", err)
+		}
+	}()
+
+	// Nothing this process starts should be able to answer for its liveness.
+	if err := sdnotify.Unsetenv(); err != nil {
+		slog.Warn("watchdog: clearing notification variables", "err", err)
+	}
+
+	wd := watchdogFor(srv, mon, notifier)
+	wdCtx, stopWatchdog := context.WithCancel(context.Background())
+	defer stopWatchdog()
+	go wd.Run(wdCtx)
+
+	if err := notifier.Ready(); err != nil {
+		slog.Warn("watchdog: READY notification failed", "err", err)
+	}
+
 	select {
 	case err := <-errCh:
 		// The listener failed (for example, the address is already in use).
@@ -224,6 +373,14 @@ func serveUntilSignal(srv *server.Server, mon *monitor.Monitor) error {
 
 	case <-ctx.Done():
 		slog.Info("shutdown signal received, stopping server")
+	}
+
+	// Stop pinging before anything is torn down. A ping sent while the server
+	// is draining reports a service that is deliberately on its way out as
+	// healthy, and systemd is entitled to act on it.
+	stopWatchdog()
+	if err := notifier.Status("shutting down"); err != nil {
+		slog.Debug("watchdog: status notification failed", "err", err)
 	}
 
 	// Stop the monitor first: closing each subscriber's Done channel lets the

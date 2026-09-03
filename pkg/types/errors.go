@@ -1,6 +1,9 @@
 package types
 
-import "strconv"
+import (
+	"strconv"
+	"time"
+)
 
 // CollectorError indicates a failure during metrics collection.
 type CollectorError struct {
@@ -308,4 +311,58 @@ type CgroupParseError struct {
 
 func (e *CgroupParseError) Error() string {
 	return "cgroup file " + e.Path + " holds " + strconv.Quote(e.Value) + "; want a byte count or \"max\""
+}
+
+// NotifySocketError indicates the systemd notification socket could not be
+// opened. The address is carried because the two failure modes -- a filesystem
+// path that does not exist and an abstract name that was not translated --
+// are indistinguishable without it.
+type NotifySocketError struct {
+	Addr  string
+	Cause error
+}
+
+func (e *NotifySocketError) Error() string {
+	return "dial notify socket " + strconv.Quote(e.Addr) + ": " + e.Cause.Error()
+}
+
+func (e *NotifySocketError) Unwrap() error { return e.Cause }
+
+// NotifySendError indicates a notification datagram could not be delivered.
+type NotifySendError struct {
+	Message string
+	Cause   error
+}
+
+func (e *NotifySendError) Error() string {
+	return "send notification " + strconv.Quote(e.Message) + ": " + e.Cause.Error()
+}
+
+func (e *NotifySendError) Unwrap() error { return e.Cause }
+
+// StaleCollectionError indicates the monitor's most recent snapshot is older
+// than the watchdog is willing to accept. Both numbers are carried because the
+// limit is derived from a runtime-settable interval, so "how old" means nothing
+// without "older than what".
+type StaleCollectionError struct {
+	Age   time.Duration
+	Limit time.Duration
+}
+
+func (e *StaleCollectionError) Error() string {
+	return "last snapshot is " + e.Age.Round(time.Second).String() +
+		" old, older than the " + e.Limit.String() + " the watchdog allows"
+}
+
+// SelfRequestError indicates the server answered its own watchdog request with
+// something other than 200. It is distinct from a transport failure: reaching
+// the socket and being refused says the listener is alive and the handler is
+// not, which is a different fault from not reaching it at all.
+type SelfRequestError struct {
+	Addr   string
+	Status int
+}
+
+func (e *SelfRequestError) Error() string {
+	return "self request to " + e.Addr + " returned status " + strconv.Itoa(e.Status)
 }

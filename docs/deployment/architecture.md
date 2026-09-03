@@ -124,6 +124,51 @@ The installation footprint is three paths:
 configuration, not data: deleting it and redeploying restores the shipped
 defaults and loses nothing but the operator's own edits.
 
+## Liveness: the watchdog
+
+`Type=exec` reports a unit active while the binary exists. It says nothing about
+whether a request can be answered, and the difference is not academic:
+vm-host-2 served nothing for two days with `NRestarts=0`, the unit `active`,
+and 2929 connections queued on a listener nothing was accepting from.
+
+The unit is `Type=notify` with `WatchdogSec=60`. The service pings at half that,
+and **only when both of these held in the same interval**:
+
+1. **A real HTTP request to its own listener succeeded.** `GET /api/version`
+   over the address the listener actually bound — not the configured string,
+   which is frequently not dialable (`:8081` has no host; a specific bind
+   address is not loopback). The response body is read, not just the status: a
+   response whose headers arrived before a stall and whose body never followed
+   is a served request only if nobody looks.
+2. **The monitor collected within three polling intervals.** Three rather than
+   one, because a single missed tick is ordinary on a loaded host and
+   restarting for it would make the watchdog a source of outages. The interval
+   is re-read on every check, since it is settable at runtime.
+
+Each covers what the other cannot. Accept is what failed on vm-host-2, and a
+check that does not cross the listener cannot see it; equally, a server
+answering promptly with readings from before its poll loop stalled looks
+perfect to the probe.
+
+**The trap this design exists to avoid.** A goroutine that pings on a `time.Ticker`
+allocates nothing and touches nothing, so it goes on pinging cheerfully through
+exactly the garbage-collection stall that has parked every other goroutine in
+the process. That watchdog converts "the service is dead" into "the service is
+dead and systemd has confirmed it is fine". The tests assert the **absence** of
+pings, because a test that only checks pings arriving passes against a bare
+ticker.
+
+The notification variables are cleared from the environment after use, so
+nothing this process starts can satisfy a watchdog it has stopped satisfying —
+a child pinging on behalf of a stalled parent is vm-host-2 again with a
+different actor holding the pen.
+
+**Verified end to end**, not only in tests: under a transient unit with
+`WatchdogSec=10`, the service stayed `active` through four watchdog periods, and
+a `SIGSTOP` — a process alive and unable to serve, which is the failure in
+miniature — produced `Watchdog timeout (limit 10s)!` and a kill within one and a
+half periods. With `Restart=always` that is a restart.
+
 ## Privileges
 
 **The service runs with no capabilities at all**, as a dedicated unprivileged

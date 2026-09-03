@@ -19,9 +19,11 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
@@ -209,6 +211,11 @@ type Server struct {
 	// protocol. It runs only while at least one has.
 	deltas *deltaHub
 
+	// ln holds the bound listener once Listen has run. It is atomic because
+	// the watchdog reads the address from another goroutine while Start is
+	// binding, and a plain field would be a race the detector would find.
+	ln atomic.Pointer[net.Listener]
+
 	version   string
 	gitCommit string
 	buildDate string
@@ -328,15 +335,66 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // a fatal error. ErrServerClosed is not returned as an error – it signals a
 // clean shutdown.
 func (s *Server) Start() error {
+	if _, err := s.Listen(); err != nil {
+		return err
+	}
+
 	var err error
 	if s.tlsConfig != nil {
 		// Certificates already live in TLSConfig, so no paths are passed here.
-		err = s.server.ListenAndServeTLS("", "")
+		err = s.server.ServeTLS(s.listener(), "", "")
 	} else {
-		err = s.server.ListenAndServe()
+		err = s.server.Serve(s.listener())
 	}
 	if err != nil && err != http.ErrServerClosed {
 		return &types.ServerStartError{Cause: err}
+	}
+	return nil
+}
+
+// Listen binds the configured address and returns the address actually bound.
+// It is idempotent: a second call returns the address from the first.
+//
+// It exists so the address is known before anything serves on it. Start blocks,
+// so a caller that needs the address has to run Start in a goroutine and then
+// discover it -- and with a port of 0, or an address that fails to bind, there
+// is nothing to discover and no error until later. Binding first turns "the
+// address is in use" into an error at the call site, and gives the watchdog a
+// real address to dial rather than the configured string.
+//
+// The distinction matters: ":8081" is not dialable, and a specific bind address
+// is not 127.0.0.1. The watchdog has to reach the socket that exists, not the
+// one the configuration describes.
+func (s *Server) Listen() (net.Addr, error) {
+	if l := s.listener(); l != nil {
+		return l.Addr(), nil
+	}
+
+	l, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return nil, &types.ServerStartError{Cause: err}
+	}
+	s.ln.Store(&l)
+	return l.Addr(), nil
+}
+
+// UsesTLS reports whether the server serves HTTPS. A caller dialling the
+// server has to know the scheme, and the configured TLS block is not exported.
+func (s *Server) UsesTLS() bool { return s.tlsConfig != nil }
+
+// Addr returns the address the server is listening on, or "" before it binds.
+func (s *Server) Addr() string {
+	l := s.listener()
+	if l == nil {
+		return ""
+	}
+	return l.Addr().String()
+}
+
+// listener returns the bound listener, or nil.
+func (s *Server) listener() net.Listener {
+	if l := s.ln.Load(); l != nil {
+		return *l
 	}
 	return nil
 }

@@ -14,7 +14,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=exec
+# Type=notify, not exec. Type=exec reports the unit active while the binary
+# exists, which says nothing about whether a request can be answered:
+# vm-host-2 served nothing for two days in that state with NRestarts=0 and
+# 2929 connections queued on a listener nothing was accepting from (#65, #66).
+#
+# With notify the service has to keep answering, and WatchdogSec below turns a
+# stall into a restart instead of a silence.
+Type=notify
+NotifyAccess=main
 
 # A dedicated system account, created by the deploy. It owns nothing, has no
 # home and no login shell -- sysmon reads the host and writes only to the
@@ -45,6 +53,17 @@ ExecReload=/bin/kill -HUP $MAINPID
 
 Restart=always
 RestartSec=5s
+
+# The service pings at half this, and ONLY when it has just made a successful
+# HTTP request to its own listener AND the monitor has collected within three
+# polling intervals. A ping from a bare ticker would prove only that a ticker
+# fires: a ticker allocates nothing, so it keeps pinging through exactly the
+# garbage-collection stall that parks every other goroutine in the process.
+#
+# 60s rather than something tighter because a restart is not free -- it drops
+# the event streams and the history the process holds -- and because collection
+# ticks are 2s, so 60s is thirty missed ticks rather than one slow one.
+WatchdogSec=60
 
 SyslogIdentifier=sysmon
 
