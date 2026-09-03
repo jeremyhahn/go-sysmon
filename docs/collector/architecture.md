@@ -329,6 +329,54 @@ roughly a minute of uptime before two samples exist and rates become real.
 Tiering is on for streaming (GUI and server) and off for one-shot CLI commands,
 where you asked for a reading and should get a fresh one.
 
+### What a tick actually costs
+
+Tiering means there is no such thing as "the cost of a tick": one tick in five
+costs several times what the other four do. That distinction is not academic —
+reading the *average* is what hid a two-day outage (issue #65), because a
+service can sit well under a CPU allowance on average while every expensive
+tick is a burst the allowance cannot absorb.
+
+Sampled on ci-node-1 at 250 ms resolution, `cpu.stat` deltas in milliseconds of
+CPU:
+
+```
+367 367 472 0 0 0 0 0 0 202 0 0 0 0 0 0 158 0 0 0 0 5 0 0 89 0 0 0 0 0 0 0
+361 347 425 449 352 399 438 393 400 384 0 0 0 0 9 200 0 0 ...
+      ^ the medium tick: ~3.9 s of CPU over 2.5 s of wall clock
+```
+
+The median sample is **zero**. Every 2 s a fast tick costs a couple of hundred
+milliseconds, and every fifth one a medium tick spends seconds — using more than
+one core, because collectors overlap.
+
+Per-collector figures come from `make bench-collector`, which reads the real
+host and reports the process count beside every result. **They are comparable
+only within one host**; quoting one machine's numbers for another is the mistake
+that put an Atom D510's figures in the deployment unit. On gpu-host (1070
+processes):
+
+| Tier | Collector | Per call | Allocated |
+|---|---|---|---|
+| Fast | host, cpu, network, load | under 1 ms each | small |
+| Fast | memory | 8.6 ms | 226 KB |
+| Medium | **process** | **70.8 ms** | **39 MB** |
+| Medium | gpu | 62.3 ms | 173 KB |
+| Medium | virt | 26.4 ms | 12.7 MB |
+| Medium | sensor | 3.9 ms | 1.3 MB |
+| Slow | disk (SMART) | 113.9 ms | 1.8 MB |
+| Slow | runtime | 3.6 ms | 52 KB |
+
+Weighted by how often each tier runs, the process walk is the largest single
+consumer of CPU on a busy host, and by a wide margin the largest consumer of
+*memory*: 39 MB of allocation every medium tick, which is most of the garbage
+the service produces. `ProcessCollector` and `VirtCollector` each walk the whole
+process table separately, and identity fields that cannot change for the life of
+a PID are re-read on every walk.
+
+See `pkg/collector/gopsutil.go` for the one setting that halved both of them,
+and why it cannot be covered by a test.
+
 ## Sensor merging
 
 hwmon reports temperatures against `(package, core)` identifiers; `/proc/stat`
