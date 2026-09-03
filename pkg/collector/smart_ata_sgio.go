@@ -4,6 +4,8 @@ package collector
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
 	"syscall"
 	"unsafe"
 )
@@ -104,6 +106,15 @@ func buildSMART16CDB(subCmd uint8) [16]byte {
 // the fallback used when HDIO_DRIVE_CMD is unavailable on the controller.
 func ataSGIOCommand(fd uintptr, devPath string, subCmd uint8) ([]byte, error) {
 	cdb := buildSMART16CDB(subCmd)
+	return sgIODataIn(fd, devPath, cdb, fmt.Sprintf("SG_IO ATA PASS-THROUGH(16) SMART(0x%02X)", subCmd))
+}
+
+// sgIODataIn issues one 16-byte SCSI command that reads a single 512-byte
+// sector from the device, and returns it. Both the SMART sub-commands and
+// IDENTIFY DEVICE are exactly this shape, and the three ways such a command
+// can look successful without being are subtle enough to be worth having in
+// one place rather than two.
+func sgIODataIn(fd uintptr, devPath string, cdb [16]byte, op string) ([]byte, error) {
 	data := make([]byte, smartDataSize)
 	sense := make([]byte, senseBufLen)
 
@@ -126,11 +137,7 @@ func ataSGIOCommand(fd uintptr, devPath string, subCmd uint8) ([]byte, error) {
 		uintptr(unsafe.Pointer(&hdr)),
 	)
 	if errno != 0 {
-		return nil, &ErrSMARTIoctl{
-			DevPath: devPath,
-			Op:      fmt.Sprintf("SG_IO ATA PASS-THROUGH(16) SMART(0x%02X)", subCmd),
-			Errno:   errno,
-		}
+		return nil, &ErrSMARTIoctl{DevPath: devPath, Op: op, Errno: errno}
 	}
 
 	// info's low bit reflects command status independently of errno; a set bit
@@ -140,7 +147,7 @@ func ataSGIOCommand(fd uintptr, devPath string, subCmd uint8) ([]byte, error) {
 	if hdr.info&sgInfoOKMask != sgInfoOK {
 		return nil, &ErrSMARTPassthrough{
 			DevPath:      devPath,
-			Op:           fmt.Sprintf("SG_IO ATA PASS-THROUGH(16) SMART(0x%02X)", subCmd),
+			Op:           op,
 			HostStatus:   hdr.hostStatus,
 			DriverStatus: hdr.driverStatus,
 			Status:       hdr.status,
@@ -155,7 +162,7 @@ func ataSGIOCommand(fd uintptr, devPath string, subCmd uint8) ([]byte, error) {
 	if hdr.resid != 0 {
 		return nil, &ErrSMARTShortTransfer{
 			DevPath: devPath,
-			Op:      fmt.Sprintf("SG_IO ATA PASS-THROUGH(16) SMART(0x%02X)", subCmd),
+			Op:      op,
 			Want:    smartDataSize,
 			Got:     smartDataSize - int(hdr.resid),
 		}
@@ -191,4 +198,114 @@ type ErrSMARTPassthrough struct {
 func (e *ErrSMARTPassthrough) Error() string {
 	return fmt.Sprintf("smart: %s on %s reported non-OK status (scsi=0x%02x host=0x%04x driver=0x%04x)",
 		e.Op, e.DevPath, e.Status, e.HostStatus, e.DriverStatus)
+}
+
+// ATA IDENTIFY DEVICE, and why it is worth a second command.
+//
+// A SMART read that fails tells us the reading did not happen; it does not say
+// whether the drive has SMART at all. IDENTIFY DEVICE does, in one bit, and
+// the difference is the difference between "we could not read this drive" and
+// "this drive has nothing to read" -- which is exactly the distinction #45 is
+// about. Measured on ci-node-1: the DELLBOSS boot volume opens, accepts
+// IDENTIFY, and reports no SMART support, while every other failure on that
+// host is the kernel refusing the caller.
+const ataCmdIdentify uint8 = 0xEC
+
+// IDENTIFY DEVICE word offsets (ATA/ATAPI Command Set).
+const (
+	// identifyWordCommandSets1 is word 82: bit 0 is the SMART feature set.
+	identifyWordCommandSets1 = 82
+	// identifyWordCommandSets2 is word 83, whose top two bits say whether
+	// words 82-84 carry meaning at all: bit 15 clear and bit 14 set.
+	identifyWordCommandSets2  = 83
+	identifySMARTSupportedBit = 1 << 0
+	identifyValidMask         = 0xC000
+	identifyValidValue        = 0x4000
+)
+
+// buildIdentify16CDB builds the ATA PASS-THROUGH(16) command descriptor block
+// for IDENTIFY DEVICE: one 512-byte sector, PIO Data-In. Unlike a SMART
+// command it carries no signature in LBA mid/high -- IDENTIFY takes none, and
+// setting one makes drives reject the command.
+//
+// It is a pure function so the wire format can be verified without hardware.
+func buildIdentify16CDB() [16]byte {
+	return [16]byte{
+		ataPassThrough16, // 0: ATA PASS-THROUGH(16)
+		0x08,             // 1: PROTOCOL=4 (PIO Data-In) << 1; EXTEND=0
+		0x0E,             // 2: T_LENGTH=2 (sector_count), BYT_BLOK=1, T_DIR=1 (from device)
+		0x00,             // 3: features (15:8)
+		0x00,             // 4: features (7:0)
+		0x00,             // 5: sector_count (15:8)
+		0x01,             // 6: sector_count (7:0) = 1 sector
+		0x00,             // 7: lba_low (15:8)
+		0x00,             // 8: lba_low (7:0)
+		0x00,             // 9: lba_mid (15:8)
+		0x00,             // 10: lba_mid (7:0)
+		0x00,             // 11: lba_high (15:8)
+		0x00,             // 12: lba_high (7:0)
+		0x00,             // 13: device
+		ataCmdIdentify,   // 14: command = 0xEC (IDENTIFY DEVICE)
+		0x00,             // 15: control
+	}
+}
+
+// identifyWord returns word n of an IDENTIFY DEVICE response. The words are
+// little-endian 16-bit.
+func identifyWord(id []byte, n int) uint16 {
+	return uint16(id[2*n]) | uint16(id[2*n+1])<<8
+}
+
+// identifySMARTSupported decodes whether a drive implements the SMART feature
+// set from its IDENTIFY DEVICE response.
+//
+// It returns an error rather than false when the answer cannot be trusted.
+// Words 82-84 are only meaningful when word 83 says so, and a drive that
+// leaves them unset must not be recorded as having declared it has no SMART --
+// that would turn "the drive did not say" into "the drive said no", which is
+// the same substitution of an absence for an answer this whole change exists
+// to stop.
+func identifySMARTSupported(id []byte) (bool, error) {
+	if len(id) < 2*(identifyWordCommandSets2+1) {
+		return false, &ErrSMARTShortTransfer{
+			Op:   "IDENTIFY DEVICE",
+			Want: 2 * (identifyWordCommandSets2 + 1),
+			Got:  len(id),
+		}
+	}
+	if identifyWord(id, identifyWordCommandSets2)&identifyValidMask != identifyValidValue {
+		return false, &ErrIdentifyIndeterminate{}
+	}
+	return identifyWord(id, identifyWordCommandSets1)&identifySMARTSupportedBit != 0, nil
+}
+
+// ErrIdentifyIndeterminate reports an IDENTIFY DEVICE response whose command
+// set words are marked invalid, so it cannot say whether SMART is supported.
+type ErrIdentifyIndeterminate struct{}
+
+func (e *ErrIdentifyIndeterminate) Error() string {
+	return "smart: IDENTIFY DEVICE reports its command set words as invalid; SMART support is indeterminate"
+}
+
+// ataSMARTSupported asks a device whether it implements SMART, using IDENTIFY
+// DEVICE over SG_IO only. It deliberately does not try HDIO_DRIVE_CMD: that
+// path segfaults the service on at least one deployed host (go-sysmon #20),
+// and this probe runs only after a read has already failed, where a crash
+// would be the worst possible way to report bad news.
+func ataSMARTSupported(devPath string) (bool, error) {
+	f, err := os.OpenFile(devPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Debug("close ATA device", "path", devPath, "err", err)
+		}
+	}()
+
+	data, err := sgIODataIn(f.Fd(), devPath, buildIdentify16CDB(), "SG_IO ATA PASS-THROUGH(16) IDENTIFY DEVICE")
+	if err != nil {
+		return false, err
+	}
+	return identifySMARTSupported(data)
 }

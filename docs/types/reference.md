@@ -82,7 +82,24 @@ Usage: `total_bytes`, `used_bytes`, `free_bytes`, `used_percent`.
 
 I/O counters: `read_count`, `write_count`, `read_bytes`, `write_bytes`, `io_time_ms`, `weighted_io_ms`.
 
-SMART: `smart_enabled`, `smart_healthy`, `smart_attrs`, `temperature_celsius`, `power_on_hours`, `power_cycles`.
+SMART: `smart_enabled`, `smart_healthy`, `smart_status`, `smart_reason`, `smart_attrs`, `temperature_celsius`, `power_on_hours`, `power_cycles`.
+
+`smart_enabled` and `smart_healthy` mean what they have always meant: a reading
+was obtained, and it was good. They cannot say *why* there is no reading, and
+four unrelated situations produced the same pair of `false`s. `smart_status`
+carries the distinction:
+
+| `smart_status` | meaning |
+|---|---|
+| `""` | not classified. A server older than this field sends nothing. **Treat as "no claim" and say less — never as a reassuring one.** |
+| `not_applicable` | a virtual block device (device-mapper, md, an unbound nbd or loop): there is no medium to ask |
+| `behind_controller` | served by a hardware RAID controller and did not answer SMART directly. Whether *this* device is a volume or a passthrough disk is not knowable from sysfs, so `smart_reason` says "if it is a volume" rather than asserting it |
+| `unsupported` | the device answered, and reports that it implements no SMART |
+| `unreadable` | the device should be able to answer and did not. `smart_reason` says what stopped it, and names the remedy that applies: a refused **open** is file permissions (the `disk` group), a refused **passthrough** is a capability check (`CAP_SYS_RAWIO`, which group membership does not grant). Either way it is a fact about the deployment rather than about the hardware |
+| `ok` / `failing` | a reading |
+
+`smart_reason` is a sentence for the statuses that have a why, and is empty for
+`ok` and `failing`.
 
 NVMe health: `wear_level_percent`, `available_spare_percent`, `spare_threshold_percent`, `media_errors`, `error_log_entries`, `unsafe_shutdowns`, `critical_warning`, `data_units_read`, `data_units_written`, `warning_temp_time_minutes`, `critical_temp_time_minutes`, `life_remaining_percent`, `estimated_hours_left`.
 

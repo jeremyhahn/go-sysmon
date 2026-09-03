@@ -4,7 +4,6 @@ package collector
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -111,6 +110,12 @@ func (e *ErrSMARTIoctl) Error() string {
 	return fmt.Sprintf("SMART ioctl %s on %s failed: %v", e.Op, e.DevPath, e.Errno)
 }
 
+// Unwrap exposes the errno so callers can ask errors.Is(err, syscall.EPERM)
+// through the wrappers rather than reaching into the struct. Without it, a
+// refusal deep under an ErrSMARTUnavailable is indistinguishable from a drive
+// that simply declined to answer.
+func (e *ErrSMARTIoctl) Unwrap() error { return e.Errno }
+
 // nvmeNameFromDisk returns the NVMe character device path for a disk name.
 // For a disk like "nvme0n1" the admin device is "/dev/nvme0".
 // NVMe block devices follow the pattern nvme<ctrl>n<ns>, so we strip
@@ -140,10 +145,7 @@ func nvmeNameFromDisk(devName string) string {
 func readNVMeSMART(devPath string, info *types.DiskInfo) error {
 	f, err := os.OpenFile(devPath, os.O_RDONLY, 0)
 	if err != nil {
-		if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
-			return &ErrSMARTPermission{DevPath: devPath}
-		}
-		return err
+		return smartOpenError(devPath, err)
 	}
 	defer func() {
 		if err := f.Close(); err != nil {

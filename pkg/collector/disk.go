@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jaypipes/ghw"
+	ghwblock "github.com/jaypipes/ghw/pkg/block"
 	psdisk "github.com/shirou/gopsutil/v4/disk"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -182,15 +183,7 @@ func (c *DiskCollector) Collect() error {
 	var result []types.DiskInfo
 
 	if blockInfo != nil && len(blockInfo.Disks) > 0 {
-		result = make([]types.DiskInfo, 0, len(blockInfo.Disks))
-		for i, d := range blockInfo.Disks {
-			info := c.buildDiskInfo(d.Name, d.Model, d.SerialNumber, d.Vendor,
-				d.SizeBytes, d.DriveType.String(), d.StorageController.String(),
-				d.StorageController.String(), isRotational(d.Name),
-				partitionsByDisk[d.Name], ioCounters)
-			info.Index = i
-			result = append(result, info)
-		}
+		result = c.disksFromBlockInfo(blockInfo.Disks, partitionsByDisk, ioCounters)
 	} else {
 		// Fall back to block devices visible through sysfs when ghw is unavailable.
 		result = c.collectFromSysfs(partitionsByDisk, ioCounters)
@@ -198,6 +191,36 @@ func (c *DiskCollector) Collect() error {
 
 	c.disks.Store(&result)
 	return nil
+}
+
+// disksFromBlockInfo turns ghw's block device enumeration into disk records.
+//
+// It is separate from Collect so the path that actually runs in production can
+// be tested: ghw.Block() reads the host, so everything downstream of it used to
+// be reachable only on real hardware, and the sysfs fallback -- the path that
+// runs almost nowhere -- was the only one with a test.
+func (c *DiskCollector) disksFromBlockInfo(
+	disks []*ghwblock.Disk,
+	partitionsByDisk map[string][]psdisk.PartitionStat,
+	ioCounters map[string]psdisk.IOCountersStat,
+) []types.DiskInfo {
+	result := make([]types.DiskInfo, 0, len(disks))
+	for _, d := range disks {
+		// ghw enumerates every name in /sys/block, including the ones the
+		// kernel created with nothing behind them. The sysfs fallback has
+		// always dropped loop and ram devices; this is the same idea on the
+		// path that runs, and by medium rather than by name.
+		if hasNoMedium(d.Name) {
+			continue
+		}
+		info := c.buildDiskInfo(d.Name, d.Model, d.SerialNumber, d.Vendor,
+			d.SizeBytes, d.DriveType.String(), d.StorageController.String(),
+			d.StorageController.String(), isRotational(d.Name),
+			partitionsByDisk[d.Name], ioCounters)
+		info.Index = len(result)
+		result = append(result, info)
+	}
+	return result
 }
 
 // buildDiskInfo constructs a DiskInfo, collecting usage, SMART and temperature
@@ -281,11 +304,20 @@ func (c *DiskCollector) buildDiskInfo(
 // applySMART populates SMART fields using direct ioctl calls.
 // It detects whether the device is NVMe or ATA and dispatches accordingly.
 // Permission errors are logged as warnings; the disk entry is still returned
-// without SMART data so the rest of the system state is visible.
+// without SMART data so the rest of the system state is visible -- but it now
+// carries SMARTStatus saying which kind of absence it is, because "no reading"
+// covers four unrelated situations that used to render identically.
 func (c *DiskCollector) applySMART(devName string, info *types.DiskInfo) {
-	// md arrays are not SMART targets; skip the ioctls (which would fail on
-	// both the HDIO and SG_IO paths every cycle) and let applyRAID handle them.
-	if isMDName(devName) {
+	// A device with no hardware under it has nothing to ask. md arrays were
+	// already skipped here to spare the ioctls; the sysfs test generalises
+	// that to device-mapper nodes, unbound nbd and loop devices, and anything
+	// else virtual, without a list of name prefixes to keep in step with the
+	// kernel. The name test is kept because it holds even where sysfs does not
+	// answer.
+	virtual, known := isVirtualBlockDevice(devName)
+	if isMDName(devName) || (known && virtual) {
+		info.SMARTStatus = types.SMARTNotApplicable
+		info.SMARTReason = "a virtual block device: there is no physical medium to ask"
 		return
 	}
 	if strings.HasPrefix(devName, "nvme") {
@@ -295,40 +327,54 @@ func (c *DiskCollector) applySMART(devName string, info *types.DiskInfo) {
 	}
 }
 
+// recordSMARTReading sets the status that goes with a successful read. It is
+// derived from SMARTHealthy rather than set alongside it so the status and the
+// boolean cannot disagree.
+func recordSMARTReading(info *types.DiskInfo) {
+	if info.SMARTHealthy {
+		info.SMARTStatus = types.SMARTOK
+		return
+	}
+	info.SMARTStatus = types.SMARTFailing
+}
+
 // applyNVMeSMART reads SMART data from an NVMe device via ioctl.
 func (c *DiskCollector) applyNVMeSMART(devName string, info *types.DiskInfo) {
 	charDev := nvmeNameFromDisk(devName)
-	if err := readNVMeSMART(charDev, info); err != nil {
-		var permErr *ErrSMARTPermission
-		if isPermissionError(err, &permErr) {
-			// A privilege denial cannot resolve itself mid-run; warn once
-			// per device so the condition is visible without repeating.
-			warnOnce(c.logger, "disk:smart:"+devName,
-				"disk: SMART unavailable", "device", devName,
-				"hint", "run with elevated privileges or add user to 'disk' group",
-				"note", "this is logged once per device per run")
-			return
-		}
-		c.logger.Debug("disk: NVMe SMART read failed", "device", devName, "error", err)
-	}
+	c.applySMARTRead(devName, info, func() error { return readNVMeSMART(charDev, info) })
 }
 
 // applyATASMART reads SMART data from an ATA device via ioctl.
 func (c *DiskCollector) applyATASMART(devName string, info *types.DiskInfo) {
 	devPath := "/dev/" + devName
-	if err := readATASMART(devPath, info); err != nil {
-		var permErr *ErrSMARTPermission
-		if isPermissionError(err, &permErr) {
-			// A privilege denial cannot resolve itself mid-run; warn once
-			// per device so the condition is visible without repeating.
-			warnOnce(c.logger, "disk:smart:"+devName,
-				"disk: SMART unavailable", "device", devName,
-				"hint", "run with elevated privileges or add user to 'disk' group",
-				"note", "this is logged once per device per run")
-			return
-		}
-		c.logger.Debug("disk: ATA SMART read failed", "device", devName, "error", err)
+	c.applySMARTRead(devName, info, func() error { return readATASMART(devPath, info) })
+}
+
+// applySMARTRead runs one device's SMART read and records what came of it,
+// whichever transport it used. Both callers need identical handling of the
+// three outcomes -- a reading, a refusal worth warning about once, and a
+// failure to classify -- and having it once is what keeps the status and the
+// warning from drifting apart.
+func (c *DiskCollector) applySMARTRead(devName string, info *types.DiskInfo, read func() error) {
+	err := read()
+	if err == nil {
+		recordSMARTReading(info)
+		return
 	}
+
+	classifySMARTFailure(devName, err, info)
+
+	var permErr *ErrSMARTPermission
+	if isPermissionError(err, &permErr) {
+		// A privilege denial cannot resolve itself mid-run; warn once per
+		// device so the condition is visible without repeating.
+		warnOnce(c.logger, "disk:smart:"+devName,
+			"disk: SMART unavailable", "device", devName,
+			"hint", "run with elevated privileges or add user to 'disk' group",
+			"note", "this is logged once per device per run")
+		return
+	}
+	c.logger.Debug("disk: SMART read failed", "device", devName, "error", err)
 }
 
 // isPermissionError returns true when err is an *ErrSMARTPermission and
@@ -357,6 +403,9 @@ func (c *DiskCollector) collectFromSysfs(
 	for _, entry := range entries {
 		name := entry.Name()
 		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") {
+			continue
+		}
+		if hasNoMedium(name) {
 			continue
 		}
 		sizeBytes := readSysfsUint64(filepath.Join(sysBlockRoot, name, "size")) * 512
@@ -438,7 +487,10 @@ func stripPartitionSuffix(part string) (string, bool) {
 
 // isRotational reads the rotational flag from sysfs.
 func isRotational(devName string) bool {
-	val := readSysfsString(fmt.Sprintf("/sys/block/%s/queue/rotational", devName))
+	// Via sysBlockRoot, not a literal /sys/block: a test that points the
+	// collector at a fixture tree was still reading the host through this one
+	// function, so its answer came from whatever machine happened to run it.
+	val := readSysfsString(filepath.Join(sysBlockRoot, devName, "queue", "rotational"))
 	return strings.TrimSpace(val) == "1"
 }
 

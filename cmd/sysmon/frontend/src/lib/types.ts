@@ -266,6 +266,23 @@ export interface DIMMInfo {
   temperature: number;
 }
 
+/**
+ * SMARTStatus mirrors types.SMARTStatus in pkg/types.
+ *
+ * `""` is the zero value and means nothing classified this device — an older
+ * server that predates the field sends no value at all. It must render as the
+ * undifferentiated "N/A" this replaced, never as a reassuring one: a tab left
+ * open across a rollback holds this bundle against a server that cannot answer.
+ */
+export type SMARTStatus =
+  | ""
+  | "not_applicable"
+  | "behind_controller"
+  | "unsupported"
+  | "unreadable"
+  | "ok"
+  | "failing";
+
 export interface DiskInfo {
   name: string;
   model: string;
@@ -299,6 +316,14 @@ export interface DiskInfo {
   peak_used_percent: number;
   smart_enabled: boolean;
   smart_healthy: boolean;
+  /**
+   * Which of several different things "there is no SMART reading" means.
+   * Absent from servers older than this field, which is why every consumer
+   * treats the empty string as "no claim" rather than as a state.
+   */
+  smart_status?: SMARTStatus;
+  /** Why there is no reading, for the statuses that have a why. */
+  smart_reason?: string;
   smart_attrs: SMARTAttr[];
   raid?: RAIDInfo | null;
   temperature_celsius: number;

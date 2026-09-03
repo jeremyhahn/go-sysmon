@@ -4,7 +4,6 @@ package collector
 
 import (
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -162,10 +161,7 @@ const attrFlagsPrefail uint16 = 0x0001
 func readATASMART(devPath string, info *types.DiskInfo) error {
 	f, err := os.OpenFile(devPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EACCES) {
-			return &ErrSMARTPermission{DevPath: devPath}
-		}
-		return err
+		return smartOpenError(devPath, err)
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
@@ -298,9 +294,16 @@ func (e *ErrSMARTUnavailable) Error() string {
 		e.DevPath, e.HDIOErr, e.SGIOErr)
 }
 
-// Unwrap returns the SG_IO error, the more informative of the two on the
-// controllers this fallback exists for.
-func (e *ErrSMARTUnavailable) Unwrap() error { return e.SGIOErr }
+// Unwrap returns both transport errors.
+//
+// It returned only the SG_IO one -- "the more informative of the two on the
+// controllers this fallback exists for" -- while the doc comment above claimed
+// both were inspectable. That was merely untidy until classification started
+// asking errors.Is(err, syscall.EPERM) through this wrapper: an HDIO refusal
+// paired with an SG_IO failure of any other kind was then invisible, and a
+// device we were refused would have been reported as one that declined to
+// answer. Returning both is what makes the sentence above true.
+func (e *ErrSMARTUnavailable) Unwrap() []error { return []error{e.HDIOErr, e.SGIOErr} }
 
 // applyATASMARTAttrs translates decoded ATA attributes into the disk record,
 // lifting the well-known IDs into their dedicated fields. It is separate from

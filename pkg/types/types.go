@@ -583,9 +583,17 @@ type DiskInfo struct {
 	PeakQueueLength    uint64  `json:"peak_queue_length"`
 	PeakUtilPercent    float64 `json:"peak_util_percent"`
 	PeakUsedPercent    float64 `json:"peak_used_percent"`
-	// SMART status
+	// SMART status. SMARTEnabled and SMARTHealthy keep the meaning they have
+	// always had -- "a reading was obtained" and "that reading was good" --
+	// because pkg/metrics and pkg/fleet are built on them. SMARTStatus says
+	// the thing two booleans cannot: which of several different absences a
+	// missing reading is.
 	SMARTEnabled bool        `json:"smart_enabled"`
 	SMARTHealthy bool        `json:"smart_healthy"`
+	SMARTStatus  SMARTStatus `json:"smart_status"`
+	// SMARTReason is a sentence naming why there is no reading, for the
+	// statuses that have a why. Empty for SMARTOK and SMARTFailing.
+	SMARTReason  string      `json:"smart_reason"`
 	SMARTAttrs   []SMARTAttr `json:"smart_attrs"`
 	Temperature  float64     `json:"temperature_celsius"`
 	PowerOnHours uint64      `json:"power_on_hours"`
@@ -665,6 +673,56 @@ type PartitionInfo struct {
 	Mountpoint string `json:"mountpoint"`
 	Fstype     string `json:"fstype"`
 	Opts       string `json:"opts"`
+}
+
+// SMARTStatus names which of several different things "there is no SMART
+// reading for this device" means.
+//
+// Before this existed, a device with no reading carried SMARTEnabled=false and
+// SMARTHealthy=false, and four unrelated situations were emitted identically.
+// Measured on ci-node-1 (2026-09-02), all four were present at once on the
+// same host and rendered as the same "SMART N/A": dm-0, a device-mapper node
+// that can never have SMART; sda and sdb, PERC virtual disks whose member
+// drives answer perfectly well behind the controller; sdc, a DELLBOSS card
+// that answers "I do not implement SMART" when asked with enough privilege to
+// hear it; and, without CAP_SYS_RAWIO, every ATA device on the host, refused
+// at the ioctl. "N/A" reads as "nothing to see" for all four, and only one of
+// them means that.
+type SMARTStatus string
+
+const (
+	// SMARTUnknown is the zero value: nothing has classified this device. An
+	// older server that predates this field sends no value, which decodes to
+	// this, so a consumer must treat it as "no claim" and say less -- never as
+	// a reassuring one.
+	SMARTUnknown SMARTStatus = ""
+	// SMARTNotApplicable is a virtual block device -- a device-mapper node, an
+	// md array, an unbound nbd or loop device. There is no medium to ask.
+	SMARTNotApplicable SMARTStatus = "not_applicable"
+	// SMARTBehindController is a device served by a hardware RAID controller
+	// that did not answer SMART directly. That -- and not "this is a volume" --
+	// is what the evidence supports: the SCSI host driver is knowable, whether
+	// THIS device is a volume or a passthrough disk is not. When it is a
+	// volume, SMART belongs to its member drives behind the controller.
+	// SMARTReason names the controller and says so conditionally.
+	SMARTBehindController SMARTStatus = "behind_controller"
+	// SMARTUnsupported is a physical device that answered the question, and
+	// answered that it does not implement the SMART feature set.
+	SMARTUnsupported SMARTStatus = "unsupported"
+	// SMARTUnreadable is a device that should be able to answer but did not.
+	// SMARTReason says what stopped it -- most often a withheld privilege,
+	// which is a fact about this deployment rather than about the hardware.
+	SMARTUnreadable SMARTStatus = "unreadable"
+	// SMARTOK is a reading, and the reading is good.
+	SMARTOK SMARTStatus = "ok"
+	// SMARTFailing is a reading, and the drive is reporting failure.
+	SMARTFailing SMARTStatus = "failing"
+)
+
+// HasReading reports whether s is an actual reading from the device rather
+// than one of the ways of having none.
+func (s SMARTStatus) HasReading() bool {
+	return s == SMARTOK || s == SMARTFailing
 }
 
 // SMARTAttr is a single SMART attribute.

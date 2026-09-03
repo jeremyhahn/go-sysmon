@@ -54,8 +54,14 @@ test.describe('Storage Tab', () => {
   });
 
   test('SMART status badge is displayed per disk', async ({ page }) => {
-    // Each disk card has a SMART badge: "Healthy", "FAILING", or "SMART N/A"
-    const smartBadge = page.locator('.badge').filter({ hasText: /Healthy|FAILING|SMART N\/A/ }).first();
+    // Every disk card carries a SMART badge. Which label it shows depends on
+    // the host this runs against and on what privilege the process holds, so
+    // the set is broad here; smart-status.spec.ts is where the labels are
+    // pinned, against a fixture that can hold all of them at once.
+    const smartBadge = page
+      .locator('.badge')
+      .filter({ hasText: /Healthy|FAILING|SMART|No SMART support/ })
+      .first();
     await expect(smartBadge).toBeVisible();
   });
 });

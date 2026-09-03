@@ -35,6 +35,12 @@ export function makeProcesses(count: number) {
 export interface MockOptions {
   /** How many processes to serve. Default 60: enough for 3 pages of 25. */
   processCount?: number;
+  /**
+   * Replaces the fixture's disk list. Given as partials merged over the first
+   * fixture disk, so a spec states only the fields it is about and still gets
+   * a renderable card.
+   */
+  disks?: Partial<Snapshot["disks"][number]>[];
 }
 
 /**
@@ -51,8 +57,13 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
   const count = opts.processCount ?? 60;
 
   const processes = makeProcesses(count);
+  const disks =
+    opts.disks == null
+      ? snapshot.disks
+      : opts.disks.map((d, i) => ({ ...snapshot.disks[0], index: i, ...d }));
   const payload: Snapshot = {
     ...snapshot,
+    disks,
     processes: {
       ...snapshot.processes,
       total: count,

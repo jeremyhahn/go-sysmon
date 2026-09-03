@@ -57,14 +57,45 @@
     expanded = next;
   }
 
+  /**
+   * The four ways a device can have no SMART reading, and the two ways it can
+   * have one.
+   *
+   * These used to render as a single neutral "SMART N/A", which reads as
+   * "nothing to see" — true of only one of the four. Measured on ci-node-1,
+   * all four were on screen at once: dm-0 has no medium to ask; sda and sdb are
+   * PERC volumes whose member drives answer fine behind the controller; and
+   * without CAP_SYS_RAWIO every ATA device on the host is simply refused, which
+   * is a fact about the deployment rather than about the hardware.
+   *
+   * An unrecognised or absent status falls back to the booleans, so an older
+   * server — or a tab held open across a rollback — shows what it showed
+   * before rather than a state this build invented.
+   */
+  const SMART_PRESENTATION: Record<string, { label: string; badge: string }> = {
+    ok: { label: "Healthy", badge: "badge-success" },
+    failing: { label: "FAILING", badge: "badge-error" },
+    not_applicable: { label: "SMART n/a", badge: "badge-ghost" },
+    behind_controller: { label: "SMART via controller", badge: "badge-info badge-outline" },
+    unsupported: { label: "No SMART support", badge: "badge-ghost" },
+    unreadable: { label: "SMART unreadable", badge: "badge-warning badge-outline" },
+  };
+
+  function smartPresentation(disk: DiskInfo): { label: string; badge: string } {
+    const known = SMART_PRESENTATION[disk.smart_status ?? ""];
+    if (known != null) return known;
+    if (!disk.smart_enabled) return { label: "SMART N/A", badge: "badge-neutral" };
+    return disk.smart_healthy
+      ? { label: "Healthy", badge: "badge-success" }
+      : { label: "FAILING", badge: "badge-error" };
+  }
+
   function smartBadge(disk: DiskInfo): string {
-    if (!disk.smart_enabled) return "badge-neutral";
-    return disk.smart_healthy ? "badge-success" : "badge-error";
+    return smartPresentation(disk).badge;
   }
 
   function smartLabel(disk: DiskInfo): string {
-    if (!disk.smart_enabled) return "SMART N/A";
-    return disk.smart_healthy ? "Healthy" : "FAILING";
+    return smartPresentation(disk).label;
   }
 
   /**
@@ -252,7 +283,7 @@
                   {disk.temperature_celsius.toFixed(0)}°C
                 </span>
               {/if}
-              <span class="badge {smartBadge(disk)} badge-sm">
+              <span class="badge {smartBadge(disk)} badge-sm" title={disk.smart_reason || undefined}>
                 {smartLabel(disk)}
               </span>
               {#if disk.raid != null}
