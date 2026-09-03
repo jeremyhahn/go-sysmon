@@ -118,13 +118,41 @@ var memoryTypes = map[byte]string{
 type MemoryCollector struct {
 	info   atomic.Pointer[types.MemoryInfo]
 	logger *slog.Logger
+
+	// dimms is the module inventory: slot, size, speed, manufacturer, part
+	// number. It comes from the SMBIOS type-17 table, which firmware generates
+	// at boot and never rewrites, so it is read once at construction.
+	//
+	// Only the topology is fixed. Temperatures are read from hwmon on every
+	// collection and applied onto a COPY of this, because they are the one
+	// thing here that changes -- and they sit in a different sysfs tree for a
+	// reason.
+	dimms []types.DIMMInfo
 }
 
-// NewMemoryCollector returns a new MemoryCollector.
+// NewMemoryCollector returns a new MemoryCollector, reading the module
+// inventory as it does so.
 func NewMemoryCollector(logger *slog.Logger) *MemoryCollector {
 	c := &MemoryCollector{logger: logger}
 	c.info.Store(&types.MemoryInfo{})
+	c.dimms = c.collectDIMMs()
 	return c
+}
+
+// dimmsWithoutTemperatures returns a copy of the cached inventory for this
+// collection to write temperatures into.
+//
+// A copy rather than the cached slice itself: applyDIMMTemperatures writes into
+// the elements it is given, and handing it the cache would leave last tick's
+// readings on the modules that no longer have a sensor -- a temperature that
+// stops being measured would go on being displayed.
+func (c *MemoryCollector) dimmsWithoutTemperatures() []types.DIMMInfo {
+	if len(c.dimms) == 0 {
+		return nil
+	}
+	out := make([]types.DIMMInfo, len(c.dimms))
+	copy(out, c.dimms)
+	return out
 }
 
 // Collect refreshes memory statistics.
@@ -159,7 +187,7 @@ func (c *MemoryCollector) Collect() error {
 		info.SwapPercent = sw.UsedPercent
 	}
 
-	info.DIMMs = c.collectDIMMs()
+	info.DIMMs = c.dimmsWithoutTemperatures()
 	info.TempSensorDetected = applyDIMMTemperatures(info.DIMMs, c.logger)
 
 	c.info.Store(info)

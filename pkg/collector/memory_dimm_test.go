@@ -2,6 +2,7 @@ package collector
 
 import (
 	"bytes"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -190,5 +191,78 @@ func TestApplyDIMMTemperatures_WarnsOncePerRun(t *testing.T) {
 	got := strings.Count(buf.String(), "no DIMM temperature sensors detected")
 	if got != 1 {
 		t.Errorf("warned %d times across 50 cycles, want exactly 1", got)
+	}
+}
+
+// ---- the cached inventory -------------------------------------------------
+
+// TestMemoryCollector_InventoryIsStableAndTemperaturesAreNot is the pair of
+// properties the cache has to hold at once: the module list is read once and
+// carried forward, and the readings applied onto it are not.
+//
+// The second half is why Collect works on a COPY. Handing applyDIMMTemperatures
+// the cached slice would leave the previous tick's value on a module whose
+// sensor has stopped answering -- a temperature that is no longer being
+// measured, still on the dashboard, indistinguishable from one that is.
+func TestMemoryCollector_InventoryIsStableAndTemperaturesAreNot(t *testing.T) {
+	root := t.TempDir()
+	withHwmonRoot(t, root)
+	mkHwmon(t, root, "hwmon0", "spd5118", "31000")
+
+	c := NewMemoryCollector(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// The inventory comes from this host's SMBIOS, which a unit test cannot
+	// stage. Give the collector a known one so the assertions are about the
+	// caching and not about the machine the suite runs on.
+	c.dimms = []types.DIMMInfo{{Location: "DIMM_A1", SizeBytes: 1 << 34}}
+
+	if err := c.Collect(); err != nil {
+		t.Fatalf("first Collect: %v", err)
+	}
+	first := c.Info()
+	if len(first.DIMMs) != 1 {
+		t.Fatalf("got %d DIMMs, want the one in the cached inventory", len(first.DIMMs))
+	}
+	if first.DIMMs[0].Temperature != 31 {
+		t.Fatalf("temperature = %v, want 31 from the fixture", first.DIMMs[0].Temperature)
+	}
+
+	// The sensor goes away: the module is still installed, its temperature is
+	// no longer readable.
+	if err := os.RemoveAll(filepath.Join(root, "hwmon0")); err != nil {
+		t.Fatalf("remove hwmon device: %v", err)
+	}
+
+	if err := c.Collect(); err != nil {
+		t.Fatalf("second Collect: %v", err)
+	}
+	second := c.Info()
+
+	if len(second.DIMMs) != 1 || second.DIMMs[0].Location != "DIMM_A1" {
+		t.Fatalf("inventory = %+v, want the cached module carried forward", second.DIMMs)
+	}
+	if got := second.DIMMs[0].Temperature; got != 0 {
+		t.Errorf("temperature = %v after the sensor disappeared, want 0: a reading "+
+			"that is no longer measured is being displayed as though it were", got)
+	}
+	if second.TempSensorDetected {
+		t.Error("TempSensorDetected is true with no sensor present")
+	}
+}
+
+// The constructor has to do the read, or the inventory is empty for the life of
+// the process and every snapshot reports a machine with no memory modules.
+//
+// It compares against a second independent read rather than asserting
+// non-empty, because a virtual machine legitimately reports no modules at all
+// -- on that host a non-empty check passes or fails for reasons that have
+// nothing to do with this wiring. Two reads of the same source agree either
+// way, and disagree only if one of them did not happen.
+func TestNewMemoryCollector_ReadsTheInventoryOnce(t *testing.T) {
+	c := NewMemoryCollector(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	direct := c.collectDIMMs()
+	if len(c.dimms) != len(direct) {
+		t.Fatalf("constructor read %d modules, a direct read finds %d: the inventory is not being read at construction",
+			len(c.dimms), len(direct))
 	}
 }

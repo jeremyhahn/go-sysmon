@@ -408,6 +408,42 @@ identity and live state side by side: DIMM *topology* cannot change, a DIMM
 *temperature* changes constantly, and both live under the same directory.
 "It is under `/sys`" is not a reason to cache anything.
 
+### The DIMM inventory is read once; its temperatures are not
+
+`MemoryCollector` reads the module list — slot, size, speed, manufacturer, part
+number — from the SMBIOS type-17 table, which firmware generates at boot and
+never rewrites. It is read in the constructor.
+
+| host | before | after | |
+|---|---|---|---|
+| gpu-host (1070 procs, 24 cores) | 8.32 ms | 2.72 ms | −67% |
+| fs (119 procs, 4 cores) | **34.74 ms** | **1.20 ms** | **−96.6%** |
+
+The saving is larger on the smaller machine, which by now is the expected shape:
+this cost was never in the process table, and the modest hosts pay most of it.
+
+Temperatures come from hwmon and are read every tick, applied onto a **copy** of
+the inventory. The copy is the correctness of the whole arrangement: writing
+into the cached slice would leave the previous tick's value on a module whose
+sensor has stopped answering, so **a temperature that is no longer being
+measured would go on being displayed**, indistinguishable from one that is.
+There is a test that removes the sensor between two collections and asserts the
+reading goes to zero while the module stays; it fails if the copy is removed.
+
+**What is deliberately still re-scanned every tick:** which hwmon devices *are*
+DIMM sensors. That discovery is about a third of the collector and looks like
+the same kind of invariant — a `name` file under sysfs, read to decide what to
+read next. It is not one. Sensors appear *after* startup: this package's own
+probe runs `modprobe jc42`/`spd5118` and instantiates spd5118 i2c devices, and
+an operator can load a module by hand at any time. Caching the discovery would
+mean a sensor appearing later is never noticed until a restart — the dashboard
+quietly ceasing to answer a question it promises to answer, and undetectably,
+because nobody notices a sensor that never shows up.
+
+**And not a rescan-when-empty fallback either.** That covers the case where *no*
+sensors were found and misses the case where *one more* appeared, which is the
+actual scenario — it would pass every test and make the gap look considered.
+
 ## Sensor merging
 
 hwmon reports temperatures against `(package, core)` identifiers; `/proc/stat`
