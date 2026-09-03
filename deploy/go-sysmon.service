@@ -54,28 +54,89 @@ SyslogIdentifier=sysmon
 # the service it exists to watch, and a monitor that can crowd out the workload
 # is a liability.
 #
-# Measured on the deployment target (Atom D510, 4 threads at 1.66GHz, 3.8 GB),
-# over 60s samples with the dashboard idle:
+# CPUWeight, NOT CPUQuota (owner ruling 2026-09-03). The difference is the
+# whole point of this block and it cost a two-day outage to learn:
 #
-#     --interval 1000    16.1% of one core     RSS ~19-22 MB
-#     --interval 2000     7.8% of one core     RSS ~20 MB
-#     --interval 5000     3.9% of one core     RSS ~20 MB
+#   CPUQuota is a hard stop on the INSTANTANEOUS rate. CPUQuota=50% is
+#   cpu.max "50000 100000" -- 50 ms of CPU per 100 ms period, after which the
+#   kernel freezes every thread in the cgroup until the period rolls over.
+#   CPUWeight only decides who wins when the CPU is contended, and never stops
+#   a runnable process at all.
 #
-# Peak RSS across every run, including two attached event-stream clients, was
-# 23.4 MB. Memory is flat in the poll rate; CPU is very nearly linear in it.
+# That matters because collection is a BURST, and the collector is tiered
+# (docs/collector/architecture.md): the fast tier runs every tick, the medium
+# tier every fifth, the slow tier every thirtieth. So there is no such thing as
+# "the cost of a tick". Sampled on ci-node-1 at 250 ms resolution, in ms of
+# CPU per sample:
 #
-# So MemoryMax=128M is about 5x the observed peak and CPUQuota=50% is about 6x
-# the cost of the shipped interval. Either one tripping means something is
-# wrong, not that the host got busy. Re-take the measurement with the procedure
-# in docs/deployment/engineering.md, "Resource footprint".
+#     367 367 472 0 0 0 0 0 0 202 0 0 0 0 0 0 158 0 0 0 0 5 0 0 89 0 0 0 0 0 0 0
+#     361 347 425 449 352 399 438 393 400 384 0 0 0 0 9 200 0 0 ...
+#           ^ the medium tick: ~3.9 s of CPU over 2.5 s of wall clock
+#
+# The MEDIAN sample is zero. Every 2 s a fast tick costs a couple of hundred
+# milliseconds; every fifth one a medium tick spends about 3.9 seconds of CPU
+# in 2.5 seconds of wall clock -- more than one core, because collectors
+# overlap. Averaged over the cycle that reads as 543 ms per tick on ci-node-1,
+# 339 ms on mon0 (which also aggregates 10 peers) and 234 ms on vm-host-2,
+# and the average is the number that hides the problem.
+#
+# Against a 50 ms grant per 100 ms period, that medium tick needs 78 periods --
+# nearly EIGHT SECONDS of wall clock to do 3.9 seconds of work, 77 of those
+# periods ending with the kernel freezing every thread in the cgroup. Meanwhile
+# ci-node-1 averaged 33% of a core against its 50% allowance while being
+# frozen for 29.5 s of every 60: more time stopped than running, without ever
+# being over budget. No average-based reading of this file could have found
+# that; only nr_throttled could.
+#
+# What it did: under sustained throttling the Go GC's mark termination cannot
+# close, every allocating goroutine parks in runtime.gcMarkDone, and the
+# server stops accepting while systemd still reports the unit active.
+# vm-host-2 sat that way with NRestarts=0 and an accept queue of 2929. Full
+# account and the goroutine dump in issue #65.
+#
+# Before the change every node in the fleet was frozen for 30-82% of the
+# periods in which it wanted to run. After it, with a control: vm-host-2 on
+# CPUWeight, 1010 processes, 17.2% of a core, ZERO throttling; vm-host-3
+# left on the quota, 803 processes, 12.0% of a core, 9,060 ms of freeze per
+# 60 s.
+#
+# The Atom D510 measurements that used to justify this block are gone rather
+# than corrected. They were taken on a host with about a hundred processes,
+# and a tick's cost scales with how much host there is to read, not with how
+# fast the CPU is -- so they were an order of magnitude under every machine
+# they were applied to. Re-take any of this with the procedure in
+# docs/deployment/engineering.md, "Resource footprint", and read nr_throttled
+# rather than an average.
+#
+# CPUWeight=50 against systemd's default of 100 is a preference, not a limit.
+# Two things to know before tuning it:
+#
+#   - It is work-conserving: it binds only when a sibling is runnable at the
+#     same instant AND the CPU is saturated. sysmon needs roughly a quarter of
+#     one core out of this fleet's 4 to 24, so almost any weight delivers
+#     that. The value is close to inconsequential; the mechanism was the fix.
+#   - It applies WITHIN one cgroup level. Measured 2026-09-03: on ci-node-1
+#     the real workload is machine.slice (the KVM guests, 142x system.slice's
+#     CPU), so this weight competes with sshd and docker rather than with the
+#     VMs. Yielding to those is a system.slice-vs-machine.slice question and
+#     is not sysmon's to set. On vm-host-2 the containers are in
+#     system.slice, so there it does what it says.
 #
 # MemoryHigh sits below MemoryMax deliberately: crossing it throttles the
-# process and reclaims, which shows up in the journal as a slow service. Only
-# MemoryMax kills. A monitor that dies silently at the moment the host runs
-# short of memory is a monitor that is missing for the one event worth seeing.
+# process and reclaims rather than killing it. Only MemoryMax kills, and a
+# monitor that dies silently when the host runs short of memory is missing for
+# the one event worth seeing.
+#
+# THAT IS THE SAME SHAPE AS THE CPU GUARD, AND IT IS ALREADY FIRING. Measured
+# 2026-09-03, forty minutes after a restart: vm-host-5 (1005 processes)
+# peaked at 96 MiB and had crossed MemoryHigh 145 times -- memory.events
+# "high 145". A crossing is a silent allocation stall with the unit still
+# reporting active; it does not kill, so it does not restart, so nothing says
+# it happened. The numbers below have not been re-derived, and the process is
+# not told about the ceiling either. Deriving GOMEMLIMIT from it is #65.
 MemoryHigh=96M
 MemoryMax=128M
-CPUQuota=50%
+CPUWeight=50
 TasksMax=64
 
 # Left at the default on purpose. Biasing sysmon to survive the OOM killer

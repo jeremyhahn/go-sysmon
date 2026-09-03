@@ -158,9 +158,40 @@ cat $CG/memory.current $CG/memory.peak
 ```
 
 `memory.current` is what `MemoryMax` actually bounds and reads lower than RSS,
-because file-backed pages of the binary are charged elsewhere. The unit's
-`MemoryMax=128M` is about 5x the observed RSS peak; `CPUQuota=50%` is about 5x
-the cost of the shipped interval.
+because file-backed pages of the binary are charged elsewhere.
+
+### The numbers above do not generalise, and that is what went wrong
+
+A collection tick's cost scales with **how much host there is to read** — the
+process table above all — not with how fast the CPU is. The reference target has
+about a hundred processes. Measured across the real fleet on 2026-09-03, at the
+same `--interval 2000`:
+
+| host | processes | CPU per tick | peak cgroup memory |
+|---|---|---|---|
+| ci-node-1 | 1414 | 543 ms | 72 MiB |
+| mon0 | 112 | 339 ms (also aggregates 10 peers) | 51 MiB |
+| vm-host-5 | 1005 | — | **96 MiB** |
+| vm-host-2 | 973 | 234 ms | 41 MiB |
+
+Three consequences, all of them measured rather than predicted:
+
+- **Those per-tick figures are averages across the tier cycle, and the average
+  is what hides the problem.** Sampled at 250 ms on ci-node-1 the median sample
+  is *zero*: a fast tick every 2 s costs a couple of hundred milliseconds, and
+  every fifth tick spends about **3.9 s of CPU in 2.5 s of wall clock**. Against
+  the old `CPUQuota=50%` — 50 ms per 100 ms — that one tick needed 78 periods,
+  nearly eight seconds of wall clock, 77 of them ending with the kernel freezing
+  the cgroup. It is now `CPUWeight`; see the unit file and issue #65.
+- **Read `nr_throttled`, not an average.** ci-node-1 averaged 33% of a core
+  against a 50% allowance while being frozen for 29.5 s of every 60. Both
+  readings were true at once, and only the second one showed the problem.
+- `MemoryHigh=96M` is no longer generous either: vm-host-5 crossed it 145
+  times in forty minutes (`memory.events`, field `high`). A crossing stalls
+  allocation silently and does not restart the unit.
+
+So when you re-take these on a host, take them **on that host**, and record the
+process count beside them.
 
 ## Test strategy
 

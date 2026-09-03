@@ -67,8 +67,16 @@ Command lines routinely carry information that is not meant to be public.
 Anything that can route to the port reads all of it.
 
 `/api/interval` accepts POST without authentication, so anything that can reach
-the port can also raise the poll rate and with it the service's CPU cost. The
-unit's `CPUQuota` bounds the damage; it does not prevent it.
+the port can also raise the poll rate and with it the service's CPU cost.
+
+**Nothing bounds that cost any more.** The unit used to carry `CPUQuota=50%`,
+which capped it; that quota was removed on 2026-09-03 because a hard CFS stop
+wedged the process (issue #65), and `CPUWeight` — what replaced it — is
+work-conserving and imposes no ceiling at all. The damage is bounded only by
+arithmetic: `allowedIntervals` floors the poll at 250 ms, so the worst an
+unauthenticated caller can do is multiply the shipped 2 s cost by **8**. On a
+big host that is a nuisance; on the 4-thread reference target, where a tick
+already costs a tenth of a core, it is most of the machine.
 
 The browser same-origin policy stops a random web page from reading the event
 stream cross-origin. That is not authentication: anything that is not a browser
