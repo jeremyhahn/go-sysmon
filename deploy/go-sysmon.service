@@ -99,6 +99,18 @@ SyslogIdentifier=sysmon
 # 339 ms on mon0 (which also aggregates 10 peers) and 234 ms on vm-host-2,
 # and the average is the number that hides the problem.
 #
+# TRUST THE 543, NOT THE 234. vm-host-2's figure was taken while that host
+# carried ~4.7 GB of abandoned processes at a load in the sixties, so it is
+# inflated by cache pressure and scheduling contention and is illustrative
+# only; it cannot be re-measured, because the fleet has since moved to a build
+# that changes exactly that path. The arithmetic below rests on ci-node-1's
+# 543 ms and on the 250 ms sampling above, both taken on a quiet host.
+#
+# The annotation is here because an unmarked number in this file carries the
+# same authority as the two beside it, and that is how the Atom D510 figures
+# survived: not because anyone defended them, but because nothing beside them
+# said how far to trust them.
+#
 # Against a 50 ms grant per 100 ms period, that medium tick needs 78 periods --
 # nearly EIGHT SECONDS of wall clock to do 3.9 seconds of work, 77 of those
 # periods ending with the kernel freezing every thread in the cgroup. Meanwhile
