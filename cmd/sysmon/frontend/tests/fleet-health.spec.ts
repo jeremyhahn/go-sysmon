@@ -98,9 +98,10 @@ test('a node with arrays and readable SMART reports both, with the denominator',
   // Both subsystems report their state as the value: two "ok"s, not one.
   await expect(full.getByText('ok', { exact: true })).toHaveCount(2);
   // "ok" alone cannot say how many were checked, which is the whole defect
-  // #44 was filed about, so the denominator stays -- beside the state as
-  // evidence rather than above it as a claim.
+  // #44 was filed about, so BOTH cells keep their denominator -- beside the
+  // state as evidence rather than above it as a claim.
   await expect(full.getByText('6 checked')).toBeVisible();
+  await expect(full.getByText('2 arrays')).toBeVisible();
 });
 
 test('a degraded array and a failing disk still read as faults', async ({ page }) => {
@@ -198,6 +199,57 @@ test('a healthy host is never labelled unhealthy', async ({ page }) => {
   await expect(healthy).toBeVisible();
   await expect(healthy).not.toContainText('unhealthy');
   await expect(healthy).not.toContainText('degraded');
+});
+
+test('a healthy host says how many arrays are well, not just that they are', async ({ page }) => {
+  // #44's argument applied to the RAID cell: "ok" for one array and "ok" for
+  // five read identically, and an operator cannot tell a host whose single
+  // array is fine from one whose five are.
+  await fleetWith(page, [
+    node('one', { raid_arrays: 1, raid_degraded: false }),
+    node('five', { raid_arrays: 5, raid_degraded: false }),
+  ]);
+
+  await expect(card(page, 'one').getByText('1 array', { exact: true })).toBeVisible();
+  await expect(card(page, 'five').getByText('5 arrays')).toBeVisible();
+});
+
+test('a degraded array still says how many arrays there are', async ({ page }) => {
+  // The branch combination neither the healthy test nor the unhealthy one
+  // reaches: degraded is a fault whose value carries no denominator, so the
+  // count is the only thing saying whether one array of one is degraded or
+  // one of five. It scopes the fault without claiming those arrays are well.
+  await fleetWith(page, [node('degraded-host', { raid_arrays: 5, raid_degraded: true })]);
+
+  const host = card(page, 'degraded-host');
+  await expect(host.getByText('degraded', { exact: true })).toBeVisible();
+  await expect(host.getByText('5 arrays')).toBeVisible();
+  // And it is still a fault, not a count with a reassuring word next to it.
+  await expect(host.getByText('ok', { exact: true })).toHaveCount(0);
+});
+
+test('the array count is not repeated next to a fault', async ({ page }) => {
+  // "2 of 3 unhealthy" already carries the denominator; printing "3 arrays"
+  // underneath would say it twice and push the fault up the card.
+  await fleetWith(page, [node('sick', { raid_arrays: 3, raid_unhealthy: 2 })]);
+
+  const sick = card(page, 'sick');
+  await expect(sick.getByText('2 of 3 unhealthy')).toBeVisible();
+  await expect(sick.getByText('3 arrays')).toHaveCount(0);
+});
+
+test('a fault with no denominator still names its count', async ({ page }) => {
+  // The rollback path, matching what the SMART cell does one line down: an
+  // older server sends raid_unhealthy without raid_arrays, and "unhealthy"
+  // alone loses the number we were given.
+  const legacy = node('old-server', {});
+  delete (legacy as Record<string, unknown>).raid_arrays;
+  legacy.raid_unhealthy = 2;
+
+  await fleetWith(page, [legacy]);
+
+  await expect(card(page, 'old-server').getByText('2 unhealthy')).toBeVisible();
+  await expect(card(page, 'old-server').getByText(/of 0/)).toHaveCount(0);
 });
 
 test('an unhealthy host still says so', async ({ page }) => {

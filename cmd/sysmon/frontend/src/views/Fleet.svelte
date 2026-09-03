@@ -431,13 +431,33 @@
                         {#if node.raid_unhealthy > 0}
                           {node.raid_arrays > 0
                             ? `${node.raid_unhealthy} of ${node.raid_arrays} unhealthy`
-                            : "unhealthy"}
+                            : `${node.raid_unhealthy} unhealthy`}
                         {:else if node.raid_degraded}
                           degraded
                         {:else}
                           ok
                         {/if}
                       </p>
+                      <!-- The denominator, on the paths where the state alone
+                           does not carry one. "ok" says the arrays are well
+                           and cannot say whether that is one array or five,
+                           which is #44's argument applied to its own sibling
+                           cell: a health figure with no denominator cannot be
+                           read. It sits beside the state as evidence rather
+                           than above it as a claim, the same treatment the
+                           SMART cell below uses. Omitted next to "N of M
+                           unhealthy", which already carries it. -->
+                      <!-- `!(x > 0)` rather than `x === 0`, so the count also
+                           shows for a payload that omits raid_unhealthy
+                           entirely: `undefined === 0` is false, and the cell
+                           would silently lose its denominator on exactly the
+                           older-server path the fault branch above exists to
+                           handle. It mirrors the value's own else-branch. -->
+                      {#if !(node.raid_unhealthy > 0) && node.raid_arrays > 0}
+                        <p class="text-xs text-base-content/60">
+                          {node.raid_arrays === 1 ? "1 array" : `${node.raid_arrays} arrays`}
+                        </p>
+                      {/if}
                     </div>
                   {/if}
                   {#if node.smart_capable > 0 || node.smart_unhealthy > 0}
