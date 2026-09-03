@@ -198,8 +198,32 @@ sysmon doctor
 sysmon doctor --json
 ```
 
-Each check reports `ok`, `degraded` or `unavailable`, and anything less than
-`ok` names the command that fixes it.
+Each check reports `ok`, `degraded` or `unavailable`, and names a remedy **when
+there is one to name**. A check that cannot establish what would fix it says
+nothing rather than guessing — advice that does not apply is worse than none,
+because it sends somebody to change a thing that changes nothing.
+
+**The SMART check's denominator is devices that could ever answer.** A
+device-mapper node has no medium and a drive that reports it implements no SMART
+never will, so both are excluded and counted separately as devices that cannot
+answer. Counting them made a perfect score unreachable on a healthy machine, and
+a check nobody can pass is a check people learn to ignore.
+
+A device behind a RAID controller **is** counted. That status means the device
+did not answer directly; it does not establish that the device is a volume
+rather than a passthrough disk, and excluding it would let a disk that genuinely
+fails to answer disappear from the count.
+
+**The remedy comes from the device, not from a constant.** A refused *open* is
+file permissions and the `disk` group fixes it; a refused *passthrough* is a
+capability check that no group membership satisfies. The check used to offer the
+group for both, which on a host already in that group was advice to do something
+already done. When several devices fail for different reasons, the most common
+is shown and the rest are counted — the reasons carry device paths and errno
+detail, so printing them all would put a paragraph on one line.
+
+A host where nothing can report SMART is `unavailable`, not `degraded`, and
+offers no remedy: there is nothing to fix.
 
 ### serve
 

@@ -217,11 +217,15 @@ func TestCheckSMART_EveryOutcome(t *testing.T) {
 	t.Cleanup(func() { diskHealth = orig })
 
 	tests := []struct {
-		name       string
-		disks      []types.DiskInfo
-		err        error
-		wantStatus string
-		wantFix    bool
+		name         string
+		disks        []types.DiskInfo
+		err          error
+		wantStatus   string
+		wantFix      bool
+		wantDetail   string
+		wantFixHas   string
+		wantFixNot   string
+		wantFixEmpty bool
 	}{
 		{
 			name:       "collection failed",
@@ -234,21 +238,121 @@ func TestCheckSMART_EveryOutcome(t *testing.T) {
 			wantStatus: "unavailable",
 		},
 		{
-			name:       "readable everywhere",
-			disks:      []types.DiskInfo{{SMARTEnabled: true}, {SMARTEnabled: true}},
+			name: "readable everywhere",
+			disks: []types.DiskInfo{
+				{SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+			},
 			wantStatus: "ok",
 		},
 		{
-			name:       "readable on some devices",
-			disks:      []types.DiskInfo{{SMARTEnabled: true}, {SMARTEnabled: false}},
+			name: "readable on some devices",
+			disks: []types.DiskInfo{
+				{SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{SMARTStatus: types.SMARTUnreadable, SMARTReason: "refused by the kernel"},
+			},
 			wantStatus: "degraded",
 			wantFix:    true,
 		},
 		{
-			name:       "readable nowhere",
-			disks:      []types.DiskInfo{{SMARTEnabled: false}},
+			name: "readable nowhere",
+			disks: []types.DiskInfo{
+				{SMARTStatus: types.SMARTUnreadable, SMARTReason: "refused by the kernel"},
+			},
 			wantStatus: "degraded",
 			wantFix:    true,
+		},
+		{
+			// ci-node-1, and the case that decides where the line is.
+			//
+			// Excluded: dm-0, which has no medium, and sdc, which reports it
+			// implements no SMART. Neither will ever be readable however the
+			// host is configured.
+			//
+			// COUNTED: sda and sdb, which are behind a RAID controller. That
+			// status does not establish they are volumes rather than
+			// passthrough disks -- sysfs cannot say -- so excluding them would
+			// let a JBOD disk that genuinely fails to answer vanish from the
+			// count. "4 of 6" is the honest reading: two devices we could not
+			// get a reading from, for a reason we can state.
+			name: "only devices that can never answer leave the denominator",
+			disks: []types.DiskInfo{
+				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "nvme1n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "nvme2n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "nvme3n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "dm-0", SMARTStatus: types.SMARTNotApplicable},
+				{Name: "sda", SMARTStatus: types.SMARTBehindController,
+					SMARTReason: "served by a LSI/Broadcom MegaRAID (Dell PERC) controller"},
+				{Name: "sdb", SMARTStatus: types.SMARTBehindController,
+					SMARTReason: "served by a LSI/Broadcom MegaRAID (Dell PERC) controller"},
+				{Name: "sdc", SMARTStatus: types.SMARTUnsupported},
+			},
+			wantStatus: "degraded",
+			wantDetail: "4 of 6",
+			wantFix:    true,
+			wantFixHas: "MegaRAID",
+		},
+		{
+			// A host whose every device is virtual. Nothing is wrong and
+			// nothing can be fixed, so offering a remedy would send somebody
+			// to change a group membership that changes nothing.
+			name: "no device on the host can report SMART",
+			disks: []types.DiskInfo{
+				{Name: "dm-0", SMARTStatus: types.SMARTNotApplicable},
+				{Name: "nbd0", SMARTStatus: types.SMARTNotApplicable},
+			},
+			wantStatus:   "unavailable",
+			wantFixEmpty: true,
+		},
+		{
+			// A device the collector did not classify. It is COUNTED, not
+			// excluded: an unexpected or older payload must err toward
+			// reporting a gap rather than quietly shrinking the denominator
+			// until the check passes. Excluding the unknown is how a check
+			// reports "all clear" by looking at less.
+			name: "an unclassified device is counted, not excluded",
+			disks: []types.DiskInfo{
+				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "mystery"},
+			},
+			wantStatus:   "degraded",
+			wantDetail:   "1 of 2",
+			wantFixEmpty: true,
+		},
+		{
+			// Several devices failing for different reasons. The remedy is one
+			// line: the reasons are prose carrying device paths and errno
+			// detail, so they do not deduplicate across devices and printing
+			// them all would put a paragraph on a terminal line and in a JSON
+			// field. The most frequent is the systemic thing worth acting on;
+			// the rest are counted.
+			name: "several distinct reasons produce one bounded remedy",
+			disks: []types.DiskInfo{
+				{Name: "sda", SMARTStatus: types.SMARTUnreadable, SMARTReason: "needs CAP_SYS_RAWIO"},
+				{Name: "sdb", SMARTStatus: types.SMARTUnreadable, SMARTReason: "needs CAP_SYS_RAWIO"},
+				{Name: "sdc", SMARTStatus: types.SMARTUnreadable, SMARTReason: "checksum failed on /dev/sdc (sum 7)"},
+			},
+			wantStatus: "degraded",
+			wantFix:    true,
+			wantFixHas: "and 1 other",
+			wantFixNot: "checksum",
+		},
+		{
+			// The remedy must come from the device, not from a constant. On
+			// ci-node-1 the node opens -- the service IS in the disk group --
+			// and the passthrough ioctl is refused, so the old advice was to
+			// do something already done.
+			name: "the remedy is the reason the device gave",
+			disks: []types.DiskInfo{
+				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "sdc", SMARTStatus: types.SMARTUnreadable,
+					SMARTReason: "the device node opens, but the SMART passthrough itself is rejected. This needs CAP_SYS_RAWIO"},
+			},
+			wantStatus: "degraded",
+			wantFix:    true,
+			wantFixHas: "CAP_SYS_RAWIO",
+			wantFixNot: "usermod",
 		},
 	}
 
@@ -265,6 +369,23 @@ func TestCheckSMART_EveryOutcome(t *testing.T) {
 			}
 			if got.Detail == "" {
 				t.Error("Detail is empty")
+			}
+			if tt.wantDetail != "" && !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Errorf("Detail = %q, want it to contain %q", got.Detail, tt.wantDetail)
+			}
+			if tt.wantFixHas != "" && !strings.Contains(got.Fix, tt.wantFixHas) {
+				t.Errorf("Fix = %q, want it to contain %q", got.Fix, tt.wantFixHas)
+			}
+			if tt.wantFixNot != "" && strings.Contains(got.Fix, tt.wantFixNot) {
+				t.Errorf("Fix = %q, want it NOT to contain %q -- that remedy does not apply here",
+					got.Fix, tt.wantFixNot)
+			}
+			// A device that did not explain itself supports "there is a gap"
+			// and nothing about permissions. Guessing one is how this check
+			// came to tell an operator to join a group the service was
+			// already in.
+			if tt.wantFixEmpty && got.Fix != "" {
+				t.Errorf("Fix = %q, want none: no device gave a reason, so there is nothing to advise", got.Fix)
 			}
 		})
 	}
