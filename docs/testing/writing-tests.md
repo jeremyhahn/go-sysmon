@@ -1,6 +1,6 @@
 # Where testing effort pays
 
-Four rules, each of which was learned the expensive way in this repository. The
+Five rules, each of which was learned the expensive way in this repository. The
 examples are real and the commit history has them; they are here because the
 general form is not obvious from the specific bug.
 
@@ -78,6 +78,18 @@ rather than assumed well. The "healthy" fixtures were not healthy.
 failed the moment the collector stopped producing something wrong. **This is the
 benign member of the family: the others hide, this one confesses.**
 
+**Unreachable by construction.** A member temperature override was set to
+100 °C on a 70 °C drive, so only the *warning* branch could ever decide — and a
+critical branch still reading the wrong threshold was untestable. A fixture
+where one of two paths cannot be reached tests half the change.
+
+The same failure occurs outside tests, in any query you trust. An audit for
+misconfigured git remotes globbed every repository on a workstation and
+returned 25 confident results, most of them third-party checkouts that are not
+company repositories at all: **a precise answer about the wrong population.**
+Whenever a measurement surprises you, check what it ranged over before
+believing what it says.
+
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
 within the hour: that machine's RAID10 lays two spans over *one* array, so
@@ -107,3 +119,36 @@ Two related habits:
   got. After tightening the SCSI status check, the live run was the only thing
   that could show it still *accepts* what it must — tests only showed it rejects
   what it should.
+
+## 5. A name is not a thing
+
+Three defects in one small CI change, in three unrelated layers, none of them a
+logic error:
+
+- **The Makefile checked one path and ran another.** `make lint` tested `PATH`
+  for `golangci-lint`, found the binary the runner image bakes into
+  `/usr/local/bin`, passed — then invoked `$(GOBIN_DIR)/golangci-lint`, which
+  does not exist there. A check and its subject disagreeing about which file
+  they mean.
+- **A version pin guarded against a dependency this repository never had.** It
+  avoided a staticcheck RC that panicked on `sentry-go`; `go.sum` has never
+  contained `sentry-go`, and the released version had fixed it besides.
+- **A runner label named two different machines.** `runs-on: ubuntu-latest` is
+  our image on Gitea and GitHub's hosted image on github.com. A fix that
+  required a file only our image has was correct in one place and inoperative
+  in the other.
+
+**All three are a name resolving to something other than what the code
+assumed.** None looks wrong on inspection, because each is a correct check
+applied to the wrong referent.
+
+The same shape appears wherever two things share a name and are not the same
+thing: a fleet cell counting one set of devices while its label described
+another; a SMART badge whose heading described something different from the
+value beneath it; an alert filed under `sdb/64:7` whose thresholds were read
+under `sdb`, so an override written for one drive was unreachable and one
+written for the volume silently governed every member.
+
+The check that catches these is not a stronger assertion. It is asking, of each
+name in a change: **what does this resolve to, here, at the moment it is used —
+and is that the same thing the code beside it means by it?**

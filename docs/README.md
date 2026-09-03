@@ -38,7 +38,7 @@ when you need to know why a number says what it says.
 
 | Topic | What it covers |
 |-------|----------------|
-| [Where testing effort pays](testing/writing-tests.md) | Four rules learned the expensive way, with the bugs that taught them |
+| [Where testing effort pays](testing/writing-tests.md) | Five rules learned the expensive way, with the bugs that taught them |
 
 ## Building, testing, releasing
 
