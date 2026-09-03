@@ -214,6 +214,14 @@ did not answer directly; it does not establish that the device is a volume
 rather than a passthrough disk, and excluding it would let a disk that genuinely
 fails to answer disappear from the count.
 
+**And the drives behind that controller are counted too.** They are not block
+devices and appear in no disk list, so a figure summed over the list alone
+reported ci-node-1 as reading four devices while ten answered. The detail line
+says how many came from a controller — `readable on 10 of 12 device(s) that can
+report it (6 behind a RAID controller)` — because otherwise a count larger than
+the number of disks on the page reads as an error rather than as drives nobody
+could see before.
+
 **The remedy comes from the device, not from a constant.** A refused *open* is
 file permissions and the `disk` group fixes it; a refused *passthrough* is a
 capability check that no group membership satisfies. The check used to offer the

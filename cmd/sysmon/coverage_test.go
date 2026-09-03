@@ -294,6 +294,85 @@ func TestCheckSMART_EveryOutcome(t *testing.T) {
 			wantFixHas: "MegaRAID",
 		},
 		{
+			// ci-node-1 as deployed, and the half of #52 that needed #51.
+			// Six of its readable drives are behind the PERC and are in no
+			// disk list at all, so a count summed over the list alone said
+			// four while ten answered -- a denominator that does not know
+			// what it left out.
+			//
+			// The volumes are counted too, and unreadable: a volume we cannot
+			// read directly is a different fact from its members being
+			// readable, and neither substitutes for the other. So the honest
+			// figure is 10 of 12, not "all 10".
+			name: "drives behind a controller are counted",
+			disks: []types.DiskInfo{
+				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "nvme1n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "nvme2n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "nvme3n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{Name: "dm-0", SMARTStatus: types.SMARTNotApplicable},
+				{Name: "sdc", SMARTStatus: types.SMARTUnsupported},
+				{
+					Name: "sda", SMARTStatus: types.SMARTBehindController,
+					SMARTReason: "served by a LSI/Broadcom MegaRAID (Dell PERC) controller",
+					Members: []types.DiskMember{
+						{DeviceID: 0, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+						{DeviceID: 1, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+					},
+				},
+				{
+					Name: "sdb", SMARTStatus: types.SMARTBehindController,
+					SMARTReason: "served by a LSI/Broadcom MegaRAID (Dell PERC) controller",
+					Members: []types.DiskMember{
+						{DeviceID: 6, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+						{DeviceID: 7, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+						{DeviceID: 8, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+						{DeviceID: 9, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+					},
+				},
+			},
+			wantStatus: "degraded",
+			wantDetail: "10 of 12 device(s) that can report it (6 behind a RAID controller)",
+			wantFix:    true,
+		},
+		{
+			// And the count says where the extra devices came from. "10 of 12"
+			// on a host showing 8 disks reads like an error until it says six
+			// of them are behind a controller.
+			name: "the detail says how many are behind a controller",
+			disks: []types.DiskInfo{
+				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{
+					Name: "sdb", SMARTEnabled: true, SMARTStatus: types.SMARTOK,
+					Members: []types.DiskMember{
+						{DeviceID: 6, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+						{DeviceID: 7, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+					},
+				},
+			},
+			wantStatus: "ok",
+			wantDetail: "2 behind a RAID controller",
+		},
+		{
+			// A member that cannot report SMART is excluded from the
+			// denominator exactly as a block device is, rather than counting
+			// as a device we failed to read.
+			name: "a member that cannot report SMART is not a candidate",
+			disks: []types.DiskInfo{
+				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+				{
+					Name: "sdb", SMARTStatus: types.SMARTBehindController,
+					SMARTReason: "served by a controller",
+					Members: []types.DiskMember{
+						{DeviceID: 6, SMARTEnabled: true, SMARTStatus: types.SMARTOK},
+						{DeviceID: 7, SMARTStatus: types.SMARTUnsupported},
+					},
+				},
+			},
+			wantStatus: "degraded",
+			wantDetail: "2 of 3 device(s) that can report it (1 behind a RAID controller)",
+		},
+		{
 			// A host whose every device is virtual. Nothing is wrong and
 			// nothing can be fixed, so offering a remedy would send somebody
 			// to change a group membership that changes nothing.

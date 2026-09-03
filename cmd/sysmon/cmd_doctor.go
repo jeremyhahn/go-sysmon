@@ -180,10 +180,25 @@ type smartTally struct {
 	candidates int
 	readable   int
 	excluded   int
+	// members counts how many of the candidates are drives behind a RAID
+	// controller, so the detail line can say where the extra devices came
+	// from. Without it "10 of 11" on a host with 8 block devices reads like
+	// an error rather than like six drives nobody could see before.
+	members int
 	// reasons counts how many devices gave each distinct explanation for
 	// having no reading, and order preserves first appearance.
 	reasons map[string]int
 	order   []string
+}
+
+// addMember records a drive behind a RAID controller, which counts exactly as
+// a block device does except that it is also tallied separately for the
+// detail line.
+func (t *smartTally) addMember(status types.SMARTStatus, enabled bool, reason string) {
+	if smartCandidate(status) {
+		t.members++
+	}
+	t.add(status, enabled, reason)
 }
 
 func (t *smartTally) add(status types.SMARTStatus, enabled bool, reason string) {
@@ -242,6 +257,18 @@ func checkSMART() checkResult {
 	var tally smartTally
 	for _, d := range disks {
 		tally.add(d.SMARTStatus, d.SMARTEnabled, d.SMARTReason)
+		// The drives behind a hardware RAID controller. They are not block
+		// devices and are in no disk list, so a count summed over the list
+		// alone reported ci-node-1 as reading four devices while ten
+		// answered -- a denominator that does not know what it left out.
+		//
+		// The volume they hang off is counted too, and separately: it is a
+		// device we could not read directly, which is a different fact from
+		// its members being readable. Neither substitutes for the other.
+		for i := range d.Members {
+			m := &d.Members[i]
+			tally.addMember(m.SMARTStatus, m.SMARTEnabled, m.SMARTReason)
+		}
 	}
 
 	// Nothing on this host can report SMART. That is a fact about the
@@ -256,8 +283,14 @@ func checkSMART() checkResult {
 	}
 
 	detail := fmt.Sprintf("readable on %d of %d device(s) that can report it", tally.readable, tally.candidates)
+	if tally.members > 0 {
+		detail += fmt.Sprintf(" (%d behind a RAID controller)", tally.members)
+	}
 	if tally.readable == tally.candidates {
 		detail = fmt.Sprintf("readable on all %d device(s) that can report it", tally.candidates)
+		if tally.members > 0 {
+			detail += fmt.Sprintf(" (%d behind a RAID controller)", tally.members)
+		}
 	}
 	if tally.excluded > 0 {
 		detail += fmt.Sprintf("; %d cannot", tally.excluded)
