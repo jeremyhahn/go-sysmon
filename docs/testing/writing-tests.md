@@ -113,6 +113,30 @@ first would not have helped, which makes this rule 5 wearing a different hat —
 **a name resolving to something other than what the reader assumed**, in the
 tool being used to check.
 
+### Two named traps
+
+General caution about instruments has not saved anybody here. These two have
+caught two people three times between them, so they are written down as
+specific things to recognise rather than as advice to be careful.
+
+**`pgrep -f <pattern>` matches the shell running it.** The check's own command
+line contains the pattern, so it finds itself and reports the process alive.
+It has produced a false "still running" for a process that had exited, and a
+false "capture in progress" for a capture that never started.
+
+```console
+$ pgrep -f "myprocess serve"      # matches the bash -c running this line
+$ pgrep -f "myprocess serve" | grep -v $$   # or match the executable, not the args
+```
+
+**Asking a JSON payload for a field name that does not exist returns nothing,
+and nothing reads as absence.** A reader asked members for `bay`, `position`
+and `temperature_c`; the payload calls them `enclosure`, `slot` and
+`temperature_celsius`. Every drive came back with `None` for each, and the
+report was "the data is missing" rather than "my key is wrong" — **`absent`
+versus `zero`, with a JSON key as the name.** A decoder into a typed structure
+fails on an unknown field; a dictionary lookup does not.
+
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
 within the hour: that machine's RAID10 lays two spans over *one* array, so

@@ -122,6 +122,14 @@ its array — and is what `RAIDInfo.active_devices` counts. It is a different
 question from whether the drive answers a health command: a failed drive can
 still answer, and a working one can refuse a command it does not implement.
 
+**The bay is `enclosure` and `slot`, two numbers, and there is no field called
+`bay`.** The controller reports the pair, so the payload carries the pair — but
+"bay 64:7" is what people say out loud, and two readers in a row have asked for
+`bay` or `position` and got nothing back for every drive. A missing key returns
+no value rather than an error, so the wrong name reads as missing data. The
+alert messages render the pair as `bay <enclosure>:<slot>`; the payload does
+not.
+
 A drive behind a RAID controller is not a block device: it has no device node,
 no partitions and no I/O counters. `serial` is the only identity that survives a
 reboot — `device_id` and `slot` describe where the drive is plugged in, not
