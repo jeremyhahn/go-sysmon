@@ -112,10 +112,46 @@ puts the first-seen timestamp next to the state that already spans snapshots.
 Every rule carries the tab it belongs to, so the bell can jump straight to the
 panel that explains it.
 
+**Drives behind a hardware RAID controller raise the same storage rules as block
+devices.** A failing member raises `smart_unhealthy` and a hot one raises
+`disk_temp`, on the same thresholds — deliberately the same rule names, so
+notification already configured on those rules catches a drive in a PERC
+without being changed. What differs is the message, which names the **bay, the
+model and the serial**, because a drive behind a controller has no device path
+to print.
+
+`raid_member_offline` is the one rule with no block-device equivalent: a drive
+the controller has taken out of service. It exists because `raid_degraded`
+cannot say *which* drive, and because a volume reported optimal with an offline
+member is a contradiction that would otherwise pass in silence.
+
+Member alerts are de-duplicated by **physical position**, not by serial. The
+serial is read from the drive every cycle and goes missing on exactly the drive
+an alert is about; keying on it would clear and re-fire a long-running alert
+each time that read failed.
+
+**That same string is what a threshold override must be written against.** A
+member's resource is `<volume>/<enclosure>:<slot>` — `sdb/64:7` — so an
+override for one drive is written for that, not for the volume:
+
+```yaml
+alerts:
+  overrides:
+    - resource: sdb/64:7      # this drive
+      temp_warn_c: 60
+```
+
+An override on the volume (`sdb`) governs the volume's own alerts and **not**
+its members. They are different resources, and a user who wrote one did not
+write the other. This matters here more than elsewhere: drives behind a
+controller run warmer than block devices in the same chassis, so a per-member
+override is usually the first thing reached for.
+
 | Tab | Rule | Threshold key | Default | Severity |
 |---|---|---|---|---|
 | storage | `raid_degraded` | — (always on) | — | critical |
 | storage | `smart_unhealthy` | — (always on) | — | critical |
+| storage | `raid_member_offline` | — (always on) | — | critical |
 | storage | `raid_resync` / `raid_mismatch` | — | — | info / warning |
 | storage | `nvme_spare_low` | `nvme_spare_pct` | 10 | critical |
 | storage | `nvme_wear_high` | `nvme_wear_pct` | 80 | warning |

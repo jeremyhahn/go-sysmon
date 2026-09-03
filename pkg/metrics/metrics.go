@@ -209,12 +209,50 @@ func Write(m Sink, snap *types.Snapshot) {
 				m.Gauge("sysmon_disk_spare_percent", "NVMe spare blocks remaining.", float64(d.AvailableSparePercent), "device", dev)
 			}
 		}
+		// Drives behind a hardware RAID controller. They are not block devices
+		// and have no device name, so they are labelled by SERIAL -- the only
+		// identifier that survives a reboot. ci-node-1's 2026-08-31 rebuild
+		// renamed every PERC and BOSS device and swapped two of four NVMe
+		// names; a series keyed on anything else silently becomes a DIFFERENT
+		// series across such a reboot, which is worse than a missing one
+		// because the history looks continuous and is not.
+		//
+		// The volume the drives sit behind is carried as a second label, so a
+		// query can group an array's members without joining on anything.
+		for j := range d.Members {
+			mem := &d.Members[j]
+			if mem.Serial == "" {
+				// Without a stable identity there is no series worth writing:
+				// two unlabelled drives would collide into one.
+				continue
+			}
+			if mem.Temperature > 0 {
+				m.Gauge("sysmon_disk_member_temperature_celsius", "Temperature of a drive behind a RAID controller.",
+					mem.Temperature, "serial", mem.Serial, "volume", dev)
+			}
+			if mem.SMARTEnabled {
+				m.Gauge("sysmon_disk_member_smart_healthy", "1 when a drive behind a RAID controller reports itself well.",
+					Bool01(mem.SMARTHealthy), "serial", mem.Serial, "volume", dev)
+			}
+		}
 		if d.RAID != nil {
 			m.Gauge("sysmon_raid_degraded", "1 when the md array is degraded.", Bool01(d.RAID.Degraded), "array", dev, "level", d.RAID.Level)
 			m.Gauge("sysmon_raid_active_devices", "Members currently in sync.", float64(d.RAID.ActiveDevices), "array", dev)
 			m.Gauge("sysmon_raid_total_devices", "Members the array is configured for.", float64(d.RAID.TotalDevices), "array", dev)
-			m.Gauge("sysmon_raid_sync_percent", "Resync/recovery progress.", d.RAID.SyncProgressPercent, "array", dev)
-			m.Gauge("sysmon_raid_mismatch_count", "Sectors that differed on the last check.", float64(d.RAID.MismatchCount), "array", dev)
+			// Both of these are md-only readings, and both have a zero value
+			// that reads as a clean result: 0 percent as a stalled rebuild,
+			// and 0 mismatches as a consistency check that found nothing. A
+			// hardware RAID volume reports neither -- its controller is never
+			// asked -- so it exports neither. An omitted series is a gap
+			// somebody can see; a fabricated one is not.
+			//
+			// An empty SyncAction is the flag for that, documented on
+			// RAIDInfo. md's applyRAID sets it on every array it accepts, so
+			// md series are unaffected.
+			if d.RAID.SyncAction != "" {
+				m.Gauge("sysmon_raid_sync_percent", "Resync/recovery progress.", d.RAID.SyncProgressPercent, "array", dev)
+				m.Gauge("sysmon_raid_mismatch_count", "Sectors that differed on the last check.", float64(d.RAID.MismatchCount), "array", dev)
+			}
 		}
 	}
 

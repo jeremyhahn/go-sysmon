@@ -31,6 +31,14 @@ func populatedSnapshot() *types.Snapshot {
 				Partitions: []types.PartitionInfo{{Device: "sda1"}, {Device: "sda2"}},
 				SMARTAttrs: []types.SMARTAttr{{ID: 5, Name: "Reallocated"}, {ID: 9, Name: "Power_On_Hours"}},
 				RAID:       &types.RAIDInfo{Members: []types.RAIDMember{{Name: "sda2"}, {Name: "sdb2"}}},
+				// Drives behind a hardware RAID controller, keyed by device ID
+				// rather than by serial: a drive that will not give a serial
+				// would otherwise share an identity with every other one that
+				// will not, and two elements would silently merge into one.
+				Members: []types.DiskMember{
+					{DeviceID: 6, Serial: "L0J4VK8J"},
+					{DeviceID: 7, Serial: "L0J4Y3AJ"},
+				},
 			},
 			{Name: "sdb"},
 		},

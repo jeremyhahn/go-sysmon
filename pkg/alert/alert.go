@@ -49,6 +49,12 @@ const (
 	RuleContainerCPU   = "container_cpu_high"
 	RuleRuntimeDown    = "container_runtime_unreachable"
 	RuleRAIDNotActive  = "raid_not_active"
+	// RuleRAIDMemberOffline fires for a drive behind a hardware RAID
+	// controller that the controller has taken out of service. It is a new
+	// rule rather than a reuse because there is no block-device equivalent to
+	// inherit routing from -- an md array's failed component is already
+	// visible as a device of its own.
+	RuleRAIDMemberOffline = "raid_member_offline"
 )
 
 // nonOperationalArrayStates are md array_state values in which the array is not
@@ -140,7 +146,51 @@ func (b *builder) add(rule, severity, category, resource, message string, value,
 	})
 }
 
-// Evaluate returns the alerts firing for snap. Thresholds come from cfg, so a
+// memberResource identifies a drive behind a RAID controller for alert
+// de-duplication, which is what an alert ID is built from.
+//
+// IT IS THE PHYSICAL POSITION, NOT THE SERIAL, and the reason is worth stating
+// because the serial looks like the better answer.
+//
+// A serial is read from the drive with a separate command every cycle. When
+// that command fails -- which is exactly what happens to a drive that is on its
+// way out, the drive this alert is about -- the serial goes empty. Keying on it
+// would mean the ID flipping between the serial and the position and back as
+// the command succeeded and failed, so an alert that had been firing for an
+// hour would clear and re-fire as though it were a new fault on a different
+// drive. The position comes from the controller's configuration, in the same
+// reply that produced the member list, so it cannot disappear while the member
+// still exists.
+//
+// The cost is that moving a drive to another bay clears its alert and raises a
+// new one. That is a change somebody made deliberately, and a fresh alert for it
+// is defensible; a transient command failure is not a change at all.
+//
+// Note this is the OPPOSITE choice from the metric label, which is the serial,
+// and deliberately so: a metric is a long-lived history where a re-bay must not
+// silently continue one drive's series under another drive's readings, and a
+// missing serial there produces a gap rather than a renamed series. The two
+// have different failure modes and therefore different answers.
+func memberResource(volume string, m *types.DiskMember) string {
+	return fmt.Sprintf("%s/%d:%d", volume, m.Enclosure, m.Slot)
+}
+
+// describeMember names a drive the way somebody standing at the rack needs it
+// named: the bay to pull, what the drive is, and the volume it belongs to.
+// A device path would be no use -- it does not have one.
+func describeMember(volume string, m *types.DiskMember) string {
+	model := strings.TrimSpace(m.Vendor + " " + m.Model)
+	if model == "" {
+		model = "drive"
+	}
+	if m.Serial != "" {
+		return fmt.Sprintf("%s in bay %d:%d behind %s (serial %s)",
+			model, m.Enclosure, m.Slot, volume, m.Serial)
+	}
+	return fmt.Sprintf("%s in bay %d:%d behind %s", model, m.Enclosure, m.Slot, volume)
+}
+
+// Evaluate returns the alerts firing for snap.// Evaluate returns the alerts firing for snap. Thresholds come from cfg, so a
 // reload changes behaviour on the next snapshot with no restart.
 func (e *Evaluator) Evaluate(cfg config.Alerts, snap *types.Snapshot, now time.Time) []types.Alert {
 	if snap == nil {
@@ -268,6 +318,68 @@ func (e *Evaluator) evalStorage(b *builder, snap *types.Snapshot) {
 		if d.SMARTEnabled && !d.SMARTHealthy {
 			b.add(RuleSMARTUnhealthy, types.SeverityCritical, catStorage, d.Name,
 				fmt.Sprintf("/dev/%s reports a failing SMART attribute", d.Name), 0, 0)
+		}
+
+		// The drives behind a hardware RAID controller. They are not block
+		// devices and are not in this loop's list -- they hang off the volume
+		// as Members -- so without this a failing drive in the owner's PERC
+		// would appear on the dashboard and raise NOTHING. That is the same
+		// gap as reporting health where there is no reading, in the opposite
+		// direction: a real reading that says nothing at all.
+		//
+		// They raise the SAME rules as a block device deliberately. A separate
+		// rule name would mean anyone who has already configured notification
+		// on smart_unhealthy hears nothing when one of these fails, which is
+		// exactly the silence being fixed. The message carries what makes a
+		// member different: the bay to pull and the serial, since it has no
+		// device name to print.
+		for i := range d.Members {
+			m := &d.Members[i]
+			resource := memberResource(d.Name, m)
+
+			// A drive the controller has taken out of service, named.
+			//
+			// raid_degraded does not cover this, and assuming it did would be
+			// resting on a firmware invariant nobody has checked: the array
+			// state and the member state are two separate fields, and a volume
+			// reported optimal while one of its drives is offline is a
+			// contradiction this would otherwise accept in silence. It also
+			// says the thing raid_degraded cannot -- WHICH drive -- which is
+			// the actionable half of a degraded array.
+			if !m.Online {
+				b.add(RuleRAIDMemberOffline, types.SeverityCritical, catStorage, resource,
+					fmt.Sprintf("%s is not in service", describeMember(d.Name, m)), 0, 0)
+			}
+			if m.SMARTEnabled && !m.SMARTHealthy {
+				b.add(RuleSMARTUnhealthy, types.SeverityCritical, catStorage, resource,
+					fmt.Sprintf("%s reports a failing SMART attribute", describeMember(d.Name, m)), 0, 0)
+			}
+			// Temperature, on the same thresholds as a block device. On a host
+			// whose only spinning disks are behind a controller these are the
+			// only drive temperatures there are, so omitting them would leave
+			// that machine with no thermal alerting on its disks at all.
+			// Thresholds are looked up under the resource the alert IS, not
+			// under the volume it hangs off. The alert's identity is
+			// "sdb/64:7"; reading its configuration under "sdb" made an
+			// override written for one member unreachable, and silently
+			// applied an override written for the volume to every member
+			// under it. A config override is the one place a user states an
+			// intention, so the resource the alert is filed under and the
+			// resource its configuration is read under have to be the same
+			// string.
+			mt := thresholds(b.cfg, resource)
+			if m.Temperature > 0 {
+				switch {
+				case mt.TempCritC > 0 && m.Temperature >= mt.TempCritC:
+					b.add(RuleDiskTemp, types.SeverityCritical, catStorage, resource,
+						fmt.Sprintf("%s is at %.0f°C", describeMember(d.Name, m), m.Temperature),
+						m.Temperature, mt.TempCritC)
+				case mt.TempWarnC > 0 && m.Temperature >= mt.TempWarnC:
+					b.add(RuleDiskTemp, types.SeverityWarning, catStorage, resource,
+						fmt.Sprintf("%s is at %.0f°C", describeMember(d.Name, m), m.Temperature),
+						m.Temperature, mt.TempWarnC)
+				}
+			}
 		}
 
 		// NVMe endurance. Gated on the device being NVMe rather than on the

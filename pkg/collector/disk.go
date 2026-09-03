@@ -47,6 +47,13 @@ type DiskCollector struct {
 	// from a single goroutine.
 	prevIO map[string]diskIOSnapshot
 	peaks  map[string]diskPeaks
+
+	// megaraidSessions holds the open management node for the collect cycle in
+	// progress, one per hardware RAID controller, and is nil outside a cycle.
+	// It is declared here rather than in the linux-only file so the struct has
+	// the same shape on every target; the field is simply unused where the
+	// passthrough is not built.
+	megaraidSessions map[uint16]*megaraidSession
 }
 
 // NewDiskCollector returns a new DiskCollector.
@@ -180,6 +187,11 @@ func (c *DiskCollector) Collect() error {
 	// their parent disk (e.g. /dev/nvme0n1p1 → nvme0n1).
 	partitionsByDisk := buildPartitionIndex(partitions)
 
+	// One controller session for the whole cycle: the configuration is read
+	// once however many volumes are built on it.
+	c.beginMegaRAID()
+	defer c.endMegaRAID()
+
 	var result []types.DiskInfo
 
 	if blockInfo != nil && len(blockInfo.Disks) > 0 {
@@ -292,6 +304,11 @@ func (c *DiskCollector) buildDiskInfo(
 	// RAID (md array) status, best-effort. Reads world-readable sysfs, so it
 	// works even when the service is unprivileged and SMART is not.
 	c.applyRAID(name, &info)
+
+	// Hardware RAID, for a device that is a controller's virtual disk. Defers
+	// to md above, and fills in the member drives that have no other way to be
+	// seen.
+	c.applyHardwareRAID(name, &info)
 
 	// Temperature via hwmon sysfs (best-effort).
 	if info.Temperature == 0 {

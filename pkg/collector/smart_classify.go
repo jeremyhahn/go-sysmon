@@ -112,20 +112,46 @@ func isVirtualBlockDevice(name string) (virtual, known bool) {
 // component (.../host0/target0:2:0/0:2:0:0), and
 // /sys/class/scsi_host/host0/proc_name names the driver.
 func scsiHostDriver(name string) string {
-	target, err := filepath.EvalSymlinks(filepath.Join(sysBlockRoot, name, "device"))
-	if err != nil {
+	host, _, ok := scsiHost(name)
+	if !ok {
 		return ""
+	}
+	return readSysfsString(filepath.Join(sysClassSCSIHost, host, "proc_name"))
+}
+
+// scsiHost returns the SCSI host a block device hangs off, as both the sysfs
+// directory name ("host0") and the number in it.
+//
+// The digit check is not decoration: a path component named "host" without a
+// number is not a SCSI host, and taking it for one ends the search at a lookup
+// that finds nothing, so the real host further along the path is never reached
+// and the device looks like it has no driver at all.
+func scsiHost(name string) (dir string, number uint16, ok bool) {
+	target := resolvedDevicePath(name)
+	if target == "" {
+		return "", 0, false
 	}
 	for _, part := range strings.Split(target, string(os.PathSeparator)) {
 		if !strings.HasPrefix(part, "host") {
 			continue
 		}
-		if _, err := strconv.Atoi(strings.TrimPrefix(part, "host")); err != nil {
+		n, err := strconv.ParseUint(strings.TrimPrefix(part, "host"), 10, 16)
+		if err != nil {
 			continue
 		}
-		return readSysfsString(filepath.Join(sysClassSCSIHost, part, "proc_name"))
+		return part, uint16(n), true
 	}
-	return ""
+	return "", 0, false
+}
+
+// resolvedDevicePath resolves /sys/block/<dev>/device to the device tree path
+// it points at, or "" when the device has no hardware behind it.
+func resolvedDevicePath(name string) string {
+	target, err := filepath.EvalSymlinks(filepath.Join(sysBlockRoot, name, "device"))
+	if err != nil {
+		return ""
+	}
+	return target
 }
 
 // raidControllerFor returns a human name for the RAID controller serving a

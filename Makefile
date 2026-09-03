@@ -283,6 +283,13 @@ fmt:
 
 vet:
 	go vet $(PKG_ALL)
+	@# The hardware RAID passthrough is built only for the 64-bit ABI its
+	@# packet layout describes, with a stub elsewhere. pkg/collector cannot be
+	@# compiled for a 32-bit target at all (NVML, issue #8), so the stub was
+	@# unverifiable and silently stopped compiling: two symbols that untagged
+	@# files use lived only in the tagged ones. Selecting a file is not the
+	@# same as building it, and this is what checks the difference.
+	go vet -tags nomegaraid $(PKG_ALL)
 
 ## Clean
 

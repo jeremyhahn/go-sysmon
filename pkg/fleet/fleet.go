@@ -325,8 +325,31 @@ func summarize(name, url string, self bool, snap *types.Snapshot, fetchedAt time
 				n.SMARTUnhealthy++
 			}
 		}
+		// The drives behind a hardware RAID controller count too. They are not
+		// block devices and never appear in the disk list, so a denominator
+		// summed over that list alone would report ci-node-1 as having three
+		// SMART-capable devices while six readable drives sat behind its PERC.
+		// That is #44's defect surviving its own fix: a denominator that does
+		// not know what it left out.
+		for _, m := range d.Members {
+			if !m.SMARTEnabled {
+				continue
+			}
+			n.SMARTCapable++
+			if !m.SMARTHealthy {
+				n.SMARTUnhealthy++
+			}
+		}
 		if d.Temperature > n.MaxTempC {
 			n.MaxTempC = d.Temperature
+		}
+		// A member's temperature is the drive's own, and on a host whose only
+		// spinning disks are behind a controller it is the only disk
+		// temperature there is.
+		for _, m := range d.Members {
+			if m.Temperature > n.MaxTempC {
+				n.MaxTempC = m.Temperature
+			}
 		}
 	}
 	for _, c := range snap.Sensors.CoreTemps {

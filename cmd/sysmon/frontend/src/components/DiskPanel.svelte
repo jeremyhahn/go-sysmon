@@ -81,7 +81,9 @@
     unreadable: { label: "SMART unreadable", badge: "badge-warning badge-outline" },
   };
 
-  function smartPresentation(disk: DiskInfo): { label: string; badge: string } {
+  type SmartBearing = Pick<DiskInfo, "smart_enabled" | "smart_healthy" | "smart_status">;
+
+  function smartPresentation(disk: SmartBearing): { label: string; badge: string } {
     const known = SMART_PRESENTATION[disk.smart_status ?? ""];
     if (known != null) return known;
     if (!disk.smart_enabled) return { label: "SMART N/A", badge: "badge-neutral" };
@@ -90,11 +92,11 @@
       : { label: "FAILING", badge: "badge-error" };
   }
 
-  function smartBadge(disk: DiskInfo): string {
+  function smartBadge(disk: SmartBearing): string {
     return smartPresentation(disk).badge;
   }
 
-  function smartLabel(disk: DiskInfo): string {
+  function smartLabel(disk: SmartBearing): string {
     return smartPresentation(disk).label;
   }
 
@@ -421,12 +423,21 @@
                     {disk.raid.active_devices}/{disk.raid.total_devices}
                   </div>
                 </div>
-                <div>
-                  <span class="text-base-content/60">Mismatch</span>
-                  <div class="font-medium {disk.raid.mismatch_count > 0 ? 'text-warning' : ''}">
-                    {disk.raid.mismatch_count}
+                <!-- Shown only when the source reports background operations
+                     at all. A hardware RAID volume is never asked about
+                     consistency checks, and "Mismatch 0" would read as a check
+                     that found nothing rather than as a check that never
+                     happened -- the reassuring one of two opposite claims about
+                     a redundant array. An empty sync_action is the flag; see
+                     RAIDInfo in pkg/types. -->
+                {#if disk.raid.sync_action !== ""}
+                  <div>
+                    <span class="text-base-content/60">Mismatch</span>
+                    <div class="font-medium {disk.raid.mismatch_count > 0 ? 'text-warning' : ''}">
+                      {disk.raid.mismatch_count}
+                    </div>
                   </div>
-                </div>
+                {/if}
               </div>
 
               {#if disk.raid.sync_action !== "idle" && disk.raid.sync_action !== ""}
@@ -611,6 +622,58 @@
                         <td>{part.fstype}</td>
                         <td class="text-xs text-base-content/60 max-w-xs truncate">
                           {part.opts}
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          {/if}
+
+          <!-- Physical drives behind a hardware RAID controller.
+               These have no device node and appear nowhere else: without this
+               the six drives in ci-node-1's PERC volumes were invisible, and
+               the volume above could only say that its SMART was somewhere
+               else. Each drive carries its own health, so a single failing
+               member is visible without opening anything. -->
+          {#if disk.members != null && disk.members.length > 0}
+            <div class="mt-3">
+              <p class="text-xs text-base-content/60 mb-1">
+                Member drives ({disk.members.length})
+              </p>
+              <div class="overflow-x-auto">
+                <table class="table table-xs">
+                  <thead>
+                    <tr>
+                      <th>Bay</th>
+                      <th>Model</th>
+                      <th>Serial</th>
+                      <th class="text-right">Temp</th>
+                      <th>SMART</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each disk.members as member (member.device_id)}
+                      <tr>
+                        <td class="font-mono">{member.enclosure}:{member.slot}</td>
+                        <td>
+                          {member.vendor}
+                          {member.model}
+                        </td>
+                        <td class="font-mono">{member.serial}</td>
+                        <td class="text-right font-mono">
+                          {member.temperature_celsius > 0
+                            ? `${member.temperature_celsius.toFixed(0)}°C`
+                            : "—"}
+                        </td>
+                        <td>
+                          <span
+                            class="badge {smartBadge(member)} badge-sm"
+                            title={member.smart_reason || undefined}
+                          >
+                            {smartLabel(member)}
+                          </span>
                         </td>
                       </tr>
                     {/each}

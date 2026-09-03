@@ -2,6 +2,7 @@ package alert_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -618,5 +619,278 @@ func TestEvaluate_VanishedInterfacesAreForgotten(t *testing.T) {
 	}}
 	if a := find(e.Evaluate(cfg, back, t0.Add(2*time.Second)), alert.RuleIfaceErrors); a != nil {
 		t.Errorf("a returning interface should be a fresh baseline, got %+v", a)
+	}
+}
+
+// A failing drive behind a RAID controller must raise the same alert a failing
+// block device raises.
+//
+// This is the half of #45 that makes reading those drives worth doing. Without
+// it the six drives behind ci-node-1's PERC appear on the dashboard and raise
+// nothing, so a failure is visible only to somebody already looking at the
+// page -- which is not what the owner asked for when he asked to see them.
+func TestEvaluate_FailingControllerMemberRaisesSMARTAlert(t *testing.T) {
+	snap := &types.Snapshot{
+		Disks: []types.DiskInfo{{
+			Name: "sdb",
+			// The VOLUME reports no SMART of its own, which is the whole
+			// point: if the alert were driven by the disk's own fields there
+			// would be nothing to fire on.
+			SMARTEnabled: false,
+			Members: []types.DiskMember{
+				{DeviceID: 6, Serial: "L0J4VK8J", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+					Enclosure: 64, Slot: 6, Online: true, SMARTEnabled: true, SMARTHealthy: true},
+				{DeviceID: 7, Serial: "L0J4Y3AJ", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+					Enclosure: 64, Slot: 7, Online: true, SMARTEnabled: true, SMARTHealthy: false},
+				// A drive we could not read. Its zero value is indistinguishable
+				// from "failing" if the SMARTEnabled guard is dropped, and
+				// alerting critical on a drive that told us nothing is the
+				// same substitution of an absence for an answer this whole
+				// change exists to remove -- just pointing the other way.
+				{DeviceID: 8, Serial: "L0J4HNUJ", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+					Enclosure: 64, Slot: 8, Online: true, SMARTEnabled: false, SMARTHealthy: false,
+					SMARTStatus: types.SMARTUnreadable},
+			},
+		}},
+	}
+
+	alerts := alert.New().Evaluate(defaults(), snap, time.Now())
+
+	var found *types.Alert
+	for i := range alerts {
+		if alerts[i].Rule == alert.RuleSMARTUnhealthy {
+			found = &alerts[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no smart_unhealthy alert for a failing member; got %d alerts", len(alerts))
+	}
+	if found.Severity != types.SeverityCritical {
+		t.Errorf("severity = %q, want critical", found.Severity)
+	}
+	// The rule name matters as much as the alert: anyone who has configured
+	// notification on smart_unhealthy must hear this one too. A separate rule
+	// would be the same silence by another route.
+	if found.Rule != alert.RuleSMARTUnhealthy {
+		t.Errorf("rule = %q, want %q", found.Rule, alert.RuleSMARTUnhealthy)
+	}
+	// The message has to name the drive the way somebody at the rack needs it:
+	// there is no /dev path to print.
+	for _, want := range []string{"bay 64:7", "L0J4Y3AJ", "sdb", "DKR5E-J1R2SS"} {
+		if !strings.Contains(found.Message, want) {
+			t.Errorf("message %q does not contain %q", found.Message, want)
+		}
+	}
+	// And the healthy member must not fire. A rule that alerted on every
+	// member would pass every assertion above.
+	if strings.Contains(found.Message, "L0J4VK8J") {
+		t.Errorf("the healthy member was named in the alert: %q", found.Message)
+	}
+	// Nor the one that never answered.
+	for _, a := range alerts {
+		if a.Rule == alert.RuleSMARTUnhealthy && strings.Contains(a.Message, "L0J4HNUJ") {
+			t.Errorf("a drive that reported nothing raised a failure alert: %q", a.Message)
+		}
+	}
+	if n := countRule(alerts, alert.RuleSMARTUnhealthy); n != 1 {
+		t.Errorf("%d smart_unhealthy alerts, want 1", n)
+	}
+}
+
+// TestEvaluate_MemberAlertIDSurvivesAMissingSerial pins the de-duplication key,
+// and pins it to the position rather than to the serial.
+//
+// The serial looks like the better identity and is the wrong one here. It is
+// read from the drive with a separate command every cycle, and that command
+// fails on exactly the drive this alert is about -- one on its way out. Keying
+// on it would have the ID flip between the serial and the position as the
+// command succeeded and failed, so an alert firing for an hour would clear and
+// re-fire as a new fault on a different drive.
+func TestEvaluate_MemberAlertIDSurvivesAMissingSerial(t *testing.T) {
+	member := types.DiskMember{
+		DeviceID: 7, Serial: "L0J4Y3AJ", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+		Enclosure: 64, Slot: 7, Online: true, SMARTEnabled: true, SMARTHealthy: false,
+	}
+	idFor := func(m types.DiskMember) string {
+		snap := &types.Snapshot{Disks: []types.DiskInfo{{Name: "sdb", Members: []types.DiskMember{m}}}}
+		for _, a := range alert.New().Evaluate(defaults(), snap, time.Now()) {
+			if a.Rule == alert.RuleSMARTUnhealthy {
+				return a.ID
+			}
+		}
+		return ""
+	}
+
+	// The cycle where the identity command failed. Same drive, same bay, no
+	// serial -- and it must be the same alert.
+	silent := member
+	silent.Serial = ""
+	if a, b := idFor(member), idFor(silent); a == "" || a != b {
+		t.Errorf("alert ID changed when the serial could not be read: %q -> %q", a, b)
+	}
+
+	// And two drives in different bays are two alerts, so the position is
+	// carrying real identity rather than collapsing them.
+	other := member
+	other.Slot, other.DeviceID = 9, 9
+	if a, b := idFor(member), idFor(other); a == b {
+		t.Errorf("two drives in different bays shared one alert ID: %q", a)
+	}
+}
+
+// TestEvaluate_OfflineMemberIsNamed covers the drive the controller has taken
+// out of service.
+//
+// raid_degraded does not cover it. The array state and the member state are
+// separate fields, so a volume reported optimal with an offline drive is a
+// contradiction that would otherwise be accepted in silence -- and even when
+// the array does report degraded, that alert cannot say WHICH drive, which is
+// the actionable half.
+func TestEvaluate_OfflineMemberIsNamed(t *testing.T) {
+	snap := &types.Snapshot{
+		Disks: []types.DiskInfo{{
+			Name: "sdb",
+			// Deliberately NOT degraded: this is the contradiction case.
+			RAID: &types.RAIDInfo{Level: "raid10", State: "active", Degraded: false,
+				TotalDevices: 2, ActiveDevices: 1},
+			Members: []types.DiskMember{
+				{DeviceID: 6, Serial: "L0J4VK8J", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+					Enclosure: 64, Slot: 6, Online: true, SMARTEnabled: true, SMARTHealthy: true},
+				{DeviceID: 7, Serial: "L0J4Y3AJ", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+					Enclosure: 64, Slot: 7, Online: false, SMARTEnabled: true, SMARTHealthy: true},
+			},
+		}},
+	}
+
+	alerts := alert.New().Evaluate(defaults(), snap, time.Now())
+	if n := countRule(alerts, alert.RuleRAIDMemberOffline); n != 1 {
+		t.Fatalf("%d raid_member_offline alerts, want 1", n)
+	}
+	for _, a := range alerts {
+		if a.Rule != alert.RuleRAIDMemberOffline {
+			continue
+		}
+		if a.Severity != types.SeverityCritical {
+			t.Errorf("severity = %q, want critical", a.Severity)
+		}
+		// It has to name the bay, because that is what somebody at the rack
+		// needs and the array-level alert cannot say it.
+		if !strings.Contains(a.Message, "bay 64:7") {
+			t.Errorf("message %q does not name the bay", a.Message)
+		}
+		if strings.Contains(a.Message, "L0J4VK8J") {
+			t.Errorf("the online drive was named: %q", a.Message)
+		}
+	}
+
+	// A drive that is offline but healthy must not also raise smart_unhealthy:
+	// they are different statements and only one of them is true.
+	if n := countRule(alerts, alert.RuleSMARTUnhealthy); n != 0 {
+		t.Errorf("%d smart_unhealthy alerts for a healthy offline drive, want 0", n)
+	}
+}
+
+// TestEvaluate_HotControllerMemberRaisesTemperature covers the other reading we
+// take from these drives. On a host whose only spinning disks sit behind a
+// controller, these are the only drive temperatures there are.
+func TestEvaluate_HotControllerMemberRaisesTemperature(t *testing.T) {
+	cfg := defaults()
+	snap := &types.Snapshot{
+		Disks: []types.DiskInfo{{
+			Name: "sdb",
+			Members: []types.DiskMember{
+				{DeviceID: 6, Serial: "COOL", Enclosure: 64, Slot: 6, Temperature: 33,
+					SMARTEnabled: true, SMARTHealthy: true},
+				{DeviceID: 7, Serial: "HOT", Enclosure: 64, Slot: 7, Temperature: 200,
+					SMARTEnabled: true, SMARTHealthy: true},
+			},
+		}},
+	}
+
+	alerts := alert.New().Evaluate(cfg, snap, time.Now())
+	if n := countRule(alerts, alert.RuleDiskTemp); n != 1 {
+		t.Fatalf("%d disk_temp alerts, want 1 (only the hot drive)", n)
+	}
+	for _, a := range alerts {
+		if a.Rule == alert.RuleDiskTemp && !strings.Contains(a.Message, "HOT") {
+			t.Errorf("the temperature alert named the wrong drive: %q", a.Message)
+		}
+	}
+}
+
+// countRule returns how many alerts fired for one rule.
+func countRule(alerts []types.Alert, rule string) int {
+	n := 0
+	for _, a := range alerts {
+		if a.Rule == rule {
+			n++
+		}
+	}
+	return n
+}
+
+// A threshold override written for one drive behind a controller must reach
+// that drive, and an override written for the volume must not silently govern
+// every drive under it.
+//
+// The alert's resource is "sdb/64:7" -- chosen so the identity does not flap
+// when a serial cannot be read -- but its thresholds were being looked up
+// under the volume's name. So the resource the alert IS and the resource its
+// configuration is READ UNDER diverged, which makes a stated intention
+// unreachable and applies one the user did not write.
+//
+// It matters most for exactly this case: drives behind a controller run warmer
+// than block devices in the same chassis, so a per-member override is the
+// first thing somebody would reach for.
+func TestEvaluate_MemberTemperatureUsesTheMembersOwnOverride(t *testing.T) {
+	member := types.DiskMember{
+		DeviceID: 7, Serial: "L0J4Y3AJ", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+		Enclosure: 64, Slot: 7, Online: true, SMARTEnabled: true, SMARTHealthy: true,
+		Temperature: 70,
+	}
+	snap := &types.Snapshot{
+		Disks: []types.DiskInfo{{Name: "sdb", Members: []types.DiskMember{member}}},
+	}
+
+	// Without an override the drive is over the default warning threshold.
+	if n := countRule(alert.New().Evaluate(defaults(), snap, time.Now()), alert.RuleDiskTemp); n != 1 {
+		t.Fatalf("%d disk_temp alerts at 70°C with default thresholds, want 1", n)
+	}
+
+	// An override written for the MEMBER must reach it.
+	raised := defaults()
+	raised.Overrides = []config.Override{{Resource: "sdb/64:7", TempWarnC: 100, TempCritC: 110}}
+	if n := countRule(alert.New().Evaluate(raised, snap, time.Now()), alert.RuleDiskTemp); n != 0 {
+		t.Errorf("%d disk_temp alerts with a member override of 100°C, want 0: the override was unreachable", n)
+	}
+
+	// An override written for the VOLUME must not govern the member. The
+	// volume and the member are different resources and a user who wrote one
+	// did not write the other.
+	volumeOnly := defaults()
+	volumeOnly.Overrides = []config.Override{{Resource: "sdb", TempWarnC: 100, TempCritC: 110}}
+	if n := countRule(alert.New().Evaluate(volumeOnly, snap, time.Now()), alert.RuleDiskTemp); n != 1 {
+		t.Errorf("%d disk_temp alerts with an override on the volume, want 1: it silently governed the member", n)
+	}
+
+	// The SEVERITY has to come from the member's override too, not only the
+	// decision to fire. Both branches read a threshold, and a fixture where
+	// the warning branch always decides cannot tell whether the critical one
+	// was fixed -- which is what the first version of this test did.
+	severity := func(cfg config.Alerts) string {
+		for _, a := range alert.New().Evaluate(cfg, snap, time.Now()) {
+			if a.Rule == alert.RuleDiskTemp {
+				return a.Severity
+			}
+		}
+		return ""
+	}
+	if got := severity(defaults()); got != types.SeverityWarning {
+		t.Fatalf("70°C on default thresholds = %q, want warning; this fixture cannot distinguish the branches", got)
+	}
+	lowered := defaults()
+	lowered.Overrides = []config.Override{{Resource: "sdb/64:7", TempWarnC: 40, TempCritC: 50}}
+	if got := severity(lowered); got != types.SeverityCritical {
+		t.Errorf("70°C with a member critical threshold of 50 = %q, want critical: the critical branch ignored the override", got)
 	}
 }

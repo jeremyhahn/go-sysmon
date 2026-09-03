@@ -652,6 +652,38 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 				{Name: "dm-0", TotalBytes: 100, SMARTEnabled: false},
 			},
 		},
+		{
+			// ci-node-1 once its PERC members are read. The volume itself has
+			// no SMART -- SMARTEnabled is false on sda and sdb -- and all six
+			// readable drives are behind it. Summing the disk list alone would
+			// report a denominator of one for a host with seven answering
+			// devices, which is #44's defect surviving its own fix.
+			name: "drives behind a hardware RAID controller count",
+			disks: []types.DiskInfo{
+				{Name: "nvme0n1", TotalBytes: 100, SMARTEnabled: true, SMARTHealthy: true},
+				{
+					Name: "sda", TotalBytes: 100, SMARTEnabled: false,
+					RAID: &types.RAIDInfo{Level: "raid1", State: "active"},
+					Members: []types.DiskMember{
+						{DeviceID: 0, SMARTEnabled: true, SMARTHealthy: true},
+						{DeviceID: 1, SMARTEnabled: true, SMARTHealthy: true},
+					},
+				},
+				{
+					Name: "sdb", TotalBytes: 100, SMARTEnabled: false,
+					RAID: &types.RAIDInfo{Level: "raid10", State: "active"},
+					Members: []types.DiskMember{
+						{DeviceID: 6, SMARTEnabled: true, SMARTHealthy: true},
+						{DeviceID: 7, SMARTEnabled: true, SMARTHealthy: false},
+						{DeviceID: 8, SMARTEnabled: true, SMARTHealthy: true},
+						// A member we could not read is not counted as capable:
+						// it is a device that told us nothing, not a well one.
+						{DeviceID: 9, SMARTEnabled: false},
+					},
+				},
+			},
+			wantArrays: 2, wantCapable: 6, wantSMARTBad: 1,
+		},
 	}
 
 	for _, tc := range cases {

@@ -108,6 +108,201 @@ covers four unrelated situations that used to render identically (see
 All of the classification reads world-readable sysfs, which matters most in
 exactly the case where the reason is that the service is unprivileged.
 
+## Drives behind a hardware RAID controller
+
+A hardware RAID volume hides its members. The kernel publishes the volume as one
+SCSI disk — `sda` on ci-node-1 — and the drives that make it up have no device
+node, no name in `/sys/block`, no partitions, no filesystem and no I/O counters:
+every field `DiskInfo` is built around. They are reachable only by asking the
+controller to carry a command to them.
+
+**The implementation is the 64-bit Linux ABI and is built only for it.** A
+32-bit target has an 8-byte `struct iovec`, a differently sized packet, and a
+different ioctl number, so `linux && (amd64 || arm64)` guards the passthrough
+and a stub reports no members elsewhere. A packet laid out for the wrong ABI is
+not a subtle error: the controller acts on whatever it finds at each offset.
+
+`DiskCollector` does that through the MFI passthrough: one ioctl on
+`/dev/megaraid_sas_ioctl_node` carrying a frame that names a drive by its device
+ID and holds an ordinary SCSI CDB. Whatever the CDB says reaches the drive, so
+the SAS members answer SCSI LOG SENSE and the SATA members answer the same ATA
+PASS-THROUGH(16) command used for directly attached disks, tunnelled one layer
+deeper.
+
+**This needs `CAP_SYS_ADMIN` and `CAP_DAC_OVERRIDE`, and does not need
+`CAP_SYS_RAWIO`** (measured on ci-node-1, 2026-09-02; either capability alone
+fails). It never touches the SG_IO or HDIO paths that `CAP_SYS_RAWIO` governs —
+including the one that crash-loops that host — so reading these drives costs no
+change to how the service is deployed.
+
+Note also that `/dev/bus/0` **does not exist**. It is `smartctl`'s synthetic
+name for the management node, which is why `smartctl -d megaraid,0 /dev/sda`
+fails in a way that reads as "this hardware cannot report".
+
+### What is reported, and where
+
+| surface | what it carries |
+|---|---|
+| `DiskInfo.Members` | one entry per drive: serial, model, vendor, enclosure and slot, temperature, whether the **controller** considers it in service, and its own SMART status |
+| `DiskInfo.RAID` | the volume as an array — level, state, degraded, and the member counts — in the same shape an md array uses, so `pkg/alert`, `pkg/metrics` and the fleet roll-up need no second notion of what a RAID array is. **Sync state is left empty: see below** |
+| `DiskInfo.SMARTStatus` | stays `behind_controller`: the volume genuinely has no SMART of its own. The reason now names how many members were read |
+| `sysmon_disk_member_*` | **labelled by serial**, not by device ID or slot — see below |
+| the fleet roll-up | members count toward `smart_capable` and `smart_unhealthy` |
+| `pkg/alert` | a failing member raises **`smart_unhealthy`**, the same rule a failing block device raises, and a hot one raises `disk_temp` on the same thresholds |
+
+`RAIDInfo.Members` is deliberately left empty for a hardware volume. That field
+names a *block device* because an md array's components are devices this host
+addresses directly; a drive behind a PERC is not one, and widening the field to
+fit would leave one name covering two different things.
+
+### Alerting, and why members share the block device's rule names
+
+Reading these drives is only worth doing if a failure is *told* to somebody. A
+dashboard the operator has to be already looking at is not that, so member
+health is wired into the same alert path as block-device SMART.
+
+**They raise the same rule names deliberately.** A separate `smart_member_*`
+rule would mean anyone who has already configured notification on
+`smart_unhealthy` hears nothing when a drive in a PERC fails — which is the
+silence being fixed, arriving by another route. What differs is the message,
+which names the **bay and the serial**, because there is no device path to
+print and the operator needs to know which drive to pull.
+
+The alert's de-duplication key is the **physical position**, not the serial —
+which is the opposite of the metric label, deliberately. A serial is read from
+the drive with a separate command every cycle, and that command fails on exactly
+the drive an alert is about: one on its way out. Keying on it would have the ID
+flip between the serial and the position as the command succeeded and failed, so
+an alert that had been firing for an hour would clear and re-fire as a new fault
+on a different drive. The position comes from the controller's configuration, in
+the same reply that produced the member list, so it cannot vanish while the
+member exists.
+
+A metric has the opposite requirement — it is a long-lived history where a
+re-bay must not silently continue one drive's series under another drive's
+readings, and a missing serial produces a gap rather than a renamed series — so
+it keeps the serial. **Different failure modes, different answers**; the message
+names both either way.
+
+A member the controller has taken **out of service** raises `raid_member_offline`
+(critical), named. `raid_degraded` does not cover it: the array state and the
+member state are separate fields, so a volume reported optimal with an offline
+drive is a contradiction that would otherwise pass in silence — and even when
+the array does report degraded, that alert cannot say *which* drive, which is
+the actionable half.
+
+A member with no reading raises nothing. `SMARTEnabled` gates the check exactly
+as it does for a block device: a drive that told us nothing is not a drive
+reporting failure, and alerting critical on it would be the same substitution of
+an absence for an answer this whole change exists to remove, pointing the other
+way.
+
+### Sync state is not reported, and says so
+
+Nothing here asks the controller about rebuild, consistency-check or
+background-init progress, so `SyncAction` is empty and `SyncProgressPercent` is
+zero — **not `"idle"` and `100`**, which is what a healthy md array reports and
+therefore what "nothing wrong" looks like in this struct. A volume in the middle
+of a rebuild would have been published, drawn and exported as a *completed* one.
+
+A rebuilding array is one drive from data loss. It is the moment this product
+exists for, and claiming it finished is the worst available answer — worse than
+saying nothing about a healthy host, which is the defect this same struct was
+fixed for elsewhere.
+
+The consumers handle the absence rather than papering over it: `pkg/alert`
+raises `raid_resync` only for a non-empty, non-idle action, so **the rule is
+honestly silent rather than silently satisfied** — an alert whose input is
+hardcoded to the all-clear reads as coverage and provides none. `DiskPanel`
+already treats `""` exactly as `idle`. `pkg/metrics` omits
+`sysmon_raid_sync_percent` entirely, because a percentage nobody measured cannot
+be told from a measured one: `0` reads as a stalled rebuild and `100` as a
+finished one, on an array that might be neither.
+
+**A rebuild is still not invisible, and for a measured reason rather than an
+assumed one.** A member that is not `MR_PD_STATE_ONLINE` reports `Online: false`
+and raises a critical `raid_member_offline` naming the bay. That states what can
+be proved — this drive is not in service — instead of guessing at a percentage.
+
+**The same applies to `MismatchCount`, one field over**, and the gate found it
+only after the sync fix was written: a source that does not report background
+operations does not report their results either, so zero there is *no check was
+read*, not *the last check was clean*. Those are opposite claims about a
+redundant array and only one of them is reassuring. `sysmon_raid_mismatch_count`
+and the panel's "Mismatch" cell are gated on the same signal.
+
+That signal — an empty `SyncAction` — is documented on `RAIDInfo` itself rather
+than left as a convention between three call sites, because an SDK consumer
+following the old contract would have read `""` as malformed.
+
+Decoding real progress needs more DCMDs and a controller in that state to verify
+against; it is follow-up work, not something to approximate.
+
+### Online is not the same question as healthy
+
+`DiskMember.Online` is the controller's verdict — the drive is in service as
+part of its array — and it is what `RAIDInfo.ActiveDevices` counts. It is
+deliberately **not** "the drive answered a health command", which is wrong in
+both directions: a drive the controller has failed can go on answering SMART
+perfectly, and a working drive can refuse a command it does not implement. Using
+readability would have reported a degraded array as whole and a whole one as
+degraded.
+
+Only `MR_PD_STATE_ONLINE` (0x18) counts as in service, because that is the only
+physical-drive state measured — all six drives on ci-node-1 report it while
+both arrays are optimal. An unrecognised state is reported as *not* in service,
+which errs toward saying an array has fewer working drives than it has: the
+direction that raises attention rather than suppressing it.
+
+### Identity is read every cycle, not cached
+
+Caching a drive's identity by device ID is the obvious optimisation and the
+wrong one. **A device ID names a slot on the controller, not the drive in it.**
+A replaced drive would keep reporting under the serial of the drive it replaced
+until the process restarted — and since that serial is the Prometheus series
+identity, the history would look continuous across a hardware change. That is
+exactly the failure the serial label exists to prevent, reintroduced one layer
+up. Two extra commands per drive on the slow collection tier is not worth it.
+
+### Why the metric label is the serial
+
+A drive behind a controller has no device name, and the names of the things
+around it are not stable. ci-node-1's 2026-08-31 rebuild renamed every PERC and
+BOSS device on the machine and swapped two of four NVMe names. **A series keyed
+on position silently becomes a different series across such a reboot, which is
+worse than a missing one: the history looks continuous and is not.** The serial
+is the only identifier that survives, so `sysmon_disk_member_smart_healthy` and
+`sysmon_disk_member_temperature_celsius` carry `serial` — with `volume` as a
+second label so a query can group an array's members without a join. A drive
+that will not give a serial is not exported at all, because two unlabelled
+drives would collide into one series.
+
+### Building for a target the passthrough does not support
+
+The implementation is the 64-bit Linux ABI, so it is built only for
+`linux && (amd64 || arm64)` and `megaraid_unsupported.go` stands in elsewhere.
+
+**That stub is compiled with `go build -tags nomegaraid ./...`, and the tag
+exists for exactly that reason.** `pkg/collector` cannot currently be built for
+a 32-bit target at all — `gpu.go` imports NVML, which does not compile there
+(#8) — so "the unsupported path builds" was a claim nothing could check, and it
+was false: two symbols used by untagged files lived only in the 64-bit ones.
+Checking which files a target *selects* is not the same as compiling them.
+
+Anything shared between the two paths therefore belongs in an untagged file.
+`megaraid_config.go` holds the pure decoders, the error types they raise, and
+the mapping onto `RAIDInfo` for that reason.
+
+### What has no automated coverage
+
+The ioctl path cannot run in CI: it needs the hardware. What **is** covered by
+tests is everything either side of it — the packet layout against the offsets a
+C compiler produced from the driver's structures, the controller configuration
+decoder against **a real 1120-byte reply captured from ci-node-1**, the SCSI
+log page and INQUIRY decoders, and the mapping onto `RAIDInfo`. The ioctl itself
+was verified by running the built binary on ci-node-1 as the service's own user
+and reading its output; a green test suite does not mean that path was exercised.
+
 ## Frequency tiering
 
 Metrics do not change at the same rate, and some are far more expensive to read

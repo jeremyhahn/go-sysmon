@@ -593,11 +593,16 @@ type DiskInfo struct {
 	SMARTStatus  SMARTStatus `json:"smart_status"`
 	// SMARTReason is a sentence naming why there is no reading, for the
 	// statuses that have a why. Empty for SMARTOK and SMARTFailing.
-	SMARTReason  string      `json:"smart_reason"`
-	SMARTAttrs   []SMARTAttr `json:"smart_attrs"`
-	Temperature  float64     `json:"temperature_celsius"`
-	PowerOnHours uint64      `json:"power_on_hours"`
-	PowerCycles  uint64      `json:"power_cycles"`
+	SMARTReason string      `json:"smart_reason"`
+	SMARTAttrs  []SMARTAttr `json:"smart_attrs"`
+	// Members are the physical drives behind a hardware RAID controller, for a
+	// device that is a virtual disk. Empty for everything else, including md
+	// arrays -- their components are in RAID.Members, which is a different
+	// thing: those are block devices this host can address directly.
+	Members      []DiskMember `json:"members"`
+	Temperature  float64      `json:"temperature_celsius"`
+	PowerOnHours uint64       `json:"power_on_hours"`
+	PowerCycles  uint64       `json:"power_cycles"`
 	// NVMe health metrics
 	WearLevelPercent      int    `json:"wear_level_percent"`
 	AvailableSparePercent int    `json:"available_spare_percent"`
@@ -618,14 +623,27 @@ type DiskInfo struct {
 	FirmwareVersion string `json:"firmware_version"`
 	// NVMe protocol version
 	NVMeVersion string `json:"nvme_version"`
-	// RAID is non-nil only when this device is a Linux md array; it carries the
-	// array's level, health, member devices and any resync/recover progress.
+	// RAID is non-nil when this device is an array: a Linux md array, or a
+	// hardware RAID controller's virtual disk. It carries the array's level,
+	// health and member counts; see RAIDInfo for which fields each source
+	// fills in.
 	RAID *RAIDInfo `json:"raid,omitempty"`
 }
 
-// RAIDInfo describes the state of a Linux md (software RAID) array. It is
-// attached to the DiskInfo of the array device (e.g. md0) and is nil for
-// devices that are not md arrays.
+// RAIDInfo describes the state of a RAID array, attached to the DiskInfo of the
+// device that presents it and nil for devices that are not arrays.
+//
+// It covers two sources, and they do not fill in the same fields. A Linux md
+// array (md0) publishes everything below. A HARDWARE RAID volume -- a
+// controller's virtual disk, presented to the kernel as an ordinary SCSI disk
+// -- publishes its level, state, degraded flag and member counts, and leaves
+// the background-operation fields empty.
+//
+// SyncAction is the flag for which: an EMPTY action means the source does not
+// report background operations, and both SyncProgressPercent and MismatchCount
+// are meaningless in that state. See their comments; the distinction is not
+// cosmetic, because their zero values are what "everything is fine" looks like
+// in this struct.
 type RAIDInfo struct {
 	// Level is the array personality, e.g. "raid1", "raid10", "raid5".
 	Level string `json:"level"`
@@ -641,13 +659,32 @@ type RAIDInfo struct {
 	FailedDevices int `json:"failed_devices"`
 	SpareDevices  int `json:"spare_devices"`
 	// SyncAction is the current background operation: "idle", "resync",
-	// "recover", "check" or "repair".
+	// "recover", "check" or "repair" -- or **empty, meaning NOT REPORTED**.
+	//
+	// The empty value is the sentinel for a source that does not publish
+	// background-operation state at all, which today means a hardware RAID
+	// volume: the controller is never asked about rebuild, consistency-check
+	// or background-init progress. It is NOT "idle". Reporting idle would say
+	// a volume in the middle of a rebuild had finished one, on the single
+	// occasion this matters most.
+	//
+	// A consumer must render and alert on nothing when this is empty, rather
+	// than treating it as malformed or as a completed sync.
 	SyncAction string `json:"sync_action"`
 	// SyncProgressPercent is 0-100 while a resync/recover/check runs, or 100
 	// when the array is fully in sync (sync_action idle).
+	//
+	// MEANINGLESS WHEN SyncAction IS EMPTY. Zero there is the absence of a
+	// reading, not a stalled rebuild.
 	SyncProgressPercent float64 `json:"sync_progress_percent"`
 	// MismatchCount is the md mismatch_cnt: sectors that differed on the last
 	// check. Non-zero on a redundant array warrants a repair.
+	//
+	// LIKEWISE MEANINGLESS WHEN SyncAction IS EMPTY, and for the same reason:
+	// a source that does not report background operations does not report
+	// their results either, so zero is "no check was read" rather than "the
+	// last check was clean". The two are opposite claims about a redundant
+	// array and only one of them is reassuring.
 	MismatchCount uint64 `json:"mismatch_count"`
 	// Members are the array's component devices in slot order.
 	Members []RAIDMember `json:"members"`
@@ -665,6 +702,49 @@ type RAIDMember struct {
 	Slot int `json:"slot"`
 	// Errors is the md per-member read/corrected error count.
 	Errors uint64 `json:"errors"`
+}
+
+// DiskMember is one physical drive behind a hardware RAID controller.
+//
+// It is not a block device and cannot be made into one. The controller presents
+// the volume; its members have no device node, no name in /sys/block, no
+// partitions, no filesystem and no I/O counters -- every field DiskInfo is
+// built around. So this carries only what a controller can be asked about a
+// drive: what it is, where it is plugged in, and whether it says it is well.
+//
+// It is a separate type from RAIDMember rather than a reuse of it. RAIDMember
+// names a block device ("sda2") because an md array's components are devices
+// this host addresses directly; a drive behind a PERC is not, and widening that
+// field's meaning to fit would leave one name covering two different things.
+type DiskMember struct {
+	// Serial is the only identity that survives a reboot. The device ID and
+	// the slot describe where the drive is plugged in, not which drive it is,
+	// and ci-node-1's 2026-08-31 rebuild renamed every device on the machine
+	// -- so a metric keyed on anything else silently becomes a different
+	// series, which is worse than a missing one because the history looks
+	// continuous.
+	Serial string `json:"serial"`
+	Model  string `json:"model"`
+	Vendor string `json:"vendor"`
+	// DeviceID is how the controller's firmware addresses this drive, and is
+	// unique across the controller.
+	DeviceID int `json:"device_id"`
+	// Enclosure and Slot are the physical location: the bay to pull.
+	Enclosure int `json:"enclosure"`
+	Slot      int `json:"slot"`
+	// Online is the CONTROLLER's verdict on the drive: in service as part of
+	// its array. It is a different question from whether the drive answers a
+	// health command -- a failed drive can still answer, and a working one can
+	// refuse a command it does not implement -- so the two are reported
+	// separately rather than one standing in for the other.
+	Online bool `json:"online"`
+	// Temperature is 0 when the drive did not report one.
+	Temperature float64 `json:"temperature_celsius"`
+	// SMART status, with the same meanings as on DiskInfo.
+	SMARTEnabled bool        `json:"smart_enabled"`
+	SMARTHealthy bool        `json:"smart_healthy"`
+	SMARTStatus  SMARTStatus `json:"smart_status"`
+	SMARTReason  string      `json:"smart_reason"`
 }
 
 // PartitionInfo describes a disk partition.

@@ -124,6 +124,7 @@ var arrayKeys = map[string]string{
 	"alerts":                        "id",
 	"cpus":                          "index",
 	"disks":                         "name",
+	"disks[].members":               "device_id",
 	"disks[].partitions":            "device",
 	"disks[].raid.members":          "name",
 	"disks[].smart_attrs":           "id",

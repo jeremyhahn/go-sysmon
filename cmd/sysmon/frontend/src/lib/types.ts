@@ -283,6 +283,27 @@ export type SMARTStatus =
   | "ok"
   | "failing";
 
+/**
+ * DiskMember is one physical drive behind a hardware RAID controller.
+ *
+ * It is not a block device: no device node, no partitions, no I/O counters.
+ * The controller presents the volume, and these are what it is made of.
+ */
+export interface DiskMember {
+  /** The only identity that survives a reboot; device_id and slot describe the bay. */
+  serial: string;
+  model: string;
+  vendor: string;
+  device_id: number;
+  enclosure: number;
+  slot: number;
+  temperature_celsius: number;
+  smart_enabled: boolean;
+  smart_healthy: boolean;
+  smart_status?: SMARTStatus;
+  smart_reason?: string;
+}
+
 export interface DiskInfo {
   name: string;
   model: string;
@@ -325,6 +346,12 @@ export interface DiskInfo {
   /** Why there is no reading, for the statuses that have a why. */
   smart_reason?: string;
   smart_attrs: SMARTAttr[];
+  /**
+   * The physical drives behind a hardware RAID controller, for a device that
+   * is a virtual disk. Absent from servers older than this field, and empty on
+   * everything that is not a controller volume.
+   */
+  members?: DiskMember[];
   raid?: RAIDInfo | null;
   temperature_celsius: number;
   power_on_hours: number;

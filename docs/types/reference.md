@@ -107,6 +107,30 @@ Firmware: `firmware_version`, `nvme_version`.
 
 Partitions: array of `PartitionInfo` with `device`, `mountpoint`, `fstype`, `opts`.
 
+Members: array of `DiskMember`, the physical drives behind a hardware RAID
+controller. Empty for everything that is not a controller volume, and absent
+from servers older than the field.
+
+## DiskMember
+
+`serial`, `model`, `vendor`, `device_id`, `enclosure`, `slot`, `online`,
+`temperature_celsius`, `smart_enabled`, `smart_healthy`, `smart_status`,
+`smart_reason`.
+
+`online` is the **controller's** verdict — the drive is in service as part of
+its array — and is what `RAIDInfo.active_devices` counts. It is a different
+question from whether the drive answers a health command: a failed drive can
+still answer, and a working one can refuse a command it does not implement.
+
+A drive behind a RAID controller is not a block device: it has no device node,
+no partitions and no I/O counters. `serial` is the only identity that survives a
+reboot — `device_id` and `slot` describe where the drive is plugged in, not
+which drive it is — and it is what the `sysmon_disk_member_*` metrics are
+labelled by.
+
+This is a separate type from `RAIDMember`, which names a block device (`sda2`)
+because an md array's components are devices the host addresses directly.
+
 ## GPUInfo
 
 Identity: `index`, `name`, `uuid`, `serial`, `driver_version`, `vbios_version`, `compute_mode`, `perf_state`.
