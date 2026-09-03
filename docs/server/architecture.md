@@ -53,9 +53,10 @@ client renders straight away instead of waiting a full poll interval. At a 60s
 interval that is the difference between an instant dashboard and a blank one.
 
 **Write deadlines are per-event.** `http.ResponseController.SetWriteDeadline`
-bounds each write to 10 seconds. A writer that does not support deadlines is
-not an error — the deadline is hardening against a stalled peer, not a
-correctness requirement.
+bounds each write to 10 seconds, and resetting it before every event is what
+exempts the stream from the server-wide response deadline below. A writer that
+does not support deadlines is not an error — the deadline is hardening against
+a stalled peer, not a correctness requirement.
 
 ### Shutdown
 
@@ -66,6 +67,41 @@ This ordering matters: an event stream never ends on its own, so
 `http.Server.Shutdown` would block on those handlers until its timeout expired.
 Stopping the monitor first releases them, and `serveUntilSignal` does exactly
 that before calling `Stop`.
+
+## Connection deadlines
+
+Three deadlines, each bounding a different phase, and the gaps between them are
+deliberate.
+
+| Setting | Value | Bounds |
+|---|---|---|
+| `ReadHeaderTimeout` | 10s | how long a client may take to send request headers |
+| `IdleTimeout` | 120s | how long an idle keep-alive connection is held open |
+| `WriteTimeout` | 30s | a whole ordinary response: the handler's work plus the body reaching the socket |
+
+There is deliberately **no `ReadTimeout`**: it would cap the request body *and*
+the response, and nothing inside a handler can lift it, so `/api/events` could
+not exist.
+
+`WriteTimeout` looks like the same problem and is not, because a handler *can*
+replace it. The event stream resets its own write deadline before every frame,
+so a stream is bounded per event rather than in total — which is the property a
+stream actually wants. Every other handler inherits the 30 seconds. This holds
+over HTTP/2 as well as HTTP/1.1: `SetWriteDeadline` is supported on an HTTP/2
+response and resetting it replaces the server-wide deadline the same way
+(measured, not assumed — a stream would otherwise die every 30 seconds over
+HTTPS and only over HTTPS).
+
+The reason it is there at all: without a write deadline, a peer that goes away
+without sending an RST leaves the response parked in TCP retransmission for as
+long as the kernel will retry, holding a goroutine and a connection with nothing
+to release either. On vm-host-2 on 2026-09-03, 53 goroutines were parked in
+`net/http.checkConnErrorWriter.Write`, 44 of them for the same seven minutes.
+
+30 seconds is a release valve, not a service-level target. The slowest
+legitimate response is a history query, which is separately bounded by
+`prometheus.timeout_ms` (10s by default). Raise that above 30s and this deadline
+becomes the tighter of the two.
 
 ## TLS
 

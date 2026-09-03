@@ -47,6 +47,16 @@ const (
 // minute.
 var keepaliveInterval = 30 * time.Second
 
+// responseWriteTimeout bounds a whole ordinary response: the handler's own work
+// plus pushing the body onto the socket. It is deliberately generous. Its job is
+// to release a connection whose peer has vanished, not to cap a slow client, and
+// the longest legitimate response is a history query, which is already bounded
+// by the Prometheus client's own timeout.
+//
+// A variable rather than a constant for the same reason as keepaliveInterval:
+// so a test can drive the deadline without waiting half a minute.
+var responseWriteTimeout = 30 * time.Second
+
 // allowedIntervals is the set of polling intervals (in milliseconds) that
 // clients are permitted to request. Values match the UI dropdown options.
 var allowedIntervals = map[int]bool{
@@ -282,6 +292,24 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 		// that stays open for hours.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+
+		// WriteTimeout bounds the response side, which for a long time nothing
+		// did. A peer that goes away without an RST leaves a write parked in TCP
+		// retransmission for as long as the kernel will retry, holding a
+		// goroutine and a connection with nothing to release either.
+		//
+		// Measured on vm-host-2 on 2026-09-03: 53 goroutines in IO wait, every
+		// one of them in net/http.checkConnErrorWriter.Write, 44 of them for the
+		// same seven minutes, on a node whose accept queue had reached 2929.
+		//
+		// /api/events needs no exemption here, which is the point of the
+		// symmetry with ReadTimeout above being only apparent. A ReadTimeout
+		// would cap the stream and could not be undone from inside the handler;
+		// this deadline is replaced by eventStream.deadline before every single
+		// event it writes, so a stream is bounded per event rather than in
+		// total -- which is the property a stream actually wants. Remove that
+		// call and the stream inherits this timeout and dies at it.
+		WriteTimeout: responseWriteTimeout,
 	}
 
 	return s
