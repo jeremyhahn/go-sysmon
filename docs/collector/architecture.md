@@ -377,6 +377,37 @@ a PID are re-read on every walk.
 See `pkg/collector/gopsutil.go` for the one setting that halved both of them,
 and why it cannot be covered by a test.
 
+### Host identity is read once, not every tick
+
+`HostCollector` used to call `host.Info()` on every tick. That call **counts
+every entry in `/proc`** to fill a `Procs` field nothing here reads — a second
+walk of the process table, every two seconds, for a number thrown away. On mon0
+the collector cost **41 ms per tick on the host with the fewest processes**,
+against 0.84 ms on the host with the most.
+
+Board, BIOS, kernel version, kernel architecture and boot time cannot change
+while the running kernel is up, so they are read once in the constructor and
+carried forward. Measured: **777.7 us to 20.1 us per collection, 39x.**
+
+Three fields are still read every tick, and the boundary is the point:
+
+| field | why it stays live |
+|---|---|
+| `Hostname` | `hostnamectl` can change it while the service runs |
+| `Uptime` | it is the field's entire purpose |
+| `Platform`, `PlatformVersion` | `/etc/os-release` is rewritten by a distribution upgrade |
+
+Caching the distribution strings would be defensible — the running system is
+still the old one — but that changes **how fresh a field is**, which is a
+decision about what the dashboard promises rather than a saving to be taken
+quietly. `PlatformInformation` costs a couple of file reads and does not count
+processes.
+
+**Split on the property, not on the path.** The same sysfs tree holds fixed
+identity and live state side by side: DIMM *topology* cannot change, a DIMM
+*temperature* changes constantly, and both live under the same directory.
+"It is under `/sys`" is not a reason to cache anything.
+
 ## Sensor merging
 
 hwmon reports temperatures against `(package, core)` identifiers; `/proc/stat`
