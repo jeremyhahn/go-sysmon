@@ -8,6 +8,7 @@ import (
 
 	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/metrics"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -892,5 +893,63 @@ func TestEvaluate_MemberTemperatureUsesTheMembersOwnOverride(t *testing.T) {
 	lowered.Overrides = []config.Override{{Resource: "sdb/64:7", TempWarnC: 40, TempCritC: 50}}
 	if got := severity(lowered); got != types.SeverityCritical {
 		t.Errorf("70°C with a member critical threshold of 50 = %q, want critical: the critical branch ignored the override", got)
+	}
+}
+
+// The metric label and the alert key for one drive are DIFFERENT on purpose,
+// and this pins it so unifying them fails rather than passing review.
+//
+// Two identifiers for one thing is normally the defect this repository keeps
+// removing. Here it is correct, because the two answer different questions and
+// fail in opposite directions: a metric is long-lived history where a re-bay
+// must not continue one drive's series under another's readings, so it travels
+// with the drive as the SERIAL. An alert is de-duplication within a run where
+// flapping is the failure, and the serial is read from the drive every cycle
+// and goes missing on exactly the drive an alert is about — so it uses the
+// POSITION, which comes from the controller's configuration and cannot vanish
+// while the member exists.
+//
+// Both sides carry a comment saying so. A comment does not fail; this does.
+func TestMemberIdentity_MetricUsesSerialAndAlertUsesPosition(t *testing.T) {
+	member := types.DiskMember{
+		DeviceID: 7, Serial: "L0J4Y3AJ", Vendor: "HITACHI", Model: "DKR5E-J1R2SS",
+		Enclosure: 64, Slot: 7, Online: true,
+		Temperature: 200, SMARTEnabled: true, SMARTHealthy: false,
+	}
+	snap := &types.Snapshot{
+		Disks: []types.DiskInfo{{Name: "sdb", Members: []types.DiskMember{member}}},
+	}
+
+	var alertID string
+	for _, a := range alert.New().Evaluate(defaults(), snap, time.Now()) {
+		if a.Rule == alert.RuleSMARTUnhealthy {
+			alertID = a.ID
+		}
+	}
+	if alertID == "" {
+		t.Fatal("no smart_unhealthy alert for a failing member")
+	}
+
+	w := &metrics.TextWriter{}
+	metrics.Write(w, snap)
+	series := w.String()
+
+	// The alert is keyed by position and must NOT contain the serial: a serial
+	// in the ID is the flapping identity this choice exists to avoid.
+	if !strings.Contains(alertID, "64:7") {
+		t.Errorf("alert ID %q does not carry the drive's position", alertID)
+	}
+	if strings.Contains(alertID, member.Serial) {
+		t.Errorf("alert ID %q carries the serial; it would change whenever that read fails", alertID)
+	}
+
+	// The metric is labelled by serial and must NOT be labelled by position: a
+	// position in the label is a series that silently continues under a
+	// different drive after a re-bay.
+	if !strings.Contains(series, `serial="L0J4Y3AJ"`) {
+		t.Error("the member metric is not labelled by serial")
+	}
+	if strings.Contains(series, `serial="64:7"`) || strings.Contains(series, `slot=`) {
+		t.Error("the member metric is labelled by position; a re-bay would continue another drive's series")
 	}
 }

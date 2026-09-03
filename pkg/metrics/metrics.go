@@ -219,6 +219,27 @@ func Write(m Sink, snap *types.Snapshot) {
 		//
 		// The volume the drives sit behind is carried as a second label, so a
 		// query can group an array's members without joining on anything.
+		//
+		// THE ALERT PATH KEYS THE SAME DRIVE BY POSITION, NOT BY SERIAL, and
+		// that is deliberate rather than an inconsistency to tidy away. Two
+		// identifiers for one thing is normally the defect this repository
+		// keeps removing; here it is correct, because the two answer different
+		// questions and fail in opposite directions:
+		//
+		//   metric  long-lived history. A re-bay must not silently continue
+		//           one drive's series under another drive's readings, so the
+		//           identity has to travel WITH the drive. A serial that
+		//           cannot be read produces a GAP, which is honest.
+		//   alert   de-duplication within a run, where flapping is the
+		//           failure. The serial is read from the drive every cycle and
+		//           goes missing on exactly the drive an alert is about -- one
+		//           on its way out -- so keying on it would clear and re-fire
+		//           an hour-old alert as a new fault on a different drive. The
+		//           position comes from the controller's configuration and
+		//           cannot vanish while the member exists.
+		//
+		// See pkg/alert.memberResource, which carries the reciprocal note. If
+		// you are here to unify the two, this is the reason not to.
 		for j := range d.Members {
 			mem := &d.Members[j]
 			if mem.Serial == "" {
