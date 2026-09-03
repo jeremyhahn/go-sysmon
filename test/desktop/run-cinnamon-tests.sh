@@ -24,6 +24,12 @@ readonly XVFB_DISPLAY=":99"
 # both so the probe is not pinned to one release.
 readonly APPLET_INSTANCES="[].concat(Object.values(imports.ui.appletManager.appletObj || {}), Object.values(imports.ui.appletManager.definitions || {}).map(function (d) { return d.applet; })).filter(function (a) { return a; })"
 
+# Cinnamon's panels, however the running version exposes them. panelManager is
+# current; Main.panel is the older single-panel field, kept because a version
+# without panelManager would otherwise report "no panel" on a healthy desktop --
+# which is the same false reading in the opposite direction.
+readonly PANEL_COUNT="(imports.ui.main.panelManager && imports.ui.main.panelManager.panels ? imports.ui.main.panelManager.panels.filter(function (p) { return p; }).length : (imports.ui.main.panel ? 1 : 0))"
+
 readonly IS_SYSMON="function (a) { return a._uuid === '${UUID}' || (a.metadata && a.metadata.uuid === '${UUID}'); }"
 
 failures=0
@@ -32,6 +38,21 @@ passes=0
 log()  { printf '  %s\n' "$*"; }
 pass() { passes=$((passes + 1)); printf 'ok   %s\n' "$*"; }
 fail() { failures=$((failures + 1)); printf 'FAIL %s\n' "$*"; }
+
+# inconclusive is neither a pass nor a failure: the check could not be
+# evaluated because something it depends on was already broken.
+#
+# It exists because "Cinnamon logged no error for the applet" used to be printed
+# as a pass whenever the log held no applet line -- which is equally true of an
+# applet that loaded cleanly and of a Cinnamon that never loaded applets at all.
+# On 2026-09-03 the virtual display failed to configure with a NaN refresh rate,
+# the panel never came up, and that assertion reported success about a component
+# that had never run, beside the assertion that reported the real failure.
+#
+# It does not add to failures because the check it depends on has already failed
+# and will fail the run; counting it twice would say two things are broken.
+inconclusives=0
+inconclusive() { inconclusives=$((inconclusives + 1)); printf 'n/a  %s\n' "$*"; }
 
 # cinnamon_eval runs JavaScript inside the Cinnamon process and prints whatever
 # the expression evaluated to. A non-zero exit means the call itself failed.
@@ -186,6 +207,30 @@ echo "Cinnamon is up."
 # ---- assertions -------------------------------------------------------------
 
 echo
+echo "== the desktop itself =="
+
+# Asserted before anything about the applet, because every applet assertion
+# below is meaningless without a panel to load into -- and the failure they
+# produce in that case reads as "the applet is broken" rather than "the desktop
+# did not start".
+#
+# Cinnamon answers Eval as soon as it claims its bus name, which it does before
+# the panel exists, so reachability is not the same question -- a display that
+# fails to configure leaves a reachable Cinnamon with no panel. That is also why
+# this waits rather than asserting once: on a healthy start the panel is
+# legitimately absent for a moment.
+panel_up=0
+if wait_for_eval "String(${PANEL_COUNT} > 0)" "true" 30; then
+    pass "the panel exists"
+    panel_up=1
+else
+    fail "the panel never came up, so nothing below could load into it"
+    log "--- display and monitor lines from cinnamon.log ---"
+    grep -iE "monitor|mode|display|mutter" /tmp/cinnamon.log | tail -10 |
+        while read -r line; do log "$line"; done
+fi
+
+echo
 echo "== applet loading =="
 
 # The applet must be in the loaded set. If require() failed or a GI call threw
@@ -204,9 +249,15 @@ assert_eval "the sysmon applet loaded without an exception" \
 readonly APPLET_JS="${APPLET_INSTANCES}.find(${IS_SYSMON})"
 
 # Cinnamon reports a failed applet load only in its own log.
+#
+# An empty log is only evidence when Cinnamon actually tried to load the applet.
+# Without the panel it never gets that far, and reporting "no error" then is a
+# pass earned by nothing having happened.
 if grep -q "\[${UUID}\]" /tmp/cinnamon.log; then
     fail "Cinnamon logged an error for the applet"
     grep "\[${UUID}\]" /tmp/cinnamon.log | tail -10 | while read -r line; do log "$line"; done
+elif (( panel_up == 0 )); then
+    inconclusive "Cinnamon logged no error for the applet (no panel, so it never tried to load one)"
 else
     pass "Cinnamon logged no error for the applet"
 fi
@@ -273,6 +324,9 @@ echo
 echo "== results =="
 echo "passed: $passes"
 echo "failed: $failures"
+# Reported even when zero. A run that says "10 passed, 0 failed" while a check
+# could not be evaluated is the same omission this line exists to prevent.
+echo "inconclusive: $inconclusives"
 
 if (( failures > 0 )); then
     echo
