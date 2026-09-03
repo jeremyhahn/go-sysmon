@@ -186,9 +186,26 @@ Three consequences, all of them measured rather than predicted:
 - **Read `nr_throttled`, not an average.** ci-node-1 averaged 33% of a core
   against a 50% allowance while being frozen for 29.5 s of every 60. Both
   readings were true at once, and only the second one showed the problem.
-- `MemoryHigh=96M` is no longer generous either: vm-host-5 crossed it 145
-  times in forty minutes (`memory.events`, field `high`). A crossing stalls
-  allocation silently and does not restart the unit.
+- `MemoryHigh` was raised from 96M to **512M** under a **768M** `MemoryMax`
+  (owner ruling 2026-09-03): vm-host-5 crossed the old ceiling **658 times in
+  one afternoon**, and a crossing stalls allocation silently without restarting
+  the unit.
+
+**Read `MemoryHigh` and `MemoryMax` as one setting.** For a few hours on
+2026-09-03 the watermark was raised to 512M while the hard limit was still 128M.
+The kernel enforces `max` first, so the watermark became *unreachable*: nothing
+could be throttled, the service would have been OOM-killed instead, and
+`memory.events` field `high` read **zero on every node** — which was taken as
+evidence the stalls had stopped. **A ceiling raised out of reach silences its
+own counter**, and the configuration reads as more generous while doing it.
+`sysmon doctor` now reports the pair and calls it degraded when `high >= max`,
+because no counter will.
+
+**`GOMEMLIMIT` is not configured anywhere.** The service derives it from the
+cgroup watermark at startup (`pkg/memlimit`, 90% of the ceiling) and logs what
+it derived, so there is no second number to keep in agreement with the first.
+An explicit `GOMEMLIMIT` in the environment still wins, and the service logs
+that it deferred to it.
 
 So when you re-take these on a host, take them **on that host**, and record the
 process count beside them.

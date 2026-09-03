@@ -7,12 +7,15 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"runtime"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
+	"github.com/jeremyhahn/go-sysmon/pkg/memlimit"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -46,6 +49,7 @@ func runDoctorCmd(cmd *cobra.Command, _ []string) error {
 		checkSMART(),
 		checkCgroups(),
 		checkRuntimeSocket(),
+		checkResourceLimits("", os.Getenv),
 	}
 
 	if jsonOutput {
@@ -445,4 +449,79 @@ func runStartupChecks() int {
 			"count", problems, "detail", "run 'sysmon doctor' for the full report")
 	}
 	return problems
+}
+
+// resourceCheckName is the doctor entry for the limits this process runs under.
+const resourceCheckName = "resource limits"
+
+// checkResourceLimits reports the cgroup ceilings and what the Go runtime was
+// told about them.
+//
+// It exists because both halves of that sentence have been wrong in production
+// on the same day (#65). A CPU quota froze the process mid-collection until it
+// stopped serving, and a memory watermark was raised above the hard limit that
+// enforces first, which made the watermark unreachable and its counter read
+// zero -- a configuration that looks more generous than the one it replaced and
+// whose own metric agrees with it. Neither showed up anywhere a person would
+// look, so this is where a person looks.
+//
+// GOMAXPROCS is reported alongside because it is derived from the CPU the
+// runtime believes it has. On a 112-CPU host under a half-core quota it was
+// 112, which provisions garbage collection for a machine the process is not
+// allowed to use.
+// root is the filesystem root to read cgroup files under and getenv resolves
+// environment variables: "" and os.Getenv for the running system, a fixture
+// directory and a stub in tests.
+//
+// getenv is a parameter and not os.Getenv directly because an inherited
+// GOMEMLIMIT short-circuits the whole derivation. The first version of this
+// took only root, and every case passed locally and failed on CI -- whose
+// runner image sets GOMEMLIMIT, so the fixture root was never read and the
+// check reported "set by the environment" for all five cases. A fixture that
+// controls one input while another can divert the code path tests nothing.
+func checkResourceLimits(root string, getenv func(string) string) checkResult {
+	detail := "GOMAXPROCS=" + strconv.Itoa(runtime.GOMAXPROCS(0))
+
+	l, err := memlimit.Detect(root, getenv)
+	if err != nil {
+		return checkResult{
+			Name:   resourceCheckName,
+			Status: "unavailable",
+			Detail: detail + "; cgroup memory ceilings unreadable: " + err.Error(),
+		}
+	}
+
+	switch {
+	case l.Incoherent:
+		return checkResult{
+			Name:   resourceCheckName,
+			Status: "degraded",
+			Detail: detail + "; MemoryHigh (" + humanBytes(l.High) + ") is at or above MemoryMax (" +
+				humanBytes(l.Max) + "), so the throttle watermark can never be reached and the service " +
+				"is OOM-killed instead of reclaimed",
+			Fix: "raise MemoryMax above MemoryHigh in the unit, or clear MemoryHigh",
+		}
+	case l.Source == "":
+		detail += "; no cgroup memory ceiling, Go default heap growth"
+	case l.Applied == 0:
+		detail += "; GOMEMLIMIT set by the environment"
+	default:
+		detail += "; " + l.Source + "=" + humanBytes(l.Ceiling()) +
+			", GOMEMLIMIT=" + humanBytes(l.Applied)
+	}
+
+	return checkResult{Name: resourceCheckName, Status: "ok", Detail: detail}
+}
+
+// humanBytes renders a byte count in the units the systemd directives use, so
+// the report can be compared with the unit file without arithmetic.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30 && n%(1<<30) == 0:
+		return strconv.FormatInt(n/(1<<30), 10) + "G"
+	case n >= 1<<20:
+		return strconv.FormatInt(n/(1<<20), 10) + "M"
+	default:
+		return strconv.FormatInt(n, 10) + "B"
+	}
 }

@@ -679,3 +679,129 @@ func TestCheckDesktopGUI_StillReportsForDoctor(t *testing.T) {
 		t.Error("doctor must still print the install command")
 	}
 }
+
+// TestCheckResourceLimits covers the report that would have caught the
+// 2026-09-03 misconfiguration. The incoherent case is the reason the check
+// exists: a MemoryHigh raised above MemoryMax reads as a more generous
+// configuration, and memory.events "high" agrees with it by staying at zero,
+// because the watermark can no longer be reached.
+func TestCheckResourceLimits(t *testing.T) {
+	tests := []struct {
+		name       string
+		high, max  string
+		wantStatus string
+		wantDetail []string
+		wantFix    bool
+	}{
+		{
+			name: "a coherent pair reports both numbers",
+			high: "536870912", max: "805306368",
+			wantStatus: "ok",
+			// The ceiling and the derived limit are both shown, in the units
+			// the unit file uses, so the report can be compared with the unit
+			// without arithmetic.
+			wantDetail: []string{"GOMAXPROCS=", "memory.high=512M", "GOMEMLIMIT=460M"},
+		},
+		{
+			name: "a watermark above the hard limit is degraded, with the fix",
+			high: "536870912", max: "134217728",
+			wantStatus: "degraded",
+			wantDetail: []string{"512M", "128M", "OOM-killed"},
+			wantFix:    true,
+		},
+		{
+			name: "an equal pair is degraded too",
+			// Equal is the same defect: high is reached only at the instant
+			// max kills, so nothing is ever throttled.
+			high: "134217728", max: "134217728",
+			wantStatus: "degraded",
+			wantFix:    true,
+		},
+		{
+			name: "no ceiling says so rather than reporting a limit of zero",
+			high: "max", max: "max",
+			wantStatus: "ok",
+			wantDetail: []string{"no cgroup memory ceiling"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := cgroupFixture(t, tt.high, tt.max)
+
+			got := checkResourceLimits(root, noEnviron)
+
+			if got.Status != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q (detail %q)", got.Status, tt.wantStatus, got.Detail)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("Detail = %q, want it to contain %q", got.Detail, want)
+				}
+			}
+			if tt.wantFix && got.Fix == "" {
+				t.Error("Fix is empty: a degraded limit the operator can correct must say how")
+			}
+			if !tt.wantFix && got.Fix != "" {
+				t.Errorf("Fix = %q, want none: nothing here needs correcting", got.Fix)
+			}
+		})
+	}
+}
+
+// TestCheckResourceLimits_UnreadableCgroup pins the third outcome: a cgroup
+// that cannot be read is reported as unavailable rather than as an absent
+// limit, because "no ceiling" and "could not look" lead to opposite actions.
+func TestCheckResourceLimits_UnreadableCgroup(t *testing.T) {
+	root := cgroupFixture(t, "", "805306368")
+	// Staged as a directory rather than by permission, so the case behaves the
+	// same for root and non-root.
+	path := filepath.Join(root, "sys", "fs", "cgroup", "system.slice", "go-sysmon.service", "memory.high")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("stage unreadable memory.high: %v", err)
+	}
+
+	got := checkResourceLimits(root, noEnviron)
+
+	if got.Status != "unavailable" {
+		t.Fatalf("Status = %q, want unavailable (detail %q)", got.Status, got.Detail)
+	}
+	if !strings.Contains(got.Detail, "memory.high") {
+		t.Errorf("Detail = %q, want it to name the file it could not read", got.Detail)
+	}
+}
+
+// noEnviron is a process with nothing set. Passing the real os.Getenv here
+// makes every case below depend on the machine running the test: the CI runner
+// image sets GOMEMLIMIT, which short-circuits the derivation before the fixture
+// is read.
+func noEnviron(string) string { return "" }
+
+// cgroupFixture writes a cgroup v2 tree under a temp root. An empty value
+// means the file is absent, which is not the same as "max".
+func cgroupFixture(t *testing.T, high, max string) string {
+	t.Helper()
+
+	root := t.TempDir()
+	procSelf := filepath.Join(root, "proc", "self")
+	if err := os.MkdirAll(procSelf, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(procSelf, "cgroup"), []byte("0::/system.slice/go-sysmon.service\n"), 0o644); err != nil {
+		t.Fatalf("write cgroup: %v", err)
+	}
+
+	dir := filepath.Join(root, "sys", "fs", "cgroup", "system.slice", "go-sysmon.service")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	for name, text := range map[string]string{"memory.high": high, "memory.max": max} {
+		if text == "" {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text+"\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return root
+}

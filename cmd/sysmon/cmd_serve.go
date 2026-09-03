@@ -14,6 +14,7 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
+	"github.com/jeremyhahn/go-sysmon/pkg/memlimit"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/prom"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
@@ -100,6 +101,12 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	// what the process is not permitted to read, and a silent gap looks like
 	// an idle machine rather than a missing permission.
 	runStartupChecks()
+
+	// Tell the Go runtime about the cgroup it is running in. Without this it
+	// grows the heap toward twice the live set and the kernel throttles the
+	// allocation instead -- silently, with the unit still active and nothing
+	// restarting (issue #65).
+	applyMemoryLimit()
 
 	sc := collector.NewSystemCollector(slog.Default())
 	snap := newEnrichedSnapshotter(newMonitorSnapshotter(sc), cfgMgr, version)
@@ -242,5 +249,41 @@ func serveUntilSignal(srv *server.Server, mon *monitor.Monitor) error {
 func stopMonitor(mon *monitor.Monitor) {
 	if err := mon.Stop(); err != nil {
 		slog.Warn("monitor stop", "err", err)
+	}
+}
+
+// applyMemoryLimit derives GOMEMLIMIT from this process's cgroup ceiling.
+//
+// Failure to read the cgroup is logged and not fatal: a host with no cgroups,
+// or one that hides them, is a legitimate target and the runtime default is a
+// working configuration. What is not acceptable is being silent about it, so
+// every outcome including "no ceiling found" is logged once at startup.
+func applyMemoryLimit() {
+	l, err := memlimit.Detect("", os.Getenv)
+	if err != nil {
+		slog.Warn("memory limit: cgroup unreadable, leaving the Go default in place", "err", err)
+		return
+	}
+
+	if l.Incoherent {
+		// The watermark cannot be reached, so memory.events "high" will stay at
+		// zero however much memory is used and the process will be OOM-killed
+		// at memory.max instead of throttled. Reported loudly because the
+		// configuration reads as more generous than a correct one and its
+		// counter agrees with it.
+		slog.Warn("memory limit: MemoryHigh is at or above MemoryMax, so the throttle watermark is unreachable and the cgroup will be OOM-killed instead",
+			"high_bytes", l.High, "max_bytes", l.Max)
+	}
+
+	memlimit.Apply(l)
+
+	switch {
+	case l.Source == "":
+		slog.Info("memory limit: no cgroup ceiling found; the Go runtime default applies")
+	case l.Applied == 0:
+		slog.Info("memory limit: set by the environment", "source", l.Source)
+	default:
+		slog.Info("memory limit: derived from the cgroup",
+			"source", l.Source, "ceiling_bytes", l.Ceiling(), "gomemlimit_bytes", l.Applied)
 	}
 }

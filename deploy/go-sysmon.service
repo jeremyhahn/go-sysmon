@@ -127,15 +127,33 @@ SyslogIdentifier=sysmon
 # monitor that dies silently when the host runs short of memory is missing for
 # the one event worth seeing.
 #
-# THAT IS THE SAME SHAPE AS THE CPU GUARD, AND IT IS ALREADY FIRING. Measured
-# 2026-09-03, forty minutes after a restart: vm-host-5 (1005 processes)
-# peaked at 96 MiB and had crossed MemoryHigh 145 times -- memory.events
-# "high 145". A crossing is a silent allocation stall with the unit still
-# reporting active; it does not kill, so it does not restart, so nothing says
-# it happened. The numbers below have not been re-derived, and the process is
-# not told about the ceiling either. Deriving GOMEMLIMIT from it is #65.
-MemoryHigh=96M
-MemoryMax=128M
+# 96M/128M was the pair inherited from the Atom, and it had the same defect as
+# the CPU quota: it fired constantly and said nothing. Measured 2026-09-03,
+# vm-host-5 (1005 processes) peaked at 96 MiB and crossed the watermark 658
+# times in one afternoon -- memory.events "high" -- never killed, so never
+# restarted, unit reporting active throughout. Owner ruling the same day:
+# 512M/768M.
+#
+# THE TWO NUMBERS ARE ONE SETTING AND MUST BE READ TOGETHER. For a few hours on
+# 2026-09-03 MemoryHigh was raised to 512M while MemoryMax was still 128M, and
+# because the kernel enforces max first that made the watermark UNREACHABLE:
+# nothing was ever throttled, the service would have been OOM-killed at 128 MiB
+# instead, and memory.events "high" read zero on every node -- which was read as
+# the stalls having been fixed. A ceiling raised out of reach silences its own
+# counter, and the configuration looks more generous while doing so.
+#
+# `sysmon doctor` now reports this pair and calls it degraded when high >= max,
+# because no counter will.
+MemoryHigh=512M
+MemoryMax=768M
+
+# GOMEMLIMIT is NOT set here on purpose. The service derives it from MemoryHigh
+# at startup (pkg/memlimit) and logs what it derived. A number written here
+# beside MemoryHigh would be two values that must agree with nothing failing
+# when they stop agreeing -- which is exactly how the pair above went wrong.
+# Setting GOMEMLIMIT in the environment still works and still wins: it is an
+# operator decision, and the service reports that it deferred to it.
+
 CPUWeight=50
 TasksMax=64
 

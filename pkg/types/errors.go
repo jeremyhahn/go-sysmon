@@ -280,3 +280,32 @@ type InvalidSortKeyError struct {
 func (e *InvalidSortKeyError) Error() string {
 	return "invalid sort key " + e.Key + "; want one of " + e.Valid
 }
+
+// CgroupReadError indicates a cgroup interface file could not be read. The
+// path is carried because "which file" is the whole diagnosis: a process can
+// be in cgroup v2, v1, or neither, and each reads differently.
+type CgroupReadError struct {
+	Path  string
+	Cause error
+}
+
+func (e *CgroupReadError) Error() string {
+	return "read cgroup file " + e.Path + ": " + e.Cause.Error()
+}
+
+func (e *CgroupReadError) Unwrap() error {
+	return e.Cause
+}
+
+// CgroupParseError indicates a cgroup interface file held something other than
+// a byte count or the literal "max". The value is carried verbatim rather than
+// summarised, because a kernel writing something unexpected there is the fact
+// worth seeing.
+type CgroupParseError struct {
+	Path  string
+	Value string
+}
+
+func (e *CgroupParseError) Error() string {
+	return "cgroup file " + e.Path + " holds " + strconv.Quote(e.Value) + "; want a byte count or \"max\""
+}
