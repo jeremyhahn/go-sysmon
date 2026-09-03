@@ -87,8 +87,31 @@ The same failure occurs outside tests, in any query you trust. An audit for
 misconfigured git remotes globbed every repository on a workstation and
 returned 25 confident results, most of them third-party checkouts that are not
 company repositories at all: **a precise answer about the wrong population.**
-Whenever a measurement surprises you, check what it ranged over before
-believing what it says.
+
+**The trigger is an answer that disagrees with something you already know**, not
+suspicion of the method — a check run carefully feels the same as one run
+carelessly. A diff claiming five branches were unmerged was caught because
+somebody had watched those five merge; it was measuring how far `main` had
+moved, not whether anything was merged.
+
+**And the trigger only fires where you have independent knowledge to be
+surprised by.** The follow-up check — which branches still exist on the server
+— was wrong too and went unnoticed, because nobody knew the answer in advance.
+It reported four branches that had already been deleted.
+
+So: **when the question is about a remote system, ask the remote system.**
+`git branch -r` answers from a local cache; the API answers from the source.
+And the cache does not refresh the way its name implies:
+
+```console
+$ git fetch dev          # 7 branches listed, 4 of them long deleted
+$ git fetch dev --prune  # 2 branches, which is the truth
+```
+
+`git fetch` adds what is new; it does not remove what is gone. Refreshing
+first would not have helped, which makes this rule 5 wearing a different hat —
+**a name resolving to something other than what the reader assumed**, in the
+tool being used to check.
 
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
