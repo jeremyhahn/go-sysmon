@@ -56,9 +56,9 @@ the word" passes.
 A test of the data path wearing a test of the interface as a costume is the
 most comfortable kind to write and the least likely to catch what matters.
 
-## 3. A fixture can fail in four different ways
+## 3. A fixture can fail in six different ways
 
-All four occurred here, and only the last announces itself.
+All six occurred here, and only one of them announces itself.
 
 **Too regular.** A property test generated field names `f0`, `f1`, `f2`, so no
 array ever sat at a keyed path and the keyed-diff branch was never exercised.
@@ -82,6 +82,16 @@ benign member of the family: the others hide, this one confesses.**
 100 °C on a 70 °C drive, so only the *warning* branch could ever decide — and a
 critical branch still reading the wrong threshold was untestable. A fixture
 where one of two paths cannot be reached tests half the change.
+
+**Testing the harness's configuration instead of yours.** `pkg/server` reaches
+its handlers through `httptest.NewServer(s)`, which builds an `http.Server` of
+its own — so it carries none of the timeouts the production constructor sets. A
+response deadline asserted through it would have been asserting *httptest's*
+configuration, and passing. Nothing in the package had ever tested the server
+configuration at all, which is why a missing `WriteTimeout` survived every test
+in the suite for the life of the package. The tests for it run the configured
+`http.Server` on a real listener instead. **Ask what the harness supplies before
+believing the assertion is about your code.**
 
 The same failure occurs outside tests, in any query you trust. An audit for
 misconfigured git remotes globbed every repository on a workstation and
@@ -113,11 +123,12 @@ first would not have helped, which makes this rule 5 wearing a different hat —
 **a name resolving to something other than what the reader assumed**, in the
 tool being used to check.
 
-### Two named traps
+### Named traps
 
-General caution about instruments has not saved anybody here. These two have
-caught two people three times between them, so they are written down as
-specific things to recognise rather than as advice to be careful.
+General caution about instruments has not saved anybody here. Each of these has
+caught somebody at least once, most of them more than once, so they are written
+down as specific things to recognise rather than as advice to be careful. Add to
+the list rather than restating the general principle.
 
 **`pgrep -f <pattern>` matches the shell running it.** The check's own command
 line contains the pattern, so it finds itself and reports the process alive.
@@ -136,6 +147,31 @@ and `temperature_c`; the payload calls them `enclosure`, `slot` and
 report was "the data is missing" rather than "my key is wrong" — **`absent`
 versus `zero`, with a JSON key as the name.** A decoder into a typed structure
 fails on an unknown field; a dictionary lookup does not.
+
+**A "wait" that burns a core.** `read -t 15 x < /dev/zero`, used as a sleep,
+waits the right amount of wall time and consumes a **whole CPU** doing it —
+measured: 3.00 s elapsed at 99% of a core (1.22 user + 1.77 sys), against 0%
+for `sleep 3`. It is not wrong about the duration, which is why it survives
+review. It is wrong about the cost, so any measurement it is waiting *for* —
+CPU time, throttling, load, a quota — is being perturbed by the wait itself.
+
+**Grepping a dump for a format that changed.** A search for `goroutine N [` in
+a Go stack dump returned zero, because the format is
+`goroutine N gp=0x.. m=nil [state, N minutes]`. Zero read as "no goroutines in
+that state" rather than "my pattern is wrong" — `absent` versus `zero` again,
+this time with a text format as the name. It was caught only because a second
+grep beside it, for the *frames*, returned 118: **two probes disagreeing is what
+exposes this, not either probe alone.**
+
+**Recomputing a combined view from the raw list.** A commit's status was read by
+paging the per-context status list and keeping the first entry per context.
+Four entries existed for one aggregator and two shared a timestamp to the
+second, so first-in-list picked `pending` over `success` and a green PR was
+reported red — then reported to a third party as "merged on a pending check",
+which had not happened. The API has a combined-status endpoint that computes
+exactly this. **When an API offers a combined or computed view, do not
+reconstruct it yourself from the raw list**; an ambiguous ordering is not a
+verdict.
 
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
