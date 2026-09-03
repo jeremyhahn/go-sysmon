@@ -140,3 +140,124 @@ func TestIdentifySMARTSupported_RefusesToGuess(t *testing.T) {
 		})
 	}
 }
+
+// The HDIO_DRIVE_CMD argument block, where byte 3 is a size contract.
+//
+// This is the block that crash-looped ci-node-1 (#20). It carried the SMART
+// signature's 0x4F in byte 3, which HDIO_DRIVE_CMD reads as the SECTOR COUNT,
+// so the kernel copied 512 x 79 = 40,448 bytes back into a 516-byte stack
+// buffer and the next allocation died inside runtime.mallocgc.
+//
+// A wrong value here cannot be caught anywhere downstream: by the time the
+// ioctl returns, the memory is already overwritten. So the block is built by a
+// pure function and pinned, the same treatment buildSMART16CDB gets.
+func TestBuildHDIOArgs_SectorCountMatchesTheBufferWeProvide(t *testing.T) {
+	args := buildHDIOArgs(smartCmdReadData)
+
+	if len(args) != hdioArgsLen {
+		t.Fatalf("argument block is %d bytes, want %d", len(args), hdioArgsLen)
+	}
+	if args[hdioArgCommand] != ataCmdSMART {
+		t.Errorf("command = 0x%02X, want 0x%02X", args[hdioArgCommand], ataCmdSMART)
+	}
+	if args[hdioArgFeature] != smartCmdReadData {
+		t.Errorf("feature = 0x%02X, want 0x%02X", args[hdioArgFeature], smartCmdReadData)
+	}
+
+	// The assertion this test exists for. One sector, because one sector is
+	// what the caller's buffer holds.
+	if args[hdioArgSectorCount] != 1 {
+		t.Errorf("SECTOR COUNT = %d, so the kernel would write %d bytes into a %d-byte buffer",
+			args[hdioArgSectorCount], int(args[hdioArgSectorCount])*smartDataSize, hdioArgsLen+smartDataSize)
+	}
+
+	// LBA low is asserted explicitly, not merely checked for the signature:
+	// the kernel maps it to the ATA PASS-THROUGH LBA-low and supplies the
+	// SMART signature itself, so ANY non-zero value here is wrong -- and a
+	// "no signature bytes" check alone would pass one.
+	if args[hdioArgLBALow] != 0 {
+		t.Errorf("LBA low = 0x%02X, want 0; the kernel supplies the SMART signature itself",
+			args[hdioArgLBALow])
+	}
+
+	// The SMART signature must appear NOWHERE in this block. It belongs in the
+	// ATA PASS-THROUGH(16) CDB, which the kernel builds itself; every byte of
+	// this block means something else, and 0x4F landing in any of them is a
+	// register model being applied to an interface that does not use one.
+	for i, b := range args {
+		if b == smartCylLow || b == smartCylHigh {
+			t.Errorf("args[%d] = 0x%02X, a SMART signature byte; this block carries no LBA", i, b)
+		}
+	}
+}
+
+// TestBuildHDIOArgs_OnlyTheFeatureByteVariesBySubCommand keeps the size
+// contract fixed across both SMART sub-commands. The threshold read reuses the
+// same buffer, so a sector count that varied with the sub-command would overrun
+// on one path and not the other -- the hardest version of this bug to find.
+func TestBuildHDIOArgs_OnlyTheFeatureByteVariesBySubCommand(t *testing.T) {
+	data := buildHDIOArgs(smartCmdReadData)
+	thresholds := buildHDIOArgs(smartCmdReadThresholds)
+
+	if thresholds[hdioArgFeature] != smartCmdReadThresholds {
+		t.Errorf("threshold feature = 0x%02X, want 0x%02X",
+			thresholds[hdioArgFeature], smartCmdReadThresholds)
+	}
+	for i := range data {
+		if i == hdioArgFeature {
+			continue
+		}
+		if data[i] != thresholds[i] {
+			t.Errorf("args[%d] differs between sub-commands (0x%02X vs 0x%02X); only the feature byte should",
+				i, data[i], thresholds[i])
+		}
+	}
+}
+
+// TestHDIOResponse_StartsAfterTheArgumentBlock pins where the answer begins.
+//
+// The argument block and the response share one buffer, so the offset the
+// response is read from has to be the same constant the sector count was sized
+// against. Reading one byte late shifts every SMART attribute by a byte and
+// decodes into plausible nonsense rather than failing -- the same class of
+// mistake as #20, one step later.
+func TestHDIOResponse_StartsAfterTheArgumentBlock(t *testing.T) {
+	var buf [hdioArgsLen + smartDataSize]byte
+	// A header that is not zero, so reading it as data would be visible.
+	for i := 0; i < hdioArgsLen; i++ {
+		buf[i] = 0xEE
+	}
+	for i := range buf[hdioArgsLen:] {
+		buf[hdioArgsLen+i] = byte(i % 251)
+	}
+
+	got := hdioResponse(buf[:])
+
+	if len(got) != smartDataSize {
+		t.Fatalf("response is %d bytes, want %d", len(got), smartDataSize)
+	}
+	for i := range got {
+		if want := byte(i % 251); got[i] != want {
+			t.Fatalf("response[%d] = 0x%02X, want 0x%02X: the data is offset from where it was written",
+				i, got[i], want)
+		}
+	}
+
+	// A buffer too small to hold a whole sector yields a ZEROED one, not a
+	// partial copy. The comment used to say "zeroed sector" while the code
+	// would have copied whatever was there and padded the rest -- which would
+	// have been rejected downstream as a corrupt reading from the drive
+	// rather than as the caller's mistake it is.
+	for _, short := range [][]byte{buf[:2], buf[:hdioArgsLen], buf[:hdioArgsLen+5], nil} {
+		got := hdioResponse(short)
+		if len(got) != smartDataSize {
+			t.Fatalf("a %d-byte buffer produced %d bytes, want %d", len(short), len(got), smartDataSize)
+		}
+		for i, b := range got {
+			if b != 0 {
+				t.Fatalf("a %d-byte buffer produced data at [%d] = 0x%02X; want a zeroed sector",
+					len(short), i, b)
+			}
+		}
+	}
+}

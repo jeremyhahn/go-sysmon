@@ -13,22 +13,41 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// ATA ioctl and command constants from linux/hdreg.h.
+// HDIO_DRIVE_CMD, from linux/hdreg.h.
 //
-// HDIO_DRIVE_CMD = 0x031F
-// Sends a single ATA command via the legacy IDE ioctl interface.
-// The argument is a 4-byte header followed by a sector buffer.
-// Layout: [ATA_CMD, SECTOR_COUNT, FEATURE, LBA_MID, LBA_HIGH, ...]
-// For SMART READ DATA:
+// The argument is a FOUR-byte block followed by the response buffer:
 //
-//	buf[0] = 0xB0  (WIN_SMART)
-//	buf[1] = 0x01  (sector count)
-//	buf[2] = 0xD0  (SMART_READ_DATA sub-command in Features register)
-//	buf[3] = 0x4F  (LBA mid / Cyl Low)
-//	buf[4] = 0xC2  (LBA high / Cyl High)
+//	args[0]  ATA command
+//	args[1]  LBA low / sector number
+//	args[2]  feature register
+//	args[3]  SECTOR COUNT  <- the kernel copies back 512 x this many bytes
+//	args[4:] the response
 //
-// The kernel writes one sector (512 bytes) of SMART data starting at buf[4].
+// It is not a set of ATA registers. There is no LBA mid or LBA high here, and
+// nowhere to put the 0x4F/0xC2 SMART signature -- the kernel's ata_cmd_ioctl
+// synthesises the ATA PASS-THROUGH itself from these four bytes.
+//
+// BYTE 3 IS A SIZE CONTRACT, NOT AN ADDRESS. It says how much the kernel will
+// write into the caller's buffer, so a wrong value there is not a failed probe;
+// it is an overrun. This code used to put the SMART signature's 0x4F in it,
+// which asked for 79 sectors -- 40,448 bytes into a 516-byte stack buffer --
+// and the next allocation died inside runtime.mallocgc. It read as a hardware
+// quirk on the one machine whose controller accepts this ioctl (#20).
+//
+// The comment that produced it described a five-register ATA layout, which is
+// true of ATA and false of this interface, and contradicted itself twice: it
+// called the block four bytes and then listed five fields, and it placed
+// LBA high at buf[4] while also saying the response starts there.
 const hdioDriverCmd uintptr = 0x031F
+
+// Offsets within the HDIO_DRIVE_CMD argument block.
+const (
+	hdioArgCommand     = 0
+	hdioArgLBALow      = 1
+	hdioArgFeature     = 2
+	hdioArgSectorCount = 3
+	hdioArgsLen        = 4
+)
 
 // ATA SMART command constants.
 const (
@@ -358,20 +377,8 @@ func applyATASMARTAttrs(attrs []ataAttr, info *types.DiskInfo) {
 // ataHDIOCommand sends a single ATA SMART sub-command via HDIO_DRIVE_CMD and
 // returns the 512-byte response buffer.
 func ataHDIOCommand(fd uintptr, devPath string, subCmd uint8) ([]byte, error) {
-	// Buffer layout for HDIO_DRIVE_CMD:
-	// byte 0: ATA command (0xB0 = WIN_SMART)
-	// byte 1: sector count
-	// byte 2: features / sub-command
-	// byte 3: LBA mid (cyl low)
-	// byte 4: LBA high (cyl high)
-	// bytes 5+: response data written by kernel
-	//
-	// We use a flat [4 + 512]byte array to match the kernel interface.
-	var buf [4 + smartDataSize]byte
-	buf[0] = ataCmdSMART
-	buf[1] = smartSectorCount
-	buf[2] = subCmd
-	buf[3] = smartCylLow
+	var buf [hdioArgsLen + smartDataSize]byte
+	copy(buf[:hdioArgsLen], buildHDIOArgs(subCmd))
 
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
@@ -387,10 +394,48 @@ func ataHDIOCommand(fd uintptr, devPath string, subCmd uint8) ([]byte, error) {
 		}
 	}
 
-	// Response data starts at byte 4.
+	return hdioResponse(buf[:]), nil
+}
+
+// hdioResponse copies the response out of a completed HDIO_DRIVE_CMD buffer.
+//
+// The kernel writes its answer after the four-byte argument block, so where the
+// data starts and how much of it there is are both consequences of the same
+// constant that decides how much the kernel writes. Reading the response at a
+// different offset from the one the sector count was sized against is the same
+// class of mistake as #20 itself, one step later, so it is a function with a
+// test rather than a slice expression in the middle of an ioctl.
+func hdioResponse(buf []byte) []byte {
 	data := make([]byte, smartDataSize)
-	copy(data, buf[4:])
-	return data, nil
+	// A buffer that cannot hold a whole sector yields a zeroed one rather than
+	// a partial copy. A partly-filled sector would be rejected downstream by
+	// the checksum anyway, but it would be rejected as a corrupt reading from
+	// the drive rather than as the caller's mistake it actually is.
+	if len(buf) >= hdioArgsLen+smartDataSize {
+		copy(data, buf[hdioArgsLen:])
+	}
+	return data
+}
+
+// buildHDIOArgs builds the four-byte argument block for one ATA SMART
+// sub-command through HDIO_DRIVE_CMD.
+//
+// It is a pure function for the same reason buildSMART16CDB is one: the wire
+// format is the whole of the risk here, and byte 3 in particular decides how
+// much the kernel writes into the caller's buffer. A wrong value cannot be
+// caught by any check downstream of the ioctl, because by then it has already
+// been written.
+func buildHDIOArgs(subCmd uint8) []byte {
+	args := make([]byte, hdioArgsLen)
+	args[hdioArgCommand] = ataCmdSMART
+	// No LBA. The SMART signature (0x4F/0xC2) belongs in the ATA
+	// PASS-THROUGH(16) CDB, which the kernel builds itself from these bytes;
+	// putting it here is what asked for 79 sectors.
+	args[hdioArgLBALow] = 0
+	args[hdioArgFeature] = subCmd
+	// One sector: 512 bytes, which is the size of the buffer we hand over.
+	args[hdioArgSectorCount] = smartSectorCount
+	return args
 }
 
 // parseATASMARTAttrs parses the 512-byte ATA SMART attribute data and, if
