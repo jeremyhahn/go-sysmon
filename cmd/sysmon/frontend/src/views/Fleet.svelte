@@ -442,14 +442,35 @@
                   {/if}
                   {#if node.smart_capable > 0 || node.smart_unhealthy > 0}
                     <div>
-                      <p class="text-xs text-base-content/60">SMART unhealthy</p>
+                      <!-- The label is neutral and the STATE is the value, the
+                           same shape as the RAID cell above. It read "SMART
+                           unhealthy" over "0 of 6", which asserts a fault in
+                           the heading about a host whose six devices all
+                           passed -- and a roll-up is read by its headings. The
+                           number was right and green the whole time; nobody
+                           looked at what it sat under. -->
+                      <p class="text-xs text-base-content/60">SMART</p>
                       <p class="font-mono {node.smart_unhealthy > 0 ? 'text-error' : 'text-success'}">
                         <!-- "N of M" needs an M. Without one, report the fault
                              plainly rather than inventing "1 of 0". -->
-                        {node.smart_capable > 0
-                          ? `${node.smart_unhealthy} of ${node.smart_capable}`
-                          : node.smart_unhealthy}
+                        {#if node.smart_unhealthy > 0}
+                          {node.smart_capable > 0
+                            ? `${node.smart_unhealthy} of ${node.smart_capable} unhealthy`
+                            : `${node.smart_unhealthy} unhealthy`}
+                        {:else}
+                          ok
+                        {/if}
                       </p>
+                      <!-- The denominator survives on the healthy path, because
+                           dropping it would undo #44: "ok" alone cannot say
+                           whether six devices were checked or none. It sits
+                           beside the state as evidence rather than above it as
+                           a claim. -->
+                      {#if node.smart_unhealthy === 0 && node.smart_capable > 0}
+                        <p class="text-xs text-base-content/60">
+                          {node.smart_capable} checked
+                        </p>
+                      {/if}
                     </div>
                   {/if}
                   {#if node.swap_percent > 0}

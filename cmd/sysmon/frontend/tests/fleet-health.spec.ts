@@ -82,7 +82,7 @@ test('a node with no RAID and no SMART says nothing about either', async ({ page
   await expect(bare).toBeVisible();
   // Not "ok" in green: there is no RAID subsystem to be ok.
   await expect(bare.getByText('RAID', { exact: true })).toHaveCount(0);
-  await expect(bare.getByText('SMART unhealthy')).toHaveCount(0);
+  await expect(bare.getByText('SMART', { exact: true })).toHaveCount(0);
 });
 
 test('a node with arrays and readable SMART reports both, with the denominator', async ({
@@ -94,9 +94,13 @@ test('a node with arrays and readable SMART reports both, with the denominator',
 
   const full = card(page, 'full');
   await expect(full.getByText('RAID', { exact: true })).toBeVisible();
-  await expect(full.getByText('ok', { exact: true })).toBeVisible();
-  // "0" alone cannot say how many were checked, which is the whole defect.
-  await expect(full.getByText('0 of 6')).toBeVisible();
+  await expect(full.getByText('SMART', { exact: true })).toBeVisible();
+  // Both subsystems report their state as the value: two "ok"s, not one.
+  await expect(full.getByText('ok', { exact: true })).toHaveCount(2);
+  // "ok" alone cannot say how many were checked, which is the whole defect
+  // #44 was filed about, so the denominator stays -- beside the state as
+  // evidence rather than above it as a claim.
+  await expect(full.getByText('6 checked')).toBeVisible();
 });
 
 test('a degraded array and a failing disk still read as faults', async ({ page }) => {
@@ -106,7 +110,7 @@ test('a degraded array and a failing disk still read as faults', async ({ page }
 
   const sick = card(page, 'sick');
   await expect(sick.getByText('degraded', { exact: true })).toBeVisible();
-  await expect(sick.getByText('2 of 4')).toBeVisible();
+  await expect(sick.getByText('2 of 4 unhealthy')).toBeVisible();
 });
 
 test('one node saying nothing does not silence another that has something to say', async ({
@@ -119,8 +123,8 @@ test('one node saying nothing does not silence another that has something to say
     node('full', { raid_arrays: 1, smart_capable: 3, smart_unhealthy: 1 }),
   ]);
 
-  await expect(card(page, 'bare').getByText('SMART unhealthy')).toHaveCount(0);
-  await expect(card(page, 'full').getByText('1 of 3')).toBeVisible();
+  await expect(card(page, 'bare').getByText('SMART', { exact: true })).toHaveCount(0);
+  await expect(card(page, 'full').getByText('1 of 3 unhealthy')).toBeVisible();
 });
 
 test('a fault from a server that sends no counts is still shown', async ({ page }) => {
@@ -142,9 +146,9 @@ test('a fault from a server that sends no counts is still shown', async ({ page 
 
   const old = card(page, 'old-server');
   await expect(old.getByText('degraded', { exact: true })).toBeVisible();
-  // Reported plainly rather than as "3 of 0", which is not a fact about
-  // anything.
-  await expect(old.getByText('3', { exact: true })).toBeVisible();
+  // The count survives without a denominator, stated as the fault it is
+  // rather than as "3 of 0", which is not a fact about anything.
+  await expect(old.getByText('3 unhealthy')).toBeVisible();
   await expect(old.getByText(/of 0/)).toHaveCount(0);
 });
 
@@ -161,7 +165,7 @@ test('a healthy host from a server that sends no counts stays quiet', async ({ p
   const quiet = card(page, 'old-quiet');
   await expect(quiet).toBeVisible();
   await expect(quiet.getByText('RAID', { exact: true })).toHaveCount(0);
-  await expect(quiet.getByText('SMART unhealthy')).toHaveCount(0);
+  await expect(quiet.getByText('SMART', { exact: true })).toHaveCount(0);
 });
 
 test('an array that is not serving I/O is not called ok', async ({ page }) => {
@@ -176,4 +180,37 @@ test('an array that is not serving I/O is not called ok', async ({ page }) => {
   const stopped = card(page, 'stopped-array');
   await expect(stopped.getByText('1 of 2 unhealthy')).toBeVisible();
   await expect(stopped.getByText('ok', { exact: true })).toHaveCount(0);
+});
+
+test('a healthy host is never labelled unhealthy', async ({ page }) => {
+  // The regression the owner reported, and the assertion that would have
+  // caught it: read the whole card as text and look for the word.
+  //
+  // Every existing test here checked the VALUE, which was correct and green
+  // the entire time -- "0 of 6". None looked at what it sat under, which was
+  // the heading "SMART unhealthy". A roll-up is read by its headings, so the
+  // page said a fault about a machine whose six devices had all passed.
+  await fleetWith(page, [
+    node('healthy', { raid_arrays: 2, raid_degraded: false, smart_capable: 6, smart_unhealthy: 0 }),
+  ]);
+
+  const healthy = card(page, 'healthy');
+  await expect(healthy).toBeVisible();
+  await expect(healthy).not.toContainText('unhealthy');
+  await expect(healthy).not.toContainText('degraded');
+});
+
+test('an unhealthy host still says so', async ({ page }) => {
+  // The other half, so the fix cannot be "remove the word". A card that never
+  // says "unhealthy" would pass the test above perfectly.
+  await fleetWith(page, [
+    node('failing', { raid_arrays: 2, raid_degraded: false, smart_capable: 6, smart_unhealthy: 1 }),
+  ]);
+
+  const failing = card(page, 'failing');
+  await expect(failing).toContainText('unhealthy');
+  await expect(failing.getByText('1 of 6 unhealthy')).toBeVisible();
+  // And the denominator line is not shown alongside a fault: the fault value
+  // already carries it.
+  await expect(failing.getByText('6 checked')).toHaveCount(0);
 });
