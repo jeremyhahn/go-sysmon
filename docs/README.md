@@ -34,6 +34,12 @@ when you need to know why a number says what it says.
 | [System tray](extensions/systray.md) | Live CPU, RAM, swap and GPU in the notification area |
 | [Desktop testing](testing/desktop.md) | How the extensions are tested, in three tiers |
 
+## Testing
+
+| Topic | What it covers |
+|-------|----------------|
+| [Where testing effort pays](testing/writing-tests.md) | Four rules learned the expensive way, with the bugs that taught them |
+
 ## Building, testing, releasing
 
 | Task | Command |
