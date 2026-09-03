@@ -16,6 +16,7 @@ endif
 PKG_ALL := ./...
 PKG_CLI := ./pkg/cli/...
 PKG_COLLECTOR := ./pkg/collector/...
+PKG_FLEET := ./pkg/fleet/...
 PKG_MONITOR := ./pkg/monitor/...
 PKG_SERVER := ./pkg/server/...
 PKG_TYPES := ./pkg/types/...
@@ -62,7 +63,7 @@ INTERVAL ?= 1000
 
 .PHONY: all deps build build-desktop build-server build-frontend dev serve test test-cli test-collector test-monitor \
         test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
-        bench-cli bench-collector bench-monitor bench-server integration-test integration-test-cli \
+        bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit release-build release-build-desktop clean-dist \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
@@ -181,6 +182,9 @@ bench-cli:
 
 bench-collector:
 	go test $(PKG_COLLECTOR) -bench=. -benchmem -count=1 -run='^$$'
+
+bench-fleet:
+	go test $(PKG_FLEET) -bench=. -benchmem -count=1 -run='^$$'
 
 bench-monitor:
 	go test $(PKG_MONITOR) -bench=. -benchmem -count=1 -run='^$$'
