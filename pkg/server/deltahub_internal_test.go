@@ -573,6 +573,19 @@ func TestDeltaHub_CachedFrameIsRefusedAfterTheMonitorRestarts(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
+
+	// Wait for the hub's own loop to finish reacting to that stop before
+	// touching h.latest below.
+	//
+	// This is a fixture that raced the code it was testing, at about one run in
+	// forty (#75). The loop notices its subscription closed and calls
+	// endBecauseTheMonitorStopped, which does latest.Store(nil) -- so a frame
+	// this test stored a moment earlier could be cleared between the Store and
+	// the read, and cachedFrame returned nil for a reason that had nothing to
+	// do with generations. Nothing in the product does this: only the hub's own
+	// goroutine writes latest, and a client never stores a frame at all.
+	waitForHubLoop(t, h)
+
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
@@ -973,5 +986,58 @@ func TestEvents_LegacyStreamAlsoSaysByeAfterTheMonitorStopped(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the legacy stream sent no event at all after the monitor stopped; " +
 			"it should be told rather than left on keepalives")
+	}
+}
+
+// waitForHubLoop blocks until the hub's publishing goroutine has exited, so a
+// test can write h.latest without racing the loop's own cleanup.
+func waitForHubLoop(t *testing.T, h *deltaHub) {
+	t.Helper()
+
+	h.lifecycle.Lock()
+	stopped := h.stopped
+	h.lifecycle.Unlock()
+	if stopped == nil {
+		return
+	}
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the hub's publishing loop did not exit after the monitor stopped")
+	}
+}
+
+// TestDeltaHub_EndingClearsTheCache demonstrates, deterministically, the
+// mechanism behind the flake in #75 -- so that the synchronisation in the test
+// above is not removed later as ceremony.
+//
+// The flake was one run in forty and would not reproduce under a thousand
+// iterations at every GOMAXPROCS once the machine was quiet, which is exactly
+// why it is pinned here as an ordinary call rather than chased as a race: the
+// window is real whether or not the scheduler opens it today.
+//
+// Note what this is NOT evidence of. Only the hub's own goroutine writes
+// latest, and no client ever stores a frame, so nothing in the product can lose
+// a frame this way. The race was between a fixture and the code it was testing.
+func TestDeltaHub_EndingClearsTheCache(t *testing.T) {
+	m := hubMonitor(t)
+	h := newDeltaHub(m, quietHubLogger())
+
+	sub := h.subscribe()
+	defer h.unsubscribe(sub)
+	waitForFrame(t, sub)
+
+	frame := &deltaFrame{seq: 1, generation: m.Generation(), full: []byte("{}")}
+	h.latest.Store(frame)
+	if h.latest.Load() != frame {
+		t.Fatal("the frame was not stored, so this proves nothing")
+	}
+
+	// What the publishing loop does when it notices the monitor has stopped.
+	h.endBecauseTheMonitorStopped()
+
+	if got := h.latest.Load(); got != nil {
+		t.Errorf("latest = %v after the loop ended, want nil", got)
 	}
 }
