@@ -93,3 +93,73 @@ test('a degraded node is still counted even though it sorts last', async ({ page
   // sorting by name genuinely would bury a fault and the ruling needs revisiting.
   await expect(page.getByText(/unreachable/i).first()).toBeVisible();
 });
+
+/**
+ * A five-second restart and a two-day outage both produce status
+ * "unreachable" (#69). The word cannot distinguish them and neither can the
+ * count, so the view has to say how long -- and `age_seconds` already carries
+ * it, because the poller deliberately dates the DATA rather than the last
+ * attempt.
+ *
+ * The fixture pairs a node absent for seconds with one absent for days, so an
+ * implementation that rendered only the word, or only one of the two, fails.
+ * Two nodes with similar ages would pass either way.
+ */
+test('an unreachable node says how long, and the summary reports the worst', async ({ page }) => {
+  await mockSnapshotFeed(page);
+  await page.route(/\/api\/fleet$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: true,
+        nodes: [
+          // Mid-deploy: the data is nine seconds old.
+          { ...fleetNode('alpha', 'unreachable'), age_seconds: 9 },
+          // Gone since Tuesday: two days.
+          { ...fleetNode('zulu', 'unreachable'), age_seconds: 172800 },
+        ],
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+
+  // The brief one is not dressed as an outage...
+  await expect(page.getByText(/Unreachable for 9s/)).toBeVisible();
+  // ...and the sustained one is not dressed as a blip.
+  await expect(page.getByText(/Unreachable for 2d/)).toBeVisible();
+
+  // The summary carries the worst of them, so a reader who never opens a card
+  // can still tell a deploy from a dead machine.
+  await expect(page.getByText(/2 unreachable, longest 2d/)).toBeVisible();
+});
+
+/**
+ * A node that has NEVER answered reports age_seconds 0 -- the sentinel meaning
+ * "no reading", not "fetched just now". Rendering it through the duration
+ * formatter would print "Unreachable for 0s", which reads as the freshest
+ * possible failure and is the exact inversion of the truth.
+ */
+test('a node that never reported says so, rather than reporting a zero-second gap', async ({ page }) => {
+  await mockSnapshotFeed(page);
+  await page.route(/\/api\/fleet$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: true,
+        nodes: [{ ...fleetNode('never', 'unreachable'), age_seconds: 0, error: 'no data' }],
+      }),
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+
+  await expect(page.getByText(/Unreachable, never reported/)).toBeVisible();
+  await expect(page.getByText(/Unreachable for 0s/)).toHaveCount(0);
+  // And the summary does not claim a duration it does not have.
+  await expect(page.getByText(/longest/)).toHaveCount(0);
+});

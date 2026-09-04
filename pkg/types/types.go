@@ -70,11 +70,20 @@ type PeerSnapshot struct {
 // FleetNode is one node's summary in the fleet view: enough to judge health at
 // a glance without opening the node.
 type FleetNode struct {
-	Name          string  `json:"name"`
-	URL           string  `json:"url"`
-	Self          bool    `json:"self"`
-	Reachable     bool    `json:"reachable"`
-	Error         string  `json:"error,omitempty"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	Self      bool   `json:"self"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
+	// AgeSeconds is how old the reading in this summary is -- it dates the
+	// DATA, not the last poll attempt, so a failing poll does not make stale
+	// data look freshly fetched.
+	//
+	// ZERO MEANS THERE IS NO READING AT ALL: a peer that has never answered,
+	// or has not been polled yet. It does not mean "fetched just now". The
+	// distinction matters because the only other thing a consumer knows about
+	// an unreachable node is how long it has been that way, and a node that
+	// never answered would otherwise report a two-second gap forever.
 	AgeSeconds    float64 `json:"age_seconds"`
 	Status        string  `json:"status"`
 	Hostname      string  `json:"hostname"`

@@ -119,6 +119,19 @@
    */
   const totals = $derived.by(() => {
     let unreachable = 0;
+    // How stale the worst unreachable node's data is.
+    //
+    // A five-second restart and a two-day outage both produce status
+    // "unreachable", so the count alone cannot tell a deploy from a dead
+    // machine (#69). age_seconds already dates the DATA rather than the last
+    // attempt, which makes it exactly the right number: "the newest reading we
+    // have is nine seconds old" and "it is two days old" are different facts,
+    // and the summary said neither.
+    //
+    // Reported alongside the count rather than used to suppress it: whether a
+    // brief absence should stop counting as a fault is a policy decision, and
+    // inventing a threshold here would be taking it silently.
+    let longestAbsence = 0;
     let critical = 0;
     let warning = 0;
     let healthy = 0;
@@ -130,6 +143,7 @@
       switch (node.status) {
         case "unreachable":
           unreachable++;
+          longestAbsence = Math.max(longestAbsence, node.age_seconds);
           break;
         case "critical":
           critical++;
@@ -148,6 +162,7 @@
     return {
       nodes: allNodes.length,
       unreachable,
+      longestAbsence,
       critical,
       warning,
       healthy,
@@ -215,8 +230,15 @@
             Across all {totals.nodes} node{totals.nodes === 1 ? "" : "s"}:
           </span>
           {#if totals.unreachable > 0}
-            <span class="badge badge-neutral badge-sm">
-              {totals.unreachable} unreachable
+            <!-- The duration is the whole point: "1 unreachable" reads the same
+                 whether a node is mid-restart or has been dead since Tuesday. -->
+            <span
+              class="badge badge-neutral badge-sm"
+              title="Longest gap since any unreachable node last reported"
+            >
+              {totals.unreachable} unreachable{totals.longestAbsence > 0
+                ? `, longest ${formatAge(totals.longestAbsence)}`
+                : ""}
             </span>
           {/if}
           {#if totals.critical > 0}
@@ -364,7 +386,17 @@
                 <!-- An unreachable node has no metrics worth showing; say why
                      instead of drawing a row of zeroes. -->
                 <div class="alert alert-error alert-soft py-2 text-sm">
-                  <span class="font-semibold">Unreachable</span>
+                  <!-- How long, not just that it is. A node restarting for five
+                       seconds and one gone for two days produced the same word
+                       and the same red panel, so every deploy repainted a
+                       healthy node as a dead one (#69). -->
+                  <span class="font-semibold">
+                    {#if node.age_seconds > 0}
+                      Unreachable for {formatAge(node.age_seconds)}
+                    {:else}
+                      Unreachable, never reported
+                    {/if}
+                  </span>
                   <span class="break-all opacity-80">
                     {node.error || "no response from this node"}
                   </span>

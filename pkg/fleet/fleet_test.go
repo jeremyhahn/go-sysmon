@@ -728,3 +728,66 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 		})
 	}
 }
+
+// TestView_APeerThatNeverAnsweredHasNoAge.
+//
+// age_seconds is the only thing distinguishing a node mid-restart from one gone
+// for days (#69), so what it says for a node that has NEVER answered decides
+// whether that distinction works at all.
+//
+// It used to be set from the last attempt, which is a couple of seconds ago and
+// always will be -- so a peer that had never once responded reported the same
+// small number as one that blipped during a deploy, forever. Zero is the
+// sentinel for "no reading", and it is what the never-polled path already
+// produced, so the two states now agree.
+func TestView_APeerThatNeverAnsweredHasNoAge(t *testing.T) {
+	// A peer that is configured and refuses every connection: polled, failed,
+	// and never had a snapshot to date.
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no", http.StatusInternalServerError)
+	}))
+	defer dead.Close()
+
+	cfg := config.Fleet{
+		PollIntervalMs: 10, TimeoutMs: 500,
+		Peers: []config.Peer{{Name: "dead", URL: dead.URL}},
+	}
+	p := fleet.New(
+		func() config.Fleet { return cfg },
+		func() *types.Snapshot { return healthySnapshot("local") },
+		func() string { return "local" }, quiet(),
+	)
+
+	done := make(chan struct{})
+	go p.Run(done)
+	defer close(done)
+
+	// Wait for at least one failed poll, so this is the "polled and failed"
+	// state rather than the "not polled yet" one -- they are different code
+	// paths and only one of them is under test here.
+	deadline := time.Now().Add(2 * time.Second)
+	var node types.FleetNode
+	for time.Now().Before(deadline) {
+		for _, n := range p.View().Nodes {
+			if n.Name == "dead" && n.Error != "" && n.Error != "not polled yet" {
+				node = n
+			}
+		}
+		if node.Name != "" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if node.Name == "" {
+		t.Fatal("the peer was never polled, so this tests the wrong path")
+	}
+
+	if node.Reachable {
+		t.Fatal("a peer refusing every request is reachable, so this proves nothing")
+	}
+	if node.AgeSeconds != 0 {
+		t.Errorf("age_seconds = %v for a peer that has never answered, want 0. "+
+			"A non-zero age here is the time since the last ATTEMPT, which reads as "+
+			"a brief gap forever and is exactly what #69 is about", node.AgeSeconds)
+	}
+}

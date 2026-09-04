@@ -274,6 +274,22 @@ func summarize(name, url string, self bool, snap *types.Snapshot, fetchedAt time
 	if snap == nil {
 		n.Reachable = false
 		n.Status = StatusUnreachable
+		// No snapshot means no reading to be old, so the age is cleared rather
+		// than left describing the last ATTEMPT.
+		//
+		// It was set from fetchedAt above, which for a peer that has answered
+		// dates its data -- deliberately, so a failing poll does not make stale
+		// data look fresh. For a peer that has NEVER answered there is no such
+		// date, and fetchedAt is the moment of the last try: about two seconds
+		// ago, always. A consumer rendering "unreachable for 2s" for a node
+		// that has never once responded is being told a five-second blip when
+		// it is a total absence, which is #69's defect in the field meant to
+		// distinguish them.
+		//
+		// Zero is the sentinel and it is the same value the never-polled path
+		// above produces, so both states agree: no age means no reading, not a
+		// reading taken now.
+		n.AgeSeconds = 0
 		if n.Error == "" {
 			n.Error = "no data"
 		}
