@@ -6,9 +6,11 @@
 package integration
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -529,15 +531,29 @@ func TestCLI_Version_JSON(t *testing.T) {
 
 // ── Serve ─────────────────────────────────────────────────────────────────────
 
-const serveAddr = "localhost:18080"
+// serverListeningMsg is the log message the serve command emits once its
+// listener is bound. It carries the bound address, which is the only way to
+// learn the port when the server was started on port 0.
+const serverListeningMsg = "server listening"
 
-// startServer launches `sysmon serve --addr :18080` as a background process.
-// The returned *exec.Cmd is already started; callers must call t.Cleanup or
-// terminate it themselves.
-func startServer(t *testing.T) *exec.Cmd {
+// startServer launches `sysmon serve` on a kernel-assigned port and returns the
+// address it bound, ready to serve. The process is killed by a t.Cleanup.
+//
+// The port is 0 rather than a constant on purpose. A fixed port made two CI
+// jobs on one runner collide by construction -- whichever bound second failed,
+// on a machine where nothing was wrong (issue #62). Asking the kernel for a
+// port cannot collide, and asking the server which port it got is exact,
+// where guessing a free one in advance is a race with every other process on
+// the host.
+func startServer(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command(binaryPath, "serve", "--addr", ":18080", "--interval", "200")
+	cmd := exec.Command(binaryPath, "serve", "--addr", "127.0.0.1:0", "--interval", "200", "--log-format", "json")
 	cmd.Env = append(os.Environ(), "DISPLAY=", "WAYLAND_DISPLAY=")
+
+	logs, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("failed to capture sysmon serve logs: %v", err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start sysmon serve: %v", err)
 	}
@@ -545,22 +561,60 @@ func startServer(t *testing.T) *exec.Cmd {
 		cmd.Process.Kill() //nolint:errcheck
 		cmd.Wait()         //nolint:errcheck
 	})
-	if !waitForPort(serveAddr, 10*time.Second) {
-		t.Fatalf("sysmon serve did not open %s within 10s", serveAddr)
+
+	addr, ok := boundAddr(logs, 10*time.Second)
+	if !ok {
+		t.Fatalf("sysmon serve did not report %q within 10s", serverListeningMsg)
+	}
+	if !waitForPort(addr, 10*time.Second) {
+		t.Fatalf("sysmon serve did not open %s within 10s", addr)
 	}
 	// Wait for the monitor to complete its first collection cycle so that
 	// /api/snapshot returns 200 rather than 503.
-	snapshotURL := "http://" + serveAddr + "/api/snapshot"
-	if !waitForSnapshot(snapshotURL, 15*time.Second) {
+	if !waitForSnapshot("http://"+addr+"/api/snapshot", 15*time.Second) {
 		t.Fatalf("sysmon serve /api/snapshot not ready within 15s")
 	}
-	return cmd
+	return addr
+}
+
+// boundAddr reads the server's JSON log stream until it reports the address its
+// listener bound, and returns it. It reports false if the deadline passes
+// first. The stream is drained afterwards either way, so a server that logs
+// steadily is never blocked by a full pipe.
+func boundAddr(logs io.Reader, deadline time.Duration) (string, bool) {
+	found := make(chan string, 1)
+
+	go func() {
+		defer io.Copy(io.Discard, logs) //nolint:errcheck
+
+		scanner := bufio.NewScanner(logs)
+		for scanner.Scan() {
+			var entry struct {
+				Msg  string `json:"msg"`
+				Addr string `json:"addr"`
+			}
+			if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+				continue
+			}
+			if entry.Msg == serverListeningMsg && entry.Addr != "" {
+				found <- entry.Addr
+				return
+			}
+		}
+	}()
+
+	select {
+	case addr := <-found:
+		return addr, true
+	case <-time.After(deadline):
+		return "", false
+	}
 }
 
 func TestCLI_Serve_StartsAndStops(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
-	resp, err := http.Get("http://" + serveAddr + "/api/snapshot")
+	resp, err := http.Get("http://" + addr + "/api/snapshot")
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
@@ -576,9 +630,9 @@ func TestCLI_Serve_StartsAndStops(t *testing.T) {
 }
 
 func TestCLI_Serve_APIReturnsSnapshot(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
-	resp, err := http.Get("http://" + serveAddr + "/api/snapshot")
+	resp, err := http.Get("http://" + addr + "/api/snapshot")
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
@@ -609,9 +663,9 @@ func TestCLI_Serve_APIReturnsSnapshot(t *testing.T) {
 }
 
 func TestCLI_Serve_EventStream(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
-	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", false)
+	stream := dialEventStream(t, "http://"+addr+"/api/events", false)
 
 	if ct := stream.contentType; ct != "text/event-stream" {
 		t.Errorf("Content-Type = %q, want text/event-stream", ct)
@@ -641,9 +695,9 @@ func TestCLI_Serve_EventStream(t *testing.T) {
 // stream for a client that offers it. Consecutive snapshots barely differ, so
 // this is where the bandwidth saving lives.
 func TestCLI_Serve_EventStream_Gzip(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
-	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", true)
+	stream := dialEventStream(t, "http://"+addr+"/api/events", true)
 
 	if stream.encoding != "gzip" {
 		t.Fatalf("Content-Encoding = %q, want gzip", stream.encoding)
@@ -755,13 +809,13 @@ var gpuSectionRE = regexp.MustCompile(`GPU \d+:`)
 // ── Rate control over REST ────────────────────────────────────────────────────
 
 func TestServer_SetInterval(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
 	// A stream opened first must keep working across the rate change.
-	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", false)
+	stream := dialEventStream(t, "http://"+addr+"/api/events", false)
 	stream.nextNamed(t, "snapshot", 10*time.Second)
 
-	resp, err := http.Post("http://"+serveAddr+"/api/interval", "application/json",
+	resp, err := http.Post("http://"+addr+"/api/interval", "application/json",
 		strings.NewReader(`{"interval_ms":1000}`)) //nolint:noctx
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
@@ -794,9 +848,9 @@ func TestServer_SetInterval(t *testing.T) {
 }
 
 func TestServer_SetInterval_Disallowed(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
-	resp, err := http.Post("http://"+serveAddr+"/api/interval", "application/json",
+	resp, err := http.Post("http://"+addr+"/api/interval", "application/json",
 		strings.NewReader(`{"interval_ms":999}`)) //nolint:noctx
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
@@ -808,14 +862,14 @@ func TestServer_SetInterval_Disallowed(t *testing.T) {
 	}
 
 	// The server must still be serving normally afterwards.
-	stream := dialEventStream(t, "http://"+serveAddr+"/api/events", false)
+	stream := dialEventStream(t, "http://"+addr+"/api/events", false)
 	stream.nextNamed(t, "snapshot", 10*time.Second)
 }
 
 func TestServer_GetInterval(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
-	resp, err := http.Get("http://" + serveAddr + "/api/interval") //nolint:noctx
+	resp, err := http.Get("http://" + addr + "/api/interval") //nolint:noctx
 	if err != nil {
 		t.Fatalf("GET /api/interval: %v", err)
 	}
@@ -839,9 +893,9 @@ func TestServer_GetInterval(t *testing.T) {
 // TestServer_WebSocketRouteRetired is the migration regression test: the old
 // endpoint must not stream, so a stale client fails loudly.
 func TestServer_WebSocketRouteRetired(t *testing.T) {
-	startServer(t)
+	addr := startServer(t)
 
-	resp, err := http.Get("http://" + serveAddr + "/ws") //nolint:noctx
+	resp, err := http.Get("http://" + addr + "/ws") //nolint:noctx
 	if err != nil {
 		t.Fatalf("GET /ws: %v", err)
 	}

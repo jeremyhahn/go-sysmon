@@ -201,6 +201,29 @@ neither existed. **Before reporting that a guarantee is broken, find out what
 was actually enforcing it** — the answer changes the severity, and here it
 changed it downward.
 
+**A constant that makes two copies of the suite impossible.** The browser suite
+served on a fixed `:18080`, so two CI jobs on one runner collided by
+construction: whichever bound second failed with "18080 is already used" on a
+machine where nothing was wrong. Measured across a hundred CI runs, **every
+failed browser job was this and nothing else** — four of four, on four
+different runners, three of them on `main`, one of them a commit that changed
+28 lines of markdown. The suite was not flaky; it was **load-dependent**, and a
+red that depends on what else the runner is doing says nothing about the code.
+A collision also does not fail fast: Playwright waits out its `webServer`
+timeout, so each one occupied a runner for **5m42s** to produce a meaningless
+result, consuming the capacity whose scarcity caused it.
+
+Two remedies exist and they are not equivalent. **Asking the kernel for a port
+(`:0`) cannot collide**, and it is available wherever the harness can read the
+port back afterwards — which is why the Go integration suite now starts the
+server on `:0` and parses the address the server logs. **Probing for a free
+port and then using it is a race**, not a fix: the browser suite spends a
+minute building between the probe and the bind, and a port that is free at the
+probe is one the kernel may hand to any outbound connection in between. Where
+the port must be known in advance, derive it from something already unique —
+the CI job's identity — and choose a band **below** `ip_local_port_range`
+(32768 by default) where the kernel never allocates on its own.
+
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
 within the hour: that machine's RAID10 lays two spans over *one* array, so

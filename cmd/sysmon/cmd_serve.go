@@ -81,6 +81,11 @@ func localNodeName(mgr *config.Manager) string {
 	return mgr.Current().LocalName()
 }
 
+// serverListeningMsg is logged once the listener is bound, with the address it
+// bound to. Named rather than inlined because the integration suite reads this
+// line to discover the port the kernel assigned it.
+const serverListeningMsg = "server listening"
+
 func runServeCmd(cmd *cobra.Command, _ []string) error {
 	if serveIntervalMs <= 0 {
 		return &types.InvalidIntervalError{Message: "interval must be greater than zero"}
@@ -206,10 +211,19 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 
 	// Bind before serving so a bad address fails here rather than inside the
 	// goroutine below, and so the watchdog has a real address to dial.
-	if _, err := srv.Listen(); err != nil {
+	bound, err := srv.Listen()
+	if err != nil {
 		stopMonitor(mon)
 		return err
 	}
+
+	// The configured address is frequently not the one in use: with a port of 0
+	// the kernel chooses, and ":8081" names no interface. The line above logs
+	// what was asked for; this one logs what was bound, which is the only place
+	// that address exists for anything outside this process -- an operator
+	// reading the journal, or a test harness that asked for port 0 precisely so
+	// that no two of them could collide.
+	slog.Info(serverListeningMsg, "addr", bound.String())
 
 	return serveUntilSignal(srv, mon)
 }
