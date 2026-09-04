@@ -21,6 +21,13 @@ import (
 // bufferedBatches, or one batch, whichever is larger".
 const bufferedBatches = 10
 
+// submitQueue bounds how many out-of-band submissions wait for Run to apply
+// them. A full queue drops the newest submission and counts it, because the
+// alternative -- blocking the fleet poller until the exporter wakes -- would
+// make the dashboard's freshness depend on a time-series database being
+// reachable, which is exactly the coupling this design is avoiding.
+const submitQueue = 256
+
 // tickInterval is how often the exporter wakes to decide whether to sample or
 // flush.
 //
@@ -96,6 +103,12 @@ type Exporter struct {
 	writerURL      string
 	writerTimeout  time.Duration
 
+	// submitted carries samples produced outside the exporter's own cadence --
+	// the aggregator writing a peer's reading as it arrives. A channel rather
+	// than a lock because Run owns the Builder and must keep owning it: the
+	// closure is applied on Run's goroutine, never on the caller's.
+	submitted chan func(*Builder)
+
 	enabled  atomic.Bool
 	buffered atomic.Int64
 	failures atomic.Int64
@@ -110,7 +123,12 @@ func NewExporter(opts func() Options, collect Collect, log *slog.Logger) *Export
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Exporter{opts: opts, collect: collect, log: log}
+	return &Exporter{
+		opts:      opts,
+		collect:   collect,
+		log:       log,
+		submitted: make(chan func(*Builder), submitQueue),
+	}
 }
 
 // Stats reports the exporter's current state. Safe for concurrent use.
@@ -122,6 +140,57 @@ func (e *Exporter) Stats() Stats {
 		LastSuccessUnix:     e.lastOK.Load(),
 		SamplesWritten:      e.written.Load(),
 		SamplesDropped:      e.dropped.Load(),
+	}
+}
+
+// Submit hands the exporter samples that were produced on someone else's
+// schedule, to be added to the current batch when Run next wakes.
+//
+// It exists for fleet aggregation: a peer's reading arrives when the fleet
+// poller fetches it, not when this exporter decides to sample, and writing it
+// on the exporter's cadence instead would mean either repeating one reading
+// several times or discarding readings that did happen. Both fabricate the
+// record -- the first invents observations, the second hides them.
+//
+// add is called on Run's goroutine with the live Builder. It must not retain
+// the Builder, and it must not block.
+//
+// Returns false when the queue is full, having counted the loss as a drop.
+// Never blocks.
+func (e *Exporter) Submit(add func(*Builder)) bool {
+	if add == nil {
+		return false
+	}
+	select {
+	case e.submitted <- add:
+		return true
+	default:
+		e.dropped.Add(1)
+		e.log.Debug("prom: submission queue full; sample dropped")
+		return false
+	}
+}
+
+// drain applies everything Submit has queued. Called only from Run, which is
+// what makes the Builder's single ownership hold.
+func (e *Exporter) drain(o Options) {
+	for {
+		select {
+		case add := <-e.submitted:
+			// A submission arriving while remote write is off is discarded
+			// rather than buffered: the exporter holds nothing in that state,
+			// and a queue that filled up during an outage would flush a burst
+			// of stale timestamps the moment it was turned back on.
+			if o.RemoteWriteURL == "" {
+				e.dropped.Add(1)
+				continue
+			}
+			e.ensureBuilder(o)
+			add(e.builder)
+			e.buffered.Store(int64(e.pendingSamples + e.builder.Len()))
+		default:
+			return
+		}
 	}
 }
 
@@ -150,8 +219,14 @@ func (e *Exporter) Run(done <-chan struct{}) {
 			o := e.opts()
 			if o.RemoteWriteURL == "" {
 				e.disable()
+				// Still drained, so a queue filled while remote write was off
+				// does not survive to be written under a later timestamp.
+				e.drain(o)
 				continue
 			}
+			// Before sampling, so a peer reading and the local sample taken in
+			// the same tick land in the same batch.
+			e.drain(o)
 			if due(lastSample, now, o.SampleInterval, 15*time.Second) {
 				lastSample = now
 				e.sample(o)

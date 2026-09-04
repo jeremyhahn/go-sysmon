@@ -13,6 +13,7 @@ import (
 
 	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/metrics"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/prom"
@@ -206,6 +207,29 @@ func promQueryOptions(mgr *config.Manager) func() prom.QueryOptions {
 // snapshotSamples is the exporter's collect step: the same description of a
 // snapshot that GET /metrics renders, stamped with one instant and handed to
 // the remote-write builder.
+// peerSamples writes a peer's reading into the exporter's current batch, under
+// that peer's own instance label and stamped with the time the peer collected
+// it.
+//
+// Two properties are deliberate. The timestamp is the READING's, not the
+// aggregator's clock, so a peer's history says when the peer measured rather
+// than when this node heard about it. And there is no cadence here at all: one
+// reading in, one set of samples out, at whatever rate the fleet poller runs.
+// Resampling to the exporter's own interval would either repeat a reading that
+// happened once or drop readings that happened -- inventing observations in the
+// first case, hiding them in the second.
+func peerSamples(exporter *prom.Exporter) fleet.Reading {
+	return func(node string, snap *types.Snapshot) {
+		if snap == nil || node == "" {
+			return
+		}
+		timeMs := snap.Timestamp.UnixMilli()
+		exporter.Submit(func(b *prom.Builder) {
+			metrics.Write(metrics.SampleSink{Builder: b, TimeMs: timeMs, Instance: node}, snap)
+		})
+	}
+}
+
 func snapshotSamples(mon *monitor.Monitor) prom.Collect {
 	return func(b *prom.Builder, timeMs int64) error {
 		snap, err := mon.Snapshot()

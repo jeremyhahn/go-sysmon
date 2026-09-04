@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -789,5 +790,120 @@ func TestView_APeerThatNeverAnsweredHasNoAge(t *testing.T) {
 		t.Errorf("age_seconds = %v for a peer that has never answered, want 0. "+
 			"A non-zero age here is the time since the last ATTEMPT, which reads as "+
 			"a brief gap forever and is exactly what #69 is about", node.AgeSeconds)
+	}
+}
+
+// TestObserve_ReportsEveryReadingThatArrives is topology A's contract on the
+// poller side: the aggregator persists the fleet, so every peer reading it
+// receives has to be handed over exactly once, under that peer's name.
+func TestObserve_ReportsEveryReadingThatArrives(t *testing.T) {
+	remote := healthySnapshot("omega")
+	srv := peerServer(t, remote)
+
+	cfg := config.Fleet{
+		Peers:          []config.Peer{{Name: "omega", URL: srv.URL}},
+		PollIntervalMs: 10, TimeoutMs: 2000,
+	}
+	p := fleet.New(func() config.Fleet { return cfg },
+		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+
+	var mu sync.Mutex
+	var names []string
+	var hosts []string
+	p.Observe(func(node string, snap *types.Snapshot) {
+		mu.Lock()
+		defer mu.Unlock()
+		names = append(names, node)
+		if snap != nil {
+			hosts = append(hosts, snap.Host.Hostname)
+		}
+	})
+
+	done := make(chan struct{})
+	go p.Run(done)
+	defer close(done)
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(names) >= 2
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, got := range names {
+		if got != "omega" {
+			t.Errorf("reading %d reported node %q, want omega", i, got)
+		}
+	}
+	// The snapshot handed over must be the peer's own, not the local one --
+	// writing the aggregator's readings under a peer's name would fill the
+	// peer's history with another machine's numbers.
+	for i, got := range hosts {
+		if got != "omega" {
+			t.Errorf("reading %d carried hostname %q, want omega", i, got)
+		}
+	}
+}
+
+// TestObserve_SilentWhileAPeerIsUnreachable is the other half, and the one that
+// keeps the history honest. The poller retains the last good snapshot so the
+// card shows stale data rather than emptying; re-reporting it would record an
+// observation nobody made and would erase the outage from the history.
+func TestObserve_SilentWhileAPeerIsUnreachable(t *testing.T) {
+	var serving atomic.Bool
+	serving.Store(true)
+	remote := healthySnapshot("omega")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !serving.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(remote); err != nil {
+			t.Errorf("encoding peer snapshot: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := config.Fleet{
+		Peers:          []config.Peer{{Name: "omega", URL: srv.URL}},
+		PollIntervalMs: 10, TimeoutMs: 2000,
+	}
+	p := fleet.New(func() config.Fleet { return cfg },
+		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+
+	var readings atomic.Int64
+	p.Observe(func(string, *types.Snapshot) { readings.Add(1) })
+
+	done := make(chan struct{})
+	go p.Run(done)
+	defer close(done)
+
+	waitFor(t, func() bool { return readings.Load() >= 2 })
+	serving.Store(false)
+
+	// Let several polls fail, then confirm the count stopped moving while the
+	// peer stayed visible in the view with its retained snapshot.
+	settled := readings.Load()
+	time.Sleep(120 * time.Millisecond)
+	after := readings.Load()
+
+	// One reading may have been in flight when serving flipped.
+	if after > settled+1 {
+		t.Errorf("readings went %d -> %d while the peer was unreachable; a retained snapshot was reported as a new observation", settled, after)
+	}
+
+	var found bool
+	for _, n := range p.View().Nodes {
+		if n.Name == "omega" {
+			found = true
+			if n.Status == "" {
+				t.Error("the unreachable peer lost its card entirely")
+			}
+		}
+	}
+	if !found {
+		t.Error("the unreachable peer disappeared from the view")
 	}
 }

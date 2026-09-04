@@ -826,3 +826,119 @@ func TestExporter_TheTimeoutIsPerRequestNotPerFlush(t *testing.T) {
 			"request, want 0", st.SamplesDropped)
 	}
 }
+
+// TestExporter_SubmitWritesUnderTheSubmittedInstance is topology A's contract
+// on the exporter side: the aggregator writes its peers' readings, and each has
+// to arrive labelled as the peer rather than as the node that sent it. One
+// history per machine is the whole point; merged series cannot be untangled by
+// any later query.
+func TestExporter_SubmitWritesUnderTheSubmittedInstance(t *testing.T) {
+	rec := newRecorder(t)
+	var calls atomic.Int64
+
+	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
+	runExporter(t, e)
+
+	if !e.Submit(func(b *Builder) {
+		b.Add("sysmon_up", 1, 1700000000000, "instance", "omega")
+	}) {
+		t.Fatal("Submit refused a sample with an empty queue")
+	}
+
+	waitFor(t, "the submitted sample to be delivered", func() bool {
+		for _, got := range rec.deliveredInstances(t) {
+			if got == "omega" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The local samples must still be the local node's: a submission changes
+	// one batch entry, not the exporter's identity.
+	waitFor(t, "a local sample to be delivered", func() bool {
+		for _, got := range rec.deliveredInstances(t) {
+			if got == "mon0" {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestExporter_SubmitDropsRatherThanBlocks covers the failure path. The fleet
+// poller calls Submit on its own goroutine; if the queue were unbounded or
+// blocking, an unreachable time-series database would stall peer polling and
+// the dashboard's freshness would depend on Prometheus being up.
+//
+// The bound below is deliberately NOT written as submitQueue. An earlier
+// version asserted "accepted == submitQueue", which the queue depth satisfies
+// whatever it is set to -- raising the constant to 100,000 kept the test green
+// while destroying the property it was meant to protect. What is actually
+// required is that a caller is refused promptly and within a sane amount of
+// memory, so the test says that instead.
+func TestExporter_SubmitDropsRatherThanBlocks(t *testing.T) {
+	rec := newRecorder(t)
+	// Deliberately NOT run: with no Run goroutine nothing drains the queue, so
+	// this measures what a caller sees when the exporter cannot keep up.
+	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(new(atomic.Int64)), quietLogger())
+
+	const sane = 10000 // a queue deeper than this is a memory bug of its own
+	accepted, refused := 0, 0
+	for i := 0; i < sane && refused == 0; i++ {
+		start := time.Now()
+		ok := e.Submit(func(b *Builder) { b.Add("sysmon_up", 1, 1700000000000) })
+		if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+			t.Fatalf("Submit blocked for %v on call %d; it must never wait on the exporter", elapsed, i)
+		}
+		if ok {
+			accepted++
+		} else {
+			refused++
+		}
+	}
+
+	if refused == 0 {
+		t.Fatalf("Submit accepted %d samples with nothing draining them and never refused; the queue is unbounded in practice", accepted)
+	}
+	if dropped := e.Stats().SamplesDropped; dropped != int64(refused) {
+		t.Errorf("SamplesDropped = %d after %d refusals, want them counted", dropped, refused)
+	}
+	if e.Submit(nil) {
+		t.Error("Submit accepted a nil function")
+	}
+}
+
+// TestExporter_SubmitDiscardedWhileDisabled keeps a disabled node costing
+// nothing. A submission arriving with no endpoint configured is dropped as it
+// is drained -- not held -- so turning remote write on later does not flush a
+// burst of samples carrying timestamps from before it was enabled.
+func TestExporter_SubmitDiscardedWhileDisabled(t *testing.T) {
+	rec := newRecorder(t)
+	var enabled atomic.Bool
+
+	e := NewExporter(func() Options {
+		o := fixedOptions(rec.srv.URL)
+		if !enabled.Load() {
+			o.RemoteWriteURL = ""
+		}
+		return o
+	}, countingCollector(new(atomic.Int64)), quietLogger())
+	runExporter(t, e)
+
+	e.Submit(func(b *Builder) { b.Add("sysmon_stale", 1, 1600000000000, "instance", "omega") })
+	waitFor(t, "the disabled exporter to discard the submission", func() bool {
+		return e.Stats().SamplesDropped >= 1
+	})
+
+	enabled.Store(true)
+	waitFor(t, "the enabled exporter to deliver its own samples", func() bool {
+		return len(rec.deliveredInstances(t)) > 0
+	})
+
+	for _, got := range rec.deliveredInstances(t) {
+		if got == "omega" {
+			t.Error("a submission made while remote write was off was delivered after it was turned on")
+		}
+	}
+}

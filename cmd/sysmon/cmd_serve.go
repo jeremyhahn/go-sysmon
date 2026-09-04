@@ -174,6 +174,14 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// The exporter runs whether or not remote write is configured, exactly as
+	// the fleet poller runs whether or not there are peers. With no
+	// remote_write_url it collects nothing, buffers nothing and makes no
+	// request; what it buys is that turning history on is a config reload
+	// rather than a restart that would drop every connected browser.
+	exporter := prom.NewExporter(promOptions(cfgMgr), snapshotSamples(mon), slog.Default())
+	go exporter.Run(done)
+
 	// The fleet poller reads its peer list from the config manager on every
 	// cycle, so peers can be added or removed by reloading rather than
 	// restarting -- which would reset Prometheus counters and drop every
@@ -190,15 +198,17 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		func() string { return localNodeName(cfgMgr) },
 		slog.Default(),
 	)
-	go fleetPoller.Run(done)
 
-	// The exporter runs whether or not remote write is configured, exactly as
-	// the fleet poller runs whether or not there are peers. With no
-	// remote_write_url it collects nothing, buffers nothing and makes no
-	// request; what it buys is that turning history on is a config reload
-	// rather than a restart that would drop every connected browser.
-	exporter := prom.NewExporter(promOptions(cfgMgr), snapshotSamples(mon), slog.Default())
-	go exporter.Run(done)
+	// Topology A (owner ruling 2026-09-04): the aggregator holds every peer's
+	// reading already, so it is the one node that can persist the fleet's
+	// history -- and the peers keep no prometheus and no storage of their own.
+	//
+	// Registered before Run so no reading can arrive unobserved, and wired
+	// unconditionally: whether anything is written is decided per submission by
+	// the exporter reading the current config, so turning remote write on stays
+	// a reload rather than a restart.
+	fleetPoller.Observe(peerSamples(exporter))
+	go fleetPoller.Run(done)
 
 	if err := mon.Start(); err != nil {
 		return err

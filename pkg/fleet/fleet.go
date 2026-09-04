@@ -50,6 +50,20 @@ type peerState struct {
 // LocalFunc supplies this node's own snapshot.
 type LocalFunc func() *types.Snapshot
 
+// Reading is called once for every peer snapshot that actually arrives, with
+// the node's name and the reading itself.
+//
+// It exists so the aggregator can persist the fleet's history: it holds every
+// peer's data already, and writing it from here is what lets the peers keep no
+// storage of their own.
+//
+// It is NOT called when a poll fails. The poller keeps the previous snapshot so
+// a card shows stale data rather than emptying, but re-writing that reading
+// under a new timestamp would record an observation nobody made and would hide
+// the outage in the history -- and a gap that needs explaining is better than a
+// number that needs distrusting.
+type Reading func(node string, snap *types.Snapshot)
+
 // ConfigFunc supplies the current fleet settings. It is called every cycle so a
 // config reload adds or removes peers without restarting the process.
 type ConfigFunc func() config.Fleet
@@ -62,6 +76,11 @@ type Poller struct {
 	logger      *slog.Logger
 	client      *http.Client
 
+	// reading is read on every poll and written at most once, at wiring time.
+	// An atomic pointer rather than a mutex: the poll goroutines only ever
+	// load it.
+	reading atomic.Pointer[Reading]
+
 	// pollOverrideNs is the dashboard's live choice of cadence, in
 	// nanoseconds; zero means follow the configuration. Atomic because it is
 	// written by an API request and read by the poll loop.
@@ -69,6 +88,16 @@ type Poller struct {
 
 	mu    sync.RWMutex
 	peers map[string]*peerState
+}
+
+// Observe registers fn to be called for each peer snapshot that arrives. Call
+// it before Run. Passing nil clears it.
+func (p *Poller) Observe(fn Reading) {
+	if fn == nil {
+		p.reading.Store(nil)
+		return
+	}
+	p.reading.Store(&fn)
 }
 
 // New returns a Poller. localNameFn supplies how this node names itself in the
@@ -174,6 +203,9 @@ func (p *Poller) refresh(cfg config.Fleet) {
 				p.logger.Debug("fleet: peer unreachable", "peer", peer.Name, "error", err)
 			} else {
 				st.snapshot = snap
+				if fn := p.reading.Load(); fn != nil {
+					(*fn)(peer.Name, snap)
+				}
 			}
 			p.mu.Lock()
 			// Keep the last good snapshot alongside the error so a brief blip

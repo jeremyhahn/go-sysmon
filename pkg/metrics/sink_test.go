@@ -164,3 +164,68 @@ func TestSampleSink_CarriesLabelsAndTimestamp(t *testing.T) {
 		t.Fatal("no series carried device=nvme0n1; per-device labels were lost")
 	}
 }
+
+// TestSampleSink_InstanceStampsEverySeries covers the aggregator's write path:
+// a peer's reading has to carry the peer's name, or ten machines' histories
+// merge into one series that no later query can separate.
+func TestSampleSink_InstanceStampsEverySeries(t *testing.T) {
+	b := prom.NewBuilder([]prom.Label{{Name: "instance", Value: "mon0"}, {Name: "job", Value: "go-sysmon"}})
+	sink := SampleSink{Builder: b, TimeMs: 1700000000000, Instance: "omega"}
+
+	sink.Gauge("sysmon_up", "", 1)
+	sink.Gauge("sysmon_disk_used_percent", "", 55, "device", "sda")
+
+	for _, series := range b.Drain() {
+		var instance, device string
+		for _, l := range series.Labels {
+			switch l.Name {
+			case "instance":
+				instance = l.Value
+			case "device":
+				device = l.Value
+			}
+		}
+		if instance != "omega" {
+			t.Errorf("series %v carries instance %q, want omega", series.Labels, instance)
+		}
+		if device != "" && device != "sda" {
+			t.Errorf("the metric's own label was lost: device = %q", device)
+		}
+	}
+}
+
+// TestSampleSink_WithoutInstanceKeepsTheNodesOwn is the unchanged path: a node
+// writing its own readings must not start labelling them, or every existing
+// series would move to a new one.
+func TestSampleSink_WithoutInstanceKeepsTheNodesOwn(t *testing.T) {
+	b := prom.NewBuilder([]prom.Label{{Name: "instance", Value: "mon0"}})
+	SampleSink{Builder: b, TimeMs: 1700000000000}.Gauge("sysmon_up", "", 1)
+
+	series := b.Drain()
+	if len(series) != 1 {
+		t.Fatalf("got %d series, want 1", len(series))
+	}
+	for _, l := range series[0].Labels {
+		if l.Name == "instance" && l.Value != "mon0" {
+			t.Errorf("instance = %q, want the node's own mon0", l.Value)
+		}
+	}
+}
+
+// TestSampleSink_DoesNotWriteIntoTheCallersLabels is the aliasing case. The
+// caller owns the slice it passes; stamping the instance by appending into its
+// spare capacity would write a label into memory the caller is still using.
+func TestSampleSink_DoesNotWriteIntoTheCallersLabels(t *testing.T) {
+	b := prom.NewBuilder(nil)
+	labels := make([]string, 2, 8) // spare capacity is what makes this visible
+	labels[0], labels[1] = "device", "sda"
+
+	SampleSink{Builder: b, TimeMs: 1, Instance: "omega"}.Gauge("sysmon_disk_used_percent", "", 1, labels...)
+
+	reused := labels[:cap(labels)]
+	for i := 2; i < len(reused); i++ {
+		if reused[i] != "" {
+			t.Fatalf("the sink wrote %q into the caller's slice at index %d", reused[i], i)
+		}
+	}
+}

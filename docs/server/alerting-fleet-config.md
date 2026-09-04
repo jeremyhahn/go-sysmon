@@ -553,6 +553,36 @@ The encoder is pinned against golden bytes produced by the real `prompb`
 encoder, so the oracle is the library rather than a second copy of the same
 logic (`pkg/prom/testdata/`).
 
+### The aggregator persists the fleet
+
+Owner ruling, 2026-09-04: **the fleet's history is written by the aggregator,
+not by the nodes.** A node with `fleet.peers` and a `prometheus.remote_write_url`
+writes each peer's reading as it arrives, under that peer's own `instance`
+label — so the peers keep no `prometheus` section, no storage, and no dependency
+on a time-series database, and one machine holds the fleet's past.
+
+Two properties of that write path are deliberate and neither is a detail:
+
+- **The timestamp is the reading's, not the aggregator's clock.** A peer's
+  history says when that peer measured, not when this node heard about it.
+- **The cadence is the fleet poll interval, and nothing is resampled.** One
+  reading in, one set of samples out. Writing on the exporter's own interval
+  instead would either repeat a reading that happened once or discard readings
+  that did happen — inventing observations in the first case, hiding them in the
+  second. The resolution of a fleet series therefore *is*
+  `fleet.poll_interval_ms`.
+
+**A peer that does not answer contributes nothing.** The poller keeps its last
+good snapshot so the fleet card shows stale data rather than emptying, but that
+retained reading is never written again: an outage appears in the history as a
+gap, which is what an outage is. A synthetic value would be an absence rendered
+as a reading, and a gap that needs explaining is better than a number that needs
+distrusting.
+
+The submission path cannot slow the dashboard down. Peer readings are queued for
+the exporter and dropped, counted, if that queue is full — so an unreachable
+Prometheus costs history, never freshness.
+
 ### History: reading a range back
 
 With `query_url` set, the dashboard gains a **date range control** in the header,
