@@ -55,6 +55,21 @@ const (
 	// inherit routing from -- an md array's failed component is already
 	// visible as a device of its own.
 	RuleRAIDMemberOffline = "raid_member_offline"
+
+	// RuleSMARTUnreadable fires for a drive behind a controller that HAS
+	// answered a health command in this run and has stopped.
+	//
+	// Warning, not critical: an absence is not a failure, and the drive may be
+	// refusing a command it does not implement rather than dying. But an
+	// otherwise-readable array where one member goes quiet is an event, and it
+	// was silent.
+	//
+	// The gate is the whole design. A drive that has NEVER answered is a
+	// capability fact -- some drives simply do not do SMART behind some
+	// controllers -- and firing on that would put a permanent warning on every
+	// such host, which trains people to ignore the category and is worse than
+	// saying nothing. Only a drive that stops is worth telling anyone about.
+	RuleSMARTUnreadable = "smart_unreadable"
 )
 
 // nonOperationalArrayStates are md array_state values in which the array is not
@@ -110,6 +125,24 @@ type Evaluator struct {
 	prevNet   map[string]netCounters
 	prevThr   map[int]uint64
 	prevAt    time.Time
+	// answered records the RAID members that have returned a SMART reading at
+	// least once in this run, keyed by the same resource string the alert is
+	// filed under. It is what separates "this drive has stopped answering"
+	// from "this drive has never answered", which are an event and a
+	// capability fact respectively.
+	//
+	// It lives here rather than on DiskMember because it is history, and a
+	// snapshot cannot carry history. netCounters above is the precedent: the
+	// same shape, for the same reason, and it keeps the payload unchanged for
+	// a fact only this consumer needs.
+	//
+	// RESET ON RESTART, deliberately and unavoidably: "has answered in this
+	// run" is the only claim a process can make honestly. A drive that was
+	// already silent before a restart is indistinguishable from one that never
+	// answered, so it is treated as the latter and stays quiet. The
+	// alternative -- persisting it -- would mean alerting on a fact nobody in
+	// this process observed.
+	answered map[string]bool
 }
 
 // New returns an Evaluator with no history.
@@ -118,6 +151,7 @@ func New() *Evaluator {
 		firstSeen: make(map[string]time.Time),
 		prevNet:   make(map[string]netCounters),
 		prevThr:   make(map[int]uint64),
+		answered:  make(map[string]bool),
 	}
 }
 
@@ -353,6 +387,18 @@ func (e *Evaluator) evalStorage(b *builder, snap *types.Snapshot) {
 			if m.SMARTEnabled && !m.SMARTHealthy {
 				b.add(RuleSMARTUnhealthy, types.SeverityCritical, catStorage, resource,
 					fmt.Sprintf("%s reports a failing SMART attribute", describeMember(d.Name, m)), 0, 0)
+			}
+			// A drive that was answering and has stopped.
+			//
+			// Recovery needs no handling: the rule only fires while the reading
+			// is absent, so a drive that answers again simply stops raising it
+			// and the alert clears with every other cleared alert.
+			switch {
+			case m.SMARTEnabled:
+				e.answered[resource] = true
+			case e.answered[resource]:
+				b.add(RuleSMARTUnreadable, types.SeverityWarning, catStorage, resource,
+					fmt.Sprintf("%s has stopped reporting SMART health", describeMember(d.Name, m)), 0, 0)
 			}
 			// Temperature, on the same thresholds as a block device. On a host
 			// whose only spinning disks are behind a controller these are the

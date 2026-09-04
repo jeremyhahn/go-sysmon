@@ -125,6 +125,22 @@ the controller has taken out of service. It exists because `raid_degraded`
 cannot say *which* drive, and because a volume reported optimal with an offline
 member is a contradiction that would otherwise pass in silence.
 
+`smart_unreadable` is the other member-only rule, and its gate is the whole
+design: it fires for a drive that **has answered a health command in this run
+and has stopped**, and never for one that has not answered yet.
+
+A drive that has never answered is a **capability fact** — some drives do not do
+SMART behind some controllers — and warning about it would put a permanent
+alert on every such host, which teaches people to ignore the category and is
+worse than saying nothing. A drive that *stops* is an **event**. It is a warning
+rather than a critical because an absent reading is not a failing drive.
+
+"In this run" is literal: the state lives in the evaluator and **resets when the
+process restarts**, so a drive already silent before a restart is treated as one
+that never answered. That is the only claim a process can honestly make about
+what it observed; persisting it would mean alerting on something nobody in this
+process saw.
+
 Member alerts are de-duplicated by **physical position**, not by serial. The
 serial is read from the drive every cycle and goes missing on exactly the drive
 an alert is about; keying on it would clear and re-fire a long-running alert
@@ -152,6 +168,7 @@ override is usually the first thing reached for.
 | storage | `raid_degraded` | — (always on) | — | critical |
 | storage | `smart_unhealthy` | — (always on) | — | critical |
 | storage | `raid_member_offline` | — (always on) | — | critical |
+| storage | `smart_unreadable` | — (always on) | — | warning |
 | storage | `raid_resync` / `raid_mismatch` | — | — | info / warning |
 | storage | `nvme_spare_low` | `nvme_spare_pct` | 10 | critical |
 | storage | `nvme_wear_high` | `nvme_wear_pct` | 80 | warning |

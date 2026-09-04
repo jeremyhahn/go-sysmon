@@ -953,3 +953,139 @@ func TestMemberIdentity_MetricUsesSerialAndAlertUsesPosition(t *testing.T) {
 		t.Error("the member metric is labelled by position; a re-bay would continue another drive's series")
 	}
 }
+
+// ---- smart_unreadable (#57) -------------------------------------------------
+
+// memberSnapshot wraps members into the shape the evaluator reads.
+func memberSnapshot(members ...types.DiskMember) *types.Snapshot {
+	return &types.Snapshot{Disks: []types.DiskInfo{{Name: "sdb", Members: members}}}
+}
+
+// fires reports whether rule appears in the alerts.
+func fires(alerts []types.Alert, rule string) bool {
+	for _, a := range alerts {
+		if a.Rule == rule {
+			return true
+		}
+	}
+	return false
+}
+
+// TestEvaluate_SMARTUnreadableOnlyAfterADriveHasAnswered is the rule's entire
+// design in one test: a drive that has NEVER answered is a capability fact, a
+// drive that STOPS is an event, and only the second is worth telling anyone
+// about.
+//
+// The two cases run against the same evaluator in sequence, because the
+// difference between them IS the sequence. A test that checked them
+// independently would pass against an implementation with no memory at all.
+func TestEvaluate_SMARTUnreadableOnlyAfterADriveHasAnswered(t *testing.T) {
+	silent := types.DiskMember{
+		DeviceID: 7, Enclosure: 64, Slot: 7, Online: true,
+		Serial: "L0J4Y3AJ", Vendor: "HITACHI",
+		SMARTEnabled: false,
+	}
+	answering := silent
+	answering.SMARTEnabled, answering.SMARTHealthy = true, true
+
+	e := alert.New()
+	now := time.Now()
+
+	// A drive that has never answered: silence, however many cycles pass.
+	// Firing here would put a permanent warning on every host whose drives do
+	// not do SMART behind their controller.
+	for i := range 3 {
+		if fires(e.Evaluate(defaults(), memberSnapshot(silent), now.Add(time.Duration(i)*time.Second)), alert.RuleSMARTUnreadable) {
+			t.Fatalf("cycle %d: warned about a drive that has never answered", i)
+		}
+	}
+
+	// It answers. Still nothing to say.
+	if fires(e.Evaluate(defaults(), memberSnapshot(answering), now.Add(4*time.Second)), alert.RuleSMARTUnreadable) {
+		t.Fatal("warned about a drive that is answering")
+	}
+
+	// And now it stops. This is the event.
+	alerts := e.Evaluate(defaults(), memberSnapshot(silent), now.Add(5*time.Second))
+	if !fires(alerts, alert.RuleSMARTUnreadable) {
+		t.Fatal("a drive that answered and then stopped raised nothing")
+	}
+	for _, a := range alerts {
+		if a.Rule != alert.RuleSMARTUnreadable {
+			continue
+		}
+		// Warning, not critical: an absence is not a failure.
+		if a.Severity != types.SeverityWarning {
+			t.Errorf("severity = %q, want warning: an absent reading is not a failing drive", a.Severity)
+		}
+		// Keyed by position, like every other member alert -- and for the
+		// reason this rule exists: the serial is read with a separate command
+		// that fails on exactly the drive this fires for.
+		if a.Resource != "sdb/64:7" {
+			t.Errorf("resource = %q, want sdb/64:7", a.Resource)
+		}
+	}
+
+	// Recovery clears it, because the rule only fires while the reading is
+	// absent. A stuck warning on a drive that came back would be its own
+	// false signal.
+	if fires(e.Evaluate(defaults(), memberSnapshot(answering), now.Add(6*time.Second)), alert.RuleSMARTUnreadable) {
+		t.Error("the warning survived the drive answering again")
+	}
+}
+
+// A fresh evaluator has no history, so a drive that was already silent before a
+// restart is indistinguishable from one that never answered -- and is treated
+// as the latter.
+//
+// That is the honest reading rather than a limitation to work around:
+// "has answered in this run" is the only claim a process can make about what it
+// observed, and persisting it would mean alerting on a fact nobody in this
+// process saw.
+func TestEvaluate_SMARTUnreadableStateResetsWithTheProcess(t *testing.T) {
+	silent := types.DiskMember{
+		DeviceID: 7, Enclosure: 64, Slot: 7, Online: true, SMARTEnabled: false,
+	}
+	answering := silent
+	answering.SMARTEnabled, answering.SMARTHealthy = true, true
+
+	before := alert.New()
+	before.Evaluate(defaults(), memberSnapshot(answering), time.Now())
+	if !fires(before.Evaluate(defaults(), memberSnapshot(silent), time.Now()), alert.RuleSMARTUnreadable) {
+		t.Fatal("the pre-restart evaluator did not warn, so the comparison below means nothing")
+	}
+
+	// The same drive, the same silence, a new process.
+	after := alert.New()
+	if fires(after.Evaluate(defaults(), memberSnapshot(silent), time.Now()), alert.RuleSMARTUnreadable) {
+		t.Error("warned after a restart about a drive this process never saw answer")
+	}
+}
+
+// Two drives in the same volume are tracked separately: one going quiet must
+// not implicate the other, and one that has answered must not vouch for a
+// neighbour that has not.
+func TestEvaluate_SMARTUnreadableIsPerDrive(t *testing.T) {
+	answering := types.DiskMember{DeviceID: 7, Enclosure: 64, Slot: 7, Online: true, SMARTEnabled: true, SMARTHealthy: true}
+	neverAnswered := types.DiskMember{DeviceID: 9, Enclosure: 64, Slot: 9, Online: true, SMARTEnabled: false}
+
+	e := alert.New()
+	now := time.Now()
+	e.Evaluate(defaults(), memberSnapshot(answering, neverAnswered), now)
+
+	// The first stops; the second has still never answered.
+	stopped := answering
+	stopped.SMARTEnabled, stopped.SMARTHealthy = false, false
+	alerts := e.Evaluate(defaults(), memberSnapshot(stopped, neverAnswered), now.Add(time.Second))
+
+	var resources []string
+	for _, a := range alerts {
+		if a.Rule == alert.RuleSMARTUnreadable {
+			resources = append(resources, a.Resource)
+		}
+	}
+	if len(resources) != 1 || resources[0] != "sdb/64:7" {
+		t.Errorf("smart_unreadable fired for %v, want exactly [sdb/64:7]: the drive in bay 9 "+
+			"has never answered and is a capability fact, not an event", resources)
+	}
+}
