@@ -81,6 +81,10 @@ func localNodeName(mgr *config.Manager) string {
 	return mgr.Current().LocalName()
 }
 
+// listenHook is called once the listener is bound, before anything serves. It
+// does nothing outside tests; see afterListen in runServe.
+var listenHook = func() {}
+
 // serverListeningMsg is logged once the listener is bound, with the address it
 // bound to. Named rather than inlined because the integration suite reads this
 // line to discover the port the kernel assigned it.
@@ -90,6 +94,21 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	if serveIntervalMs <= 0 {
 		return &types.InvalidIntervalError{Message: "interval must be greater than zero"}
 	}
+
+	// The signal handler is installed FIRST, before anything is started and
+	// well before the socket is bound.
+	//
+	// It used to be installed inside serveUntilSignal, which runs after
+	// srv.Listen() -- so between the bind and the handler the process was
+	// reachable on its port with SIGTERM still at its default disposition, and
+	// a stop arriving in that window killed it outright: no clean shutdown, no
+	// monitor stop, no drained connections. `systemctl stop` during startup is
+	// a real ordering on a rolling deploy, not a theoretical one (#106).
+	//
+	// Installed before the monitor starts as well, so a stop during collector
+	// startup -- which takes longer than the bind -- is handled too.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	cfgMgr, err := loadServeConfig(cmd)
 	if err != nil {
@@ -209,6 +228,15 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// afterListen is called with the socket bound and nothing serving yet.
+	//
+	// It exists so a test can occupy that instant deterministically: the window
+	// this fix closes is a few microseconds wide, and a test that waits for the
+	// port and then signals wins the race almost always -- which is how the
+	// defect survived (#106). With the hook, "a SIGTERM arriving between the
+	// bind and the first request" is a case that runs the same way every time.
+	afterListen := listenHook
+
 	// Bind before serving so a bad address fails here rather than inside the
 	// goroutine below, and so the watchdog has a real address to dial.
 	bound, err := srv.Listen()
@@ -224,8 +252,9 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	// reading the journal, or a test harness that asked for port 0 precisely so
 	// that no two of them could collide.
 	slog.Info(serverListeningMsg, "addr", bound.String())
+	afterListen()
 
-	return serveUntilSignal(srv, mon)
+	return serveUntilSignal(ctx, srv, mon)
 }
 
 // watchdogFor builds the systemd watchdog for a running server, or a Watchdog
@@ -336,9 +365,20 @@ func collectionIsCurrent(mon *monitor.Monitor) watchdog.Collecting {
 // serveUntilSignal runs srv until it fails or the process receives SIGINT or
 // SIGTERM, then shuts both srv and mon down cleanly. It returns the error that
 // ended the server, or nil when the shutdown was signal-initiated and clean.
-func serveUntilSignal(srv *server.Server, mon *monitor.Monitor) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+func serveUntilSignal(ctx context.Context, srv *server.Server, mon *monitor.Monitor) error {
+	// A signal that arrived during startup is already in ctx, and the server is
+	// stopped without ever being started rather than serving one request and
+	// then being told to stop.
+	if ctx.Err() != nil {
+		slog.Info("shutdown signal received before serving started")
+		stopMonitor(mon)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		// The listener is already bound -- runServe binds before this is
+		// called -- so it is closed here rather than left open on a process
+		// that is exiting.
+		return srv.Stop(shutdownCtx)
+	}
 
 	// Start blocks, so run it alongside the signal wait. The buffered channel
 	// keeps the goroutine from leaking if a signal wins the race.

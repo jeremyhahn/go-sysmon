@@ -401,7 +401,22 @@ func (s *Server) listener() net.Listener {
 
 // Stop gracefully shuts down the HTTP server within the deadline given by ctx.
 func (s *Server) Stop(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
+	err := s.server.Shutdown(ctx)
+
+	// Shutdown closes the listeners http.Server is SERVING on, and a listener
+	// that was bound and never served is not one of them. Listen exists so the
+	// address can be bound before serving starts (#78), so Stop has to release
+	// what Listen took -- otherwise a process told to stop during startup keeps
+	// the port open, and the next start of the service finds its own address in
+	// use (#106).
+	//
+	// Closing twice is not an error worth reporting: http.Server has already
+	// closed it on the normal path, and "use of closed network connection" is
+	// the expected answer there rather than a failure to stop.
+	if l := s.listener(); l != nil {
+		_ = l.Close()
+	}
+	return err
 }
 
 // handleVersion returns the build metadata embedded at compile time so the

@@ -3,9 +3,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
+	"os/signal"
 	"syscall"
 	"testing"
 	"time"
@@ -72,7 +74,7 @@ func TestServeUntilSignal_ReturnsListenError(t *testing.T) {
 	mon := startedMonitor(t)
 	srv := server.New(mon, l.Addr().String(), nil)
 
-	err = serveUntilSignal(srv, mon)
+	err = serveUntilSignal(context.Background(), srv, mon)
 	if err == nil {
 		t.Fatal("serveUntilSignal() = nil, want the bind error")
 	}
@@ -105,7 +107,9 @@ func TestServeUntilSignal_ShutsDownOnSignal(t *testing.T) {
 	srv := server.New(mon, addr, nil)
 
 	done := make(chan error, 1)
-	go func() { done <- serveUntilSignal(srv, mon) }()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	go func() { done <- serveUntilSignal(ctx, srv, mon) }()
 
 	// Wait for the listener to come up before signalling.
 	deadline := time.Now().Add(3 * time.Second)
