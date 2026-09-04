@@ -178,6 +178,14 @@ everything, and would be switched off within a week. **"Is there a signature"
 and "does the signature verify" are different questions**, and only the first
 can be answered without the file.
 
+**A clean head over a dirty history.** Six commits on a branch carried git
+conflict markers in the committed frontend bundle and every gate passed, because
+later commits rebuilt the bundle and the branch *head* was clean. The tree that
+would have been squash-merged was fine; `git show` on any of those six produced
+a broken bundle, and a bisect would have landed on one. **Checking the end state
+is not checking the work** — where history is navigable, it is part of what
+shipped.
+
 **Recomputing a combined view from the raw list.** A commit's status was read by
 paging the per-context status list and keeping the first entry per context.
 Four entries existed for one aggregator and two shared a timestamp to the

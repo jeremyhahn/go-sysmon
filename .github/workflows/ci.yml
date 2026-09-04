@@ -7,8 +7,6 @@ on:
     branches: [main, master, develop]
   workflow_dispatch:
 
-# Cancel superseded runs on the same branch; only the newest matters.
-
 env:
   # The go.mod toolchain directive pins the exact compiler, including the
   # patched standard library. Reading the version from go.mod keeps CI on
@@ -23,11 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history so the signature scan can walk the commits this PR
-          # adds. Signed commits are enforced on main, but every merge is a
-          # Gitea squash -- a new commit Gitea signs itself -- so that
-          # enforcement never sees a branch's own commits (#41). A shallow
-          # clone would leave the scan reporting SKIPPED forever.
+          # Full history so the scans below can walk the commits this PR adds,
+          # not merely the tree it ends at. Both need it, for the same reason
+          # from opposite directions: the conflict-marker contamination in #40
+          # was six commits deep under a CLEAN HEAD, and signed commits are
+          # enforced on main only through a Gitea squash -- a new commit Gitea
+          # signs itself -- so that enforcement never sees a branch's own
+          # commits (#41). A shallow clone would leave both scans reporting a
+          # pass, or SKIPPED forever, for exactly the cases they exist to catch.
           fetch-depth: 0
 
       - uses: actions/setup-go@v7
@@ -78,7 +79,14 @@ jobs:
       # distinguishable from a lint finding in the job log.
       - run: make fmt-check
       - run: make vet
+
+      # The base is passed explicitly so the conflict-marker scan can walk the
+      # commits this PR adds. On a push to main there is no pull_request
+      # context, the variable is empty, and the scan reports the history half as
+      # SKIPPED rather than as a pass -- which is the distinction #40 is about.
       - run: make lint
+        env:
+          CONFLICT_SCAN_BASE: ${{ github.event.pull_request.base.sha }}
 
       # Its own step so a signing failure is named in the job list rather than
       # buried in lint output. On a push to main there is no pull_request

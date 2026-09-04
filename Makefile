@@ -65,7 +65,7 @@ INTERVAL ?= 1000
         test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
-        ci ci-fast vulncheck gosec audit check-signed release-build release-build-desktop clean-dist \
+        ci ci-fast vulncheck gosec audit check-signed check-conflicts release-build release-build-desktop clean-dist \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
 
@@ -255,7 +255,7 @@ uninstall-extension-cinnamon:
 # lint fails the build on any finding. gofmt and vet always run; golangci-lint
 # is resolved from GOBIN/GOPATH because "go install"-ed tools are not on the
 # default PATH that make uses.
-lint: fmt-check vet lint-workflows
+lint: fmt-check vet lint-workflows check-conflicts
 	@if [ ! -x "$(GOLANGCI_LINT)" ] && ! command -v golangci-lint >/dev/null 2>&1; then \
 		echo "golangci-lint not found. Install it with:"; \
 		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
@@ -271,6 +271,18 @@ lint: fmt-check vet lint-workflows
 # skip goes unnoticed. CI passes the PR base and it does real work there.
 check-signed:
 	@SIGNED_SCAN_BASE="$(SIGNED_SCAN_BASE)" ./scripts/check-signed-commits.sh
+
+# check-conflicts fails when a git conflict marker has been committed.
+#
+# It is part of lint because the class it catches is invisible to everything
+# else: the committed frontend bundle is generated output that nothing compiles
+# and no test reads, so a marker in it survives every other gate (#40).
+#
+# Set CONFLICT_SCAN_BASE to also scan each commit ahead of that base. Without
+# it only the working tree is scanned, and the script says so rather than
+# reporting a pass it did not earn.
+check-conflicts:
+	@CONFLICT_SCAN_BASE="$(CONFLICT_SCAN_BASE)" ./scripts/check-conflict-markers.sh
 
 # lint-workflows validates the GitHub Actions files with the same expression
 # parser GitHub uses. A rejected workflow fails the run before any job starts,
