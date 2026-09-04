@@ -65,7 +65,7 @@ INTERVAL ?= 1000
         test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
-        ci ci-fast vulncheck gosec audit release-build release-build-desktop clean-dist \
+        ci ci-fast vulncheck gosec audit check-signed release-build release-build-desktop clean-dist \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
 
@@ -262,6 +262,15 @@ lint: fmt-check vet lint-workflows
 		exit 1; \
 	fi
 	$(GOLANGCI_LINT) run $(PKG_ALL)
+
+# check-signed fails when a commit on this branch carries no signature.
+#
+# NOT part of `lint`, deliberately. It needs a base commit to have a range to
+# scan, so locally it would print SKIPPED on every run -- and a line that is
+# always skipped teaches people to read past it, which is how the next real
+# skip goes unnoticed. CI passes the PR base and it does real work there.
+check-signed:
+	@SIGNED_SCAN_BASE="$(SIGNED_SCAN_BASE)" ./scripts/check-signed-commits.sh
 
 # lint-workflows validates the GitHub Actions files with the same expression
 # parser GitHub uses. A rejected workflow fails the run before any job starts,

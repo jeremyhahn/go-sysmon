@@ -22,6 +22,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history so the signature scan can walk the commits this PR
+          # adds. Signed commits are enforced on main, but every merge is a
+          # Gitea squash -- a new commit Gitea signs itself -- so that
+          # enforcement never sees a branch's own commits (#41). A shallow
+          # clone would leave the scan reporting SKIPPED forever.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
@@ -72,6 +79,15 @@ jobs:
       - run: make fmt-check
       - run: make vet
       - run: make lint
+
+      # Its own step so a signing failure is named in the job list rather than
+      # buried in lint output. On a push to main there is no pull_request
+      # context, the base is empty, and the scan reports SKIPPED -- correctly,
+      # since main's own commits are what branch protection already verifies.
+      - name: Signed commits
+        run: make check-signed
+        env:
+          SIGNED_SCAN_BASE: ${{ github.event.pull_request.base.sha }}
 
   security:
     name: Security Scan
