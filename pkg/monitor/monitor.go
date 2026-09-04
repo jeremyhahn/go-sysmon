@@ -33,6 +33,24 @@ type Subscriber struct {
 	Ch chan *types.Snapshot
 	// Done is closed when the subscriber is removed via Unsubscribe.
 	Done chan struct{}
+
+	// generation is the run this subscription was taken against, so a Stop
+	// closes the subscribers of the run it is ending and no others.
+	generation uint64
+
+	// closeOnce guards Done. Two callers can reach a subscriber at once --
+	// Stop sweeping the map and a consumer unsubscribing -- and both used to
+	// check "is it closed" and then close it, which is not one operation. Both
+	// could see it open and both could close it, which PANICS and takes the
+	// process with it. Reachable in production: the SSE handler unsubscribes
+	// when a client disconnects, and Stop runs whenever the poll interval
+	// changes.
+	closeOnce sync.Once
+}
+
+// close closes Done exactly once, however many callers reach it.
+func (s *Subscriber) close() {
+	s.closeOnce.Do(func() { close(s.Done) })
 }
 
 // Monitor polls a Snapshotter on a fixed interval and broadcasts every
@@ -190,14 +208,21 @@ func (m *Monitor) Stop() error {
 	// returns; subscribers would otherwise see a snapshot after their close.
 	<-stopped
 
-	// Signal all subscribers that the monitor has stopped.
+	// Signal the subscribers of THIS run that the monitor has stopped.
+	//
+	// Scoped by generation rather than sweeping everything: a subscription
+	// belonging to a later run must not be closed by an earlier run's stop,
+	// which would hand its consumer a closed Done on a monitor that is
+	// collecting normally -- and "Done closed means the monitor stopped" is
+	// reasoning the delta hub depends on.
+	//
+	// A subscriber taken after this Stop began still carries the outgoing
+	// generation and is still closed here, which is right: it belongs to the
+	// run that is ending.
+	ending := m.generation.Load()
 	m.subscribers.Range(func(_, value any) bool {
-		sub := value.(*Subscriber)
-		select {
-		case <-sub.Done:
-			// already closed
-		default:
-			close(sub.Done)
+		if sub := value.(*Subscriber); sub.generation == ending {
+			sub.close()
 		}
 		return true
 	})
@@ -239,6 +264,10 @@ func (m *Monitor) Subscribe() *Subscriber {
 		ID:   m.nextID.Add(1),
 		Ch:   make(chan *types.Snapshot, subscriberBufSize),
 		Done: make(chan struct{}),
+		// Stamped before registering, so a Stop that sweeps immediately after
+		// the Store sees the generation this subscription was taken against
+		// rather than a zero value that matches nothing.
+		generation: m.generation.Load(),
 	}
 	m.subscribers.Store(sub.ID, sub)
 	return sub
@@ -251,13 +280,7 @@ func (m *Monitor) Unsubscribe(id uint64) {
 	if !loaded {
 		return
 	}
-	sub := value.(*Subscriber)
-	select {
-	case <-sub.Done:
-		// already closed
-	default:
-		close(sub.Done)
-	}
+	value.(*Subscriber).close()
 }
 
 // Snapshot returns the most recently collected snapshot without waiting for
