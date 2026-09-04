@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { mockSnapshotFeed } from './fixtures/mock-sse';
 
 test.describe('GPU Panel', () => {
   // Helper: navigate to the GPU tab and wait for snapshot data.
@@ -108,57 +109,37 @@ test.describe('GPU Panel', () => {
   });
 
   test('GPU panel shows Utilization section when GPUs are present', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 1 });
     await openGpuPanel(page);
-
-    if (await page.getByText('No GPUs detected').isVisible().catch(() => false)) {
-      test.skip();
-      return;
-    }
 
     await expect(page.getByText('Utilization').first()).toBeVisible();
   });
 
   test('GPU panel shows Memory section with MiB values when GPUs are present', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 1 });
     await openGpuPanel(page);
-
-    if (await page.getByText('No GPUs detected').isVisible().catch(() => false)) {
-      test.skip();
-      return;
-    }
 
     await expect(page.getByText(/MiB/).first()).toBeVisible();
   });
 
   test('GPU panel shows ECC status row in metrics footer when GPUs are present', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 1 });
     await openGpuPanel(page);
-
-    if (await page.getByText('No GPUs detected').isVisible().catch(() => false)) {
-      test.skip();
-      return;
-    }
 
     await expect(page.getByText('ECC').first()).toBeVisible();
   });
 
   test('GPU panel renders gauge charts when GPUs are present', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 1 });
     await openGpuPanel(page);
-
-    if (await page.getByText('No GPUs detected').isVisible().catch(() => false)) {
-      test.skip();
-      return;
-    }
 
     await expect(page.getByText('GPU Util').first()).toBeVisible();
     await expect(page.getByText('VRAM').first()).toBeVisible();
   });
 
   test('GPU panel renders time-series charts when GPUs are present', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 1 });
     await openGpuPanel(page);
-
-    if (await page.getByText('No GPUs detected').isVisible().catch(() => false)) {
-      test.skip();
-      return;
-    }
 
     await expect(page.getByText('GPU Usage (60s)').first()).toBeVisible();
     await expect(page.getByText('Memory Usage (60s)').first()).toBeVisible();
@@ -168,16 +149,33 @@ test.describe('GPU Panel', () => {
   });
 
   test('GPU panel shows GPU index and name in card header when GPUs are present', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 1 });
     await openGpuPanel(page);
-
-    if (await page.getByText('No GPUs detected').isVisible().catch(() => false)) {
-      test.skip();
-      return;
-    }
 
     const gpuHeader = page.locator('h3').filter({ hasText: /^GPU \d+:/ }).first();
     await expect(gpuHeader).toBeVisible();
     const headerText = await gpuHeader.textContent();
     expect(headerText).toMatch(/^GPU \d+:/);
+  });
+});
+
+/**
+ * The state that used to be a skip condition, now asserted.
+ *
+ * "No GPUs detected" was read six times to decide whether a test should run,
+ * and never once checked to be correct. A host without a GPU is the ordinary
+ * case on most of this fleet, so it is the message most operators see and the
+ * one that had no coverage at all (#35).
+ */
+test.describe('GPU Panel, with no GPU', () => {
+  test('says so, rather than rendering an empty panel', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 0 });
+
+    await page.goto('/');
+    await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
+    await page.getByRole('button', { name: 'GPU' }).click();
+    await page.waitForTimeout(500);
+
+    await expect(page.getByText('No GPUs detected')).toBeVisible();
   });
 });

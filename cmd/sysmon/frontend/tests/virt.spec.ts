@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { mockSnapshotFeed } from './fixtures/mock-sse';
 
 /**
  * containersTable scopes to the container listing.
@@ -17,17 +18,6 @@ function containersTable(page: Page) {
   });
 }
 
-/**
- * runningContainers asks the server what it can see, rather than inferring it
- * from whichever tables happen to be on the page. The API-based tests further
- * down this file already work this way; the DOM tests now agree with them.
- */
-async function runningContainers(page: Page): Promise<number> {
-  const resp = await page.request.get('/api/snapshot');
-  const snap = await resp.json();
-  return (snap.virtualization?.containers ?? []).length;
-}
-
 test.describe('Containers Tab', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
@@ -40,11 +30,30 @@ test.describe('Containers Tab', () => {
       await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
     }
   });
+});
+
+/**
+ * The container table, driven by a mocked snapshot rather than by whatever the
+ * host happens to be running.
+ *
+ * These assertions used to be skipped on a host with no containers, which is a
+ * test reporting success for not running -- the defect this suite exists to
+ * catch (#35). Columns, sort order and the detail drawer are properties of the
+ * component, so the data they run against belongs in the fixture, exactly as
+ * pagination already does.
+ *
+ * The host-dependent half is not deleted: the empty state has its own test
+ * below, so a machine with no containers is asserted rather than skipped.
+ */
+test.describe('Containers Tab, with containers', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockSnapshotFeed(page, { containers: 6 });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Containers', exact: true }).click();
+    await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
+  });
 
   test('table exposes the operational columns', async ({ page }) => {
-    if ((await runningContainers(page)) === 0) {
-      test.skip(true, 'no containers running on this host');
-    }
     const table = containersTable(page);
     // Headers carry a sort indicator when active, so anchor rather than
     // matching exactly. Sort state itself is asserted via aria-sort below.
@@ -58,9 +67,6 @@ test.describe('Containers Tab', () => {
   });
 
   test('selecting a row opens the detail drawer', async ({ page }) => {
-    if ((await runningContainers(page)) === 0) {
-      test.skip(true, 'no containers running on this host');
-    }
     await containersTable(page).locator('tbody tr').first().click();
     await expect(page.getByText('CPU throttling')).toBeVisible();
     await expect(page.getByText('OOM kills / events')).toBeVisible();
@@ -69,6 +75,33 @@ test.describe('Containers Tab', () => {
 
   test('containers tab does not show virtual machines', async ({ page }) => {
     await expect(page.getByRole('heading', { name: 'Virtual Machines' })).toHaveCount(0);
+  });
+});
+
+/**
+ * The other half, and the half that used to be a skip: what a host with no
+ * containers shows.
+ *
+ * A machine running none is the ordinary case on a CI runner and on most of
+ * the fleet, so it is the state most users see and the one that had no
+ * coverage at all. Asserting it costs one test and turns "we did not look"
+ * into "we looked, and this is what it says".
+ */
+test.describe('Containers Tab, with none', () => {
+  test('says there are none rather than rendering an empty table', async ({ page }) => {
+    await mockSnapshotFeed(page, { containers: 0 });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Containers', exact: true }).click();
+    await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
+
+    // The rollup still renders -- a host with no containers is a fact about
+    // the host, not a broken page.
+    await expect(page.getByText('Containers', { exact: true }).first()).toBeVisible();
+
+    // And no container rows are claimed. Scoped to the container table so the
+    // storage summary's rows, which exist whenever a runtime socket answers,
+    // cannot satisfy this.
+    await expect(containersTable(page).locator('tbody tr')).toHaveCount(0);
   });
 });
 
@@ -103,14 +136,21 @@ test.describe('Virtualization Tab', () => {
     const resp = await request.get('/api/snapshot');
     const snap = await resp.json();
     const containers = snap.virtualization.containers ?? [];
-    if (containers.length === 0) {
-      test.skip(true, 'no containers running on this host');
-    }
-    for (const field of [
-      'throttled_percent', 'nr_throttled', 'oom_kills', 'memory_peak_bytes',
-      'cpu_pressure', 'memory_pressure', 'io_pressure', 'uptime_seconds',
-    ]) {
-      expect(containers[0]).toHaveProperty(field);
+    // Every entry, not just the first, and no skip when there are none: this
+    // asserts a property of whatever the server actually returned. On a host
+    // with no containers it is vacuously true and still RUNS, which is the
+    // difference between "nothing violated this" and "we did not look".
+    //
+    // The guarantee that a populated entry carries these fields does not rest
+    // on a host happening to run a container: pkg/types has a marshalling test
+    // that asserts the same field names on a filled-in ContainerInfo.
+    for (const container of containers) {
+      for (const field of [
+        'throttled_percent', 'nr_throttled', 'oom_kills', 'memory_peak_bytes',
+        'cpu_pressure', 'memory_pressure', 'io_pressure', 'uptime_seconds',
+      ]) {
+        expect(container).toHaveProperty(field);
+      }
     }
   });
 
@@ -118,11 +158,13 @@ test.describe('Virtualization Tab', () => {
     const resp = await request.get('/api/snapshot');
     const snap = await resp.json();
     const vms = snap.virtualization.vms ?? [];
-    if (vms.length === 0) {
-      test.skip(true, 'no VMs running on this host');
-    }
-    for (const field of ['vcpu_threads', 'thread_count', 'uptime_seconds', 'net_rx_rate', 'net_tx_rate']) {
-      expect(vms[0]).toHaveProperty(field);
+    // Same shape as the container check above: every entry, no skip, and the
+    // populated-entry guarantee lives in pkg/types where it does not depend on
+    // a host running a guest.
+    for (const vm of vms) {
+      for (const field of ['vcpu_threads', 'thread_count', 'uptime_seconds', 'net_rx_rate', 'net_tx_rate']) {
+        expect(vm).toHaveProperty(field);
+      }
     }
   });
 });

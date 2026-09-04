@@ -1,5 +1,20 @@
 import type { Page } from "@playwright/test";
 import snapshot from "./snapshot.json" with { type: "json" };
+/**
+ * Zero-valued entries with EVERY field the Go types emit, generated from them
+ * rather than written by hand.
+ *
+ * Hand-written fixtures here failed exactly once and instructively: a container
+ * built from the fields a test happened to care about was missing `read_iops`,
+ * so the detail drawer threw on `selected.read_iops.toLocaleString()` and never
+ * rendered -- and the test reported "CPU throttling not found", which reads as
+ * a missing label rather than a fixture with a hole in it.
+ *
+ * pkg/types has a test asserting these key sets still match the Go structs, so
+ * a field added there fails loudly here instead of silently producing another
+ * undefined.
+ */
+import templates from "./entry-templates.json" with { type: "json" };
 
 /**
  * Serves a deterministic snapshot over a mocked /api/events stream.
@@ -41,6 +56,137 @@ export interface MockOptions {
    * a renderable card.
    */
   disks?: Partial<Snapshot["disks"][number]>[];
+  /**
+   * Replaces the container list. Default: the fixture's, which is empty.
+   *
+   * This exists so a table's columns, sorting and detail drawer can be tested
+   * on a host that is running no containers. They used to be skipped there --
+   * a test that reports success for not running, which is the thing this suite
+   * is meant to catch rather than perform (#35).
+   */
+  containers?: number;
+  /** Replaces the VM list. Same reasoning as containers. */
+  vms?: number;
+  /** Replaces the container image list. Same reasoning. */
+  images?: number;
+  /** Attaches SMART attributes to the first disk. Same reasoning. */
+  smartAttrs?: boolean;
+  /**
+   * Replaces the GPU list. Default: the fixture's two, which are integrated
+   * adapters reporting zeroes. Pass a count for NVIDIA-shaped entries with
+   * memory, utilisation and ECC, or 0 for a host with no GPU at all -- both
+   * states used to decide whether six tests ran (#35).
+   */
+  gpus?: number;
+}
+
+/** Builds `count` discrete GPUs with memory, utilisation and ECC populated. */
+export function makeGPUs(count: number) {
+  const template = snapshot.gpus[0];
+  return Array.from({ length: count }, (_, i) => ({
+    ...template,
+    index: i,
+    name: `NVIDIA RTX PRO 6000 (${i})`,
+    uuid: `GPU-0000000${i}`,
+    driver_version: "580.178.04",
+    compute_mode: "Default",
+    memory_total_mib: 98304,
+    memory_used_mib: 12288,
+    memory_free_mib: 86016,
+    memory_percent: 12.5,
+    gpu_util_percent: 37 + i,
+    memory_util_percent: 12,
+    temperature_gpu: 54,
+    power_draw_w: 180,
+    power_limit_w: 600,
+    ecc_enabled: true,
+  }));
+}
+
+/** Builds `count` containers with predictable, sortable values. */
+export function makeContainers(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    ...templates.container,
+    index: i,
+    id: `c0ffee${String(i).padStart(10, "0")}`,
+    short_id: `c0ffee${String(i).padStart(6, "0")}`,
+    name: `container-${i}`,
+    runtime: "docker",
+    command: `/usr/bin/app --id ${i}`,
+    cgroup_path: `/sys/fs/cgroup/system.slice/docker-${i}.scope`,
+    cpu_percent: (count - i) * 1.5,
+    cpu_usage_usec: (count - i) * 1_000_000,
+    memory_bytes: (count - i) * 64 * 1024 * 1024,
+    memory_limit_bytes: 2 * 1024 * 1024 * 1024,
+    memory_percent: (count - i) * 2.5,
+    memory_peak_bytes: (count - i) * 80 * 1024 * 1024,
+    pids: 10 + i,
+    process_count: 10 + i,
+    read_bytes: 0,
+    write_bytes: 0,
+    read_bytes_rate: 0,
+    write_bytes_rate: 0,
+    throttled_percent: i === 0 ? 12.5 : 0,
+    nr_throttled: i === 0 ? 42 : 0,
+    nr_periods: 1000,
+    oom_kills: 0,
+    cpu_pressure: 0,
+    memory_pressure: 0,
+    io_pressure: 0,
+    uptime_seconds: 3600 + i,
+  }));
+}
+
+/** Builds `count` virtual machines. */
+export function makeVMs(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    ...templates.vm,
+    index: i,
+    pid: 2000 + i,
+    name: `guest-${i}`,
+    hypervisor: "qemu",
+    vcpus: 4,
+    vcpu_threads: 4,
+    thread_count: 8,
+    memory_bytes: 4 * 1024 * 1024 * 1024,
+    rss_bytes: 3 * 1024 * 1024 * 1024,
+    cpu_percent: (count - i) * 10,
+    uptime_seconds: 7200 + i,
+    net_rx_rate: 1024,
+    net_tx_rate: 2048,
+    disks: [],
+    networks: [],
+  }));
+}
+
+/** Builds `count` container images. */
+export function makeImages(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    ...templates.image,
+    id: `sha256:image${String(i).padStart(8, "0")}`,
+    tags: [`example/app:${i}`],
+    size_bytes: (count - i) * 10 * 1024 * 1024,
+    created_unix: 1_700_000_000 + i,
+    dangling: false,
+    in_use: i % 2 === 0,
+  }));
+}
+
+/** Builds a SMART attribute table with a known worst entry. */
+export function makeSMARTAttrs() {
+  const names = [
+    "Raw_Read_Error_Rate", "Reallocated_Sector_Ct", "Power_On_Hours",
+    "Temperature_Celsius", "Wear_Leveling_Count", "Total_LBAs_Written",
+  ];
+  return names.map((name, i) => ({
+    id: i + 1,
+    name,
+    value: 100 - i,
+    worst: 100 - i,
+    threshold: 10,
+    raw: String(i * 100),
+    failing: false,
+  }));
 }
 
 /**
@@ -57,13 +203,38 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
   const count = opts.processCount ?? 60;
 
   const processes = makeProcesses(count);
-  const disks =
+  let disks =
     opts.disks == null
       ? snapshot.disks
       : opts.disks.map((d, i) => ({ ...snapshot.disks[0], index: i, ...d }));
+  if (opts.smartAttrs) {
+    disks = disks.map((d, i) => (i === 0 ? { ...d, smart_attrs: makeSMARTAttrs() } : d));
+  }
+
+  const gpus = opts.gpus == null ? snapshot.gpus : makeGPUs(opts.gpus);
+
+  const virtualization = {
+    ...snapshot.virtualization,
+    containers: opts.containers == null ? snapshot.virtualization.containers : makeContainers(opts.containers),
+    vms: opts.vms == null ? snapshot.virtualization.vms : makeVMs(opts.vms),
+    runtime: {
+      ...snapshot.virtualization.runtime,
+      // The image table renders only when a runtime socket answered, so
+      // supplying images without this produces a fixture whose table is not on
+      // the page at all -- and the test then fails looking for a search box,
+      // which reads as a missing control rather than a missing precondition.
+      // Found by running the suite rather than by reading it.
+      available: opts.images == null ? snapshot.virtualization.runtime.available : true,
+      images: opts.images == null ? snapshot.virtualization.runtime.images : makeImages(opts.images),
+      images_total: opts.images == null ? snapshot.virtualization.runtime.images_total : opts.images,
+    },
+  };
+
   const payload: Snapshot = {
     ...snapshot,
     disks,
+    gpus,
+    virtualization,
     processes: {
       ...snapshot.processes,
       total: count,

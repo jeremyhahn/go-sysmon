@@ -110,23 +110,19 @@ test.describe('DataTable sorting', () => {
   });
 });
 
-// These two run against whatever the host actually has, because they are
-// checking that real collector output reaches the table. They skip rather than
-// fail when the host has nothing to show -- a CI container has no SMART-capable
-// disk, and asserting otherwise would just be flaky.
+// These two used to run against whatever the host happened to have, and to skip
+// when it had nothing -- a CI container has no SMART-capable disk, and the
+// image listing depends on a background /system/df query that may not have
+// landed. Skipping made both report success for not running (#35).
 //
-// The image listing is no longer one of those "CI has none" cases: a runner
-// with a docker socket has images, and this test now runs there. It stays
-// conditional because whether it runs at all depends on timing -- image sizes
-// come from a background /system/df query that takes many seconds on a host
-// with a large library, so a snapshot taken before it lands reports none.
+// They are the same kind of assertion as pagination: search, sort and column
+// layout are properties of the component, so the data belongs in the fixture.
+// What is host-dependent -- whether a real collector produces this shape at
+// all -- is covered where it can be asserted honestly: pkg/collector has tests
+// for the SMART attribute decode, and the image listing has its own Go tests.
 test.describe('Images table', () => {
-  test('supports search, sort and pagination when images are present', async ({ page, request }) => {
-    const snap = await (await request.get('/api/snapshot')).json();
-    const images = snap.virtualization?.runtime?.images ?? [];
-    if (images.length === 0) {
-      test.skip(true, 'no container images visible on this host');
-    }
+  test('supports search, sort and pagination when images are present', async ({ page }) => {
+    await mockSnapshotFeed(page, { images: 30 });
 
     await page.goto('/');
     await page.getByRole('button', { name: 'Containers', exact: true }).click();
@@ -147,14 +143,8 @@ test.describe('Images table', () => {
 });
 
 test.describe('SMART attributes table', () => {
-  test('expands into a searchable, sortable, paginated table', async ({ page, request }) => {
-    const snap = await (await request.get('/api/snapshot')).json();
-    const withAttrs = (snap.disks ?? []).find(
-      (d: { smart_attrs: unknown[] | null }) => (d.smart_attrs ?? []).length > 0
-    );
-    if (!withAttrs) {
-      test.skip(true, 'no disk reports SMART attributes on this host');
-    }
+  test('expands into a searchable, sortable, paginated table', async ({ page }) => {
+    await mockSnapshotFeed(page, { smartAttrs: true });
 
     await page.goto('/');
     await page.getByRole('button', { name: 'Storage', exact: true }).click();
