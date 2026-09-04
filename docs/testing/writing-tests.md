@@ -245,6 +245,22 @@ implementation cannot fail when the implementation changes**, which is the one
 thing a test is for. Both were caught only by mutating; neither was visible on
 inspection, and both read as careful when written.
 
+**A test that passes alone and fails in company.** A binding's frame stream was
+observed through a **package-level** seam, so streams started by other tests in
+the same package wrote into this test's capture and their frames were counted as
+this binding's. Run on its own it passed; run with the package it failed, and
+the failure named the wrong thing — it read as "the binding is emitting whole
+snapshots" when the binding was fine.
+
+The fix is the same move as every other good one here: **put the fact on the
+thing that owns it.** The seam became a field on the binding, so a test observes
+the one object it created and nothing else can reach it.
+
+**Isolation is part of what a test asserts.** A test that only passes when it is
+alone is measuring something it does not own, and the package run is where that
+shows — which is an argument for running the package, not the test, before
+believing a green result.
+
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
 within the hour: that machine's RAID10 lays two spans over *one* array, so

@@ -3,8 +3,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -249,5 +251,73 @@ func TestSetInterval_AdjustsInPlace(t *testing.T) {
 	if before != nil && after.Host.Hostname != before.Host.Hostname {
 		t.Errorf("the served snapshot changed identity across an interval change: %q -> %q",
 			before.Host.Hostname, after.Host.Hostname)
+	}
+}
+
+// TestStreamToFrontend_SendsDeltasNotSnapshots is #98's contract on the desktop
+// side: the window gets one whole snapshot and patches after it.
+//
+// It emitted the entire snapshot on every tick, which on a ten-node fleet host
+// measured 367,126 bytes per frame against a delta averaging 7,842 -- 47 times
+// the bytes for identical information, on a machine that already had a correct
+// delta hub it never called.
+func TestStreamToFrontend_SendsDeltasNotSnapshots(t *testing.T) {
+	var mu sync.Mutex
+	var names []string
+	var sizes []int
+
+	m := newTestMonitor(t, "delta-host")
+	waitSnapshot(t, m)
+	b := NewMonitorBinding(m, collector.NewSystemCollector(slog.Default()))
+	b.ctx = context.Background()
+	// Observed per binding, so a stream started by another test cannot be
+	// mistaken for this one's -- which it was, until this test failed in the
+	// package run and passed alone.
+	b.emit = func(_ context.Context, name string, payload []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		names = append(names, name)
+		sizes = append(sizes, len(payload))
+	}
+
+	go b.streamToFrontend(context.Background())
+	t.Cleanup(func() {
+		b.mu.RLock()
+		cancel := b.streamCancel
+		b.mu.RUnlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		enough := len(names) >= 3
+		mu.Unlock()
+		if enough {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(names) < 3 {
+		t.Fatalf("got %d frames in 3s, want at least 3", len(names))
+	}
+	if names[0] != "full" {
+		t.Errorf("first frame is %q, want full -- there is nothing to patch yet", names[0])
+	}
+	for i, name := range names[1:] {
+		if name != "full" {
+			continue
+		}
+		t.Errorf("frame %d is a full snapshot; the whole measurement is being resent every tick", i+1)
+	}
+	for i, size := range sizes[1:] {
+		if size >= sizes[0] {
+			t.Errorf("frame %d is %d bytes against a first frame of %d; it is not a patch", i+1, size, sizes[0])
+		}
 	}
 }

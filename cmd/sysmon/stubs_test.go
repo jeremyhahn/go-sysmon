@@ -281,7 +281,7 @@ func TestMonitorBinding_StreamToFrontendIsSingleFlight(t *testing.T) {
 	b := NewMonitorBinding(mon, collector.NewSystemCollector(nil))
 	b.ctx = context.Background()
 
-	go b.streamToFrontend()
+	go b.streamToFrontend(context.Background())
 
 	// Wait for the first goroutine to claim the flag.
 	deadline := time.Now().Add(3 * time.Second)
@@ -295,7 +295,7 @@ func TestMonitorBinding_StreamToFrontendIsSingleFlight(t *testing.T) {
 	// A second call must return immediately rather than double-subscribing.
 	returned := make(chan struct{})
 	go func() {
-		b.streamToFrontend()
+		b.streamToFrontend(context.Background())
 		close(returned)
 	}()
 

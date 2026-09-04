@@ -557,6 +557,9 @@ declare global {
         MonitorBinding: {
           GetSnapshot: () => Promise<Snapshot>;
           SetInterval: (ms: number) => Promise<void>;
+          // Restarts the frame stream, so the next frame is a whole snapshot.
+          // The desktop's equivalent of reopening the socket (#98).
+          Resync: () => Promise<void>;
         };
       };
     };

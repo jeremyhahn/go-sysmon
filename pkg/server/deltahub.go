@@ -76,6 +76,66 @@ func frameFor(last uint64, frame *deltaFrame) (name string, payload []byte) {
 	return "full", frame.full
 }
 
+// clientStream is one client's position in the stream: which frame it last
+// applied, and which frame it was handed on connection.
+//
+// It exists so the rule "what does this client get next" lives in one place.
+// Two transports carry this stream -- server-sent events to a browser and the
+// Wails event bridge to the desktop window -- and a second copy of the
+// sequencing would be a second set of decisions about when a client is sent a
+// patch it cannot apply. The transports differ only in how bytes are written.
+type clientStream struct {
+	hub *deltaHub
+	sub *deltaSubscriber
+	// last is the sequence number this client has applied.
+	last uint64
+	// sent is the frame delivered on connection, kept so the copy that arrives
+	// on the channel a moment later can be recognised and dropped. Comparing
+	// sequence numbers instead would also drop a frame that legitimately
+	// carries an older number -- which happens when the counter restarts -- and
+	// the client would then be frozen on that snapshot indefinitely.
+	sent *deltaFrame
+}
+
+// newClientStream subscribes a client and returns its position.
+func newClientStream(hub *deltaHub) *clientStream {
+	return &clientStream{hub: hub, sub: hub.subscribe()}
+}
+
+// close unsubscribes the client.
+func (c *clientStream) close() { c.hub.unsubscribe(c.sub) }
+
+// frames is the channel new frames arrive on.
+func (c *clientStream) frames() <-chan *deltaFrame { return c.sub.frames }
+
+// done closes when the monitor stops.
+func (c *clientStream) done() <-chan struct{} { return c.sub.done }
+
+// ended reports whether the subscription has closed.
+func (c *clientStream) ended() bool { return closed(c.sub.done) }
+
+// initial returns the frame a client is given on connection, so it is not
+// blank until the next tick, or ok=false when there is none to give.
+func (c *clientStream) initial() (name string, payload []byte, ok bool) {
+	frame := c.hub.initialFrame(c.sub)
+	if frame == nil || c.ended() {
+		return "", nil, false
+	}
+	c.last, c.sent = frame.seq, frame
+	return "full", frame.full, true
+}
+
+// next returns what to send for a frame that has just arrived, or skip=true
+// when the client already has it.
+func (c *clientStream) next(frame *deltaFrame) (name string, payload []byte, skip bool) {
+	if frame == c.sent {
+		return "", nil, true
+	}
+	name, payload = frameFor(c.last, frame)
+	c.last = frame.seq
+	return name, payload, false
+}
+
 // deltaSubscriber is one connected client's view of the hub.
 type deltaSubscriber struct {
 	frames chan *deltaFrame

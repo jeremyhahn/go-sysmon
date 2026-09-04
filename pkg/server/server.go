@@ -706,18 +706,8 @@ func wantsDeltas(r *http.Request) bool {
 // is never sent a patch against a base it does not have, which is the one way
 // this stream could leave a reading on screen that looks measured and is not.
 func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *eventStream) {
-	sub := s.deltas.subscribe()
-	defer s.deltas.unsubscribe(sub)
-
-	var (
-		last uint64
-		// sent is the frame delivered below, kept so the copy that arrives on
-		// the channel a moment later can be recognised and dropped. Comparing
-		// sequence numbers instead would also drop a frame that legitimately
-		// carries an older number -- which happens when the counter restarts --
-		// and the client would then be frozen on this snapshot indefinitely.
-		sent *deltaFrame
-	)
+	client := newClientStream(s.deltas)
+	defer client.close()
 
 	// The frame already published, so a client connecting between ticks is not
 	// blank until the next one.
@@ -726,15 +716,12 @@ func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *ev
 	// the run that produced it -- deliberately, so a client arriving between
 	// ticks is not blank -- and after a stop that makes it a reading from
 	// before the service stopped. The hub clears it when a run ends for that
-	// reason, and this is the other half: the two together mean a client
-	// connecting after a stop is sent "bye" and nothing else, rather than one
-	// stale snapshot marked current and then "bye".
-	if frame := s.deltas.initialFrame(sub); frame != nil && !closed(sub.done) {
-		if err := stream.sendRaw("full", frame.full); err != nil {
+	// reason, and clientStream.initial makes the same check on the way out.
+	if name, payload, ok := client.initial(); ok {
+		if err := stream.sendRaw(name, payload); err != nil {
 			slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
 			return
 		}
-		last, sent = frame.seq, frame
 	}
 
 	keepalive := time.NewTicker(keepaliveInterval)
@@ -745,33 +732,32 @@ func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *ev
 		case <-r.Context().Done():
 			return
 
-		case <-sub.done:
+		case <-client.done():
 			if err := stream.send("bye", "monitor stopped"); err != nil {
 				slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
 			}
 			return
 
-		case frame := <-sub.frames:
-			if frame == sent {
-				continue // the frame already sent on connection
-			}
+		case frame := <-client.frames():
 			// A closed subscription wins over a queued frame. Both cases can be
 			// ready at once and Go picks between them at random, so without
 			// this a frame published before the stop could be written after the
 			// stream was already over -- rendered and marked current, then
 			// followed by the bye that says it is not.
-			if closed(sub.done) {
+			if client.ended() {
 				if err := stream.send("bye", "monitor stopped"); err != nil {
 					slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
 				}
 				return
 			}
-			name, payload := frameFor(last, frame)
+			name, payload, skip := client.next(frame)
+			if skip {
+				continue // the frame already sent on connection
+			}
 			if err := stream.sendRaw(name, payload); err != nil {
 				slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
 				return
 			}
-			last = frame.seq
 
 		case <-keepalive.C:
 			if err := stream.comment("keepalive"); err != nil {

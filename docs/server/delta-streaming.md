@@ -340,6 +340,45 @@ different thing from the defect this section describes, which was a reading
 from a stop that had *already completed*, served to a client that then received
 nothing but keepalives.
 
+## Both windows get the same stream
+
+The browser and the desktop window run the same Svelte application, and both now
+receive the same protocol. The desktop did not: `MonitorBinding.streamToFrontend`
+emitted the **entire snapshot on every tick** through the Wails event bridge,
+never touching the hub the socket path had used since #29.
+
+Measured on a ten-node fleet host, 2026-09-04:
+
+```
+event full :  1 frame  , 367,126 bytes
+event delta:  6 frames , avg 7,842 bytes, max 30,943
+```
+
+**A delta averages 47x smaller than the snapshot it replaces.** At a 500ms
+interval that is roughly 734 KB/s against 16 KB/s, for identical information, on
+the same machine.
+
+`server.DeltaStream` is the hub without HTTP: `Run(ctx, emit)` delivers `full`
+and `delta` frames to any caller, and the desktop binding emits them as
+`sysmon:full` and `sysmon:delta`. The names differ from the old
+`sysmon:snapshot` deliberately -- a frontend and a binding that disagree about
+the protocol fail at once rather than parsing an envelope as a snapshot and
+rendering a page of undefined values.
+
+**Recovery differs because the transports differ.** A browser that cannot apply
+a frame reopens the socket, and a new connection begins with a whole snapshot.
+The desktop has no socket to reopen, so the frontend calls
+`MonitorBinding.Resync()`, which restarts the stream; its first frame is a full.
+Without that, a window that lost its place would go on applying patches to a
+snapshot the server never sent it -- drifting silently instead of failing, which
+is the one thing this protocol exists to prevent.
+
+The sequencing itself is not duplicated. `clientStream` in `pkg/server` holds
+one client's position and answers "what does this client get next" for both
+transports, and `createFrameApplier` in `lib/transport.ts` holds the other half
+for both of the frontend's. Two copies of those rules would be two places for
+them to be wrong.
+
 ## Keeping the two implementations in step
 
 `pkg/delta` and `cmd/sysmon/frontend/src/lib/delta.ts` apply the same format,

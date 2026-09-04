@@ -7,7 +7,13 @@ import type { Snapshot } from "./types";
 export type SnapshotCallback = (snapshot: Snapshot) => void;
 export type StatusCallback = (connected: boolean) => void;
 
-const WAILS_EVENT = "sysmon:snapshot";
+// The desktop stream carries the same two frame kinds as the socket: one whole
+// snapshot, then patches against it. The names are distinct from the old
+// "sysmon:snapshot" so a frontend and a binding that disagree about the
+// protocol fail immediately rather than parsing an envelope as a snapshot and
+// rendering a page of undefined values.
+const WAILS_FULL_EVENT = "sysmon:full";
+const WAILS_DELTA_EVENT = "sysmon:delta";
 
 // The stream is opened in delta mode. The server keeps the original protocol
 // on the same endpoint for any other client, but this dashboard ships with the
@@ -299,6 +305,100 @@ export function connect(
   return connectEventSource(onSnapshot, onStatus);
 }
 
+// --- The frame protocol, once ----------------------------------------------
+
+/**
+ * createFrameApplier holds one client's place in the delta stream: the snapshot
+ * every patch is applied to, and the sequence number it carries.
+ *
+ * Both transports use it. The rules are identical whether the frames arrive
+ * over a socket or over the Wails event bridge -- a patch applies to exactly
+ * one frame, a gap means this client cannot be trusted to be current, and a
+ * result that is not a snapshot is not rendered -- and only the recovery
+ * differs: the browser reopens the socket, the desktop asks the binding to
+ * restart its stream. A second copy of these rules would be a second place for
+ * them to be wrong, and the failure they prevent is readings that look measured
+ * and are not.
+ */
+function createFrameApplier(
+  onSnapshot: SnapshotCallback,
+  onStatus: StatusCallback,
+  onGap: (reason: string) => void
+) {
+  let state: Snapshot | null = null;
+  let seq = 0;
+
+  return {
+    /** forget drops this client's place, so the next frame must be a full. */
+    forget() {
+      state = null;
+      seq = 0;
+    },
+
+    /** seen reports whether a snapshot has been applied. */
+    get current(): Snapshot | null {
+      return state;
+    },
+
+    full(raw: string): boolean {
+      const frame = parseFull(raw);
+      if (frame == null) {
+        // Not a gap, but treated as one: a frame that is not a snapshot leaves
+        // this client with nothing it can trust.
+        onGap("a full frame that is not a snapshot");
+        return false;
+      }
+      state = frame.snapshot;
+      seq = frame.seq;
+      onSnapshot(state);
+      onStatus(true);
+      return true;
+    },
+
+    delta(raw: string): boolean {
+      const frame = parseDelta(raw);
+      if (frame == null) {
+        onGap("a delta frame that is not a delta");
+        return false;
+      }
+      // A patch describes the change from exactly one frame. Applying it to
+      // anything else produces a snapshot that never existed.
+      if (state == null) {
+        onGap("a delta with no snapshot to apply it to");
+        return false;
+      }
+      if (frame.seq !== seq + 1) {
+        onGap(`a gap in the stream: expected ${seq + 1}, got ${frame.seq}`);
+        return false;
+      }
+
+      let patched: unknown;
+      try {
+        patched = applyPatch(state, frame.patch);
+      } catch (e) {
+        onGap(e instanceof Error ? e.message : "a patch that did not apply");
+        return false;
+      }
+
+      // The patch applied; that does not make the result a snapshot. A patch is
+      // a tree of operations, and one of them replaces the node it is applied
+      // to -- at the root, that replaces the whole measurement with whatever
+      // the frame carried. `as Snapshot` would accept null, a number or an
+      // arbitrary object and render it as current.
+      if (!isSnapshot(patched)) {
+        onGap("a delta whose result is not a snapshot");
+        return false;
+      }
+
+      state = patched;
+      seq = frame.seq;
+      onSnapshot(state);
+      onStatus(true);
+      return true;
+    },
+  };
+}
+
 // --- Wails transport -------------------------------------------------------
 
 function connectWails(
@@ -307,28 +407,42 @@ function connectWails(
 ): Transport {
   const rt = window.runtime!;
 
-  rt.EventsOn(WAILS_EVENT, (data: unknown) => {
-    try {
-      const snapshot = data as Snapshot;
-      onSnapshot(snapshot);
-      onStatus(true);
-    } catch {
-      // Malformed event payload — ignore silently.
-    }
+  // The desktop has no socket to reopen, so recovery is a binding call: the
+  // stream restarts and begins with a whole snapshot. Without it a window that
+  // lost its place would go on applying patches to a snapshot the server never
+  // sent it, drifting silently instead of failing (#98).
+  const applier = createFrameApplier(onSnapshot, onStatus, (reason) => {
+    console.warn(`sysmon: restarting the desktop stream (${reason})`);
+    applier.forget();
+    onStatus(false);
+    void window.go?.main.MonitorBinding.Resync();
   });
 
-  onStatus(true);
+  rt.EventsOn(WAILS_FULL_EVENT, (data: unknown) => {
+    if (typeof data === "string") applier.full(data);
+  });
+  rt.EventsOn(WAILS_DELTA_EVENT, (data: unknown) => {
+    if (typeof data === "string") applier.delta(data);
+  });
 
-  // Request an immediate snapshot so the UI is not blank on first load.
+  // Request an immediate snapshot so the UI is not blank on first load. It is
+  // rendered but NOT adopted as the base for patches: it carries no sequence
+  // number, so a patch computed against the server's frame would not be
+  // describing this object.
   window.go?.main.MonitorBinding.GetSnapshot().then((snap) => {
-    onSnapshot(snap);
+    if (applier.current == null) {
+      onSnapshot(snap);
+      onStatus(true);
+    }
   }).catch(() => {
-    // GetSnapshot is best-effort; streaming events will populate data shortly.
+    // GetSnapshot is best-effort; streaming frames will populate data shortly.
   });
 
   return {
     disconnect() {
-      rt.EventsOff(WAILS_EVENT);
+      rt.EventsOff(WAILS_FULL_EVENT);
+      rt.EventsOff(WAILS_DELTA_EVENT);
+      applier.forget();
       onStatus(false);
     },
     async setInterval(ms: number, _scope: IntervalScope) {
@@ -350,13 +464,13 @@ function connectEventSource(
   let reconnectDelay = RECONNECT_DELAY_MS;
   let reconnectTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 
-  // The snapshot every delta is applied to, and the sequence number it carries.
+  // The snapshot every delta is applied to, and the sequence number it carries,
+  // live in the shared applier -- the same one the desktop transport uses.
   // Both are cleared whenever the stream is reopened: a patch is only ever
   // applied to the frame the server computed it against, and after a reconnect
   // this client has no idea which frame that was.
-  let state: Snapshot | null = null;
-  let seq = 0;
   let consecutiveResyncs = 0;
+  const applier = createFrameApplier(onSnapshot, onStatus, (reason) => resync(reason));
 
   /**
    * resync abandons the stream and opens a new one, which begins with a whole
@@ -370,8 +484,7 @@ function connectEventSource(
    */
   function resync(reason: string) {
     if (stopped) return;
-    state = null;
-    seq = 0;
+    applier.forget();
     source?.close();
     source = null;
     onStatus(false);
@@ -388,8 +501,7 @@ function connectEventSource(
   function open() {
     if (stopped) return;
 
-    state = null;
-    seq = 0;
+    applier.forget();
     source = new EventSource(EVENTS_URL);
 
     // A socket that is open is not a dashboard that is current. The reconnect
@@ -406,18 +518,7 @@ function connectEventSource(
     };
 
     source.addEventListener("full", (ev: MessageEvent<string>) => {
-      const frame = parseFull(ev.data);
-      if (frame == null) {
-        // Not a gap, but treated as one: a frame that is not a snapshot leaves
-        // this client with nothing it can trust, and the only way back to a
-        // known state is a fresh stream.
-        resync("a full frame that is not a snapshot");
-        return;
-      }
-      state = frame.snapshot;
-      seq = frame.seq;
-      onSnapshot(state);
-      onStatus(true);
+      applier.full(ev.data);
       // consecutiveResyncs is deliberately NOT cleared here. Every reopened
       // stream begins with a full frame, so treating one as proof of recovery
       // clears the counter a moment after resync() raised it and the limit is
@@ -427,45 +528,7 @@ function connectEventSource(
     });
 
     source.addEventListener("delta", (ev: MessageEvent<string>) => {
-      const frame = parseDelta(ev.data);
-      if (frame == null) {
-        resync("a delta frame that is not a delta");
-        return;
-      }
-
-      // A patch describes the change from exactly one frame. Applying it to
-      // anything else produces a snapshot that never existed.
-      if (state == null) {
-        resync("a delta with no snapshot to apply it to");
-        return;
-      }
-      if (frame.seq !== seq + 1) {
-        resync(`a gap in the stream: expected ${seq + 1}, got ${frame.seq}`);
-        return;
-      }
-
-      let patched: unknown;
-      try {
-        patched = applyPatch(state, frame.patch);
-      } catch (e) {
-        resync(e instanceof Error ? e.message : "a patch that did not apply");
-        return;
-      }
-
-      // The patch applied; that does not make the result a snapshot. A patch
-      // is a tree of operations, and one of them replaces the node it is
-      // applied to -- at the root, that replaces the whole measurement with
-      // whatever the frame carried. `as Snapshot` would accept null, a number
-      // or an arbitrary object and render it as current.
-      if (!isSnapshot(patched)) {
-        resync("a delta whose result is not a snapshot");
-        return;
-      }
-      state = patched;
-
-      seq = frame.seq;
-      onSnapshot(state);
-      onStatus(true);
+      if (!applier.delta(ev.data)) return;
       // An applied delta is the evidence a full frame is not: this stream
       // delivered a contiguous frame that fitted the snapshot it was computed
       // against, which is the thing that was failing. Only that clears the
@@ -481,8 +544,7 @@ function connectEventSource(
     source.addEventListener("bye", () => {
       source?.close();
       source = null;
-      state = null;
-      seq = 0;
+      applier.forget();
       onStatus(false);
       scheduleReconnect();
     });
@@ -496,8 +558,7 @@ function connectEventSource(
       // only case this code has to handle.
       if (source?.readyState === EventSource.CLOSED) {
         source = null;
-        state = null;
-        seq = 0;
+        applier.forget();
         scheduleReconnect();
       }
     };
@@ -524,8 +585,7 @@ function connectEventSource(
       }
       source?.close();
       source = null;
-      state = null;
-      seq = 0;
+      applier.forget();
       onStatus(false);
     },
     async setInterval(ms: number, scope: IntervalScope) {

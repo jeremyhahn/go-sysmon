@@ -66,7 +66,13 @@ already caused bugs:
   excludes it with `@source not "../dist"`. Without that the CSS grows on every
   rebuild and a clean build and an incremental build disagree on content hashes.
 - A change to the frontend is not complete until `dist/` is rebuilt and
-  committed with it, or the embedded UI and the source drift apart.
+  committed with it, or the embedded UI and the source drift apart. **This is
+  not hypothetical and the rule was already written when it happened**: on
+  2026-09-03 #89 changed `src/` without rebuilding, and for a day `main` carried
+  a bundle that did not contain the fleet card it had just merged -- a binary
+  built with a bare `go build` served a UI one commit behind, with green CI and
+  a correct source tree (#55). A rule nothing checks is a rule that holds until
+  someone is busy.
 
 ## Charts
 
