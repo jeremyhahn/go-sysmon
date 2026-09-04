@@ -13,6 +13,42 @@ response comes from the monitor.
 | GET    | `/api/interval` | The monitor's current polling interval              |
 | POST   | `/api/interval` | Changes the polling interval                        |
 
+## Every response is the poll the monitor last published
+
+Owner ruling, 2026-09-04: *"the poller does its job, updates a state, and every
+API request and stream serves from that state until the next poll. No endpoint
+may query fresh host state per request."*
+
+That is how the package is built. `Monitor.Snapshot()` is `m.latest.Load()` — an
+atomic pointer read of the last completed collection — and every handler goes
+through it: `/api/snapshot`, the event stream, the delta hub's first frame, and
+the Prometheus exporter at `/metrics`. `/api/fleet` serves the fleet poller's
+cached peer snapshots; `/api/history` queries storage, which is not host state.
+**`pkg/server` does not import a collector at all.**
+
+The cost of getting this wrong is not abstract: two clients would measure the
+machine twice for one poll, and a slow read — a disk that has spun down, a
+`smartctl` that takes eight seconds — would block a response that had a
+perfectly good reading available.
+
+### The rule is enforced, not described
+
+`pkg/server/architecture_test.go` walks the first-party import graph and fails
+if `pkg/server` can reach `pkg/collector` through **any** chain. Transitively,
+not just directly: the question is what the request path can do, and a package
+two hops away reads the host just as easily as one imported here. When it fails
+it prints the shortest chain, so the answer arrives with the finding.
+
+A second test asserts the graph actually loaded. Every check of the form "X
+cannot reach Y" passes when nothing was read, and a guard that reports a pass
+having read nothing is the failure this repository keeps finding elsewhere.
+
+This is a test rather than a paragraph for a measured reason. The equivalent
+rule for the frontend bundle **was** written down — "a change to the frontend is
+not complete until `dist/` is rebuilt and committed with it" — and `main` still
+spent a day carrying a bundle that did not match its sources (#55, #89).
+**Prose does not enforce; a failing check does.**
+
 ## Why server-sent events rather than WebSocket
 
 The data flow is one-way. The server pushes snapshots; the only thing a client
