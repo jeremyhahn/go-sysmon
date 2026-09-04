@@ -232,6 +232,19 @@ the port must be known in advance, derive it from something already unique —
 the CI job's identity — and choose a band **below** `ip_local_port_range`
 (32768 by default) where the kernel never allocates on its own.
 
+**A threshold written in terms of the thing it is testing.** A queue test
+asserted `accepted == submitQueue`, which the queue depth satisfies **whatever
+it is set to**: raising the constant from 256 to 100,000 left the test green
+while the property it protected — that a caller is refused rather than blocked —
+was gone. It now requires a refusal within a bound written independently of the
+constant, and fails against the raised value.
+
+Same species as the `>= 2` entries threshold that an unbounded probe satisfied
+by entering exactly twice. **A test whose expectation is derived from the
+implementation cannot fail when the implementation changes**, which is the one
+thing a test is for. Both were caught only by mutating; neither was visible on
+inspection, and both read as careful when written.
+
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
 within the hour: that machine's RAID10 lays two spans over *one* array, so

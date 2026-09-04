@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/alert"
@@ -61,6 +62,11 @@ type Poller struct {
 	logger      *slog.Logger
 	client      *http.Client
 
+	// pollOverrideNs is the dashboard's live choice of cadence, in
+	// nanoseconds; zero means follow the configuration. Atomic because it is
+	// written by an API request and read by the poll loop.
+	pollOverrideNs atomic.Int64
+
 	mu    sync.RWMutex
 	peers map[string]*peerState
 }
@@ -95,9 +101,62 @@ func (p *Poller) Run(done <-chan struct{}) {
 		select {
 		case <-done:
 			return
-		case <-time.After(cfg.PollInterval()):
+		case <-time.After(p.effectiveInterval(cfg)):
 		}
 	}
+}
+
+// MinPollInterval is the floor for the peer refresh cadence.
+//
+// A peer poll is an HTTP round trip to another machine, and every peer is
+// fetched on every cycle, so this is not the same kind of cost as reading
+// /proc locally. Below a second the aggregator would spend its time asking ten
+// machines what changed in the last few hundred milliseconds, on their CPU as
+// well as its own.
+const MinPollInterval = time.Second
+
+// SetPollInterval overrides the configured peer refresh cadence for as long as
+// the process runs, floored at MinPollInterval.
+//
+// It exists because the dashboard's interval control must drive the poller that
+// actually feeds what is on screen (#97): while the view is the fleet or a
+// peer, that poller is this one, and a control that changed only how often the
+// browser re-read the same cached figures would be reporting a cadence nobody
+// was collecting at.
+//
+// A zero or negative duration clears the override and returns to the
+// configuration, which is also what a reload means: the override is the user's
+// live choice, the file is the default it started from.
+func (p *Poller) SetPollInterval(d time.Duration) {
+	if d <= 0 {
+		p.pollOverrideNs.Store(0)
+		return
+	}
+	if d < MinPollInterval {
+		d = MinPollInterval
+	}
+	p.pollOverrideNs.Store(int64(d))
+}
+
+// PollInterval reports the cadence peers are actually refreshed at, which is
+// what the dashboard displays. It is the override when one is set, the
+// configured value otherwise, and never below the floor.
+func (p *Poller) PollInterval() time.Duration {
+	return p.effectiveInterval(p.cfgFn())
+}
+
+// effectiveInterval resolves the override, the configuration and the floor in
+// one place, so the loop and the reported value cannot disagree -- a dashboard
+// stating a cadence the poller is not running at is the defect this feature
+// exists to remove, and having two expressions of it is how that comes back.
+func (p *Poller) effectiveInterval(cfg config.Fleet) time.Duration {
+	if ns := p.pollOverrideNs.Load(); ns > 0 {
+		return time.Duration(ns)
+	}
+	if configured := cfg.PollInterval(); configured > 0 {
+		return max(configured, MinPollInterval)
+	}
+	return MinPollInterval
 }
 
 // refresh polls all peers concurrently. One slow peer must not delay the rest,

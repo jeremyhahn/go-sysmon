@@ -330,9 +330,16 @@ func TestMonitorBinding_SetIntervalRejectsNonPositive(t *testing.T) {
 	}
 }
 
-// TestMonitorBinding_SetIntervalRestartsMonitor covers the success path,
-// including the stop-then-recreate sequence on a monitor that is not running.
-func TestMonitorBinding_SetIntervalRestartsMonitor(t *testing.T) {
+// TestMonitorBinding_SetIntervalDoesNotStartCollection covers the success path
+// on a monitor that is NOT running.
+//
+// It used to assert the opposite, because SetInterval stopped the monitor and
+// built a replacement that it started -- so changing the polling rate could
+// also begin collecting on a binding whose monitor was deliberately stopped.
+// The cadence is now adjusted in place (#97): the interval changes, and
+// starting collection stays the caller's decision. A control named "polling
+// interval" that also starts the poller is two actions under one name.
+func TestMonitorBinding_SetIntervalDoesNotStartCollection(t *testing.T) {
 	mon, err := monitor.New(bindStub{}, time.Second)
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
@@ -343,27 +350,21 @@ func TestMonitorBinding_SetIntervalRestartsMonitor(t *testing.T) {
 	if err := b.SetInterval(50); err != nil {
 		t.Fatalf("SetInterval(50) = %v, want nil", err)
 	}
-	t.Cleanup(func() {
-		var notRunning *types.MonitorNotRunningError
-		if stopErr := b.mon.Stop(); stopErr != nil && !errors.As(stopErr, &notRunning) {
-			t.Errorf("monitor.Stop: %v", stopErr)
-		}
-	})
 
-	// The replacement monitor must be running and serving snapshots.
-	//
-	// Generous for the same reason as TestSetInterval_ValidValue: SetInterval
-	// replaces the monitor with one built on the real SystemCollector, so this
-	// waits on a genuine collection of the whole machine, not on the stub above.
-	// Three seconds survived on a developer machine and is not a safe margin
-	// under the race detector on a shared runner -- this one simply won the
-	// race that its sibling lost.
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, snapErr := b.mon.Snapshot(); snapErr == nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	if got := b.mon; got != mon {
+		t.Error("SetInterval replaced the monitor rather than retuning it")
 	}
-	t.Error("SetInterval left no monitor that produced a snapshot within 30s")
+	if got := mon.Interval(); got != 50*time.Millisecond {
+		t.Errorf("Interval() = %v, want 50ms", got)
+	}
+	if mon.Running() {
+		t.Error("SetInterval started a monitor that was not running")
+	}
+
+	// And nothing collected: a stopped monitor has no snapshot, before or
+	// after a rate change.
+	var notRunning *types.MonitorNotRunningError
+	if _, snapErr := mon.Snapshot(); !errors.As(snapErr, &notRunning) {
+		t.Errorf("Snapshot() error = %v, want MonitorNotRunningError", snapErr)
+	}
 }

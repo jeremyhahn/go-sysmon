@@ -4,7 +4,7 @@
 // .svelte.ts modules that are used as shared state).
 
 import { connect } from "$lib/transport";
-import type { Transport } from "$lib/transport";
+import type { IntervalScope, Transport } from "$lib/transport";
 import { sortBySeverity } from "$lib/alerts";
 import { readStoredJSON, writeStoredJSON } from "$lib/storage";
 import type {
@@ -326,9 +326,40 @@ class MonitorStore {
     this.#transport = t;
   }
 
+  /**
+   * setInterval changes the cadence of the poller feeding the current view.
+   *
+   * Which poller that is depends on what is on screen (#97): this node's own
+   * monitor while its own data is shown, the aggregator's peer refresh while a
+   * peer or the fleet is shown. Driving the local monitor from a peer's page
+   * would change a number nobody is looking at and leave the displayed data
+   * arriving at its old rate.
+   *
+   * The server's answer is applied rather than assumed, because a fleet
+   * request is floored server-side: asking for 250ms and displaying 250ms
+   * while peers refresh once a second is the same class of untruth as a stale
+   * reading presented as live.
+   */
   setInterval(ms: number): void {
     this.intervalMs = ms;
-    this.#transport?.setInterval(ms);
+    const scope: IntervalScope = this.selectedNode == null ? "local" : "fleet";
+    void this.#transport?.setInterval(ms, scope)?.then((effective) => {
+      if (effective == null) return;
+      this.fleetIntervalMs = effective.fleetIntervalMs;
+    });
+  }
+
+  /** The cadence peers are actually refreshed at, as the server reports it.
+   * Zero when this node has no fleet. */
+  fleetIntervalMs = $state(0);
+
+  /** effectiveIntervalMs is the rate the data on screen is actually collected
+   * at: the fleet poller's when a peer is selected, this node's otherwise. */
+  get effectiveIntervalMs(): number {
+    if (this.selectedNode != null && this.fleetIntervalMs > 0) {
+      return this.fleetIntervalMs;
+    }
+    return this.intervalMs;
   }
 
   /**

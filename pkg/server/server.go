@@ -451,11 +451,42 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 // by both interval handlers.
 type intervalPayload struct {
 	IntervalMS int `json:"interval_ms"`
+	// Scope names which poller the value applies to. Empty or "local" is this
+	// node's own monitor, which is what every existing client sends and means
+	// exactly what it always did. "fleet" is the peer refresh cadence.
+	//
+	// The dashboard's control has to drive the poller that actually feeds the
+	// view it is on (#97): while a peer is selected, that is the fleet poller,
+	// and changing the local monitor instead would report a cadence nothing was
+	// collecting at.
+	Scope string `json:"scope,omitempty"`
+	// FleetIntervalMS is reported, never accepted: it is the cadence peers are
+	// actually refreshed at, after the floor and the configuration are
+	// resolved. Zero means this node has no fleet.
+	FleetIntervalMS int `json:"fleet_interval_ms,omitempty"`
+}
+
+// Interval scopes.
+const (
+	scopeLocal = "local"
+	scopeFleet = "fleet"
+)
+
+// fleetIntervalMS reports the peer refresh cadence, or 0 when there is no
+// fleet.
+func (s *Server) fleetIntervalMS() int {
+	if s.fleet == nil {
+		return 0
+	}
+	return int(s.fleet.PollInterval().Milliseconds())
 }
 
 // handleGetInterval reports the monitor's current polling interval.
 func (s *Server) handleGetInterval(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, intervalPayload{IntervalMS: int(s.mon.Interval().Milliseconds())})
+	writeJSON(w, intervalPayload{
+		IntervalMS:      int(s.mon.Interval().Milliseconds()),
+		FleetIntervalMS: s.fleetIntervalMS(),
+	})
 }
 
 // handleSetInterval changes the monitor's polling interval.
@@ -478,12 +509,36 @@ func (s *Server) handleSetInterval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.mon.SetInterval(time.Duration(req.IntervalMS) * time.Millisecond); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	switch req.Scope {
+	case "", scopeLocal:
+		if err := s.mon.SetInterval(time.Duration(req.IntervalMS) * time.Millisecond); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	case scopeFleet:
+		if s.fleet == nil {
+			http.Error(w, (&types.InvalidIntervalError{
+				Message: "this node has no fleet",
+			}).Error(), http.StatusBadRequest)
+			return
+		}
+		s.fleet.SetPollInterval(time.Duration(req.IntervalMS) * time.Millisecond)
+	default:
+		http.Error(w, (&types.InvalidIntervalError{
+			Message: "unknown scope",
+		}).Error(), http.StatusBadRequest)
 		return
 	}
 
-	writeJSON(w, intervalPayload{IntervalMS: req.IntervalMS})
+	// The response reports what is in force, not what was asked for. A peer
+	// refresh is floored (fleet.MinPollInterval), so a request for 250ms is
+	// answered with the second it will actually run at -- the dashboard states
+	// the cadence it is being served, and a clamped value must not be presented
+	// back as though it had been honoured.
+	writeJSON(w, intervalPayload{
+		IntervalMS:      int(s.mon.Interval().Milliseconds()),
+		FleetIntervalMS: s.fleetIntervalMS(),
+	})
 }
 
 // writeJSON encodes v as a JSON response body.

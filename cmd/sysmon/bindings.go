@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -104,40 +103,21 @@ func (b *MonitorBinding) GetVersion() map[string]string {
 	}
 }
 
-// SetInterval updates the polling interval. ms must be positive. The running
-// monitor is stopped, a new one is created with the updated interval, and
-// streaming resumes automatically.
+// SetInterval updates the polling interval on the running monitor. ms must be
+// positive.
+//
+// Adjusted in place rather than by rebuilding. This used to stop the monitor,
+// construct a new one and start it, which made the same control mean two
+// different things depending on which build the user was running: the server
+// changes the cadence and keeps the readings, the desktop discarded everything
+// the monitor had accumulated and restarted collection. A control named
+// "polling interval" that also clears the charts is a second, unnamed action
+// (#97).
 func (b *MonitorBinding) SetInterval(ms int) error {
 	if ms <= 0 {
 		return &types.InvalidIntervalError{Message: "interval must be greater than zero"}
 	}
-
-	interval := time.Duration(ms) * time.Millisecond
-
-	// Stop the current monitor. A "not running" error is expected when it was
-	// already stopped and is not a failure; anything else is worth recording.
-	if err := b.monitor().Stop(); err != nil {
-		var notRunning *types.MonitorNotRunningError
-		if !errors.As(err, &notRunning) {
-			slog.Warn("monitor stop during interval change", "err", err)
-		}
-	}
-
-	snap := &snapshotterAdapter{sc: b.sc}
-	newMon, err := monitor.New(snap, interval)
-	if err != nil {
-		return err
-	}
-
-	b.mu.Lock()
-	b.mon = newMon
-	b.mu.Unlock()
-
-	if err := newMon.Start(); err != nil {
-		return err
-	}
-	go b.streamToFrontend()
-	return nil
+	return b.monitor().SetInterval(time.Duration(ms) * time.Millisecond)
 }
 
 // streamToFrontend subscribes to the monitor's snapshot channel and emits

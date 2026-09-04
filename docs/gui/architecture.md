@@ -37,12 +37,19 @@ The server build links three shared libraries and runs anywhere.
 |-------------------|--------------------------------------------------|
 | `GetSnapshot()`   | One snapshot, on demand                          |
 | `GetVersion()`    | Version, commit and build date                   |
-| `SetInterval(ms)` | Changes the rate and restarts the monitor        |
+| `SetInterval(ms)` | Retunes the running monitor                      |
 
-`SetInterval` replaces the monitor rather than mutating it, which means the
-binding's pointer to it changes while the streaming goroutine is reading it.
-That is guarded by an `RWMutex` — one of two real data races the race detector
-caught after this shipped.
+`SetInterval` adjusts the cadence in place. It used to **replace** the monitor —
+stop it, build a new one, start it — which meant the same control also discarded
+every reading the monitor had accumulated, and the binding's pointer changed
+while the streaming goroutine was reading it (guarded by an `RWMutex`, one of
+two real data races the race detector caught after this shipped).
+
+The server had always retuned in place, so one control meant two different
+things depending on which build was running, and only the desktop's version
+cleared the charts. **A control named "polling interval" that also restarts
+collection is a second, unnamed action** (#97). The `RWMutex` remains for `ctx`
+and the stream's cancel function; the monitor pointer no longer changes.
 
 ## Assets
 

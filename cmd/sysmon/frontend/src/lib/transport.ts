@@ -261,9 +261,25 @@ function isWailsRuntime(): boolean {
 }
 
 // Transport is the opaque handle returned by connect().
+/** IntervalScope names which poller a rate change is aimed at.
+ *
+ * "local" is this node's own monitor. "fleet" is the aggregator's peer refresh,
+ * which is the poller that actually feeds the fleet view and a selected peer --
+ * changing the local monitor while looking at a peer would report a cadence
+ * nothing was collecting at (#97). */
+export type IntervalScope = "local" | "fleet";
+
+/** Effective is what the server is actually running at, after its own floor.
+ * A request for 250ms on the fleet poller comes back as 1000. */
+export interface Effective {
+  intervalMs: number;
+  fleetIntervalMs: number;
+}
+
+// Transport is the opaque handle returned by connect().
 export interface Transport {
   disconnect: () => void;
-  setInterval: (ms: number) => void;
+  setInterval: (ms: number, scope: IntervalScope) => Promise<Effective | null>;
 }
 
 /**
@@ -315,8 +331,10 @@ function connectWails(
       rt.EventsOff(WAILS_EVENT);
       onStatus(false);
     },
-    setInterval(ms: number) {
-      window.go?.main.MonitorBinding.SetInterval(ms);
+    async setInterval(ms: number, _scope: IntervalScope) {
+      // The desktop build has no fleet, so both scopes mean the local monitor.
+      await window.go?.main.MonitorBinding.SetInterval(ms);
+      return { intervalMs: ms, fleetIntervalMs: 0 };
     },
   };
 }
@@ -510,17 +528,30 @@ function connectEventSource(
       seq = 0;
       onStatus(false);
     },
-    setInterval(ms: number) {
-      // The poll rate belongs to the server's single monitor, so it is a plain
-      // REST call rather than something carried on the stream.
-      void fetch(INTERVAL_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ interval_ms: ms }),
-      }).catch(() => {
+    async setInterval(ms: number, scope: IntervalScope) {
+      // The poll rate belongs to a server-side poller, so it is a plain REST
+      // call rather than something carried on the stream.
+      //
+      // The response is read rather than discarded: the server answers with
+      // what is in force after its own floor, and the header states that
+      // instead of what was asked for.
+      try {
+        const res = await fetch(INTERVAL_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ interval_ms: ms, scope }),
+        });
+        if (!res.ok) return null;
+        const body = await res.json();
+        return {
+          intervalMs: Number(body.interval_ms) || ms,
+          fleetIntervalMs: Number(body.fleet_interval_ms) || 0,
+        };
+      } catch {
         // Best-effort: a dropped rate change corrects itself the next time the
         // user picks an interval, and the stream is unaffected.
-      });
+        return null;
+      }
     },
   };
 }

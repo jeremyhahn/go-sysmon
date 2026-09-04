@@ -68,6 +68,42 @@ service. **A reload discards the override** and puts the configured interval
 back — reloading means "make the file true", and a rate picked in a browser is
 not something the file knows about.
 
+### The rate control drives the poller feeding the view
+
+Owner ruling, 2026-09-04: *"the poller provides new data consistent with what
+the user is expecting."* The dashboard's interval control therefore aims at
+whichever poller produces what is on screen:
+
+| what is on screen | poller | request |
+|---|---|---|
+| this node's own data | the local monitor | `{"interval_ms":N}` (or `"scope":"local"`) |
+| the fleet, or a selected peer | the aggregator's peer refresh | `{"interval_ms":N,"scope":"fleet"}` |
+
+Without this, choosing 250ms while viewing a peer changed the local monitor —
+a cadence nobody was looking at — while the peer's figures kept arriving at
+`fleet.poll_interval_ms`, and the control reported a rate nothing was collecting
+at.
+
+**A peer refresh is floored at one second** (`fleet.MinPollInterval`). Every
+peer is fetched over HTTP on every cycle, on their CPU as well as this node's,
+so a sub-second fleet cadence spends the aggregator's time asking ten machines
+what changed in the last few hundred milliseconds. **The response reports what
+is in force, not what was asked for**, and the header states the effective rate
+beside the control — a dropdown reading 250ms over data collected once a second
+is the same class of untruth as a stale reading shown as live.
+
+`GET /api/interval` reports both cadences: `interval_ms` for this node's monitor
+and `fleet_interval_ms` for the peer refresh, the latter absent on a node with
+no fleet.
+
+**The control never reaches into a peer's own poller.** Changing another
+machine's collection rate from this dashboard is a question of ownership and
+access that no ruling covers; the aggregator changes only how often it asks.
+
+**The desktop build adjusts the same way.** It used to stop the monitor, build a
+new one and start it, so the same control also discarded every reading the
+monitor had accumulated — a second, unnamed action riding on "polling interval".
+
 **Boot-only:** `server.addr`, `server.tls_cert`, `server.tls_key` and
 `server.watch`. These are consumed once, when the process starts and the socket
 binds. A reload reports each changed one in `deferred` **and keeps the boot

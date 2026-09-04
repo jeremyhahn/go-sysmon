@@ -157,49 +157,22 @@ func TestSetInterval_ValidValue(t *testing.T) {
 	m := newTestMonitor(t, "interval-host")
 	sc := collector.NewSystemCollector(slog.Default())
 	b := NewMonitorBinding(m, sc)
+	waitSnapshot(t, m)
 
 	if err := b.SetInterval(500); err != nil {
 		t.Errorf("SetInterval(500) error = %v, want nil", err)
 	}
-	// Wait for the new monitor to produce a snapshot, then confirm the binding
-	// is live.
-	//
-	// The wait is deliberately generous, and this is the reason: SetInterval
-	// REPLACES the monitor, and the replacement is built on the real
-	// SystemCollector rather than on this test's stub. So what is being waited
-	// for is a genuine collection -- SMBIOS, every GPU, every disk, the whole
-	// process table -- taking its first tick 500ms in.
-	//
-	// Two seconds was enough on an idle developer machine and not on CI, where
-	// the race detector slows everything several-fold and two runners share the
-	// host. That is a flake in the test, not in the binding: it passed or
-	// failed on how busy the machine was.
-	//
-	// The loop still exits the moment the snapshot appears, so a passing run
-	// costs no more than it did.
-	//
-	// This is a stopgap, not the fix: it removes the flake without removing the
-	// host dependency that causes it. The design fix is a seam --
-	// MonitorBinding takes a concrete *collector.SystemCollector, so a test
-	// cannot inject a stub -- tracked as issue #34. Until then, do not trim it
-	// back to make the suite look faster; it will only fail somewhere it is
-	// harder to read.
-	deadline := time.Now().Add(30 * time.Second)
-	var snap *types.Snapshot
-	var err error
-	for time.Now().Before(deadline) {
-		snap, err = b.GetSnapshot()
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+
+	// The reading that existed before the change is still there immediately
+	// after it. This used to need a thirty-second wait, because SetInterval
+	// REBUILT the monitor on the real SystemCollector and the test had to sit
+	// through a genuine first collection -- SMBIOS, every GPU, every disk, the
+	// whole process table (issue #34's flake). Adjusting the cadence in place
+	// removes the wait because it removes the restart: there is nothing to
+	// collect again (#97).
+	snap, err := b.GetSnapshot()
 	if err != nil {
-		// The monitor IS running; Snapshot reports "not running" when it has
-		// simply not collected yet, which reads as a lifecycle bug and is not
-		// one. Say what actually happened.
-		t.Fatalf("the replacement monitor produced no snapshot within 30s "+
-			"(last error from GetSnapshot: %v)", err)
+		t.Fatalf("GetSnapshot straight after SetInterval: %v", err)
 	}
 	if snap == nil {
 		t.Fatal("GetSnapshot returned nil after SetInterval")
@@ -234,32 +207,47 @@ func TestSetInterval_NegativeIsInvalid(t *testing.T) {
 	}
 }
 
-func TestSetInterval_ReplacesMonitor(t *testing.T) {
-	m := newTestMonitor(t, "replace-host")
+// TestSetInterval_AdjustsInPlace pins the behaviour the server has always had
+// and the desktop did not: the same control changes the cadence and keeps
+// everything else.
+//
+// It used to stop the monitor, construct a new one and start it, so a user
+// changing the polling rate also silently discarded every reading the monitor
+// had accumulated -- a second, unnamed action riding on a control called
+// "polling interval" (#97).
+func TestSetInterval_AdjustsInPlace(t *testing.T) {
+	m := newTestMonitor(t, "in-place-host")
 	waitSnapshot(t, m)
 	sc := collector.NewSystemCollector(slog.Default())
 	b := NewMonitorBinding(m, sc)
 
-	// Change interval; the internal monitor should be replaced.
+	before, err := b.GetSnapshot()
+	if err != nil {
+		t.Fatalf("GetSnapshot before SetInterval: %v", err)
+	}
+
 	if err := b.SetInterval(100); err != nil {
 		t.Fatalf("SetInterval(100): %v", err)
 	}
 
-	// The new monitor should produce snapshots within a reasonable time.
-	deadline := time.Now().Add(2 * time.Second)
-	var snap *types.Snapshot
-	var err error
-	for time.Now().Before(deadline) {
-		snap, err = b.GetSnapshot()
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	if got := b.monitor(); got != m {
+		t.Error("SetInterval replaced the monitor; it must adjust the running one")
 	}
+	if got := m.Interval(); got != 100*time.Millisecond {
+		t.Errorf("Interval() = %v after SetInterval(100), want 100ms", got)
+	}
+
+	// No gap: the reading collected before the change is still being served
+	// the instant after it, rather than the monitor starting from nothing.
+	after, err := b.GetSnapshot()
 	if err != nil {
-		t.Fatalf("GetSnapshot after SetInterval: %v", err)
+		t.Fatalf("GetSnapshot straight after SetInterval: %v", err)
 	}
-	if snap == nil {
-		t.Fatal("GetSnapshot returned nil after SetInterval")
+	if after == nil {
+		t.Fatal("the monitor had no snapshot immediately after an interval change")
+	}
+	if before != nil && after.Host.Hostname != before.Host.Hostname {
+		t.Errorf("the served snapshot changed identity across an interval change: %q -> %q",
+			before.Host.Hostname, after.Host.Hostname)
 	}
 }

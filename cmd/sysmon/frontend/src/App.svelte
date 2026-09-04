@@ -22,9 +22,30 @@
   const connected = $derived(monitor.connected);
   const snapshot = $derived(monitor.snapshot);
   const currentInterval = $derived(monitor.intervalMs);
+
   const fleetEnabled = $derived(monitor.fleetEnabled);
   const selectedNode = $derived(monitor.selectedNode);
   const peerFreshness = $derived(monitor.peerFreshness);
+  // What the control is driving right now, said out loud. While a peer is
+  // selected the poller feeding the page is the aggregator's, whose cadence is
+  // floored server-side -- so the requested value and the served value can
+  // differ, and the served one is the one that matters (#97).
+  const effectiveInterval = $derived(monitor.effectiveIntervalMs);
+  const effectiveNote = $derived(
+    selectedNode != null && effectiveInterval !== currentInterval
+      ? `peers every ${formatInterval(effectiveInterval)}`
+      : ""
+  );
+  const intervalTitle = $derived(
+    selectedNode != null
+      ? "Peer refresh interval (the aggregator polls its peers at this rate)"
+      : "Polling interval"
+  );
+
+  /** formatInterval renders a millisecond cadence the way the dropdown does. */
+  function formatInterval(ms: number): string {
+    return ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`;
+  }
 
   // How long ago the selected peer last answered. Rounded to whole units: the
   // point is "minutes, not seconds", and false precision on a stale reading
@@ -241,7 +262,7 @@
       <select
         class="select select-xs select-bordered bg-base-200 text-base-content/80 font-medium"
         aria-label="Polling interval"
-        title="Polling interval"
+        title={intervalTitle}
         value={currentInterval}
         onchange={onIntervalChange}
       >
@@ -249,6 +270,15 @@
           <option value={opt.value}>{opt.label}</option>
         {/each}
       </select>
+      {#if effectiveNote !== ""}
+        <!-- The peer refresh is floored server-side, so a request can be
+             honoured only as far as the floor. Saying so is the point: a
+             dropdown reading 250ms over data collected once a second states a
+             cadence nothing is running at. -->
+        <span class="whitespace-nowrap text-warning" title="The cadence peers are actually refreshed at">
+          {effectiveNote}
+        </span>
+      {/if}
       <RangePicker />
       <ThemeToggle />
       <AlertBell onNavigate={navigateToCategory} />
