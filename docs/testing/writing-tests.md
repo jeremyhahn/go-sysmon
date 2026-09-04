@@ -163,6 +163,21 @@ this time with a text format as the name. It was caught only because a second
 grep beside it, for the *frames*, returned 118: **two probes disagreeing is what
 exposes this, not either probe alone.**
 
+**A field that reports the same value for two opposite states.** `git log
+--format=%G?` prints `N` for an unsigned commit *and* for a correctly signed one
+that cannot be verified without `gpg.ssh.allowedSignersFile`, which agents do
+not have. Measured on this repository's own `main`:
+
+```console
+$ git log -1 --format=%G? 5edd5b65      # N
+$ git cat-file commit 5edd5b65 | grep ^gpgsig   # present
+```
+
+A check built on `%G?` reports `N` on correctly signed commits, would fail
+everything, and would be switched off within a week. **"Is there a signature"
+and "does the signature verify" are different questions**, and only the first
+can be answered without the file.
+
 **Recomputing a combined view from the raw list.** A commit's status was read by
 paging the per-context status list and keeping the first entry per context.
 Four entries existed for one aggregator and two shared a timestamp to the
@@ -172,6 +187,19 @@ which had not happened. The API has a combined-status endpoint that computes
 exactly this. **When an API offers a combined or computed view, do not
 reconstruct it yourself from the raw list**; an ambiguous ordering is not a
 verdict.
+
+**A guarantee that holds for a reason nobody wrote down.** Signed commits are
+required on `main`, and unsigned commits were found on a feature branch — which
+looked like the guarantee failing. It was not. Measured: a Gitea **squash merge
+discards the branch's commit objects entirely** and authors a new single-parent
+commit signed with its own key, so a branch's signatures never had a path onto
+`main`; and `main`'s protection separately sets `require_signed_commits`, which
+covers the direct-push path.
+
+Two mechanisms, both undocumented, and the investigation began by assuming
+neither existed. **Before reporting that a guarantee is broken, find out what
+was actually enforcing it** — the answer changes the severity, and here it
+changed it downward.
 
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
