@@ -496,3 +496,93 @@ func TestVolumeRAIDInfo_UnknownSyncStateIsSilentNotSatisfied(t *testing.T) {
 		t.Error("raid_resync did not fire for an md array that is recovering")
 	}
 }
+
+// TestVolumeRAIDInfo_MDOnlyCountersAreUnsetAndSaidSo pins the contract for the
+// last two md-only fields, using the real controller's configuration rather
+// than a fixture that would encode the belief being tested (#60).
+//
+// The four fields the RAIDInfo sentinel covers -- SyncProgressPercent,
+// MismatchCount, FailedDevices, SpareDevices -- must all be at their zero
+// values on a hardware volume, and SyncAction must be empty to say why. A
+// consumer applying the one documented rule then gets the right answer for all
+// four; if any of them were populated without SyncAction being set, that rule
+// would silently stop working for the others.
+//
+// This is not asserting that zero is the truth. It is asserting that zero is
+// accompanied by the flag which says it is not a measurement.
+func TestVolumeRAIDInfo_MDOnlyCountersAreUnsetAndSaidSo(t *testing.T) {
+	cfg, err := parseControllerConfig(realConfig(t))
+	if err != nil {
+		t.Fatalf("parse the real controller config: %v", err)
+	}
+	if len(cfg.Volumes) == 0 {
+		t.Fatal("the fixture has no volumes, so this proves nothing")
+	}
+
+	for _, vol := range cfg.Volumes {
+		info := volumeRAIDInfo(vol, cfg.MembersOf(vol))
+		if info == nil {
+			t.Fatalf("volume %q produced no RAIDInfo", vol.Name)
+		}
+
+		// The flag first: without it the zeroes below are just zeroes.
+		if info.SyncAction != "" {
+			t.Errorf("volume %q: SyncAction = %q, want empty -- the controller is never asked",
+				vol.Name, info.SyncAction)
+		}
+
+		unread := []struct {
+			field string
+			value float64
+		}{
+			{"SyncProgressPercent", info.SyncProgressPercent},
+			{"MismatchCount", float64(info.MismatchCount)},
+			{"FailedDevices", float64(info.FailedDevices)},
+			{"SpareDevices", float64(info.SpareDevices)},
+		}
+		for _, u := range unread {
+			if u.value != 0 {
+				t.Errorf("volume %q: %s = %v, want 0. If the controller can now report this, "+
+					"the RAIDInfo sentinel has to change with it -- one flag covers all four, "+
+					"so populating one of them alone breaks the rule for the other three",
+					vol.Name, u.field, u.value)
+			}
+		}
+
+		// And the fields that ARE read stay read: the gap is four fields wide,
+		// not the whole struct.
+		if info.TotalDevices == 0 {
+			t.Errorf("volume %q: TotalDevices = 0, so the volume lost the counts it does report",
+				vol.Name)
+		}
+	}
+
+	// The real controller has no failed drive, which makes every count above
+	// zero whether or not anything derives them -- the fixture cannot reach the
+	// case it claims to guard. So the guard is asserted on a DEGRADED volume,
+	// where a derivation would produce a non-zero number and be visible.
+	//
+	// "Total minus online" is the obvious derivation and it is wrong: a drive
+	// rebuilding is not a failed drive, a hot spare is not a member, and the
+	// MFI state constants beyond ONLINE have never been observed on real
+	// hardware here. One offline member out of two would report "1 failed",
+	// which is a claim nobody made.
+	degraded := volumeRAIDInfo(
+		megaraidVolume{State: mrLDDegraded, NumDrives: 2, RAIDLevel: 0x01},
+		[]megaraidMember{
+			{DeviceID: 0, State: mrPDStateOnline},
+			{DeviceID: 1, State: 0x10}, // OFFLINE
+		},
+	)
+	if degraded.ActiveDevices != 1 {
+		t.Fatalf("active devices = %d, want 1: the fixture is not degraded, so it proves nothing",
+			degraded.ActiveDevices)
+	}
+	if degraded.FailedDevices != 0 {
+		t.Errorf("FailedDevices = %d on a degraded volume, want 0: a count derived from "+
+			"member states is not a count the controller reported", degraded.FailedDevices)
+	}
+	if degraded.SpareDevices != 0 {
+		t.Errorf("SpareDevices = %d, want 0 for the same reason", degraded.SpareDevices)
+	}
+}

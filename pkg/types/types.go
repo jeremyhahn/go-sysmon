@@ -640,10 +640,14 @@ type DiskInfo struct {
 // the background-operation fields empty.
 //
 // SyncAction is the flag for which: an EMPTY action means the source does not
-// report background operations, and both SyncProgressPercent and MismatchCount
-// are meaningless in that state. See their comments; the distinction is not
-// cosmetic, because their zero values are what "everything is fine" looks like
-// in this struct.
+// report md-specific state, and FOUR fields are meaningless in that state --
+// SyncProgressPercent, MismatchCount, FailedDevices and SpareDevices. See their
+// comments; the distinction is not cosmetic, because their zero values are what
+// "everything is fine" looks like in this struct.
+//
+// One sentinel covers all four deliberately. A second flag meaning almost the
+// same thing is how two flags drift apart, and a consumer holding one rule in
+// its head is likelier to apply it than one holding two.
 type RAIDInfo struct {
 	// Level is the array personality, e.g. "raid1", "raid10", "raid5".
 	Level string `json:"level"`
@@ -656,6 +660,20 @@ type RAIDInfo struct {
 	TotalDevices  int `json:"total_devices"`
 	ActiveDevices int `json:"active_devices"`
 	// FailedDevices and SpareDevices count members in those roles.
+	//
+	// MEANINGLESS WHEN SyncAction IS EMPTY, for the same reason as the two
+	// fields below: they are md counters, read from that array's own state,
+	// and a hardware RAID volume publishes neither. Zero there is "nobody
+	// asked", not "none failed" -- and on a redundant array those are opposite
+	// claims, only one of which is reassuring.
+	//
+	// They are NOT derived from the controller's per-drive states, though a
+	// count of members that are not online would be easy to produce. It would
+	// also be wrong: a drive rebuilding is not a failed drive, a hot spare is
+	// not a member, and the MFI state constants beyond ONLINE have never been
+	// observed on real hardware here. A count assembled from unverified
+	// constants is a confident number, which is exactly what this comment
+	// exists to prevent.
 	FailedDevices int `json:"failed_devices"`
 	SpareDevices  int `json:"spare_devices"`
 	// SyncAction is the current background operation: "idle", "resync",

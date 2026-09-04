@@ -199,6 +199,19 @@ way.
 
 ### Sync state is not reported, and says so
 
+**One sentinel covers four fields**, and the list matters as much as the rule:
+an empty `SyncAction` means `SyncProgressPercent`, `MismatchCount`,
+`FailedDevices` and `SpareDevices` are all unread. They are md counters, and a
+hardware volume publishes none of them. A second flag meaning almost the same
+thing is how two flags drift apart, so there is one.
+
+`FailedDevices` in particular is **not** derived from the controller's per-drive
+states, though "total minus online" is easy to write. It would be wrong: a drive
+rebuilding is not a failed drive, a hot spare is not a member, and the MFI state
+constants beyond `ONLINE` have never been observed on the hardware here. A count
+assembled from unverified constants is a confident number, and a confident zero
+on a redundant array is the reassuring half of a claim nobody made.
+
 Nothing here asks the controller about rebuild, consistency-check or
 background-init progress, so `SyncAction` is empty and `SyncProgressPercent` is
 zero — **not `"idle"` and `100`**, which is what a healthy md array reports and
