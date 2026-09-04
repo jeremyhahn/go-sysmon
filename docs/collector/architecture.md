@@ -400,8 +400,27 @@ Three fields are still read every tick, and the boundary is the point:
 Caching the distribution strings would be defensible — the running system is
 still the old one — but that changes **how fresh a field is**, which is a
 decision about what the dashboard promises rather than a saving to be taken
-quietly. `PlatformInformation` costs a couple of file reads and does not count
-processes.
+quietly.
+
+**That sentence used to end "`PlatformInformation` costs a couple of file reads
+and does not count processes", and it was wrong on two of ten hosts.** gopsutil
+reads `/etc/lsb-release` when it exists and otherwise **forks
+`/usr/bin/lsb_release`**, a Python script on Debian. fs and mon0 are the only
+two nodes without that file, and they were the only two whose `HostCollector`
+cost tens of milliseconds — 38.65 ms on fs, 19.33 ms/s, **29% of that machine's
+entire CPU**, spent starting an interpreter to report a distribution name. Ten
+hosts, no exceptions.
+
+The cost was measured on a workstation that has the file and generalised to the
+fleet, which is the same error as the Atom D510 figures in the deployment unit.
+
+`platformInformation` in `host.go` now short-circuits exactly the case where
+gopsutil would fork **and** its answer is fully determined by files that can be
+read: no `/etc/lsb-release`, an `lsb_release` binary present, `ID=debian` in
+os-release, and no `raspi-config`. Everything else calls gopsutil unchanged.
+Measured on fs: **38.65 ms to 0.19 ms, 206x**, with the reported values
+identical — `debian 12.13`, the point release from `/etc/debian_version`, which
+is what gopsutil returns and is *not* what os-release's `VERSION_ID` says.
 
 **Split on the property, not on the path.** The same sysfs tree holds fixed
 identity and live state side by side: DIMM *topology* cannot change, a DIMM
