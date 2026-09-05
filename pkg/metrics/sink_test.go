@@ -1,3 +1,6 @@
+//go:build prometheus
+
+// Tagged because SampleSink exists only in the prometheus build (#100).
 package metrics
 
 import (

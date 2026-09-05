@@ -29,7 +29,6 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
-	"github.com/jeremyhahn/go-sysmon/pkg/prom"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -174,13 +173,13 @@ type Config struct {
 
 	// Exporter is optional. When set, its health is published on the scrape
 	// endpoint, so a node that has quietly stopped pushing history says so.
-	Exporter *prom.Exporter
+	Exporter MetricsExporter
 
 	// History is optional. When set, the history endpoints answer date-range
 	// queries from Prometheus; when nil they report history as unavailable and
 	// the dashboard offers no range picker, which is exactly the standalone
 	// node's behaviour.
-	History *prom.Querier
+	History HistoryQuerier
 
 	// Version, GitCommit and BuildDate are the build metadata reported at
 	// GET /api/version. Empty values render as "dev"/"unknown" downstream.
@@ -204,8 +203,8 @@ type Server struct {
 
 	// exporter and history are optional in the same way, and for the same
 	// reason: a node with neither is a standalone node, not a broken one.
-	exporter *prom.Exporter
-	history  *prom.Querier
+	exporter MetricsExporter
+	history  HistoryQuerier
 
 	// deltas diffs once per tick for every client that asked for the delta
 	// protocol. It runs only while at least one has.

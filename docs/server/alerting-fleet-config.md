@@ -583,6 +583,40 @@ The submission path cannot slow the dashboard down. Peer readings are queued for
 the exporter and dropped, counted, if that queue is full — so an unreachable
 Prometheus costs history, never freshness.
 
+### Prometheus is a build tag, not only a config section
+
+Owner ruling, 2026-09-04: *"when an endpoint is configured, use it; otherwise
+pure realtime. The prometheus code compiles only under a build tag."*
+
+`sysmon-server` is built with `-tags prometheus`; the **desktop and systray
+builds are not**, so a realtime-only user carries no remote-write writer, no
+protobuf encoder and no snappy. `make build-server` and `make release-build`
+set the tag; `make build-desktop` does not.
+
+**The endpoints exist in both builds and answer the same shape.** A binary
+without the tag answers `/api/history/metrics` with `{"enabled":false}` and
+HTTP 200 -- exactly what a node with no `query_url` returns -- and never a 404.
+The dashboard hides its date picker on that envelope; on a 404 it would be
+looking at a failure, and the picker's absence would stop being a decision and
+become a symptom. "This node keeps no history" and "this build cannot" are the
+same answer to the only question the dashboard asks.
+
+Both shapes are built and tested: `make test` runs the suite twice, `make
+build-both` compiles both, and CI does the same in the unit, build and FIPS
+jobs. **A tag that is only ever compiled one way is not tested.**
+
+Two guards keep the split honest, because splitting files does not enforce
+anything -- one import in one untagged file puts `pkg/prom` back into the
+desktop binary and everything still compiles:
+
+- `TestPrometheusTagExcludesProm` walks the import graph **with build
+  constraints applied** and fails if `cmd/sysmon`, `pkg/server` or `pkg/metrics`
+  can reach `pkg/prom` without the tag.
+- `TestPrometheusTagIncludesProm` requires `cmd/sysmon` to import `pkg/prom`
+  **directly** when the tag is set. Reachability alone was too weak: the wiring
+  file was deleted entirely and a reachability check stayed green, because
+  `cmd/sysmon` reaches `pkg/prom` through `pkg/server` regardless.
+
 ### History: reading a range back
 
 With `query_url` set, the dashboard gains a **date range control** in the header,

@@ -1,3 +1,7 @@
+//go:build prometheus
+
+// Tagged because the catalog it checks is the remote-write catalog, which only
+// exists in the prometheus build (#100).
 package metrics
 
 import (

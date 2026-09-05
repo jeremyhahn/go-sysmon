@@ -1,3 +1,5 @@
+//go:build prometheus
+
 package server
 
 import (

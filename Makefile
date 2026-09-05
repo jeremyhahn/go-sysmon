@@ -8,6 +8,13 @@ LDFLAGS := -X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.bu
 WITH_SYSTRAY ?= 1
 
 # Build tags — desktop + systray assembled dynamically
+#
+# SERVER_TAGS carries `prometheus`: remote write and date-range history are
+# compiled into sysmon-server and NOT into the desktop or systray builds, whose
+# users want a realtime monitor with no time-series dependency (owner ruling
+# 2026-09-04, #100). Both shapes are built and tested here and in CI -- a tag
+# that only ever compiles one way is not tested.
+SERVER_TAGS := prometheus
 DESKTOP_TAGS := desktop,production,webkit2_41
 ifeq ($(WITH_SYSTRAY),1)
   DESKTOP_TAGS := $(DESKTOP_TAGS),systray
@@ -66,6 +73,7 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts release-build release-build-desktop clean-dist \
+        build-both \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
 
@@ -117,7 +125,7 @@ build-desktop: build-frontend
 # with CGO_ENABLED=0. The result is dynamically linked and needs a matching
 # glibc on the target host. No desktop tag, so no Wails runtime is pulled in.
 build-server: build-frontend
-	CGO_ENABLED=1 go build -ldflags "$(LDFLAGS)" -o bin/sysmon-server ./cmd/sysmon
+	CGO_ENABLED=1 go build -tags "$(SERVER_TAGS)" -ldflags "$(LDFLAGS)" -o bin/sysmon-server ./cmd/sysmon
 
 # svelte-check runs before the bundle: the TypeScript interfaces in
 # frontend/src/lib/types.ts mirror the Go types by hand, and drift between them
@@ -132,8 +140,18 @@ dev:
 
 # -race is on by default: the monitor broadcasts to concurrent subscribers and
 # two real data races shipped undetected while this target ran without it.
+# Both shapes, because a build tag that is only ever compiled one way is not
+# tested: the untagged run is what a desktop or systray user gets, and it has
+# its own history handlers to check (#100).
 test:
 	go test $(PKG_ALL) -race -count=1
+	go test -tags "$(SERVER_TAGS)" $(PKG_ALL) -race -count=1
+
+# build-both compiles the two shapes without running anything, which is the
+# cheap half of the same guarantee.
+build-both:
+	CGO_ENABLED=1 go build ./...
+	CGO_ENABLED=1 go build -tags "$(SERVER_TAGS)" ./...
 
 test-cli:
 	go test $(PKG_CLI) -v -count=1
@@ -495,11 +513,11 @@ scan-image-sarif:
 #
 #   make ci          full pipeline
 #   make ci-fast     everything except the container and browser suites
-ci: fmt-check vet lint vulncheck gosec audit test test-extensions build integration-test test-e2e
+ci: fmt-check vet lint vulncheck gosec audit test test-extensions build build-both integration-test test-e2e
 	@echo ""
 	@echo "CI pipeline passed."
 
-ci-fast: fmt-check vet lint vulncheck gosec audit test test-extensions build
+ci-fast: fmt-check vet lint vulncheck gosec audit test test-extensions build build-both
 	@echo ""
 	@echo "CI (fast) passed. Container and browser suites were skipped."
 
@@ -512,7 +530,7 @@ ci-fast: fmt-check vet lint vulncheck gosec audit test test-extensions build
 RELEASE_DIR ?= dist
 release-build: build-frontend
 	@mkdir -p $(RELEASE_DIR)
-	CGO_ENABLED=1 go build -trimpath -ldflags "$(LDFLAGS) -s -w" \
+	CGO_ENABLED=1 go build -trimpath -tags "$(SERVER_TAGS)" -ldflags "$(LDFLAGS) -s -w" \
 		-o $(RELEASE_DIR)/sysmon-server-$(VERSION)-linux-$(shell go env GOARCH) ./cmd/sysmon
 	cd $(RELEASE_DIR) && sha256sum sysmon-server-$(VERSION)-linux-$(shell go env GOARCH) \
 		> sysmon-server-$(VERSION)-linux-$(shell go env GOARCH).sha256

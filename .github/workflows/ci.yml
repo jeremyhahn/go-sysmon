@@ -249,6 +249,13 @@ jobs:
       - name: Build everything
         run: make build
 
+      # Both shapes of the prometheus tag, not just the one `make build`
+      # produces. sysmon-server is built WITH it and the desktop binary WITHOUT,
+      # so an untagged compile break would otherwise surface only in a desktop
+      # release -- and a tag that is compiled one way is not tested (#100).
+      - name: Build both prometheus shapes
+        run: make build-both
+
       - name: Verify the server binary runs
         run: |
           ./bin/sysmon-server version
@@ -284,8 +291,17 @@ jobs:
       - name: Build all packages (FIPS mode)
         run: go build ./...
 
+      # The tagged shape too: pkg/prom encodes protobuf and snappy by hand, so
+      # if anything in it reaches a non-approved primitive, this is where it
+      # shows (#100).
+      - name: Build all packages (FIPS mode, prometheus)
+        run: go build -tags prometheus ./...
+
       - name: Unit tests (FIPS mode)
         run: go test -count=1 -timeout=900s ./...
+
+      - name: Unit tests (FIPS mode, prometheus)
+        run: go test -tags prometheus -count=1 -timeout=900s ./...
 
   integration:
     name: Integration Tests

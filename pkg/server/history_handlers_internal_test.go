@@ -1,3 +1,6 @@
+//go:build prometheus
+
+// Tagged because the real history handlers exist only in the prometheus build (#100).
 package server
 
 import (

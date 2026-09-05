@@ -20,7 +20,6 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/memlimit"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
-	"github.com/jeremyhahn/go-sysmon/pkg/prom"
 	"github.com/jeremyhahn/go-sysmon/pkg/sdnotify"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -174,14 +173,6 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// The exporter runs whether or not remote write is configured, exactly as
-	// the fleet poller runs whether or not there are peers. With no
-	// remote_write_url it collects nothing, buffers nothing and makes no
-	// request; what it buys is that turning history on is a config reload
-	// rather than a restart that would drop every connected browser.
-	exporter := prom.NewExporter(promOptions(cfgMgr), snapshotSamples(mon), slog.Default())
-	go exporter.Run(done)
-
 	// The fleet poller reads its peer list from the config manager on every
 	// cycle, so peers can be added or removed by reloading rather than
 	// restarting -- which would reset Prometheus counters and drop every
@@ -199,6 +190,10 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		slog.Default(),
 	)
 
+	// Nil in a build without prometheus support; the server has always
+	// treated that as "this node keeps no history" (#100).
+	exporter := startExporter(cfgMgr, mon, done)
+
 	// Topology A (owner ruling 2026-09-04): the aggregator holds every peer's
 	// reading already, so it is the one node that can persist the fleet's
 	// history -- and the peers keep no prometheus and no storage of their own.
@@ -206,8 +201,9 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	// Registered before Run so no reading can arrive unobserved, and wired
 	// unconditionally: whether anything is written is decided per submission by
 	// the exporter reading the current config, so turning remote write on stays
-	// a reload rather than a restart.
-	fleetPoller.Observe(peerSamples(exporter))
+	// a reload rather than a restart. In a build without prometheus support
+	// this observes nothing, because there is nothing to write to.
+	observePeers(fleetPoller, exporter)
 	go fleetPoller.Run(done)
 
 	if err := mon.Start(); err != nil {
@@ -228,7 +224,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		Fleet:     fleetPoller,
 		Config:    cfgMgr,
 		Exporter:  exporter,
-		History:   prom.NewQuerier(promQueryOptions(cfgMgr)),
+		History:   newHistoryQuerier(cfgMgr),
 		Version:   version,
 		GitCommit: gitCommit,
 		BuildDate: buildDate,
