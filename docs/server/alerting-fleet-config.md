@@ -654,6 +654,40 @@ desktop binary and everything still compiles:
   file was deleted entirely and a reachability check stayed green, because
   `cmd/sysmon` reaches `pkg/prom` through `pkg/server` regardless.
 
+### Searching the history
+
+The owner asked, 2026-09-02, for **the ability to search across historical data
+points**. The date range answered half of that; the search box beside it answers
+the other half: naming what you want to see rather than finding the panel it
+lives on.
+
+Type a metric (`swap`, `disk read`) or a resource (`sda`, `eth0`, a core
+number). Matches are listed best-first -- an exact resource, then a partial one,
+then a metric name -- and choosing one charts it over the selected range,
+above the tabs, beside the question that produced it. Up to six at once.
+
+**What is searched is the catalog crossed with the resources this node actually
+has.** `disk_util` is one catalogued metric and six answerable questions on a
+machine with six drives, and `sda` is what an operator types. The resource list
+comes from the **live snapshot**, not from a new endpoint and not from
+Prometheus: the dashboard already knows every disk, interface, GPU and core, and
+asking the time-series database what labels exist would be a second source for
+the same list -- one that still offers a drive that was pulled yesterday.
+
+Four states are distinguished, because three of them are not charts and each
+means something different:
+
+| state | what is shown |
+|---|---|
+| no range selected | "Pick a date range to chart these" |
+| query matches nothing | "Nothing recorded matches that" |
+| metric answered, this resource absent from the window | "Nothing recorded for this in the selected range" |
+| the query failed | the reason the server gave |
+
+**A node with no Prometheus has no search box at all** -- not a disabled one.
+There is nothing to search, and a control that always answers "nothing" is worse
+than no control.
+
 ### History: reading a range back
 
 With `query_url` set, the dashboard gains a **date range control** in the header,

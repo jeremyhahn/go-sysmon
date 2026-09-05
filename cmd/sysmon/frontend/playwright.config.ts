@@ -20,10 +20,19 @@ export default defineConfig({
   webServer: {
     // CGO must stay enabled: pkg/collector imports NVIDIA go-nvml, which does
     // not compile with CGO_ENABLED=0.
+    //
+    // -tags prometheus builds the shape that SHIPS. Without it, since the tag
+    // landed (#100), this suite ran against a server with no history support at
+    // all and still passed -- every history spec mocks /api/history* through
+    // page.route, so nothing noticed. "The browser tests pass" has to keep
+    // meaning something about the built server: the mocks stay, because they
+    // make the specs deterministic, but a spec that ever routes through to a
+    // real endpoint must reach the real endpoint rather than an absence shaped
+    // like one.
     // The frontend is rebuilt here as well: the Go binary embeds
     // frontend/dist, so building only the binary would serve whatever bundle
     // happened to be on disk and silently test a stale UI.
-    command: `npm run build && cd ../../../ && CGO_ENABLED=1 go build -o bin/sysmon-server ./cmd/sysmon && ./bin/sysmon-server serve --addr 127.0.0.1:${port} --interval 500`,
+    command: `npm run build && cd ../../../ && CGO_ENABLED=1 go build -tags prometheus -o bin/sysmon-server ./cmd/sysmon && ./bin/sysmon-server serve --addr 127.0.0.1:${port} --interval 500`,
     // A dedicated high port: :8080 is a common default and reuseExistingServer
     // would otherwise run the whole suite against an unrelated service.
     port,

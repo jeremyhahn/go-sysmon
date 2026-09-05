@@ -5,6 +5,8 @@
   import SettingsDialog from "./components/SettingsDialog.svelte";
   import ThemeToggle from "./components/ThemeToggle.svelte";
   import RangePicker from "./components/RangePicker.svelte";
+  import HistorySearch from "./components/HistorySearch.svelte";
+  import HistoryResults from "./components/HistoryResults.svelte";
   import HistoryBanner from "./components/HistoryBanner.svelte";
   import CpuPanel from "./components/CpuPanel.svelte";
   import GpuPanel from "./components/GpuPanel.svelte";
@@ -280,6 +282,7 @@
         </span>
       {/if}
       <RangePicker />
+      <HistorySearch />
       <ThemeToggle />
       <AlertBell onNavigate={navigateToCategory} />
       <button
@@ -344,6 +347,7 @@
 
   <!-- Says, unmistakably, when the charts below are not live. -->
   <HistoryBanner />
+  <HistoryResults />
 
   <!-- Main content -->
   <main class="flex-1 p-4">
