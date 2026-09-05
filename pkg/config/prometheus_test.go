@@ -308,3 +308,71 @@ func TestPrometheus_ExternalLabelsAreValidated(t *testing.T) {
 		t.Errorf("ExternalLabels = %v", cfg.Prometheus.ExternalLabels)
 	}
 }
+
+// Topology B (owner ruling 2026-09-04): "a node may be configured to store to
+// local prometheus; when enabled, that node's GUI allows historical searching
+// too -- so if the aggregator dies, the data survives on the nodes."
+//
+// It needs no new mechanism, and this is the check that keeps that claim true:
+// a node pointing both halves at a Prometheus on its own host loads, validates
+// and reports both halves enabled, which is what makes the date picker and the
+// history search appear on that node (#101).
+func TestPrometheus_NodeLocalStoreIsAValidTopology(t *testing.T) {
+	cfg, sources, err := config.NewLoader(writeConfig(t, `
+prometheus:
+  remote_write_url: "http://127.0.0.1:9090/api/v1/write"
+  query_url: "http://127.0.0.1:9090"
+`)).Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	if !cfg.Prometheus.WriteEnabled() {
+		t.Error("a node-local store does not record: WriteEnabled() is false")
+	}
+	if !cfg.Prometheus.QueryEnabled() {
+		t.Error("a node-local store cannot be read back: QueryEnabled() is false")
+	}
+	if sources["prometheus.query_url"] != config.SourceFile {
+		t.Errorf("query_url source = %q, want the file", sources["prometheus.query_url"])
+	}
+}
+
+// A node that records locally and reads from somewhere else is a real
+// arrangement, not a mistake to reject: a node keeping its own copy while the
+// dashboard reads the fleet's aggregate is exactly the arrangement that
+// survives the aggregator dying.
+func TestPrometheus_HalvesMayPointAtDifferentStores(t *testing.T) {
+	cfg, _, err := config.NewLoader(writeConfig(t, `
+prometheus:
+  remote_write_url: "http://127.0.0.1:9090/api/v1/write"
+  query_url: "http://mon0:9090"
+`)).Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	if !cfg.Prometheus.WriteEnabled() || !cfg.Prometheus.QueryEnabled() {
+		t.Fatalf("Prometheus = %+v, want both halves enabled", cfg.Prometheus)
+	}
+}
+
+// The write half alone is the shape every peer in topology A has: it records
+// nothing locally to read back, so the dashboard must show no date picker while
+// the node keeps pushing.
+func TestPrometheus_WriteWithoutQueryHasNoHistoryToShow(t *testing.T) {
+	cfg, _, err := config.NewLoader(writeConfig(t, `
+prometheus:
+  remote_write_url: "http://mon0:9090/api/v1/write"
+`)).Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+
+	if !cfg.Prometheus.WriteEnabled() {
+		t.Error("WriteEnabled() = false with a remote_write_url set")
+	}
+	if cfg.Prometheus.QueryEnabled() {
+		t.Error("QueryEnabled() = true with no query_url; the node would offer history it cannot read")
+	}
+}

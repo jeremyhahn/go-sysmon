@@ -583,6 +583,43 @@ The submission path cannot slow the dashboard down. Peer readings are queued for
 the exporter and dropped, counted, if that queue is full — so an unreachable
 Prometheus costs history, never freshness.
 
+### Two topologies, and which to choose
+
+Owner ruling, 2026-09-04. Both are supported; they differ in **where the past
+lives**, not in what the dashboard can do with it.
+
+**Topology A -- aggregator persistence.** One node runs the fleet poller and a
+`prometheus` section; the other nine have **neither**. They are pure realtime:
+no time-series dependency, no storage, nothing to administer. The aggregator
+writes every peer's reading under that peer's own `instance` label, so the
+fleet's whole past is queryable from one dashboard. This is the preferred shape
+and the one the fleet runs.
+
+**Topology B -- node-local store.** A node points `prometheus.query_url` (and
+usually `remote_write_url`) at a Prometheus on **its own host**. That node's
+dashboard then gains the date picker and the history search for its own past,
+independently of the aggregator -- *"so if the aggregator dies, the data
+survives on the nodes."* Config-selected, never a default.
+
+B needs no new mechanism. The two halves of the section are independent, and a
+node reading back what it has written is the same code path as a node reading
+the aggregator's store. What it costs is a Prometheus per node to run, back up
+and upgrade, which is why A is preferred.
+
+The halves may point at **different** stores, and that is a real arrangement
+rather than a mistake: a node recording locally while its dashboard reads the
+fleet's aggregate is exactly what keeps that node's history when the aggregator
+is gone.
+
+**One configuration to avoid, and this process cannot detect it.** If a
+topology-B node writes to the *same* Prometheus an aggregator writes its peers
+into, that node's series are written twice -- once by the node at its sample
+interval, once by the aggregator at the fleet poll interval -- under the same
+`instance` label. Prometheus accepts both, and a chart shows whichever samples
+landed. Neither writer can see the other, so this is a rule for whoever writes
+the config: **a node that an aggregator writes does not also write itself into
+that aggregator's store.**
+
 ### Prometheus is a build tag, not only a config section
 
 Owner ruling, 2026-09-04: *"when an endpoint is configured, use it; otherwise
