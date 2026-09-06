@@ -276,7 +276,7 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
 
 	if cfg.Assets != nil {
-		mux.Handle("GET /", cacheControl(http.FileServerFS(cfg.Assets)))
+		mux.Handle("GET /", assetHeaders(assetETags(cfg.Assets), http.FileServerFS(cfg.Assets)))
 	} else {
 		mux.HandleFunc("GET /", s.handleStatus)
 	}
@@ -934,26 +934,4 @@ func (s *eventStream) Close() error {
 		return s.gz.Close()
 	}
 	return nil
-}
-
-// cacheControl sets caching headers appropriate to each kind of asset.
-//
-// The bundle filenames are content-hashed, so they can be cached forever and a
-// new build produces new names. index.html references those names and must
-// therefore never be served from cache without revalidation: a stale copy
-// pins the browser to an old bundle permanently, so a redeployed server keeps
-// showing the previous UI. The embedded filesystem also reports a zero
-// modification time, which leaves the response with no validator at all and
-// lets browsers fall back to heuristic caching.
-func cacheControl(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
-			// Content-addressed: safe to keep indefinitely.
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		} else {
-			// Entry point and anything else: always revalidate.
-			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-		}
-		next.ServeHTTP(w, r)
-	})
 }

@@ -381,8 +381,9 @@ func TestHandleEvents_WriteToClosedConnection(t *testing.T) {
 func TestCacheControl_EntryPointRevalidates(t *testing.T) {
 	m := newMonitor(t, "cache-host")
 	assets := fstest.MapFS{
-		"index.html":             &fstest.MapFile{Data: []byte("<html>app</html>")},
-		"assets/index-abc123.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+		"index.html":                 &fstest.MapFile{Data: []byte("<html>app</html>")},
+		"assets/echarts-CJXIpdJj.js": &fstest.MapFile{Data: []byte("charts")},
+		"assets/index.js":            &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
 	srv := server.New(m, ":0", assets)
 	ts := httptest.NewServer(srv)
@@ -404,20 +405,22 @@ func TestCacheControl_EntryPointRevalidates(t *testing.T) {
 	}
 }
 
-// TestCacheControl_HashedAssetsAreImmutable verifies content-addressed bundles
+// TestCacheControl_HashedAssetsAreImmutable verifies content-addressed chunks
 // are cacheable indefinitely, which is what makes the no-cache entry point
-// cheap.
+// cheap. Since #55 that is the split-out vendor chunk only: the app bundle
+// carries a fixed name and revalidates, covered by the test below.
 func TestCacheControl_HashedAssetsAreImmutable(t *testing.T) {
 	m := newMonitor(t, "cache-host")
 	assets := fstest.MapFS{
-		"index.html":             &fstest.MapFile{Data: []byte("<html>app</html>")},
-		"assets/index-abc123.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+		"index.html":                 &fstest.MapFile{Data: []byte("<html>app</html>")},
+		"assets/echarts-CJXIpdJj.js": &fstest.MapFile{Data: []byte("charts")},
+		"assets/index.js":            &fstest.MapFile{Data: []byte("console.log(1)")},
 	}
 	srv := server.New(m, ":0", assets)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/assets/index-abc123.js") //nolint:noctx
+	resp, err := http.Get(ts.URL + "/assets/echarts-CJXIpdJj.js") //nolint:noctx
 	if err != nil {
 		t.Fatalf("GET asset: %v", err)
 	}
@@ -433,5 +436,65 @@ func TestCacheControl_HashedAssetsAreImmutable(t *testing.T) {
 	got := resp.Header.Get("Cache-Control")
 	if !strings.Contains(got, "immutable") {
 		t.Errorf("Cache-Control = %q, want hashed assets to be immutable", got)
+	}
+}
+
+// TestCacheControl_FixedNameBundleRevalidatesWithETag is the safety net for
+// dropping the content hash from the app bundle (#55). The filename no longer
+// changes when the code does, so the only thing standing between a returning
+// browser and a stale bundle is the entity tag: it must be present, it must
+// answer a matching conditional request with 304, and it must serve the new
+// bytes when the tag does not match.
+func TestCacheControl_FixedNameBundleRevalidatesWithETag(t *testing.T) {
+	m := newMonitor(t, "cache-host")
+	assets := fstest.MapFS{
+		"index.html":      &fstest.MapFile{Data: []byte("<html>app</html>")},
+		"assets/index.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+	}
+	srv := server.New(m, ":0", assets)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	resp, err := http.Get(ts.URL + "/assets/index.js") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET bundle: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close body: %v", err)
+	}
+	if cc := resp.Header.Get("Cache-Control"); !strings.Contains(cc, "no-cache") {
+		t.Errorf("Cache-Control = %q, want the fixed-name bundle to revalidate", cc)
+	}
+	tag := resp.Header.Get("ETag")
+	if tag == "" {
+		t.Fatal("ETag is empty: a fixed-name bundle with no validator re-downloads on every load")
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/assets/index.js", nil)
+	if err != nil {
+		t.Fatalf("build conditional request: %v", err)
+	}
+	req.Header.Set("If-None-Match", tag)
+	cond, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("conditional GET: %v", err)
+	}
+	if err := cond.Body.Close(); err != nil {
+		t.Errorf("close body: %v", err)
+	}
+	if cond.StatusCode != http.StatusNotModified {
+		t.Errorf("status = %d, want %d for a matching entity tag", cond.StatusCode, http.StatusNotModified)
+	}
+
+	req.Header.Set("If-None-Match", `"00000000000000000000000000000000"`)
+	stale, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("stale conditional GET: %v", err)
+	}
+	if err := stale.Body.Close(); err != nil {
+		t.Errorf("close body: %v", err)
+	}
+	if stale.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d for a stale entity tag", stale.StatusCode, http.StatusOK)
 	}
 }

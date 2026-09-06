@@ -73,6 +73,20 @@ already caused bugs:
   built with a bare `go build` served a UI one commit behind, with green CI and
   a correct source tree (#55). A rule nothing checks is a rule that holds until
   someone is busy.
+- The application chunk and its stylesheet are emitted under **fixed** names,
+  `assets/index.js` and `assets/index.css`, not content-hashed ones. A hash
+  renamed a *committed* file on every build, so any two branches touching the
+  frontend collided on three paths at once — add/add on their new bundles,
+  delete/delete on the one they both replaced, modify/modify on `index.html` —
+  and none of it was resolvable by merging (#55). With fixed names `index.html`
+  changes only when its own source or the vendor chunk does, and the bundle is
+  a single conflict on one file whose resolution is always "rebuild". Cache
+  correctness moves to the server: see `assetHeaders` in
+  `pkg/server/assets.go`, and *Static assets* in
+  [../server/architecture.md](../server/architecture.md).
+
+  Two builds of an unchanged tree are byte-identical, so a rebuild you did not
+  need produces no diff at all.
 
 ## Charts
 
@@ -84,8 +98,9 @@ bundle for a dashboard that draws two kinds of chart.
 
 Anything added to a chart option later — another series type, a legend, a data
 zoom — has to be registered there first, or ECharts silently renders nothing for
-it. Vendor code is emitted as its own content-hashed chunk, so redeploying the
-app does not invalidate the charting library in returning browsers.
+it. Vendor code is emitted as its own content-hashed chunk — the only remaining
+hashed name in the bundle — so redeploying the app does not invalidate the
+charting library in returning browsers, and it can still be served `immutable`.
 
 The stock `dark` theme is not used: it ships as a UMD bundle that re-imports the
 full ECharts build, which would undo the tree shaking. Instead `chartPalette()`

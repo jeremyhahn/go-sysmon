@@ -178,14 +178,26 @@ rather than failing later as an opaque handshake error.
 
 ## Static assets
 
-The dashboard is served from an embedded filesystem. Two cache policies:
+The dashboard is served from an embedded filesystem by `assetHeaders` in
+`pkg/server/assets.go`. Two cache policies, split on whether the filename is
+content-addressed:
 
-- `/assets/*` is content-hashed by the bundler, so it is `immutable` with a
-  long max-age.
-- `index.html` is `no-cache`. It has to be revalidated on every load, because
-  it is the file that names the current bundle. Serving it without a validator
-  pins a browser to whichever build it saw first, which makes every subsequent
-  deploy invisible. That bug is easy to ship and very confusing to diagnose.
+- A name matching `<base>-<hash>.<ext>` under `/assets/` is `immutable` with a
+  long max-age. Today that is the ECharts vendor chunk alone. A new build of it
+  produces a new name, so a cached copy can never be the wrong one.
+- Everything else is `no-cache, must-revalidate`: `index.html`, and — since
+  #55 — the application chunk `/assets/index.js` and its stylesheet
+  `/assets/index.css`, which now carry fixed names so that two branches
+  touching the frontend no longer collide on three generated paths at once.
+  A stale copy of any of these runs old code against a new server, so they must
+  be revalidated on every load.
+
+Revalidation is only cheap if there is something to revalidate against. An
+embedded filesystem reports a zero modification time, so `Last-Modified` is
+useless and a conditional request would carry no validator at all — every
+reload would re-download the whole bundle. `assetETags` therefore hashes every
+embedded file once at construction and the middleware sets a strong `ETag`,
+which `http.ServeContent` reads back to answer `If-None-Match` with a 304.
 
 ## Constructing one
 
