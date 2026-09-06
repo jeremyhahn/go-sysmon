@@ -7,6 +7,19 @@ on:
     branches: [main, master, develop]
   workflow_dispatch:
 
+# Shed superseded runs instead of letting them finish. gpu-host's act_runner is
+# capacity 3 for the whole portfolio, so a run whose head has already moved on is
+# occupying a slot a live run needs. Keyed on the ref, so each branch supersedes
+# only itself; `desktop.yml` has carried the same workflow-level block in
+# production since #104 and `opencode-review.yml` keys on the PR number.
+#
+# `cancel-in-progress` is the LITERAL `true`. Gitea 1.27.1 does not evaluate
+# expressions in that field -- any non-empty value is truthy -- so an expression
+# there reads as "always cancel" no matter what it would have computed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # The go.mod toolchain directive pins the exact compiler, including the
   # patched standard library. Reading the version from go.mod keeps CI on
