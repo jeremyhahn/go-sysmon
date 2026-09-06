@@ -12,9 +12,9 @@ import (
 )
 
 // withServeConfig points the serve command at a temporary config file and
-// neutralises the flag-backed package variables, which persist across tests and
-// would otherwise be treated as supplied when loadServeConfig is called with no
-// cobra command.
+// returns the flag-backed package variables -- which persist across tests -- to
+// the defaults they were registered with, which is how "no flag was supplied"
+// is spelled when loadServeConfig is called with no cobra command.
 func withServeConfig(t *testing.T, body string) string {
 	t.Helper()
 
@@ -29,11 +29,68 @@ func withServeConfig(t *testing.T, body string) string {
 		serveConfigPath, serveAddr, serveIntervalMs = oldPath, oldAddr, oldInterval
 		serveTLSCert, serveTLSKey = oldCert, oldKey
 	})
+
+	d := config.Defaults()
 	serveConfigPath = path
-	serveAddr, serveTLSCert, serveTLSKey = "", "", ""
-	serveIntervalMs = 0
+	serveAddr, serveTLSCert, serveTLSKey = d.Server.Addr, d.Server.TLSCert, d.Server.TLSKey
+	serveIntervalMs = d.Server.IntervalMs
 
 	return path
+}
+
+// TestLoadServeConfig_UnsuppliedAddrLeavesTheFileInCharge is the regression
+// this issue is really about (#17). The flag layer outranks the config file, so
+// a flag default that reaches it is not merely redundant -- it wins. The
+// aggregator's sysmon.yaml asks for :8081; a serve loop that handed the
+// built-in ":8080" to the flag layer would bind that instead and report it as
+// having come from a flag nobody typed.
+func TestLoadServeConfig_UnsuppliedAddrLeavesTheFileInCharge(t *testing.T) {
+	withServeConfig(t, "server:\n  addr: \":8081\"\n")
+
+	mgr, err := loadServeConfig(nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+	if got := mgr.Current().Server.Addr; got != ":8081" {
+		t.Errorf("server.addr = %q, want %q from the config file", got, ":8081")
+	}
+	if got := mgr.Sources()["server.addr"]; got != config.SourceFile {
+		t.Errorf("source = %q, want %q", got, config.SourceFile)
+	}
+}
+
+// TestLoadServeConfig_SuppliedAddrOutranksTheFile is the other half: a flag the
+// operator actually gave still wins, which is what makes `--addr` worth having.
+func TestLoadServeConfig_SuppliedAddrOutranksTheFile(t *testing.T) {
+	withServeConfig(t, "server:\n  addr: \":8081\"\n")
+	serveAddr = "127.0.0.1:9099"
+
+	mgr, err := loadServeConfig(nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+	if got := mgr.Current().Server.Addr; got != "127.0.0.1:9099" {
+		t.Errorf("server.addr = %q, want %q from the flag", got, "127.0.0.1:9099")
+	}
+	if got := mgr.Sources()["server.addr"]; got != config.SourceFlag {
+		t.Errorf("source = %q, want %q", got, config.SourceFlag)
+	}
+}
+
+// TestLoadServeConfig_EmptyAddrFlagIsNotAValue covers the bad input: `--addr ""`
+// names no address, so it must not displace the file and leave normalize to put
+// the default back under a "flag" label.
+func TestLoadServeConfig_EmptyAddrFlagIsNotAValue(t *testing.T) {
+	withServeConfig(t, "server:\n  addr: \":8081\"\n")
+	serveAddr = ""
+
+	mgr, err := loadServeConfig(nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+	if got := mgr.Current().Server.Addr; got != ":8081" {
+		t.Errorf("server.addr = %q, want %q from the config file", got, ":8081")
+	}
 }
 
 // TestLoadServeConfig_RejectsPeerNamedLikeThisNode proves the collision check is

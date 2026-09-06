@@ -60,27 +60,39 @@ func newEnrichedSnapshotter(inner monitor.Snapshotter, mgr *config.Manager, vers
 // so only flags the user changed are passed through.
 func loadServeConfig(cmd *cobra.Command) (*config.Manager, error) {
 	loader := config.NewLoader(serveConfigPath)
+	d := config.Defaults()
 
-	// With no cobra command there is no flag state to consult, which is the
-	// case when the serve loop is driven directly rather than from the CLI. The
-	// caller set these variables deliberately, so they are treated as supplied.
-	set := func(name string) bool {
+	// supplied reports whether a flag was actually given. With a cobra command
+	// that is exactly what Changed says. Without one -- the serve loop driven
+	// directly rather than from the CLI -- there is no flag state to consult, so
+	// a value counts as supplied when it differs from the defaults-layer value
+	// the flag was registered with.
+	//
+	// Treating the no-command case as "everything was supplied", which is what
+	// it used to do, put the flag defaults into the flag layer: the ONE layer
+	// that outranks the config file and the environment. A host whose
+	// sysmon.yaml said `addr: ":8081"` would have been bound to the built-in
+	// ":8080" instead, with the settings view reporting it as a flag.
+	supplied := func(name string, differs bool) bool {
 		if cmd == nil {
-			return true
+			return differs
 		}
 		return cmd.Flags().Changed(name)
 	}
 
-	if set("addr") && serveAddr != "" {
+	// The second condition is the empty flag: `--addr ""` names no address and
+	// `--interval 0` is not a cadence, so neither is worth carrying into the
+	// flag layer to be repaired back to the default afterwards.
+	if supplied("addr", serveAddr != d.Server.Addr) && serveAddr != "" {
 		loader.SetFlag("server.addr", serveAddr)
 	}
-	if set("interval") && serveIntervalMs > 0 {
+	if supplied("interval", serveIntervalMs != d.Server.IntervalMs) && serveIntervalMs > 0 {
 		loader.SetFlag("server.interval_ms", strconv.Itoa(serveIntervalMs))
 	}
-	if set("tls-cert") && serveTLSCert != "" {
+	if supplied("tls-cert", serveTLSCert != d.Server.TLSCert) && serveTLSCert != "" {
 		loader.SetFlag("server.tls_cert", serveTLSCert)
 	}
-	if set("tls-key") && serveTLSKey != "" {
+	if supplied("tls-key", serveTLSKey != d.Server.TLSKey) && serveTLSKey != "" {
 		loader.SetFlag("server.tls_key", serveTLSKey)
 	}
 

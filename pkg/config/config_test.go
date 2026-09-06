@@ -108,6 +108,91 @@ func TestLoad_FlagOutranksEnv(t *testing.T) {
 	}
 }
 
+// TestLoad_ServerAddrClimbsEveryLayer walks the listen address up the whole
+// precedence ladder in one test, because it is the ladder that matters here
+// rather than any single rung: the deployments this setting exists for -- the
+// fleet aggregator and its peers -- each reach it from a different layer
+// (#17), and a rung that quietly stopped outranking the one below it would
+// bind the wrong port on a live host while the settings view agreed with the
+// file it was ignoring.
+//
+// Each step adds exactly one layer and asserts both the effective value and
+// the layer credited with it, so a break says which rung gave way.
+func TestLoad_ServerAddrClimbsEveryLayer(t *testing.T) {
+	// No file, no environment, no flag: the built-in address, and nothing
+	// claiming to have supplied it.
+	absent := filepath.Join(t.TempDir(), "absent.yaml")
+	cfg, sources, err := config.NewLoader(absent).Load()
+	if err != nil {
+		t.Fatalf("Load() with no file: %v", err)
+	}
+	if want := config.Defaults().Server.Addr; cfg.Server.Addr != want {
+		t.Errorf("server.addr = %q, want the default %q", cfg.Server.Addr, want)
+	}
+	if got := sources["server.addr"]; got != config.SourceDefault {
+		t.Errorf("source = %q, want %q", got, config.SourceDefault)
+	}
+
+	// The config file outranks the default.
+	path := writeConfig(t, "server:\n  addr: \":8081\"\n")
+	cfg, sources, err = l(path).Load()
+	if err != nil {
+		t.Fatalf("Load() with a file: %v", err)
+	}
+	if cfg.Server.Addr != ":8081" {
+		t.Errorf("server.addr = %q, want %q from the file", cfg.Server.Addr, ":8081")
+	}
+	if got := sources["server.addr"]; got != config.SourceFile {
+		t.Errorf("source = %q, want %q", got, config.SourceFile)
+	}
+
+	// The environment outranks the file.
+	t.Setenv("SYSMON_SERVER_ADDR", "127.0.0.1:9090")
+	cfg, sources, err = l(path).Load()
+	if err != nil {
+		t.Fatalf("Load() with an environment override: %v", err)
+	}
+	if cfg.Server.Addr != "127.0.0.1:9090" {
+		t.Errorf("server.addr = %q, want %q from the environment", cfg.Server.Addr, "127.0.0.1:9090")
+	}
+	if got := sources["server.addr"]; got != config.SourceEnv {
+		t.Errorf("source = %q, want %q", got, config.SourceEnv)
+	}
+
+	// The flag outranks everything.
+	ld := l(path)
+	ld.SetFlag("server.addr", "10.0.0.5:8443")
+	cfg, sources, err = ld.Load()
+	if err != nil {
+		t.Fatalf("Load() with a flag: %v", err)
+	}
+	if cfg.Server.Addr != "10.0.0.5:8443" {
+		t.Errorf("server.addr = %q, want %q from the flag", cfg.Server.Addr, "10.0.0.5:8443")
+	}
+	if got := sources["server.addr"]; got != config.SourceFlag {
+		t.Errorf("source = %q, want %q", got, config.SourceFlag)
+	}
+}
+
+// TestLoad_EmptyServerAddrIsRepairedToTheDefault is the bad-input half: an
+// `addr:` line with nothing after it parses fine and yields "", which
+// net.Listen reads as "every interface, port 0" -- a kernel-chosen port that
+// nothing knows how to reach. The default is restored instead, and credited to
+// the defaults so the settings view does not point at a file saying otherwise.
+func TestLoad_EmptyServerAddrIsRepairedToTheDefault(t *testing.T) {
+	path := writeConfig(t, "server:\n  addr: \"\"\n")
+	cfg, sources, err := l(path).Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if want := config.Defaults().Server.Addr; cfg.Server.Addr != want {
+		t.Errorf("server.addr = %q, want the default %q", cfg.Server.Addr, want)
+	}
+	if got := sources["server.addr"]; got != config.SourceDefault {
+		t.Errorf("source = %q, want %q -- the file did not supply the effective value", got, config.SourceDefault)
+	}
+}
+
 // TestLoad_MalformedFileIsAnError distinguishes a broken file from a missing
 // one: a typo must be reported, not silently ignored.
 func TestLoad_MalformedFileIsAnError(t *testing.T) {

@@ -18,6 +18,16 @@ environment are a valid configuration.
 | Environment | `SYSMON_` + the key, `.` → `_`, e.g. `SYSMON_ALERTS_DISK_FULL_PCT` |
 | Flag | `--addr`, `--interval`, `--tls-cert`, `--tls-key` |
 
+Every layer is reachable for every key, the listen address included: `:8081` in
+the config file, `SYSMON_SERVER_ADDR=:8081`, or `--addr :8081`, in that rising
+order. A flag counts only when it was actually given — one left at its default
+does not displace the file.
+
+**`SYSMON_ADDR` in `sysmon.env` is not the environment layer.** It is a systemd
+variable that the unit interpolates into `--addr`, so it arrives as a *flag* and
+outranks a `server.addr` set in the config file. The environment layer is spelt
+`SYSMON_SERVER_ADDR`: the prefix, then the config key with `.` replaced by `_`.
+
 `deploy/sysmon.yaml.example` documents every key. `GET /api/config` returns the
 effective value of each setting **and which layer supplied it**, which is what
 the dashboard's Settings tab renders.

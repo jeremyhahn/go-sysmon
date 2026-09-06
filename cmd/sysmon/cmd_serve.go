@@ -47,10 +47,17 @@ var serveCmd = &cobra.Command{
 }
 
 func init() {
-	serveCmd.Flags().StringVar(&serveAddr, "addr", ":8080", "HTTP listen address")
-	serveCmd.Flags().IntVar(&serveIntervalMs, "interval", 1000, "Polling interval in milliseconds")
-	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "Path to a PEM certificate; enables HTTPS")
-	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "Path to the PEM private key matching --tls-cert")
+	// Every flag default is read from the defaults layer rather than written
+	// out again here. A second copy of ":8080" would be a listen address that
+	// the config file and the environment cannot reach: it sits in the flag
+	// layer, which outranks both, and the two copies would drift the first time
+	// only one of them was edited.
+	d := config.Defaults()
+
+	serveCmd.Flags().StringVar(&serveAddr, "addr", d.Server.Addr, "HTTP listen address")
+	serveCmd.Flags().IntVar(&serveIntervalMs, "interval", d.Server.IntervalMs, "Polling interval in milliseconds")
+	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", d.Server.TLSCert, "Path to a PEM certificate; enables HTTPS")
+	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", d.Server.TLSKey, "Path to the PEM private key matching --tls-cert")
 	serveCmd.Flags().StringVar(&serveConfigPath, "config", config.DefaultPath,
 		"Path to the YAML configuration file; missing is not an error")
 	rootCmd.AddCommand(serveCmd)
