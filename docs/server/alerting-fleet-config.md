@@ -369,8 +369,40 @@ different hosts are fine, and the same URL listed twice is not.
 
 - `GET /api/fleet` — one summary per node: status, alert counts, CPU, memory,
   load per core, worst filesystem, RAID, SMART, temperature, power, throughput,
-  uptime and **the go-sysmon version** (so a node left behind on an old build is
-  visible).
+  uptime and **the build each node is running**.
+
+  The build is three fields: `version`, `git_commit` and `build_date`, carried
+  up from that node's snapshot. `version` alone never answered the question it
+  was added for. It is the release string, it has read `0.1.0-alpha` on every
+  build this project has produced, and a fleet running five different builds
+  therefore reported one identical word ten times — five nodes sat two builds
+  behind for days and the view showed them green. `git_commit` is the field
+  that distinguishes builds; `version` is kept beside it unchanged for anything
+  already reading it.
+
+  `build_match` states the comparison rather than leaving it to the reader:
+  `same`, `different` or `unknown`, against the commit of the node **serving
+  the view**. The aggregator is the only party that knows its own build, so it
+  makes the comparison once.
+
+  **`build_match` is not a health signal, by design.** It does not touch
+  `status`, `warning_count` or `critical_count`, and it must not: during a
+  rollout every node disagrees with the aggregator until it restarts, and a
+  fleet that went amber for the length of every deploy would teach operators to
+  ignore the colour. A node on another build is a fact to display. The
+  dashboard shows it as a neutral badge beside the health badges, not among
+  them.
+
+  **`unknown` never collapses into `same`.** A node whose binary predates these
+  fields sends no commit; a local build sends the literal `unknown`; a node
+  that has not answered sends nothing at all. None of them has agreed with
+  anything, and reading their silence as agreement is exactly the defect — a
+  stale node looking current — that these fields exist to end. `git_commit` and
+  `build_date` are omitted from the payload when the node did not state them;
+  `build_match` is always present.
+
+  Adding these three is an **additive schema change**: nothing was removed or
+  reinterpreted, and a client reading only the existing fields is unaffected.
 
   The two health figures carry a **denominator** — `raid_arrays` beside
   `raid_unhealthy`, `smart_capable` beside `smart_unhealthy` — and without them

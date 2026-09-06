@@ -40,6 +40,42 @@ const (
 	StatusUnreachable = "unreachable"
 )
 
+// Build agreement values, reported per node as FleetNode.BuildMatch.
+//
+// These describe BUILD IDENTITY, not health. They are kept apart from the
+// Status values above and from the alert counts on purpose: during a rollout
+// every node disagrees with the aggregator until it is restarted, and a fleet
+// that turned amber on every deploy would train operators to ignore the colour.
+const (
+	BuildSame      = "same"
+	BuildDifferent = "different"
+	BuildUnknown   = "unknown"
+)
+
+// unstatedCommit is what a binary built without the -ldflags reports for its
+// commit: main.gitCommit defaults to it, and GET /api/version renders an empty
+// value the same way. It says "this build does not know what it is", which is
+// the same non-answer as an empty field and is treated as one here.
+const unstatedCommit = "unknown"
+
+// compareBuild reports whether a node's commit is the aggregator's own.
+//
+// A missing commit on either side yields BuildUnknown rather than agreement.
+// Two nodes that both declined to say what they are running have not been shown
+// to match -- and a peer whose build predates the field is precisely the stale
+// node this comparison exists to find, so reading its silence as "same" would
+// reintroduce the defect in a new field.
+func compareBuild(local, node string) string {
+	if local == "" || local == unstatedCommit ||
+		node == "" || node == unstatedCommit {
+		return BuildUnknown
+	}
+	if local == node {
+		return BuildSame
+	}
+	return BuildDifferent
+}
+
 // peerState is the last result of polling one peer.
 type peerState struct {
 	snapshot  *types.Snapshot
@@ -332,6 +368,18 @@ func (p *Poller) View() types.Fleet {
 	}
 	p.mu.RUnlock()
 
+	// Build agreement is stamped here rather than inside summarize because it
+	// is the one field that is not a property of a node on its own: it is that
+	// node's commit held against THIS node's. Doing it in one pass over every
+	// node also covers the two paths summarize never reaches -- the peer that
+	// has not been polled yet and the peer that answered nothing -- so no node
+	// leaves the view with the field unset, which would decode as "" and read
+	// as neither agreement nor its absence.
+	selfCommit := self.GitCommit
+	for i := range nodes {
+		nodes[i].BuildMatch = compareBuild(selfCommit, nodes[i].GitCommit)
+	}
+
 	// Alphabetical by name (owner ruling 2026-09-01). Names are unique within a
 	// fleet, so this is a total order and the list cannot reshuffle between
 	// polls -- which was the original reason for sorting here at all, since map
@@ -389,6 +437,8 @@ func summarize(name, url string, self bool, snap *types.Snapshot, fetchedAt time
 	n.Reachable = errMsg == ""
 	n.Hostname = snap.Host.Hostname
 	n.Version = snap.Version
+	n.GitCommit = snap.GitCommit
+	n.BuildDate = snap.BuildDate
 	n.UptimeSeconds = snap.Host.Uptime
 	n.MemoryPercent = snap.Memory.UsedPercent
 	n.SwapPercent = snap.Memory.SwapPercent

@@ -145,7 +145,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	applyMemoryLimit()
 
 	sc := collector.NewSystemCollector(slog.Default())
-	snap := newEnrichedSnapshotter(newMonitorSnapshotter(sc), cfgMgr, version)
+	snap := newEnrichedSnapshotter(newMonitorSnapshotter(sc), cfgMgr, version, gitCommit, buildDate)
 
 	mon, err := monitor.New(snap, interval)
 	if err != nil {

@@ -26,10 +26,16 @@ import (
 // Thresholds are read from the config manager on every snapshot, which is what
 // makes a reload take effect without restarting.
 type enrichedSnapshotter struct {
-	inner   monitor.Snapshotter
-	cfg     *config.Manager
-	eval    *alert.Evaluator
-	version string
+	inner monitor.Snapshotter
+	cfg   *config.Manager
+	eval  *alert.Evaluator
+	// version is the release string and gitCommit/buildDate are the build it
+	// was cut from. All three are stamped, because the release string alone
+	// has never distinguished two builds -- it has read the same for every
+	// build of this project -- and the fleet view needs to.
+	version   string
+	gitCommit string
+	buildDate string
 }
 
 // Snapshot collects, stamps and evaluates.
@@ -39,17 +45,25 @@ func (e *enrichedSnapshotter) Snapshot() (*types.Snapshot, error) {
 		return nil, err
 	}
 	snap.Version = e.version
+	snap.GitCommit = e.gitCommit
+	snap.BuildDate = e.buildDate
 	snap.Alerts = e.eval.Evaluate(e.cfg.Current().Alerts, snap, time.Now())
 	return snap, nil
 }
 
-// newEnrichedSnapshotter wraps inner so its snapshots carry version and alerts.
-func newEnrichedSnapshotter(inner monitor.Snapshotter, mgr *config.Manager, version string) monitor.Snapshotter {
+// newEnrichedSnapshotter wraps inner so its snapshots carry the build serving
+// them and the alerts its thresholds produce.
+func newEnrichedSnapshotter(
+	inner monitor.Snapshotter, mgr *config.Manager,
+	version, gitCommit, buildDate string,
+) monitor.Snapshotter {
 	return &enrichedSnapshotter{
-		inner:   inner,
-		cfg:     mgr,
-		eval:    alert.New(),
-		version: version,
+		inner:     inner,
+		cfg:       mgr,
+		eval:      alert.New(),
+		version:   version,
+		gitCommit: gitCommit,
+		buildDate: buildDate,
 	}
 }
 

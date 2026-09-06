@@ -49,6 +49,19 @@ export interface Alert {
 
 export type NodeStatus = "healthy" | "warning" | "critical" | "unreachable";
 
+/**
+ * Whether a node runs the same go-sysmon build as the aggregator serving the
+ * view. The server decides this -- it is the only party that knows its own
+ * commit -- so the UI states it rather than recomputing it.
+ *
+ * It is NOT a status. A rollout puts every node in "different" until it
+ * restarts, so this is rendered as a fact and never as a fault.
+ *
+ * "unknown" never means "same": a node whose build predates the field, or that
+ * answered nothing at all, has not agreed with anything.
+ */
+export type BuildMatch = "same" | "different" | "unknown";
+
 /** FleetNode is one peer's rolled-up health, as the local node last saw it. */
 /**
  * PeerSnapshot is what GET /api/fleet/{name}/snapshot returns: a peer's
@@ -76,7 +89,16 @@ export interface FleetNode {
   age_seconds: number;
   status: NodeStatus;
   hostname: string;
+  /** The release string. It has read the same on every build this project has
+   * produced, so it cannot tell two builds apart -- `git_commit` can. */
   version: string;
+  /** The node's build identity. Absent when the node did not state it, which
+   * an older build does not. */
+  git_commit?: string;
+  build_date?: string;
+  /** Agreement with the aggregator's own build. Absent from a server that
+   * predates the field, which reads as "unknown" and shows nothing. */
+  build_match?: BuildMatch;
   uptime_seconds: number;
   critical_count: number;
   warning_count: number;

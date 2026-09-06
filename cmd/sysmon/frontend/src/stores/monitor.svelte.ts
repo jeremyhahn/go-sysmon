@@ -294,9 +294,18 @@ class MonitorStore {
    */
   readonly fleetNodes = $derived(this.fleet?.nodes ?? []);
 
-  /** The local node's own version, used to spot version drift across peers. */
+  /** The local node's own version, shown beside a peer's when they differ. */
   readonly localVersion = $derived(
     this.fleet?.nodes?.find((n) => n.self)?.version ?? ""
+  );
+
+  /**
+   * The local node's own commit. Named in the drift tooltips so "a different
+   * build than this one" says WHICH build -- the version string beside it is
+   * the same word on every node and identifies nothing.
+   */
+  readonly localCommit = $derived(
+    this.fleet?.nodes?.find((n) => n.self)?.git_commit ?? ""
   );
 
   /** The FleetNode currently selected, or null when viewing this host. */

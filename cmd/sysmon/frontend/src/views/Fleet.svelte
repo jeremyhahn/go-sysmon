@@ -45,6 +45,7 @@
 
   const allNodes = $derived(monitor.fleetNodes);
   const localVersion = $derived(monitor.localVersion);
+  const localCommit = $derived(monitor.localCommit);
   const selectedNode = $derived(monitor.selectedNode);
 
   let query = $state(readStored(SEARCH_KEY) ?? "");
@@ -156,7 +157,7 @@
       }
       criticalAlerts += node.critical_count;
       warningAlerts += node.warning_count;
-      if (hasVersionDrift(node)) drifted++;
+      if (hasBuildDrift(node)) drifted++;
     }
 
     return {
@@ -182,11 +183,28 @@
     return "text-success";
   }
 
-  /** A peer running a different build than this node is worth flagging. */
-  function hasVersionDrift(node: FleetNode): boolean {
-    return (
-      localVersion !== "" && node.version !== "" && node.version !== localVersion
-    );
+  /**
+   * A peer running a different build than this node is worth showing.
+   *
+   * The server decides this and sends `build_match`; it is the only party that
+   * knows its own commit, and comparing `version` here answered "no drift"
+   * always -- the release string is the same word on every build this project
+   * has ever produced (#68). An older server sends no field, which reads as
+   * unknown and shows nothing rather than guessing.
+   *
+   * Divergence is reported, never counted as a fault: mid-rollout every node
+   * differs until it restarts, and colouring the fleet amber for the length of
+   * a deploy teaches operators to ignore the colour.
+   */
+  function hasBuildDrift(node: FleetNode): boolean {
+    return node.build_match === "different";
+  }
+
+  /** What to show for a node's build: the commit if it stated one. */
+  function buildLabel(node: FleetNode): string {
+    return node.git_commit && node.git_commit !== "unknown"
+      ? node.git_commit
+      : "";
   }
 
   /**
@@ -258,11 +276,15 @@
             {totals.criticalAlerts} critical / {totals.warningAlerts} warning alerts
           </span>
           {#if totals.drifted > 0}
+            <!-- Neutral, alongside the health badges rather than among them. A
+                 rollout puts every node here until it restarts, so this must
+                 read as "worth knowing", not as "something is wrong". -->
             <span
-              class="badge badge-warning badge-sm"
-              title="Nodes running a different go-sysmon build than {localVersion}"
+              class="badge badge-neutral badge-sm"
+              title="Nodes running a go-sysmon build other than {localCommit ||
+                localVersion}"
             >
-              {totals.drifted} version drift
+              {totals.drifted} on another build
             </span>
           {/if}
         </div>
@@ -320,7 +342,8 @@
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
         {#each visible as node (node.name)}
           {@const isSelected = selectedNode === node.name}
-          {@const drift = hasVersionDrift(node)}
+          {@const drift = hasBuildDrift(node)}
+          {@const build = buildLabel(node)}
           <button
             type="button"
             class="card bg-base-200 shadow-sm text-left w-full transition-colors
@@ -363,15 +386,23 @@
                   </p>
                 </div>
                 <div class="text-right text-xs shrink-0">
-                  {#if node.version}
-                    <div class={drift ? "text-warning font-medium" : "text-base-content/60"}>
+                  {#if node.version || build}
+                    <div class="text-base-content/60">
                       {node.version}
+                      {#if build}
+                        <!-- The commit is the only part that varies between
+                             builds; the version beside it has never moved. -->
+                        <span class="font-mono" title={node.build_date ?? ""}>
+                          {build}
+                        </span>
+                      {/if}
                       {#if drift}
                         <span
-                          class="badge badge-warning badge-xs ml-1"
-                          title="This node runs a different go-sysmon build than {localVersion}"
+                          class="badge badge-neutral badge-xs ml-1"
+                          title="This node runs a go-sysmon build other than {localCommit ||
+                            localVersion}"
                         >
-                          drift
+                          other build
                         </span>
                       {/if}
                     </div>

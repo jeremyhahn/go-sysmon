@@ -20,6 +20,20 @@ type Snapshot struct {
 	// Version is the go-sysmon build serving this snapshot. It travels with the
 	// data so the fleet view can spot a node left behind on an older build.
 	Version string `json:"version"`
+	// GitCommit and BuildDate identify the BUILD, which Version alone cannot.
+	// The release string has read "0.1.0-alpha" for every build this project
+	// has ever produced, so a fleet on five different builds reported one word
+	// ten times and a stale node was indistinguishable from a current one.
+	// GET /api/version has always carried these two; the snapshot, and so the
+	// fleet payload built from it, dropped them.
+	//
+	// EMPTY MEANS THE NODE DID NOT STATE ITS BUILD -- a binary predating these
+	// fields, or one built without the -ldflags that inject them. That is not
+	// agreement with anything and must never be read as agreement. A binary
+	// built without the flags reports the literal "unknown" instead, for the
+	// same reason and with the same meaning.
+	GitCommit string `json:"git_commit,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
 	// Alerts are the threshold evaluations for this snapshot. Evaluated
 	// server-side so the dashboard, the API and the Prometheus endpoint all
 	// report the same conditions from the same rules.
@@ -89,6 +103,29 @@ type FleetNode struct {
 	Hostname      string  `json:"hostname"`
 	Version       string  `json:"version"`
 	UptimeSeconds uint64  `json:"uptime_seconds"`
+
+	// GitCommit and BuildDate are the node's build identity, carried up from
+	// its snapshot. Version is the release string and has never varied, so
+	// these are the only fields in this summary that can tell one build from
+	// another. Empty means the node did not state its build.
+	GitCommit string `json:"git_commit,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
+	// BuildMatch says whether this node runs the same build as the aggregator
+	// serving the view: "same", "different" or "unknown". The aggregator knows
+	// its own commit, so this is a comparison it can make once rather than
+	// leaving every consumer to make it -- and get wrong for the node that
+	// answered nothing.
+	//
+	// IT IS NOT A HEALTH SIGNAL, and deliberately does not touch Status,
+	// WarningCount or CriticalCount. Mid-rollout every node disagrees with the
+	// aggregator for as long as the rollout takes; a fleet that went amber on
+	// every deploy would teach operators to ignore the colour. Divergence is a
+	// fact to display, not a fault to raise.
+	//
+	// "unknown" is its own answer and never collapses into "same". A node that
+	// did not state its build has not agreed with anything, and reporting the
+	// silence as agreement is the exact failure this field was added to end.
+	BuildMatch string `json:"build_match"`
 
 	CriticalCount int `json:"critical_count"`
 	WarningCount  int `json:"warning_count"`
