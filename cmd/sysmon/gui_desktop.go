@@ -30,7 +30,7 @@ func launchGUI() error {
 		os.Exit(1)
 	}
 
-	binding := NewMonitorBinding(mon, sc)
+	binding := NewMonitorBinding(mon)
 
 	// wailsCtx is stored once the Wails runtime calls OnStartup so that the
 	// tray callbacks can reference it.

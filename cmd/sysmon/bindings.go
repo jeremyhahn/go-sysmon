@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -37,7 +36,6 @@ type MonitorBinding struct {
 	// way back for a frontend that lost its place.
 	streamCancel context.CancelFunc
 
-	sc      *collector.SystemCollector
 	running atomic.Bool
 
 	// emit is where frames are written. Per binding rather than a package
@@ -62,13 +60,21 @@ func (b *MonitorBinding) emitContext() context.Context {
 	return b.ctx
 }
 
-// NewMonitorBinding constructs a MonitorBinding backed by the given monitor
-// and system collector. The collector is retained so that SetInterval can
-// create a replacement monitor when the interval changes.
-func NewMonitorBinding(mon *monitor.Monitor, sc *collector.SystemCollector) *MonitorBinding {
+// NewMonitorBinding constructs a MonitorBinding backed by the given monitor.
+//
+// It used to take the *collector.SystemCollector as well, because SetInterval
+// stopped the monitor and rebuilt it on that collector -- which is what made
+// a test of SetInterval wait on a genuine full-machine collection and pass or
+// fail on how busy the host was (#34). SetInterval retunes the running
+// monitor instead (#97), so the rebuild is gone and nothing here has read the
+// collector since.
+//
+// The parameter outlived its only reader. Keeping it meant a caller still had
+// to hand over the real machine to fill a field nobody looked at, and left
+// the rebuild looking like something this type was still built for.
+func NewMonitorBinding(mon *monitor.Monitor) *MonitorBinding {
 	return &MonitorBinding{
 		mon: mon,
-		sc:  sc,
 		// A binding always has a context, so nothing downstream has to invent
 		// one: startup replaces this with the application's, and until then
 		// there is no lifetime to inherit. Without it the stream would need a

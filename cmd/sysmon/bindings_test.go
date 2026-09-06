@@ -5,12 +5,10 @@ package main
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -65,7 +63,7 @@ func waitSnapshot(t *testing.T, m *monitor.Monitor) {
 
 func TestNewMonitorBinding_NotNil(t *testing.T) {
 	m := newTestMonitor(t, "binding-host")
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 	if b == nil {
 		t.Fatal("NewMonitorBinding returned nil")
 	}
@@ -73,7 +71,7 @@ func TestNewMonitorBinding_NotNil(t *testing.T) {
 
 func TestNewMonitorBinding_StoresMonitor(t *testing.T) {
 	m := newTestMonitor(t, "store-host")
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 	// Verify the binding is usable – GetSnapshot delegates to the monitor.
 	waitSnapshot(t, m)
 	snap, err := b.GetSnapshot()
@@ -85,11 +83,74 @@ func TestNewMonitorBinding_StoresMonitor(t *testing.T) {
 	}
 }
 
+// TestNewMonitorBinding_NeedsNoCollector drives the binding's whole exported
+// surface against a stub snapshotter, which is what #34 asked for.
+//
+// The constructor used to demand a *collector.SystemCollector for a field
+// nothing read, so every test of this type instantiated the real machine to
+// satisfy it. The seam is the monitor's own Snapshotter, reached only through
+// the monitor: there is no second collector to inject because the binding no
+// longer has one.
+func TestNewMonitorBinding_NeedsNoCollector(t *testing.T) {
+	m := newTestMonitor(t, "no-collector-host")
+	b := NewMonitorBinding(m)
+	waitSnapshot(t, m)
+
+	snap, err := b.GetSnapshot()
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+	if snap.Host.Hostname != "no-collector-host" {
+		t.Errorf("Hostname = %q, want the stub's", snap.Host.Hostname)
+	}
+	if err := b.SetInterval(500); err != nil {
+		t.Fatalf("SetInterval(500): %v", err)
+	}
+	if got := b.monitor(); got != m {
+		t.Error("SetInterval replaced the monitor; it must retune the running one")
+	}
+	if got := m.Interval(); got != 500*time.Millisecond {
+		t.Errorf("Interval() = %v, want 500ms", got)
+	}
+	if _, ok := b.GetVersion()["version"]; !ok {
+		t.Error("GetVersion() has no version key")
+	}
+}
+
+// TestNewMonitorBinding_SurfacesACollectionFailure is the error counterpart: a
+// monitor whose snapshotter only ever fails collects nothing, and the binding
+// reports that rather than inventing a reading. It also pins the direction of
+// the dependency -- the binding has no collector of its own to ask, so the
+// only way it can fail is the monitor's.
+func TestNewMonitorBinding_SurfacesACollectionFailure(t *testing.T) {
+	stub := &monitorStub{err: errors.New("collector unavailable")}
+	m, err := monitor.New(stub, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("monitor.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop() })
+	b := NewMonitorBinding(m)
+
+	// Several ticks' worth, so this is the failure rather than a warm-up.
+	time.Sleep(50 * time.Millisecond)
+
+	snap, err := b.GetSnapshot()
+	if err == nil {
+		t.Fatalf("GetSnapshot() = %v, nil; want an error when nothing collected", snap)
+	}
+	if snap != nil {
+		t.Errorf("GetSnapshot() returned %v alongside an error", snap)
+	}
+}
+
 // ---- GetVersion -----------------------------------------------------------
 
 func TestGetVersion_ContainsExpectedKeys(t *testing.T) {
 	m := newTestMonitor(t, "ver-host")
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 	v := b.GetVersion()
 
 	for _, key := range []string{"version", "gitCommit", "buildDate"} {
@@ -101,7 +162,7 @@ func TestGetVersion_ContainsExpectedKeys(t *testing.T) {
 
 func TestGetVersion_ValuesAreStrings(t *testing.T) {
 	m := newTestMonitor(t, "ver-host2")
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 	v := b.GetVersion()
 
 	// Values must be non-empty strings (the package-level vars are "dev" /
@@ -118,7 +179,7 @@ func TestGetVersion_ValuesAreStrings(t *testing.T) {
 func TestGetSnapshot_ReturnsData(t *testing.T) {
 	m := newTestMonitor(t, "snap-host")
 	waitSnapshot(t, m)
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 
 	snap, err := b.GetSnapshot()
 	if err != nil {
@@ -141,7 +202,7 @@ func TestGetSnapshot_MonitorNotStarted(t *testing.T) {
 		t.Fatalf("monitor.New: %v", err)
 	}
 	// Do NOT start the monitor – no snapshot is available yet.
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 
 	_, err = b.GetSnapshot()
 	if err == nil {
@@ -157,8 +218,7 @@ func TestGetSnapshot_MonitorNotStarted(t *testing.T) {
 
 func TestSetInterval_ValidValue(t *testing.T) {
 	m := newTestMonitor(t, "interval-host")
-	sc := collector.NewSystemCollector(slog.Default())
-	b := NewMonitorBinding(m, sc)
+	b := NewMonitorBinding(m)
 	waitSnapshot(t, m)
 
 	if err := b.SetInterval(500); err != nil {
@@ -183,7 +243,7 @@ func TestSetInterval_ValidValue(t *testing.T) {
 
 func TestSetInterval_ZeroIsInvalid(t *testing.T) {
 	m := newTestMonitor(t, "interval-zero-host")
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 
 	err := b.SetInterval(0)
 	if err == nil {
@@ -197,7 +257,7 @@ func TestSetInterval_ZeroIsInvalid(t *testing.T) {
 
 func TestSetInterval_NegativeIsInvalid(t *testing.T) {
 	m := newTestMonitor(t, "interval-neg-host")
-	b := NewMonitorBinding(m, nil)
+	b := NewMonitorBinding(m)
 
 	err := b.SetInterval(-100)
 	if err == nil {
@@ -220,8 +280,7 @@ func TestSetInterval_NegativeIsInvalid(t *testing.T) {
 func TestSetInterval_AdjustsInPlace(t *testing.T) {
 	m := newTestMonitor(t, "in-place-host")
 	waitSnapshot(t, m)
-	sc := collector.NewSystemCollector(slog.Default())
-	b := NewMonitorBinding(m, sc)
+	b := NewMonitorBinding(m)
 
 	before, err := b.GetSnapshot()
 	if err != nil {
@@ -268,7 +327,7 @@ func TestStreamToFrontend_SendsDeltasNotSnapshots(t *testing.T) {
 
 	m := newTestMonitor(t, "delta-host")
 	waitSnapshot(t, m)
-	b := NewMonitorBinding(m, collector.NewSystemCollector(slog.Default()))
+	b := NewMonitorBinding(m)
 	b.ctx = context.Background()
 	// Observed per binding, so a stream started by another test cannot be
 	// mistaken for this one's -- which it was, until this test failed in the

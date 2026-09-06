@@ -106,7 +106,7 @@ func TestMonitorBinding_StartupShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
 	}
-	b := NewMonitorBinding(mon, collector.NewSystemCollector(nil))
+	b := NewMonitorBinding(mon)
 
 	b.startup(context.Background())
 
@@ -139,7 +139,7 @@ func TestMonitorBinding_ShutdownWithoutStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
 	}
-	b := NewMonitorBinding(mon, collector.NewSystemCollector(nil))
+	b := NewMonitorBinding(mon)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -253,7 +253,7 @@ func TestMonitorBinding_StartupWhenAlreadyRunning(t *testing.T) {
 		}
 	})
 
-	b := NewMonitorBinding(mon, collector.NewSystemCollector(nil))
+	b := NewMonitorBinding(mon)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -278,7 +278,7 @@ func TestMonitorBinding_StreamToFrontendIsSingleFlight(t *testing.T) {
 		t.Fatalf("monitor.Start: %v", err)
 	}
 
-	b := NewMonitorBinding(mon, collector.NewSystemCollector(nil))
+	b := NewMonitorBinding(mon)
 	b.ctx = context.Background()
 
 	go b.streamToFrontend(context.Background())
@@ -316,7 +316,7 @@ func TestMonitorBinding_SetIntervalRejectsNonPositive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
 	}
-	b := NewMonitorBinding(mon, collector.NewSystemCollector(nil))
+	b := NewMonitorBinding(mon)
 
 	for _, ms := range []int{0, -1} {
 		err := b.SetInterval(ms)
@@ -344,7 +344,7 @@ func TestMonitorBinding_SetIntervalDoesNotStartCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
 	}
-	b := NewMonitorBinding(mon, collector.NewSystemCollector(nil))
+	b := NewMonitorBinding(mon)
 	b.ctx = context.Background()
 
 	if err := b.SetInterval(50); err != nil {
