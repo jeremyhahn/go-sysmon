@@ -25,8 +25,11 @@ import (
 //
 //	make bench-fleet
 
-// benchPeerCount matches the deployed fleet: mon0 polls nine peers plus itself.
-const benchPeerCount = 9
+// benchPeerCount matches the deployed fleet: mon0 polls ten peers plus itself.
+// The tenth (gitea) was added 2026-09-06; the count is read from mon0's own
+// sysmon.yaml rather than assumed, because it is the multiplier on everything
+// below.
+const benchPeerCount = 10
 
 // benchProcesses gives each peer's snapshot a realistic body. The fleet's
 // snapshots run 223 KB to 488 KB, almost all of it the process list, so a
@@ -103,9 +106,15 @@ func benchFleet(b *testing.B, n int) (*Poller, config.Fleet) {
 	return p, cfg
 }
 
-// BenchmarkPoller_Refresh is one aggregation cycle: nine peers fetched
-// concurrently and decoded. At the deployed 3s poll interval, the per-second
-// cost is this figure divided by three.
+// BenchmarkPoller_Refresh is one aggregation cycle: every peer fetched
+// concurrently and decoded.
+//
+// Its ns/op is WALL time, and the peers are fetched in parallel, so it is
+// roughly the slowest round trip and not what the cycle costs a CPU. Do not
+// divide it by the poll interval to get a per-second load: doing exactly that
+// is how #76 concluded aggregation was too small to explain mon0, which it
+// outweighed by more than two orders of magnitude. BenchmarkPoller_RefreshCPU
+// reports the CPU figure directly.
 func BenchmarkPoller_Refresh(b *testing.B) {
 	p, cfg := benchFleet(b, benchPeerCount)
 
