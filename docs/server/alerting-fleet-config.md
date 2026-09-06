@@ -143,10 +143,36 @@ fails with an error instead of quietly booting on defaults. Silently discarding
 an operator's TLS, listener, fleet and alert configuration while looking like a
 healthy start is the worse outcome by far.
 
-`GET /api/config` renders `server.tls_cert` and `server.tls_key` as
-`(configured)` or `(not set)` rather than their paths. The endpoint is
-unauthenticated by design, and the location of a private key is reconnaissance
-that whoever reaches it should not be handed for free.
+### What the settings view withholds
+
+`GET /api/config` is unauthenticated by design — go-sysmon sits behind an
+authenticating proxy — so it reports **whether** each of these is set up, as
+`(configured)` or `(not set)`, and never what it is:
+
+| Withheld | Why |
+|---|---|
+| `server.tls_cert`, `server.tls_key` | The location of a private key. |
+| `prometheus.remote_write_url`, `prometheus.query_url` | The address of the fleet's time-series database. |
+| `config_file` | An absolute path is a map of the host's filesystem layout. |
+| `fleet.peers.<name>` | Another machine's scheme, host and port. |
+
+Peers keep their **names**. The name is how the dashboard, the fleet proxy and
+the history queries all address a node, and the browser reaches a peer through
+`/api/fleet/{name}/...` on this node rather than by dialling it — so the URL
+buys a client nothing and hands an anonymous one the internal topology. Together
+with the config file's path it let a single reachable listener enumerate
+hostnames, ports, transport choices and filesystem layout (#16).
+
+**A peer with no `name:` is reported as `fleet.peers.(unnamed 1)`.** Such a peer
+is legal configuration and takes its URL as its name (see *Peer names must be
+unique* below), so keying the entry by the name would put the address back on
+the wire in the key while the value beside it read `(configured)` — half a
+redaction. The number is positional, not an identity: adding a peer renumbers
+the rest. **Name your peers** — the name is the routing identity everywhere else
+in the fleet, and an unnamed peer is unidentifiable in this view by design.
+
+`GET /api/fleet` still carries each peer's `url`, which the fleet card renders.
+That is the same exposure on a different endpoint and is tracked separately.
 
 ## Alerts
 
@@ -351,8 +377,8 @@ alongside the unauthenticated read endpoints.
 
 **Peer URLs must not carry credentials.** `https://user:token@peer` is rejected
 at load, as is a bare `user@peer` — authenticated peers are not supported, and
-the fleet view copies peer URLs into `GET /api/config`, which has no
-authentication of its own. Rejecting rather than redacting means the secret is
+`GET /api/fleet` copies peer URLs into a response that has no authentication of
+its own. Rejecting rather than redacting means the secret is
 never stored, never rendered and never logged; the error names the peer and its
 host but never the URL. A URL that cannot be parsed at all is also a load
 error, rather than a connection failure repeated on every poll.

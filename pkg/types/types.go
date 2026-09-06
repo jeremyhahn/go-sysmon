@@ -186,6 +186,10 @@ type ConfigEntry struct {
 
 // ConfigView is the effective configuration served at /api/config.
 type ConfigView struct {
+	// ConfigFile says WHETHER a configuration file is in use -- "(configured)"
+	// or "(not set)" -- and deliberately not where it is. The endpoint has no
+	// authentication of its own, and an absolute path is a map of the host's
+	// filesystem layout handed to anyone who can reach the port (#16).
 	ConfigFile string        `json:"config_file"`
 	Entries    []ConfigEntry `json:"entries"`
 }

@@ -162,3 +162,68 @@ func TestConfigView_WithoutAMonitorStillServes(t *testing.T) {
 		t.Errorf("value = %q, want the configured 1000", got)
 	}
 }
+
+// TestConfigView_ServesNoInternalTopology is #16 asserted where it actually
+// matters: on the bytes GET /api/config puts on the wire, with no
+// authentication in front of them. The endpoint used to answer an anonymous
+// caller with every peer's scheme, host and port plus the absolute path of the
+// config file -- enough for one reachable listener to map the internal network
+// and the host's filesystem layout.
+//
+// The whole response body is searched rather than the entries a test picks out,
+// because a redaction that only covers the field somebody remembered to check
+// is not a redaction.
+func TestConfigView_ServesNoInternalTopology(t *testing.T) {
+	mgr, path := reloadManager(t, `
+server:
+  interval_ms: 1000
+  tls_cert: /etc/ssl/private/node.pem
+fleet:
+  peers:
+    - name: fs
+      url: http://198.51.100.10:8081
+    - name: gpu-host
+      url: https://198.51.100.91:9443
+    - url: http://198.51.100.90:8081
+`)
+
+	rec := httptest.NewRecorder()
+	(&Server{cfg: mgr}).handleConfig(rec, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	body := rec.Body.String()
+
+	for _, secret := range []string{
+		path,                     // the config file's absolute path
+		"198.51.100.10", "8081", // a peer's host and port
+		"198.51.100.91", "9443",
+		"198.51.100.90",      // the unnamed peer, whose NAME is its URL
+		"http://", "https://", // the transport choice
+		"/etc/ssl/private/node.pem", // the TLS material's location
+	} {
+		if strings.Contains(body, secret) {
+			t.Errorf("GET /api/config leaks %q:\n%s", secret, body)
+		}
+	}
+
+	// The third peer has no `name:`, so normalize adopts its URL as its name --
+	// which is how the address survived the first pass at this fix, in the entry
+	// KEY rather than its value.
+	//
+	// What survives is what the dialog is for: the peers, named where they have
+	// names, and the fact that a config file is in force.
+	var view types.ConfigView
+	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
+		t.Fatalf("decoding %q: %v", body, err)
+	}
+	if view.ConfigFile != config.ValueConfigured {
+		t.Errorf("config_file = %q, want %q", view.ConfigFile, config.ValueConfigured)
+	}
+	var peers int
+	for _, e := range view.Entries {
+		if strings.HasPrefix(e.Key, "fleet.peers.") {
+			peers++
+		}
+	}
+	if peers != 3 {
+		t.Errorf("peer entries = %d, want all three peers still listed", peers)
+	}
+}

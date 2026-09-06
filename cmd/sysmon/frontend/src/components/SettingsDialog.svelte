@@ -46,6 +46,25 @@
   });
 
   /**
+   * `config_file` says WHETHER a file is in force, not where it is: the
+   * endpoint has no authentication of its own, so the server withholds the
+   * path rather than handing out its filesystem layout. Anything else is a
+   * peer still running a build that sent the path, and is shown verbatim
+   * rather than described wrongly.
+   */
+  function configFileLabel(state: string): string {
+    switch (state) {
+      case "(configured)":
+        return "reading a configuration file";
+      case "(not set)":
+      case "":
+        return "no config file — running on defaults";
+      default:
+        return state;
+    }
+  }
+
+  /**
    * The badge answers "how surprising is this line": a default is unremarkable,
    * a flag or env var is something someone deliberately did.
    */
@@ -132,9 +151,7 @@
         </h2>
         {#if config != null}
           <p class="text-xs text-base-content/60 mt-1 truncate">
-            <span class="font-mono">
-              {config.config_file || "no config file — running on defaults"}
-            </span>
+            {configFileLabel(config.config_file)}
           </p>
         {/if}
       </div>

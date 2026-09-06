@@ -157,6 +157,13 @@ export interface ConfigEntry {
 }
 
 export interface ConfigView {
+  /**
+   * Whether a configuration file is in use — "(configured)" or "(not set)" —
+   * and deliberately NOT where it is. GET /api/config has no authentication of
+   * its own, so the server withholds the path rather than handing out the
+   * host's filesystem layout. Peer entries are withheld the same way: the name
+   * is served, the URL is not.
+   */
   config_file: string;
   entries: ConfigEntry[];
 }

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -274,8 +275,10 @@ func TestView_ReportsEveryKeyWithSource(t *testing.T) {
 		t.Fatalf("NewManager(): %v", err)
 	}
 	view := mgr.View()
-	if view.ConfigFile != path {
-		t.Errorf("ConfigFile = %q, want %q", view.ConfigFile, path)
+	// The file is reported as in use, not by name -- see
+	// TestView_DoesNotDiscloseTheConfigFilePath.
+	if view.ConfigFile != config.ValueConfigured {
+		t.Errorf("ConfigFile = %q, want %q", view.ConfigFile, config.ValueConfigured)
 	}
 
 	var sawTemp, sawPeer bool
@@ -286,15 +289,189 @@ func TestView_ReportsEveryKeyWithSource(t *testing.T) {
 				t.Errorf("temp_crit_c entry = %+v, want value 88 from the config file", e)
 			}
 		}
+		// The peer is present by NAME, with its URL withheld -- see
+		// TestView_DoesNotDisclosePeerURLs.
 		if e.Key == "fleet.peers.fs" {
 			sawPeer = true
-			if e.Value != "http://10.0.0.1:8081" {
-				t.Errorf("peer entry value = %q", e.Value)
+			if e.Value != config.ValueConfigured {
+				t.Errorf("peer entry value = %q, want %q", e.Value, config.ValueConfigured)
 			}
 		}
 	}
 	if !sawTemp || !sawPeer {
 		t.Errorf("view is missing entries (temp=%v peer=%v)", sawTemp, sawPeer)
+	}
+}
+
+// TestView_DoesNotDiscloseTheConfigFilePath is the read-side half of #16: GET
+// /api/config has no authentication of its own, and it used to hand back the
+// absolute path of the configuration file. An operator needs to know whether a
+// file is in force -- otherwise every value in the dialog is unexplained -- but
+// not where it lives, which is answered by the unit and by --config, both of
+// which require being on the machine.
+func TestView_DoesNotDiscloseTheConfigFilePath(t *testing.T) {
+	path := writeConfig(t, "alerts:\n  temp_crit_c: 88\n")
+	mgr, err := config.NewManager(l(path))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+
+	view := mgr.View()
+	if strings.Contains(view.ConfigFile, path) || strings.Contains(view.ConfigFile, "/") {
+		t.Errorf("ConfigFile = %q, want no filesystem path", view.ConfigFile)
+	}
+	if view.ConfigFile != config.ValueConfigured {
+		t.Errorf("ConfigFile = %q, want %q -- a file IS in use", view.ConfigFile, config.ValueConfigured)
+	}
+}
+
+// TestView_ReportsNoConfigFileWhenThereIsNone is the other state: a host
+// running on defaults and environment must be distinguishable from one reading
+// a file, or the settings dialog cannot explain where its values came from.
+func TestView_ReportsNoConfigFileWhenThereIsNone(t *testing.T) {
+	mgr, err := config.NewManager(config.NewLoader(filepath.Join(t.TempDir(), "absent.yaml")))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+	if got := mgr.View().ConfigFile; got != config.ValueNotSet {
+		t.Errorf("ConfigFile = %q, want %q", got, config.ValueNotSet)
+	}
+}
+
+// TestView_ConfigFileStateFollowsAReload guards the plumbing rather than the
+// redaction: the state is captured with the generation it describes, so a host
+// that gains a config file and reloads reports the file, and one whose file is
+// removed stops claiming to have one. Reading it from the loader on demand
+// would also race the next reload.
+func TestView_ConfigFileStateFollowsAReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sysmon.yaml")
+	mgr, err := config.NewManager(config.NewLoader(path))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+	if got := mgr.View().ConfigFile; got != config.ValueNotSet {
+		t.Fatalf("ConfigFile before the file exists = %q, want %q", got, config.ValueNotSet)
+	}
+
+	if err := os.WriteFile(path, []byte("alerts:\n  temp_crit_c: 88\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload(): %v", err)
+	}
+	if got := mgr.View().ConfigFile; got != config.ValueConfigured {
+		t.Errorf("ConfigFile after the file appears = %q, want %q", got, config.ValueConfigured)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload() after removing the file: %v", err)
+	}
+	if got := mgr.View().ConfigFile; got != config.ValueNotSet {
+		t.Errorf("ConfigFile after the file is removed = %q, want %q", got, config.ValueNotSet)
+	}
+}
+
+// TestView_DoesNotDisclosePeerURLs is the other half of #16. The peer list is
+// the fleet's topology: scheme, host and port of every other machine. The name
+// is kept because it is how everything downstream addresses a node and is what
+// the dialog is for; the URL is not, and nothing in the browser needs it -- a
+// peer is reached through /api/fleet/{name}/... on this node.
+func TestView_DoesNotDisclosePeerURLs(t *testing.T) {
+	path := writeConfig(t, `
+fleet:
+  peers:
+    - name: fs
+      url: http://198.51.100.10:8081
+    - name: gpu-host
+      url: https://198.51.100.91:9443
+`)
+	mgr, err := config.NewManager(l(path))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+
+	view := mgr.View()
+	body, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Asserted over the whole serialised payload, because a redaction that only
+	// covers the entry a test happens to read is not a redaction.
+	for _, secret := range []string{"198.51.100.10", "198.51.100.91", "8081", "9443", "http://", "https://"} {
+		if strings.Contains(string(body), secret) {
+			t.Errorf("/api/config payload still contains %q: %s", secret, body)
+		}
+	}
+
+	var names []string
+	for _, e := range view.Entries {
+		if name, ok := strings.CutPrefix(e.Key, "fleet.peers."); ok {
+			names = append(names, name)
+			if e.Value != config.ValueConfigured {
+				t.Errorf("peer %q value = %q, want %q", name, e.Value, config.ValueConfigured)
+			}
+		}
+	}
+	if !slices.Equal(names, []string{"fs", "gpu-host"}) {
+		t.Errorf("peer names = %v, want both peers still listed by name", names)
+	}
+}
+
+// TestView_UnnamedPeerDoesNotLeakItsURLThroughTheKey is the case the first pass
+// at #16 missed. A peer with no `name:` is legal configuration, and normalize
+// adopts its URL as its name -- so redacting only the entry's VALUE left the
+// address on the wire in the entry's KEY, as
+// `fleet.peers.http://198.51.100.10:8081` beside a value reading
+// "(configured)". Half a redaction is not a redaction.
+//
+// The middle peer is named after its own URL by hand, which must be treated the
+// same way: the endpoint withholds peer addresses, however they got into the
+// name.
+func TestView_UnnamedPeerDoesNotLeakItsURLThroughTheKey(t *testing.T) {
+	path := writeConfig(t, `
+fleet:
+  peers:
+    - url: http://198.51.100.10:8081
+    - name: https://198.51.100.91:9443
+      url: https://198.51.100.91:9443
+    - name: omega
+      url: http://198.51.100.90:8081
+`)
+	mgr, err := config.NewManager(l(path))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+
+	view := mgr.View()
+	body, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{
+		"198.51.100.10", "198.51.100.90", "198.51.100.91",
+		"8081", "9443", "http://", "https://",
+	} {
+		if strings.Contains(string(body), secret) {
+			t.Errorf("/api/config payload still contains %q: %s", secret, body)
+		}
+	}
+
+	var keys []string
+	for _, e := range view.Entries {
+		if name, ok := strings.CutPrefix(e.Key, "fleet.peers."); ok {
+			keys = append(keys, name)
+			if e.Value != config.ValueConfigured {
+				t.Errorf("peer %q value = %q, want %q", name, e.Value, config.ValueConfigured)
+			}
+		}
+	}
+	// Sorted by the name normalize settled on, so both URL-named peers precede
+	// "omega". The named peer keeps its name; the other two are numbered.
+	if !slices.Equal(keys, []string{"(unnamed 1)", "(unnamed 2)", "omega"}) {
+		t.Errorf("peer keys = %v, want the two address-named peers numbered and omega named", keys)
 	}
 }
 

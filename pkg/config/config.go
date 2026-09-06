@@ -263,9 +263,17 @@ func Defaults() Config {
 }
 
 // Loader reads configuration and tracks the origin of each value.
+//
+// A Loader is not safe for concurrent use: SetFlag and Load both mutate it.
+// Manager serialises every load it performs behind its reload lock.
 type Loader struct {
 	path  string
 	flags map[string]string
+	// fileLoaded records whether the last Load actually read the config file.
+	// It cannot be inferred from the path, which is always set, nor from the
+	// per-key sources, which say "default" both for a host with no file and for
+	// a file that simply does not mention the key.
+	fileLoaded bool
 }
 
 // NewLoader returns a Loader for the given config file path. An empty path
@@ -314,6 +322,7 @@ func (l *Loader) Load() (*Config, map[string]string, error) {
 	case !errors.Is(err, fs.ErrNotExist):
 		return nil, nil, &ErrConfigUnreadable{Path: l.path, Err: err}
 	}
+	l.fileLoaded = fileLoaded
 
 	v.SetEnvPrefix(EnvPrefix)
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -365,6 +374,11 @@ func (l *Loader) Load() (*Config, map[string]string, error) {
 
 // Path returns the config file this loader reads.
 func (l *Loader) Path() string { return l.path }
+
+// FileLoaded reports whether the last Load found and read the config file. It
+// is false before the first Load, and false on a host running purely on
+// defaults and environment.
+func (l *Loader) FileLoaded() bool { return l.fileLoaded }
 
 // normalize repairs values that would otherwise disable a subsystem by
 // accident, keeping a partial config file usable. It fails only on a peer list
@@ -699,6 +713,10 @@ type Validator func(*Config) error
 type snapshot struct {
 	cfg *Config
 	src map[string]string
+	// fileLoaded is captured with the values it describes rather than read from
+	// the loader on demand: the loader is mutated by the next reload, and a
+	// settings view that read it directly would race that reload.
+	fileLoaded bool
 }
 
 // Manager holds the current configuration and swaps it atomically on reload, so
@@ -751,7 +769,7 @@ func NewManager(l *Loader) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{loader: l}
-	m.live.Store(&snapshot{cfg: cfg, src: src})
+	m.live.Store(&snapshot{cfg: cfg, src: src, fileLoaded: l.FileLoaded()})
 	m.boot = cfg.Server
 	m.bootSources = make(map[string]string, len(bootOnlyKeys()))
 	for _, key := range bootOnlyKeys() {
@@ -896,7 +914,7 @@ func (m *Manager) Reload() ([]string, error) {
 
 	// Values and provenance are published in one store, so no reader can
 	// observe a value from this generation beside a source from the last.
-	m.live.Store(&snapshot{cfg: cfg, src: src})
+	m.live.Store(&snapshot{cfg: cfg, src: src, fileLoaded: m.loader.FileLoaded()})
 
 	// Apply the settings that genuinely can change at runtime. A failure here
 	// is reported but does not roll back: the configuration is already live for

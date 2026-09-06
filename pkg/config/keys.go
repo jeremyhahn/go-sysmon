@@ -174,18 +174,20 @@ func (c *Config) value(key string) string {
 	return ""
 }
 
-// ValueConfigured and ValueNotSet stand in for a filesystem path in the
-// settings view, so an operator can still tell whether TLS is set up.
+// ValueConfigured and ValueNotSet stand in for a withheld value in the settings
+// view, so an operator can still tell whether TLS, a peer or the Prometheus
+// integration is set up.
 const (
 	ValueConfigured = "(configured)"
 	ValueNotSet     = "(not set)"
 )
 
-// redactPath reports whether a path is configured without disclosing it. The
-// settings endpoint carries no authentication of its own -- it is designed to
-// sit behind an authenticating proxy -- and the location of a certificate and
-// its private key is reconnaissance that anyone reaching the endpoint should
-// not be handed for free.
+// redactPath reports whether a filesystem path or a URL is configured without
+// disclosing it. The settings endpoint carries no authentication of its own --
+// it is designed to sit behind an authenticating proxy -- and the location of a
+// certificate and its private key, the address of the fleet's time-series
+// database and the URL of another node are reconnaissance that anyone reaching
+// the endpoint should not be handed for free.
 func redactPath(p string) string {
 	if p == "" {
 		return ValueNotSet
@@ -208,15 +210,38 @@ func section(key string) string {
 	return key
 }
 
+// configFileState reports whether a configuration file is in use without
+// disclosing where it is, for the same reason redactPath exists: the settings
+// endpoint carries no authentication of its own. An absolute path is a map of
+// the host's filesystem layout handed to anyone who can reach the port, and
+// "am I running on a file or on defaults" is the part an operator standing in
+// front of this dialog actually needs. Where the file lives is answered by the
+// unit and by --config, both of which require being on the machine.
+func configFileState(loaded bool) string {
+	if loaded {
+		return ValueConfigured
+	}
+	return ValueNotSet
+}
+
 // View builds the read-only settings payload: every effective value with the
-// source that supplied it, plus the configured peers.
+// source that supplied it, plus the configured peers by name.
+//
+// It is deliberately not a copy of the configuration. GET /api/config has no
+// authentication -- go-sysmon is designed to sit behind an authenticating proxy
+// -- so the values that describe the internal topology rather than this node's
+// behaviour are reported as configured-or-not: the config file's path, the peer
+// URLs, the TLS key and certificate paths and the Prometheus addresses. Between
+// them they gave one reachable listener the fleet's hostnames, ports, transport
+// choices and filesystem layout (#16). What survives is what the dialog is for:
+// which settings are in force, and which layer supplied each of them.
 func (m *Manager) View() types.ConfigView {
 	// One load, not Current() plus Sources(): the whole point of this payload is
 	// that each value sits beside the layer that supplied THAT value, so both
 	// halves have to come from the same published generation.
 	live := m.live.Load()
 	if live == nil {
-		return types.ConfigView{ConfigFile: m.Path()}
+		return types.ConfigView{ConfigFile: configFileState(false)}
 	}
 	cfg, src := live.cfg, live.src
 
@@ -241,14 +266,41 @@ func (m *Manager) View() types.ConfigView {
 	peers := make([]Peer, len(cfg.Fleet.Peers))
 	copy(peers, cfg.Fleet.Peers)
 	sort.Slice(peers, func(i, j int) bool { return peers[i].Name < peers[j].Name })
+	unnamed := 0
 	for _, p := range peers {
+		// A named peer is keyed by its name, kept deliberately: it is how the
+		// dashboard, the fleet proxy and the history queries all address a node,
+		// and it is the peer's identity everywhere an operator meets it. The URL
+		// behind it is the scheme, host and port of another machine on the
+		// internal network, and nothing on this page needs it -- the browser
+		// reaches a peer through /api/fleet/{name}/... on this node, never by
+		// dialling it.
+		//
+		// A peer with no name of its own is a different matter. normalize takes
+		// its URL as its name, so keying by the name would put the address back
+		// on the wire in the key while the value beside it read "(configured)" --
+		// and half a redaction is not a redaction. Such a peer is numbered
+		// instead. The same test catches an operator who typed the URL into
+		// `name:`, which is the right outcome for this endpoint.
+		key := p.Name
+		if key == p.URL {
+			unnamed++
+			// Positional, and deliberately not a hash of the URL. A truncated
+			// digest would look protective without being so: peer URLs are drawn
+			// from private address space and a handful of ports, so the whole
+			// input space can be enumerated offline in seconds and the address
+			// read straight back out. A number discloses nothing. It is not an
+			// identity either -- adding a peer renumbers the rest -- which is
+			// the honest state of a peer nobody named, and naming it is the fix.
+			key = fmt.Sprintf("(unnamed %d)", unnamed)
+		}
 		entries = append(entries, types.ConfigEntry{
 			Section: "fleet",
-			Key:     fmt.Sprintf("fleet.peers.%s", p.Name),
-			Value:   p.URL,
+			Key:     fmt.Sprintf("fleet.peers.%s", key),
+			Value:   redactPath(p.URL),
 			Source:  peerSource,
 		})
 	}
 
-	return types.ConfigView{ConfigFile: m.Path(), Entries: entries}
+	return types.ConfigView{ConfigFile: configFileState(live.fileLoaded), Entries: entries}
 }
