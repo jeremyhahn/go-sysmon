@@ -1,6 +1,7 @@
-# code-review-template: v4 — automated peer review on EVERY pull request.
+# code-review-template: v5 — automated peer review on EVERY pull request.
 # v2 gated the job on a `code-review` label and could skip itself green;
-# see the note on the job below. v4 adds the concurrency and guard fix.
+# see the note on the job below. v4 added a guard step and a concurrency
+# change; v5 keeps the guard and reverts the concurrency — measured, below.
 #
 # NOTE ON THE STAMP. There were briefly TWO different files stamped v3: the
 # 17 deployed copies (carrying the skip-itself-green fix) and this template
@@ -44,33 +45,41 @@ on:
     types: [opened, reopened, synchronize, labeled]
 
 # Creating a PR that already carries the label fires `opened` AND `labeled`, so
-# TWO runs exist for ONE head. v3 keyed the group on the PR number alone and
-# cancelled the loser, which had two costs measured on 2026-09-06:
+# TWO runs exist for ONE head. One is cancelled, and Gitea maps a cancelled job
+# to commit status `failure` under the SAME context name the survivor will use
+# -- so a healthy PR carries a red required check meaning "superseded", not
+# "broken" (go-sysmon PR#122, runs 13001/13002, same head, one second apart).
+# Note for anyone reducing these to one verdict: a status whose run ended
+# `cancelled` is SUPERSEDED, not a verdict, and "newest per context" does NOT
+# resolve it -- the newest IS the cancelled run's `failure`.
 #
-#   1. Gitea maps a cancelled job to commit status `failure`, written under the
-#      SAME context name the survivor will use. A healthy PR carried a red
-#      required check meaning "superseded", not "broken" (go-sysmon PR#122,
-#      runs 13001/13002, same head f38cebb7, created in the same second).
-#      "Prefer the newest status per context" does not rescue this: the newest
-#      status WAS the cancelled run's `failure`, one second newer than the
-#      survivor's `pending`, written by a run that will never report again.
-#      The sound rule: a status whose run ended `cancelled` is SUPERSEDED,
-#      not a verdict.
-#   2. Cancellation did not reliably prevent the duplicate anyway. go-sysmon
-#      PR#122 and PR#113 each carry TWO `opencode` APPROVED reviews on one
-#      commit, 11 and 19 minutes apart -- two full GPU reviews of one head.
+# v4 TRIED TO FIX THAT HERE AND COULD NOT. It keyed the group on the head sha
+# and OMITTED `cancel-in-progress`, intending the spec default of `false` so the
+# twins would queue. MEASURED on go-sysmon PR#137 (2026-09-07, head a9e50c0):
+# Gitea 1.27.1 cancelled the older run anyway, both runs carrying the same
+# head-sha group, and wrote `failure` to the context exactly as before.
 #
-# So: key on the head sha, so runs for different heads never contend, and drop
-# the cancellation. `cancel-in-progress` is OMITTED rather than set to `false`
-# because Gitea 1.27.1 does not evaluate expressions in that field and treats
-# any non-empty value as truthy; omitting it takes the `false` default without
-# depending on how a literal is parsed. The group key DOES evaluate
-# expressions -- that asymmetry is why one is written and the other is not.
+#   06:22:11 pending runs/13316 | 06:22:12 failure "Canceled after 0s" runs/13316
+#   06:22:12 pending runs/13317 | 06:23:33 success "Successful in 1m17s" runs/13317
 #
-# Nothing is cancelled now, so the guard step below is what stops a stale or
-# duplicate run before it spends 45 minutes of GPU.
+# So: OMITTING `cancel-in-progress` DOES NOT GIVE YOU `false` on this Gitea.
+# That extends the asymmetry already known here -- the group key evaluates
+# expressions and this field does not -- with: it is not consulted for its
+# default either. Do not spend another canary rediscovering it.
+#
+# Worse, head-sha keying REMOVED a cancellation that was doing real work: under
+# a PR-number key a new push cancels the previous head's review, and under a
+# head-sha key that superseded 45-minute GPU review runs to completion on a
+# runner with capacity 2. The guard below cannot prevent it -- the guard runs
+# once, at start, and a run already past it keeps going.
+#
+# v5 therefore reverts to the v3 concurrency and keeps the guard. The transient
+# red is accepted: it is self-healing (80s on the canary) and is not fixable at
+# the workflow level. What IS fixable -- a wasted duplicate review, and a
+# duplicate overwriting a verdict -- the guard fixes. automatethethings#94.
 concurrency:
-  group: code-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  group: code-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
@@ -99,7 +108,11 @@ jobs:
     timeout-minutes: 45
     steps:
       # Runs BEFORE checkout so a stale or duplicate run costs a few API calls
-      # rather than a clone and a 45-minute review.
+      # rather than a clone and a 45-minute review. Cancellation handles the
+      # common superseded case; this handles what cancellation cannot -- a run
+      # that reaches a runner after the head moved, and the second of a twin
+      # pair when both survive (PR#122 and PR#113 each carry TWO opencode
+      # APPROVED reviews on one commit, 11 and 19 minutes apart).
       #
       # This is a STEP, not a job-level condition, for the same reason the job
       # carries no `if:` -- see the note above. A step that skips leaves the
