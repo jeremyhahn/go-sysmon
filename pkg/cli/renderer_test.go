@@ -197,9 +197,10 @@ func testSnapshot() *types.Snapshot {
 				{Label: "CPU Fan", RPM: 1200, MinRPM: 0, MaxRPM: 3000, HwmonName: "nct6776"},
 			},
 			PSI: types.PSIData{
-				CPU:    types.PSIResource{SomeAvg10: 0.10, SomeAvg60: 0.05, SomeAvg300: 0.02},
-				Memory: types.PSIResource{SomeAvg10: 0.20, SomeAvg60: 0.10, SomeAvg300: 0.05, FullAvg10: 0.01, FullAvg60: 0.00, FullAvg300: 0.00},
-				IO:     types.PSIResource{SomeAvg10: 1.50, SomeAvg60: 0.80, SomeAvg300: 0.30, FullAvg10: 0.50, FullAvg60: 0.20, FullAvg300: 0.10},
+				Available: true,
+				CPU:       types.PSIResource{Available: true, SomeAvg10: 0.10, SomeAvg60: 0.05, SomeAvg300: 0.02},
+				Memory:    types.PSIResource{Available: true, SomeAvg10: 0.20, SomeAvg60: 0.10, SomeAvg300: 0.05, FullAvg10: 0.01, FullAvg60: 0.00, FullAvg300: 0.00},
+				IO:        types.PSIResource{Available: true, SomeAvg10: 1.50, SomeAvg60: 0.80, SomeAvg300: 0.30, FullAvg10: 0.50, FullAvg60: 0.20, FullAvg300: 0.10},
 			},
 		},
 	}
@@ -297,6 +298,25 @@ func TestRenderOverview(t *testing.T) {
 		// PSI is always shown.
 		if !strings.Contains(out, "PSI:") {
 			t.Errorf("expected PSI: always present\nOutput:\n%s", out)
+		}
+	})
+
+	t.Run("unavailable PSI renders n/a, not zero", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testSnapshot()
+		// A kernel without CONFIG_PSI: the readings are zero because nothing
+		// was read. Printing "0.00%" here would describe the host as calm.
+		snap.Sensors.PSI = types.PSIData{}
+		if err := RenderOverview(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "CPU: n/a | Memory: n/a | IO: n/a") {
+			t.Errorf("expected PSI rendered as n/a when unavailable\nOutput:\n%s", out)
+		}
+		if strings.Contains(out, "CPU: 0.00%") {
+			t.Errorf("unavailable PSI must not render as 0.00%%\nOutput:\n%s", out)
 		}
 	})
 

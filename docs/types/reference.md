@@ -179,6 +179,45 @@ Rates: `bytes_sent_rate`, `bytes_recv_rate`.
 | `fans`            | `[]FanInfo`        | Fan speed readings             |
 | `psi`             | `PSIData`          | Pressure stall information     |
 
+## PSIData
+
+| Field       | Type          | Description                                  |
+|-------------|---------------|----------------------------------------------|
+| `available` | `bool`        | All three resources were read                |
+| `cpu`       | `PSIResource` | CPU pressure                                 |
+| `memory`    | `PSIResource` | Memory pressure                              |
+| `io`        | `PSIResource` | I/O pressure                                 |
+
+`available` is the field that makes the rest of the struct safe to read.
+Pressure accounting is absent on kernels built without `CONFIG_PSI` and in
+containers that do not expose `/proc/pressure`, and every number below is then
+zero — byte-identical to a completely idle machine. A consumer that skips the
+flag concludes the hosts it cannot see are the calmest in the fleet, which is
+the wrong direction to be wrong in: an unmeasurable node treated as unmeasured
+is safe, one treated as idle is the most attractive placement target there is.
+
+It is true only when cpu, memory and io were all read, so a partial reading
+fails closed. `PSIResource.available` says which ones individually were.
+
+## PSIResource
+
+| Field         | Type      | Description                                     |
+|---------------|-----------|-------------------------------------------------|
+| `available`   | `bool`    | This resource's file was read and parsed        |
+| `some_avg10`  | `float64` | % of time ≥1 task stalled, 10s average          |
+| `some_avg60`  | `float64` | Same, 60s average                               |
+| `some_avg300` | `float64` | Same, 300s average                              |
+| `some_total`  | `uint64`  | Cumulative stall microseconds (some)            |
+| `full_avg10`  | `float64` | % of time *every* runnable task stalled, 10s    |
+| `full_avg60`  | `float64` | Same, 60s average                               |
+| `full_avg300` | `float64` | Same, 300s average                              |
+| `full_total`  | `uint64`  | Cumulative stall microseconds (full)            |
+
+`available` is false when the file could not be read, and also when it was read
+but carried no parseable `some` line — a truncated read produces the same
+unquestionable zeros as an absent one. A missing `full` line is normal for
+`cpu` and leaves the resource available with the full fields at zero.
+
 ## Errors
 
 Errors are named types, not `fmt.Errorf` calls. That means a caller can react

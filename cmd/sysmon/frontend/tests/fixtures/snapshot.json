@@ -841,7 +841,9 @@
    }
   ],
   "psi": {
+   "available": true,
    "cpu": {
+    "available": true,
     "some_avg10": 1.9,
     "some_avg60": 1.35,
     "some_avg300": 0.75,
@@ -852,6 +854,7 @@
     "full_total": 0
    },
    "memory": {
+    "available": true,
     "some_avg10": 0,
     "some_avg60": 0,
     "some_avg300": 0.05,
@@ -862,6 +865,7 @@
     "full_total": 167798556
    },
    "io": {
+    "available": true,
     "some_avg10": 0.73,
     "some_avg60": 0.54,
     "some_avg300": 0.24,

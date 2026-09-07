@@ -1109,14 +1109,31 @@ type FanInfo struct {
 }
 
 // PSIData contains Pressure Stall Information for cpu, memory, and io.
+//
+// Available separates "the kernel reported no pressure" from "there was no
+// kernel reading to report". Pressure accounting is absent on kernels built
+// without CONFIG_PSI and in containers that do not expose /proc/pressure, and
+// every measurement below is zero in that case -- the same value a completely
+// idle machine produces. A consumer that reads the numbers without consulting
+// this flag concludes that the least observable hosts in a fleet are the
+// calmest ones, which is the wrong direction to be wrong in.
+//
+// It is true only when all three resources were read, so a partial reading
+// fails closed. PSIResource.Available says which ones individually were.
 type PSIData struct {
-	CPU    PSIResource `json:"cpu"`
-	Memory PSIResource `json:"memory"`
-	IO     PSIResource `json:"io"`
+	Available bool        `json:"available"`
+	CPU       PSIResource `json:"cpu"`
+	Memory    PSIResource `json:"memory"`
+	IO        PSIResource `json:"io"`
 }
 
 // PSIResource holds some/full pressure data for a single resource.
+//
+// Available is false when the resource's file under /proc/pressure could not be
+// read, or was read and carried no parseable reading. The measurement fields are
+// zero in that case and must not be taken as zero pressure.
 type PSIResource struct {
+	Available  bool    `json:"available"`
 	SomeAvg10  float64 `json:"some_avg10"`
 	SomeAvg60  float64 `json:"some_avg60"`
 	SomeAvg300 float64 `json:"some_avg300"`

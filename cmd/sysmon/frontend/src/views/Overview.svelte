@@ -86,7 +86,11 @@
 
   const hasThermalZoneData = $derived((sensors?.thermal_zones?.length ?? 0) > 0);
   const hasFanData = $derived((sensors?.fans?.length ?? 0) > 0);
-  const hasPsiData = $derived(sensors?.psi != null);
+  // psi is always present in the payload, so its presence says nothing. The
+  // available flag is what distinguishes a real reading from the zeros a
+  // kernel without CONFIG_PSI produces -- which would otherwise render as a
+  // full panel of perfectly calm pressure.
+  const hasPsiData = $derived(sensors?.psi?.available === true);
 
   /**
    * psiRows lays out one PSI resource as "some" then "full".
@@ -631,6 +635,19 @@
               showXAxis
             />
           </div>
+        </div>
+      </div>
+    {:else if sensors != null}
+      <div class="card bg-base-200 shadow-sm">
+        <div class="card-body p-4">
+          <h3 class="card-title text-sm text-base-content/70 mb-1">
+            Pressure Stall Information (PSI)
+          </h3>
+          <p class="text-xs text-base-content/60">
+            Not available on this host. The kernel was built without
+            CONFIG_PSI, or /proc/pressure is not exposed to this container.
+            This is not the same as zero pressure — there is no reading.
+          </p>
         </div>
       </div>
     {/if}

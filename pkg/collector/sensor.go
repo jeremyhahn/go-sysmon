@@ -538,13 +538,15 @@ func (c *SensorCollector) collectFans() []types.FanInfo {
 //
 //	some avg10=0.00 avg60=0.00 avg300=0.00 total=0
 //
-// It returns (avg10, avg60, avg300, total). On any parse error all values are
-// zero.
-func parsePSILine(line string) (avg10, avg60, avg300 float64, total uint64) {
+// It returns (avg10, avg60, avg300, total, ok). ok is false when the line
+// carried no recognisable key=value pair — a truncated or garbage line — and
+// all values are zero in that case. The caller needs the flag because zero is
+// also a perfectly ordinary reading, and the two must not be confused.
+func parsePSILine(line string) (avg10, avg60, avg300 float64, total uint64, ok bool) {
 	fields := strings.Fields(line)
 	// Minimum: "some/full avg10=X avg60=X avg300=X total=X" -> 5 fields.
 	if len(fields) < 5 {
-		return 0, 0, 0, 0
+		return 0, 0, 0, 0, false
 	}
 
 	for _, field := range fields[1:] {
@@ -557,21 +559,30 @@ func parsePSILine(line string) (avg10, avg60, avg300 float64, total uint64) {
 		switch key {
 		case "avg10":
 			avg10, _ = strconv.ParseFloat(val, 64)
+			ok = true
 		case "avg60":
 			avg60, _ = strconv.ParseFloat(val, 64)
+			ok = true
 		case "avg300":
 			avg300, _ = strconv.ParseFloat(val, 64)
+			ok = true
 		case "total":
 			total, _ = strconv.ParseUint(val, 10, 64)
+			ok = true
 		}
 	}
 
-	return avg10, avg60, avg300, total
+	return avg10, avg60, avg300, total, ok
 }
 
 // parsePSIFile parses a PSI resource file and fills both "some" and "full"
 // halves of a PSIResource. CPU files omit the "full" line; that is handled
 // gracefully by leaving the full fields at zero.
+//
+// Available is set from the "some" line alone: every resource file has one, and
+// a file that yields no parseable "some" line yielded no measurement at all.
+// The absent "full" line on cpu is normal and does not make the reading
+// unavailable.
 func parsePSIFile(data []byte) types.PSIResource {
 	var res types.PSIResource
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -579,17 +590,23 @@ func parsePSIFile(data []byte) types.PSIResource {
 		line := scanner.Text()
 		switch {
 		case strings.HasPrefix(line, "some"):
-			res.SomeAvg10, res.SomeAvg60, res.SomeAvg300, res.SomeTotal = parsePSILine(line)
+			res.SomeAvg10, res.SomeAvg60, res.SomeAvg300, res.SomeTotal, res.Available = parsePSILine(line)
 		case strings.HasPrefix(line, "full"):
-			res.FullAvg10, res.FullAvg60, res.FullAvg300, res.FullTotal = parsePSILine(line)
+			res.FullAvg10, res.FullAvg60, res.FullAvg300, res.FullTotal, _ = parsePSILine(line)
 		}
 	}
 	return res
 }
 
 // collectPSI reads /proc/pressure/{cpu,memory,io} and returns Pressure Stall
-// Information. If the files are absent (kernel < 4.20 or PSI disabled), a
-// zero PSIData is returned without error.
+// Information.
+//
+// When the files are absent -- a kernel without CONFIG_PSI, or a container that
+// does not expose /proc/pressure -- the readings stay at zero and the Available
+// flags are false. The flags are the whole point: zero pressure and no reading
+// produce identical numbers, and a consumer that cannot tell them apart treats
+// the hosts it cannot see as the idlest in the fleet. The aggregate flag is set
+// only when all three resources were read, so a partial reading fails closed.
 func (c *SensorCollector) collectPSI() types.PSIData {
 	var data types.PSIData
 
@@ -612,6 +629,8 @@ func (c *SensorCollector) collectPSI() types.PSIData {
 	if b := read("io"); b != nil {
 		data.IO = parsePSIFile(b)
 	}
+
+	data.Available = data.CPU.Available && data.Memory.Available && data.IO.Available
 
 	return data
 }

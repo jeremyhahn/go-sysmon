@@ -548,6 +548,9 @@ export interface FanInfo {
 }
 
 export interface PSIResource {
+  // False when this resource's file under /proc/pressure could not be read.
+  // The averages below are zero in that case and are not a reading.
+  available: boolean;
   some_avg10: number;
   some_avg60: number;
   some_avg300: number;
@@ -559,6 +562,11 @@ export interface PSIResource {
 }
 
 export interface PSIData {
+  // False on kernels built without CONFIG_PSI and in containers that do not
+  // expose /proc/pressure. Every number below is zero there, identical to a
+  // completely idle machine, so the panel must gate on this rather than on the
+  // values.
+  available: boolean;
   cpu: PSIResource;
   memory: PSIResource;
   io: PSIResource;

@@ -191,15 +191,26 @@ func RenderOverview(w io.Writer, snap *types.Snapshot) error {
 		fmt.Fprintf(w, "%-12s%s\n", "Fans:", strings.Join(parts, " | "))
 	}
 
+	// PSI is always shown, but a host without pressure accounting must not be
+	// printed as three zeros -- that reads as a perfectly calm machine.
 	psi := s.PSI
-	fmt.Fprintf(w, "%-12sCPU: %.2f%% | Memory: %.2f%% | IO: %.2f%%\n",
+	fmt.Fprintf(w, "%-12sCPU: %s | Memory: %s | IO: %s\n",
 		"PSI:",
-		psi.CPU.SomeAvg10,
-		psi.Memory.SomeAvg10,
-		psi.IO.SomeAvg10,
+		formatPSI(psi.CPU),
+		formatPSI(psi.Memory),
+		formatPSI(psi.IO),
 	)
 
 	return ew.Err()
+}
+
+// formatPSI renders one PSI resource's 10-second "some" average, or "n/a" when
+// the kernel had no reading to give.
+func formatPSI(r types.PSIResource) string {
+	if !r.Available {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.2f%%", r.SomeAvg10)
 }
 
 // RenderHost writes detailed host information to w.

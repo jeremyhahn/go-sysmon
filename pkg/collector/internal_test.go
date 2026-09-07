@@ -1813,8 +1813,11 @@ func TestCollectFans_NoFans(t *testing.T) {
 // TestParsePSILine_Valid verifies correct parsing of a well-formed PSI line.
 func TestParsePSILine_Valid(t *testing.T) {
 	line := "some avg10=1.23 avg60=4.56 avg300=7.89 total=12345"
-	avg10, avg60, avg300, total := parsePSILine(line)
+	avg10, avg60, avg300, total, ok := parsePSILine(line)
 
+	if !ok {
+		t.Error("parsePSILine reported not-ok for a well-formed line")
+	}
 	if avg10 != 1.23 {
 		t.Errorf("avg10: got %v, want 1.23", avg10)
 	}
@@ -1829,7 +1832,9 @@ func TestParsePSILine_Valid(t *testing.T) {
 	}
 }
 
-// TestParsePSILine_Invalid verifies that a malformed line returns all zeros.
+// TestParsePSILine_Invalid verifies that a malformed line returns all zeros
+// AND reports not-ok, so the caller can tell "nothing was read" from "the
+// kernel reported zero pressure".
 func TestParsePSILine_Invalid(t *testing.T) {
 	cases := []string{
 		"",
@@ -1838,9 +1843,12 @@ func TestParsePSILine_Invalid(t *testing.T) {
 		"garbage line with no equals signs",
 	}
 	for _, line := range cases {
-		avg10, avg60, avg300, total := parsePSILine(line)
+		avg10, avg60, avg300, total, ok := parsePSILine(line)
 		if avg10 != 0 || avg60 != 0 || avg300 != 0 || total != 0 {
 			t.Errorf("parsePSILine(%q): expected all zeros, got (%v,%v,%v,%d)", line, avg10, avg60, avg300, total)
+		}
+		if ok {
+			t.Errorf("parsePSILine(%q): reported ok for a malformed line", line)
 		}
 	}
 }
@@ -1889,17 +1897,91 @@ func TestCollectPSI_Normal(t *testing.T) {
 	if psi.IO.FullTotal != 4500 {
 		t.Errorf("IO.FullTotal: got %d, want 4500", psi.IO.FullTotal)
 	}
+	if !psi.Available {
+		t.Error("PSIData.Available: got false, want true when all three files were read")
+	}
+	if !psi.CPU.Available || !psi.Memory.Available || !psi.IO.Available {
+		t.Errorf("per-resource Available: got cpu=%v memory=%v io=%v, want all true",
+			psi.CPU.Available, psi.Memory.Available, psi.IO.Available)
+	}
 }
 
-// TestCollectPSI_MissingFiles verifies that absent PSI files produce a zero
-// PSIData without any error or panic.
+// TestCollectPSI_MissingFiles verifies that absent PSI files report
+// UNAVAILABLE rather than zero pressure. This is the case that used to pass by
+// accident: a kernel with PSI compiled out returned a value byte-identical to a
+// completely idle machine, so a fail-closed consumer could not fail closed.
 func TestCollectPSI_MissingFiles(t *testing.T) {
 	c := newSensorCollectorWithPaths(newNopLogger(), "/nonexistent", "/nonexistent", "/nonexistent", "/nonexistent", "/nonexistent/pressure")
 	psi := c.collectPSI()
 
+	if psi.Available {
+		t.Error("PSIData.Available: got true for absent /proc/pressure, want false")
+	}
+	if psi.CPU.Available || psi.Memory.Available || psi.IO.Available {
+		t.Errorf("per-resource Available: got cpu=%v memory=%v io=%v, want all false",
+			psi.CPU.Available, psi.Memory.Available, psi.IO.Available)
+	}
+	// The readings themselves stay at zero; it is the flag, not the value,
+	// that carries the absence.
 	zero := types.PSIData{}
 	if psi != zero {
 		t.Errorf("expected zero PSIData for missing files, got %+v", psi)
+	}
+}
+
+// TestCollectPSI_MalformedFile verifies that a file which exists but carries no
+// parseable reading is reported as unavailable. A truncated or garbage read is
+// the same defect as an absent one — zeros that were never measured.
+func TestCollectPSI_MalformedFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Present but unparseable: a header with no key=value pairs, and an empty
+	// file.
+	if err := os.WriteFile(filepath.Join(dir, "cpu"), []byte("some\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "memory"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newSensorCollectorWithPaths(newNopLogger(), dir, dir, dir, dir, dir)
+	psi := c.collectPSI()
+
+	if psi.CPU.Available {
+		t.Error("CPU.Available: got true for a file with no parseable reading, want false")
+	}
+	if psi.Memory.Available {
+		t.Error("Memory.Available: got true for an empty file, want false")
+	}
+	if psi.Available {
+		t.Error("PSIData.Available: got true when no resource was readable, want false")
+	}
+}
+
+// TestCollectPSI_PartiallyAvailable verifies that the aggregate flag is
+// fail-closed: one readable resource out of three is not "PSI is available".
+// The per-resource flags still report exactly which ones were read.
+func TestCollectPSI_PartiallyAvailable(t *testing.T) {
+	dir := t.TempDir()
+
+	cpuContent := "some avg10=0.10 avg60=0.20 avg300=0.30 total=1000\n"
+	if err := os.WriteFile(filepath.Join(dir, "cpu"), []byte(cpuContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// memory and io deliberately absent.
+
+	c := newSensorCollectorWithPaths(newNopLogger(), dir, dir, dir, dir, dir)
+	psi := c.collectPSI()
+
+	if !psi.CPU.Available {
+		t.Error("CPU.Available: got false for a readable cpu file, want true")
+	}
+	if psi.Memory.Available || psi.IO.Available {
+		t.Errorf("Available for absent files: got memory=%v io=%v, want both false",
+			psi.Memory.Available, psi.IO.Available)
+	}
+	if psi.Available {
+		t.Error("PSIData.Available: got true with memory and io unreadable, want false")
 	}
 }
 
@@ -1922,6 +2004,10 @@ func TestCollectPSI_CPUNoFull(t *testing.T) {
 	}
 	if psi.CPU.FullAvg10 != 0 || psi.CPU.FullAvg60 != 0 || psi.CPU.FullAvg300 != 0 || psi.CPU.FullTotal != 0 {
 		t.Errorf("CPU full fields should be zero for CPU-only PSI file, got %+v", psi.CPU)
+	}
+	// A missing "full" line is normal for cpu and must not read as unavailable.
+	if !psi.CPU.Available {
+		t.Error("CPU.Available: got false for a cpu file with only a some line, want true")
 	}
 }
 
