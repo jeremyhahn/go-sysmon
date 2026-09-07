@@ -73,6 +73,49 @@ type Fleet struct {
 	// TimeoutMs bounds a single peer request so one dead node cannot stall the
 	// whole fleet refresh.
 	TimeoutMs int `mapstructure:"timeout_ms"`
+	// TLS is how peers reached over https are verified, and how this node
+	// identifies itself to them. It is inert for http peers.
+	TLS FleetTLS `mapstructure:"tls"`
+}
+
+// FleetTLS carries the peer transport settings.
+//
+// Every field is off by default and a fleet of http peers never reaches any of
+// it, so an existing deployment keeps working exactly as it did. The scheme of
+// a peer's URL decides what happens: http is plaintext, https is verified TLS.
+// There is no negotiation and no downgrade.
+type FleetTLS struct {
+	// CAFile verifies peer certificates against a named authority instead of
+	// the system roots, which is what an internal CA needs.
+	CAFile string `mapstructure:"ca_file"`
+	// CertFile and KeyFile are this node's client certificate, presented to a
+	// peer that asks for one. Both must be set together. This is the client
+	// half of mTLS.
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
+	// InsecureSkipVerify accepts whatever certificate a peer offers. It leaves
+	// the connection encrypted and unauthenticated, which is the exact property
+	// this feature exists to remove, so it is named rather than implied.
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
+	// RequireTLS refuses to poll any peer whose URL scheme is http.
+	//
+	// It is phrased as opting IN to the requirement, rather than opting out of
+	// plaintext, so that the ZERO VALUE keeps an http fleet working. That is
+	// not a stylistic choice: every deployed fleet speaks plain http today, and
+	// a config.Fleet built in code -- by a test, or by anything embedding this
+	// as a library -- gets the zero value without going through Defaults(). A
+	// field meaning "allow plaintext" would deny it in exactly those cases,
+	// which is the whole fleet, silently, on the next deploy.
+	//
+	// Setting it true is how an operator states that this fleet has finished
+	// moving to TLS: after that an http peer is a configuration error reported
+	// against that peer by name, rather than a connection quietly made in the
+	// clear.
+	//
+	// It is read per peer per cycle, so it can be switched on by a reload --
+	// the enforcement is reloadable even though the material it enforces with
+	// is not.
+	RequireTLS bool `mapstructure:"require_tls"`
 }
 
 // PollInterval returns the peer refresh period.
@@ -740,6 +783,11 @@ type Manager struct {
 	// back into every reloaded Config: reporting a value that is not in effect
 	// would make the settings view lie about the running service.
 	boot Server
+	// bootFleetTLS records the peer-transport settings, which are consumed once
+	// when the poller's HTTP client is built. allow_plaintext is deliberately
+	// NOT among them: it is read per peer per cycle, so enforcement can be
+	// switched on by a reload while the material it enforces against cannot.
+	bootFleetTLS FleetTLS
 	// bootSources records where each boot-only value came from. Provenance is
 	// pinned with the value it describes: reporting the boot value under the
 	// new file's source would produce a value/source pair that contradicts
@@ -759,6 +807,10 @@ func bootOnlyKeys() []string {
 		"server.tls_cert",
 		"server.tls_key",
 		"server.watch",
+		"fleet.tls.ca_file",
+		"fleet.tls.cert_file",
+		"fleet.tls.key_file",
+		"fleet.tls.insecure_skip_verify",
 	}
 }
 
@@ -771,6 +823,7 @@ func NewManager(l *Loader) (*Manager, error) {
 	m := &Manager{loader: l}
 	m.live.Store(&snapshot{cfg: cfg, src: src, fileLoaded: l.FileLoaded()})
 	m.boot = cfg.Server
+	m.bootFleetTLS = cfg.Fleet.TLS
 	m.bootSources = make(map[string]string, len(bootOnlyKeys()))
 	for _, key := range bootOnlyKeys() {
 		m.bootSources[key] = src[key]
@@ -890,6 +943,20 @@ func (m *Manager) Reload() ([]string, error) {
 	if cfg.Server.Watch != m.boot.Watch {
 		deferred = append(deferred, "server.watch")
 	}
+	// The peer transport is baked into the poller's HTTP client at startup, so
+	// a reload that changes it describes a client that is not running.
+	if cfg.Fleet.TLS.CAFile != m.bootFleetTLS.CAFile {
+		deferred = append(deferred, "fleet.tls.ca_file")
+	}
+	if cfg.Fleet.TLS.CertFile != m.bootFleetTLS.CertFile {
+		deferred = append(deferred, "fleet.tls.cert_file")
+	}
+	if cfg.Fleet.TLS.KeyFile != m.bootFleetTLS.KeyFile {
+		deferred = append(deferred, "fleet.tls.key_file")
+	}
+	if cfg.Fleet.TLS.InsecureSkipVerify != m.bootFleetTLS.InsecureSkipVerify {
+		deferred = append(deferred, "fleet.tls.insecure_skip_verify")
+	}
 
 	// Validate before publishing: a configuration this process cannot use must
 	// leave the running one in place, exactly as a malformed file does.
@@ -902,6 +969,10 @@ func (m *Manager) Reload() ([]string, error) {
 	cfg.Server.Addr = m.boot.Addr
 	cfg.Server.TLSCert = m.boot.TLSCert
 	cfg.Server.TLSKey = m.boot.TLSKey
+	cfg.Fleet.TLS.CAFile = m.bootFleetTLS.CAFile
+	cfg.Fleet.TLS.CertFile = m.bootFleetTLS.CertFile
+	cfg.Fleet.TLS.KeyFile = m.bootFleetTLS.KeyFile
+	cfg.Fleet.TLS.InsecureSkipVerify = m.bootFleetTLS.InsecureSkipVerify
 	cfg.Server.Watch = m.boot.Watch
 
 	// Restore each pinned value's provenance along with the value itself. The

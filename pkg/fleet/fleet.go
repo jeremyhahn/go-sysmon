@@ -16,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -126,6 +127,25 @@ type Poller struct {
 	peers map[string]*peerState
 }
 
+// SetClient replaces the HTTP client peers are polled with. Call it before Run.
+// A nil client is ignored, so a caller with nothing to install need not branch.
+//
+// The TLS policy is resolved into a client once, at startup, rather than being
+// rebuilt in the poll loop. A CA file that cannot be read or a key pair that
+// does not load is a configuration mistake, and it should stop the process with
+// a message naming the file -- not appear three seconds later as every peer
+// being unreachable for a reason that has nothing to do with the peers.
+//
+// The consequence is that the TLS settings are boot-time, exactly as
+// server.tls_cert and server.tls_key already are: a reload retimes and repoints
+// the fleet, but changing how peers are verified takes a restart.
+func (p *Poller) SetClient(c *http.Client) {
+	if c == nil {
+		return
+	}
+	p.client = c
+}
+
 // Observe registers fn to be called for each peer snapshot that arrives. Call
 // it before Run. Passing nil clears it.
 func (p *Poller) Observe(fn Reading) {
@@ -232,7 +252,7 @@ func (p *Poller) refresh(cfg config.Fleet) {
 		wg.Add(1)
 		go func(peer config.Peer) {
 			defer wg.Done()
-			snap, err := p.fetch(peer, cfg.Timeout())
+			snap, err := p.fetch(peer, cfg)
 			st := &peerState{fetchedAt: time.Now()}
 			if err != nil {
 				st.err = err.Error()
@@ -279,12 +299,35 @@ func (p *Poller) refresh(cfg config.Fleet) {
 }
 
 // fetch retrieves one peer's snapshot.
-func (p *Poller) fetch(peer config.Peer, timeout time.Duration) (*types.Snapshot, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+//
+// It takes the whole fleet config rather than just the timeout because the
+// transport a peer is reached over is a property of the fleet, and deciding it
+// here -- once, per peer, per cycle -- is what lets a reload move a peer from
+// http to https without restarting.
+func (p *Poller) fetch(peer config.Peer, cfg config.Fleet) (*types.Snapshot, error) {
+	target := strings.TrimRight(peer.URL, "/") + "/api/snapshot"
+
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return nil, &ErrPeerURL{Peer: peer.Name, URL: peer.URL, Cause: err}
+	}
+	// The scheme is checked before the request is built, so a peer that should
+	// not be spoken to in the clear is refused here rather than after the
+	// connection has already been made.
+	switch parsed.Scheme {
+	case "https":
+	case "http":
+		if cfg.TLS.RequireTLS {
+			return nil, &ErrPlaintextPeer{Peer: peer.Name}
+		}
+	default:
+		return nil, &ErrPeerScheme{Peer: peer.Name, Scheme: parsed.Scheme}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout())
 	defer cancel()
 
-	url := strings.TrimRight(peer.URL, "/") + "/api/snapshot"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -549,6 +592,55 @@ func summarize(name, url string, self bool, snap *types.Snapshot, fetchedAt time
 	}
 	return n
 }
+
+// ErrPlaintextPeer reports a peer configured with an http URL on a fleet that
+// has switched plaintext off.
+//
+// It names the remedy, because the two ways out are not equivalent and an
+// operator reading this at three in the morning should not have to weigh them:
+// giving the peer an https URL is the fix, and turning allow_plaintext back on
+// is the retreat.
+type ErrPlaintextPeer struct {
+	Peer string
+}
+
+func (e *ErrPlaintextPeer) Error() string {
+	return fmt.Sprintf(
+		"peer %s is configured with a plaintext http URL and fleet.tls.require_tls is set; "+
+			"give it an https URL, or clear fleet.tls.require_tls to accept plaintext again",
+		e.Peer)
+}
+
+// ErrPeerScheme reports a peer URL whose scheme is neither http nor https.
+//
+// Without this the request fails inside the HTTP client with a message about
+// an unsupported protocol and no mention of which peer caused it, which in a
+// fleet of ten is most of the work of finding it.
+type ErrPeerScheme struct {
+	Peer   string
+	Scheme string
+}
+
+func (e *ErrPeerScheme) Error() string {
+	scheme := e.Scheme
+	if scheme == "" {
+		scheme = "(none)"
+	}
+	return fmt.Sprintf("peer %s has URL scheme %q; fleet peers are http or https", e.Peer, scheme)
+}
+
+// ErrPeerURL reports a peer URL that will not parse.
+type ErrPeerURL struct {
+	Peer  string
+	URL   string
+	Cause error
+}
+
+func (e *ErrPeerURL) Error() string {
+	return fmt.Sprintf("peer %s has an unparseable URL %q: %v", e.Peer, e.URL, e.Cause)
+}
+
+func (e *ErrPeerURL) Unwrap() error { return e.Cause }
 
 // ErrPeerStatus reports a peer that answered with a non-OK HTTP status.
 //

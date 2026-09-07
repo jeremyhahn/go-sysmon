@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/outbound"
@@ -36,7 +35,8 @@ func TestPollerFetch_RefusesRedirectOffTheConfiguredHost(t *testing.T) {
 		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
-	snap, err := p.fetch(config.Peer{Name: "peer", URL: peer.URL}, 2*time.Second)
+	cfg := config.Fleet{TimeoutMs: 2000}
+	snap, err := p.fetch(config.Peer{Name: "peer", URL: peer.URL}, cfg)
 	if err == nil {
 		t.Fatalf("fetch() followed the redirect and returned %+v, want it refused", snap)
 	}

@@ -484,6 +484,100 @@ cannot delay the refresh. A peer that stops answering keeps its last good
 snapshot alongside the error, so a brief blip reads as stale data rather than an
 empty card, and an unreachable node is never rendered as a healthy one.
 
+### Peer transport: HTTPS and mTLS
+
+The aggregator treats a peer's answer as authoritative — it is what the fleet
+dashboard shows and what gets recorded into history. Over plain HTTP it does
+not authenticate the node that answered, so anything able to intercept or
+impersonate a peer can return a fabricated healthy snapshot. That is a
+fail-open property of a monitoring signal.
+
+**The URL scheme decides the transport. There is no negotiation and no
+downgrade.** A peer with an `http://` URL is polled in the clear exactly as
+before; a peer with an `https://` URL is polled over TLS with its certificate
+verified.
+
+```yaml
+fleet:
+  peers:
+    - name: gpu-host
+      url: https://198.51.100.91:8081     # verified TLS
+    - name: fs
+      url: http://198.51.100.10:8081      # still plaintext, still works
+  tls:
+    ca_file: /etc/go-sysmon/fleet-ca.pem   # verify peers against this authority
+    cert_file: /etc/go-sysmon/node.pem     # this node's client certificate
+    key_file: /etc/go-sysmon/node-key.pem  # ...and its key (mTLS, client half)
+    insecure_skip_verify: false            # never true in a deployment
+    require_tls: false                     # true forbids http peers entirely
+```
+
+| Setting | Default | Effect |
+|---|---|---|
+| `ca_file` | unset | Verify peer certificates against this PEM bundle instead of the system roots. An internal CA needs this; a publicly signed certificate does not. |
+| `cert_file` / `key_file` | unset | The certificate this node presents when a peer asks for one. Both together or neither. |
+| `insecure_skip_verify` | `false` | Accept any certificate a peer offers. Encrypted and unauthenticated — the property this feature exists to remove. Logged as a warning at startup. |
+| `require_tls` | `false` | Refuse to poll `http://` peers at all. |
+
+**Every default is the existing behaviour, and the zero value is too.** That
+second part is load-bearing: a `config.Fleet` is not always built by the
+defaults layer — a test, or anything embedding go-sysmon as a library, gets the
+zero value. The setting is therefore phrased as opting *in* to requiring TLS
+rather than opting *out* of plaintext, so an unconfigured fleet permits
+plaintext however it was constructed. A field meaning "allow plaintext" would
+have denied every peer in exactly those cases.
+
+Setting `require_tls: true` is how an operator states that this fleet has
+finished moving to TLS. After that an `http://` peer is a configuration error
+reported against that peer by name, rather than a connection quietly made in
+the clear. It is read per peer per cycle, so **it can be switched on by a
+reload** — the enforcement is reloadable even though the material it enforces
+with is not.
+
+`ca_file`, `cert_file`, `key_file` and `insecure_skip_verify` are **boot-only**,
+like `server.tls_cert` and `server.tls_key`. They are resolved once into the
+poller's HTTP client, so a CA file that cannot be read stops the process at
+startup naming the file, rather than surfacing three seconds later as every
+peer being unreachable — which looks identical to a switch being down. A reload
+that changes them is reported as deferred and the running values are kept.
+
+#### When one side has TLS and the other does not
+
+Nothing negotiates, so every mismatch is a clean failure attributed to the peer
+that caused it, and the rest of the fleet is unaffected:
+
+| Peer's configured URL | What that peer serves | Result |
+|---|---|---|
+| `http://` | HTTP | Works, unchanged. This is every current deployment. |
+| `https://` | HTTPS, certificate signed by `ca_file` | Works, and the peer is authenticated. |
+| `https://` | HTTP | Handshake fails. Peer marked unreachable; last good snapshot kept and badged stale. |
+| `http://` | HTTPS | Request fails. Same unreachable path. |
+| `https://` | HTTPS, certificate from an untrusted CA | Verification fails, peer unreachable. This is the attack being refused. |
+| `https://`, peer requires a client certificate | this node has none configured | The **peer** refuses the handshake. Unreachable. |
+| `http://` with `require_tls: true` | anything | Refused before connecting, with an error naming the peer and both ways out. |
+
+A failing peer never takes the fleet view down. It is one unreachable card
+among the rest — the same handling a peer that has simply stopped answering
+already gets.
+
+#### What this does not cover
+
+The server half of mTLS — a node *requiring* a client certificate before it
+will serve `/api/snapshot` — is not configurable here, and that is a scope
+boundary rather than an oversight. The dashboard and the peer API share one
+listener and one mux, so requiring client certificates for peers would require
+them from browsers too; enforcing it per-endpoint instead would break the
+dashboard, which fetches `/api/snapshot` itself. Deciding what happens to
+browsers is dashboard authentication, a separate question from the peer
+transport.
+
+The consequence is worth stating plainly: configuring `cert_file` and `key_file`
+lets this node prove who it is **to a peer that asks**, and nothing in go-sysmon
+currently asks. It is the client half of mTLS — useful against a peer fronted by
+a proxy that does require certificates, and inert otherwise. What is fully
+solved here is the direction the risk actually runs: the aggregator verifying
+the node that answered.
+
 ## Prometheus
 
 `GET /metrics` serves the latest snapshot in text exposition format. The host is

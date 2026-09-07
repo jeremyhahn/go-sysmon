@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/memlimit"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
+	"github.com/jeremyhahn/go-sysmon/pkg/outbound"
 	"github.com/jeremyhahn/go-sysmon/pkg/sdnotify"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -196,6 +197,33 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		func() string { return localNodeName(cfgMgr) },
 		slog.Default(),
 	)
+
+	// The peer transport is resolved once, here, because a CA file that cannot
+	// be read is a startup mistake and should read as one. Deferring it to the
+	// poll loop would report it as every peer being unreachable, which is the
+	// same symptom as a switch being down.
+	//
+	// An unconfigured fleet.tls yields exactly the client the poller builds for
+	// itself, so a plaintext fleet takes this path and changes nothing.
+	fleetTLS := cfgMgr.Current().Fleet.TLS
+	peerClient, err := outbound.NewTLSClient(0, outbound.TLS{
+		CAFile:             fleetTLS.CAFile,
+		CertFile:           fleetTLS.CertFile,
+		KeyFile:            fleetTLS.KeyFile,
+		InsecureSkipVerify: fleetTLS.InsecureSkipVerify,
+	})
+	if err != nil {
+		return err
+	}
+	fleetPoller.SetClient(peerClient)
+
+	if fleetTLS.InsecureSkipVerify {
+		// Said once, loudly, at startup. A fleet running with peer verification
+		// off looks identical to one running with it on, right up until it
+		// matters, so this log is the only place it is visible.
+		slog.Default().Warn("fleet: peer certificate verification is DISABLED " +
+			"(fleet.tls.insecure_skip_verify); https peers are encrypted but not authenticated")
+	}
 
 	// Nil in a build without prometheus support; the server has always
 	// treated that as "this node keeps no history" (#100).

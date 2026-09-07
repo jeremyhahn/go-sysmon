@@ -41,6 +41,11 @@ func scalarKeys() []string {
 		"fleet.local_name",
 		"fleet.poll_interval_ms",
 		"fleet.timeout_ms",
+		"fleet.tls.ca_file",
+		"fleet.tls.cert_file",
+		"fleet.tls.key_file",
+		"fleet.tls.insecure_skip_verify",
+		"fleet.tls.require_tls",
 		"prometheus.remote_write_url",
 		"prometheus.query_url",
 		"prometheus.sample_interval_ms",
@@ -89,6 +94,12 @@ func defaultMap(c Config) map[string]any {
 		"prometheus.flush_interval_ms":  c.Prometheus.FlushIntervalMs,
 		"prometheus.batch_size":         c.Prometheus.BatchSize,
 		"prometheus.timeout_ms":         c.Prometheus.TimeoutMs,
+
+		"fleet.tls.ca_file":              c.Fleet.TLS.CAFile,
+		"fleet.tls.cert_file":            c.Fleet.TLS.CertFile,
+		"fleet.tls.key_file":             c.Fleet.TLS.KeyFile,
+		"fleet.tls.insecure_skip_verify": c.Fleet.TLS.InsecureSkipVerify,
+		"fleet.tls.require_tls":          c.Fleet.TLS.RequireTLS,
 	}
 }
 
@@ -153,6 +164,21 @@ func (c *Config) value(key string) string {
 		return strconv.Itoa(c.Fleet.PollIntervalMs)
 	case "fleet.timeout_ms":
 		return strconv.Itoa(c.Fleet.TimeoutMs)
+	// The three paths are reported as configured-or-not, like the server's own
+	// TLS paths: where a node keeps its private key is not something an
+	// unauthenticated dashboard should hand out. The two booleans are shown
+	// verbatim, because their whole purpose is to be auditable at a glance --
+	// a fleet running with verification off should say so here.
+	case "fleet.tls.ca_file":
+		return redactPath(c.Fleet.TLS.CAFile)
+	case "fleet.tls.cert_file":
+		return redactPath(c.Fleet.TLS.CertFile)
+	case "fleet.tls.key_file":
+		return redactPath(c.Fleet.TLS.KeyFile)
+	case "fleet.tls.insecure_skip_verify":
+		return strconv.FormatBool(c.Fleet.TLS.InsecureSkipVerify)
+	case "fleet.tls.require_tls":
+		return strconv.FormatBool(c.Fleet.TLS.RequireTLS)
 	// The two URLs are reported as configured-or-not rather than verbatim, the
 	// same way TLS paths are. This endpoint has no authentication of its own,
 	// and the address of the fleet's time-series database is reconnaissance
