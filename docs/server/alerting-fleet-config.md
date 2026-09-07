@@ -106,6 +106,28 @@ is the same class of untruth as a stale reading shown as live.
 and `fleet_interval_ms` for the peer refresh, the latter absent on a node with
 no fleet.
 
+**`fleet_interval_ms` is the interval plus the time the last refresh took, so it
+is not the same number as `fleet.poll_interval_ms`.** The poll loop refreshes
+every peer and *then* sleeps for the interval, so the cadence peers are actually
+polled at is interval + work. On mon0, configured at 3000 ms with a refresh
+costing about 200 ms, peers are refreshed every 3.20 s — measured, as an
+autocorrelation peak at exactly 3.20 s in that node's CPU trace (#76).
+
+The endpoint therefore reports 3200 where the config file says 3000, and that is
+deliberate. Reporting the configured value restates the file rather than
+describing the service, which is the same class of untruth as a dropdown reading
+250 ms over data collected once a second. It reports the **last** cycle rather
+than an average: a cycle in which a peer times out genuinely does stretch, and
+smoothing it would trade a true jumpy number for a calm false one.
+
+The loop is still "work, then sleep" rather than a ticker, and that is a
+deferral rather than an oversight. Converting it would poll every 3.00 s instead
+of 3.20 s — 6.7% *more* aggregation on mon0, the node with the least CPU to
+spare and where aggregation is 94% of the sysmon process's CPU. That is a
+correctness fix paid for with the resource under pressure, so it is held until
+the larger question is settled: whether the poll path should carry peer process
+lists at all, which would remove most of the load and make the ticker free.
+
 **The control never reaches into a peer's own poller.** Changing another
 machine's collection rate from this dashboard is a question of ownership and
 access that no ruling covers; the aggregator changes only how often it asks.

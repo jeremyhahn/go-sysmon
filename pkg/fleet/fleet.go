@@ -123,6 +123,15 @@ type Poller struct {
 	// written by an API request and read by the poll loop.
 	pollOverrideNs atomic.Int64
 
+	// lastRefreshNs is how long the most recent refresh took, in nanoseconds.
+	// Atomic because the poll goroutine writes it and API requests read it.
+	//
+	// It exists because Run sleeps for the interval AFTER doing the work, so
+	// the cadence peers are actually refreshed at is interval + work, not
+	// interval. Zero until a refresh has completed, which is honest: nothing
+	// has been observed yet.
+	lastRefreshNs atomic.Int64
+
 	mu    sync.RWMutex
 	peers map[string]*peerState
 }
@@ -175,8 +184,22 @@ func (p *Poller) Enabled() bool {
 	return len(p.cfgFn().Peers) > 0
 }
 
-// Run refreshes every peer until done is closed. The ticker period is re-read
-// from configuration each cycle so a reload retimes it.
+// Run refreshes every peer until done is closed. The period is re-read from
+// configuration each cycle so a reload retimes it.
+//
+// This sleeps for the interval AFTER the refresh rather than driving off a
+// ticker, so the real cadence is interval + work. That is measurable: mon0 runs
+// at 3.20s against a configured 3.00s. PollInterval reports the real figure
+// rather than the configured one, so the dashboard is truthful about it.
+//
+// Leaving the loop this way is a DELIBERATE deferral, not an oversight. A true
+// ticker would poll every 3.00s instead of every 3.20s -- 6.7% MORE aggregation
+// on mon0, which is the node this is trying to relieve, and where aggregation
+// was measured as 94% of the process's CPU (#76). Spending that before the
+// larger question is settled -- whether the poll path should carry peer process
+// lists at all, which would remove most of the load -- is paying for a
+// correctness fix with the resource under pressure. Once that is decided the
+// ticker costs nothing worth counting and should be done then.
 func (p *Poller) Run(done <-chan struct{}) {
 	for {
 		cfg := p.cfgFn()
@@ -224,10 +247,39 @@ func (p *Poller) SetPollInterval(d time.Duration) {
 }
 
 // PollInterval reports the cadence peers are actually refreshed at, which is
-// what the dashboard displays. It is the override when one is set, the
-// configured value otherwise, and never below the floor.
+// what the dashboard displays. It is the resolved interval -- the override when
+// one is set, the configuration otherwise, never below the floor -- PLUS the
+// time the last refresh took.
+//
+// The addition is the point. Run does the work and THEN sleeps for the
+// interval, so a configured 3s with a 200ms refresh produces a peer poll every
+// 3.2s, not every 3s. On mon0 that was measured at 3.20s against a configured
+// 3.00s (#76): the aggregation cycle is visible in that node's CPU trace with
+// an autocorrelation peak at exactly 3.20s.
+//
+// Returning the configured value would restate the file rather than describe
+// the service, which is the defect effectiveInterval's own comment says this
+// feature exists to remove. It was reintroduced here by the shape of the loop
+// rather than by the resolution logic, so it is fixed here rather than there.
+//
+// This reports the LAST cycle, not an average. A cycle in which a peer times
+// out genuinely does take longer, and the cadence genuinely does stretch for
+// it; smoothing that would trade a true jumpy number for a calm untrue one.
+//
+// The loop still uses effectiveInterval directly, so this changes what is
+// REPORTED and nothing about what is done. Converting Run to a real ticker --
+// which would make the cadence match the configuration instead of the
+// configuration matching the cadence -- is deliberately not done here; see the
+// note on Run.
 func (p *Poller) PollInterval() time.Duration {
-	return p.effectiveInterval(p.cfgFn())
+	return p.effectiveInterval(p.cfgFn()) + time.Duration(p.lastRefreshNs.Load())
+}
+
+// LastRefresh reports how long the most recent peer refresh took, or zero
+// before the first one completes. It is the difference between the configured
+// cadence and the one PollInterval reports.
+func (p *Poller) LastRefresh() time.Duration {
+	return time.Duration(p.lastRefreshNs.Load())
 }
 
 // effectiveInterval resolves the override, the configuration and the floor in
@@ -247,6 +299,9 @@ func (p *Poller) effectiveInterval(cfg config.Fleet) time.Duration {
 // refresh polls all peers concurrently. One slow peer must not delay the rest,
 // so each has its own timeout and they run in parallel.
 func (p *Poller) refresh(cfg config.Fleet) {
+	started := time.Now()
+	defer func() { p.lastRefreshNs.Store(int64(time.Since(started))) }()
+
 	var wg sync.WaitGroup
 	for _, peer := range cfg.Peers {
 		wg.Add(1)
