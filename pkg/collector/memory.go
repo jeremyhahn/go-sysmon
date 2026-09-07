@@ -1,12 +1,15 @@
 package collector
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +24,12 @@ import (
 // constant so tests can supply a fixture table and exercise the parser without
 // root, which reading the real one requires.
 var smbiosTablePath = "/sys/firmware/dmi/tables/DMI"
+
+// vmstatPath is the kernel's cumulative VM event counters. It is a variable
+// rather than a constant for the same reason as smbiosTablePath: tests feed a
+// fixture instead of reading the host, whose counters move under the test and
+// cannot express the absent case at all.
+var vmstatPath = "/proc/vmstat"
 
 const (
 	// SMBIOS structure type for Memory Device.
@@ -178,6 +187,9 @@ func (c *MemoryCollector) Collect() error {
 		CachedBytes:    vm.Cached,
 		SharedBytes:    vm.Shared,
 		SlabBytes:      vm.Slab,
+		// A property of the host, not of the swap reading, so it is reported
+		// whether or not the counters below could be read.
+		PageSizeBytes: uint64(os.Getpagesize()),
 	}
 
 	if sw != nil {
@@ -187,11 +199,60 @@ func (c *MemoryCollector) Collect() error {
 		info.SwapPercent = sw.UsedPercent
 	}
 
+	if in, out, ok := readSwapCounters(vmstatPath); ok {
+		info.SwapInPages = in
+		info.SwapOutPages = out
+		info.SwapCountersAvailable = true
+	} else {
+		warnOnce(c.logger, "memory:vmstat",
+			"memory: swap paging counters unavailable; reporting occupancy only",
+			"path", vmstatPath)
+	}
+
 	info.DIMMs = c.dimmsWithoutTemperatures()
 	info.TempSensorDetected = applyDIMMTemperatures(info.DIMMs, c.logger)
 
 	c.info.Store(info)
 	return nil
+}
+
+// readSwapCounters reads the cumulative swap paging counters -- pswpin and
+// pswpout, in pages since boot -- from a /proc/vmstat-shaped file. It reports
+// ok only when BOTH counters were present and parsed; a partial or unreadable
+// read yields zeros with ok false, because zero is also what a host that has
+// never paged reports and the two must stay distinguishable.
+//
+// gopsutil's SwapMemory does surface these as Sin/Sout, and this is not an
+// oversight of that: it scales them by a hardcoded 4096 rather than the host's
+// page size, and it cannot say whether the values were read or merely defaulted
+// -- which is the entire point of the counters here.
+func readSwapCounters(path string) (in, out uint64, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, false
+	}
+
+	var haveIn, haveOut bool
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		key, value, found := strings.Cut(scanner.Text(), " ")
+		if !found {
+			continue
+		}
+		switch key {
+		case "pswpin":
+			in, err = strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+			haveIn = err == nil
+		case "pswpout":
+			out, err = strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+			haveOut = err == nil
+		}
+	}
+
+	if !haveIn || !haveOut {
+		return 0, 0, false
+	}
+	return in, out, true
 }
 
 // collectDIMMs reads DIMM information from the SMBIOS binary table, falling

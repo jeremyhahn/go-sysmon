@@ -66,7 +66,29 @@ Physical RAM fields: `total_bytes`, `used_bytes`, `available_bytes`, `free_bytes
 
 Linux kernel fields: `buffers_bytes`, `cached_bytes`, `shared_bytes`, `slab_bytes`.
 
-Swap fields: `swap_total_bytes`, `swap_used_bytes`, `swap_free_bytes`, `swap_percent`.
+Swap **occupancy** — how much swap holds pages: `swap_total_bytes`,
+`swap_used_bytes`, `swap_free_bytes`, `swap_percent`.
+
+Swap **paging counters** — how much swapping is happening: `swap_in_pages`,
+`swap_out_pages` (cumulative pages since boot, read from `/proc/vmstat`'s
+`pswpin`/`pswpout`), `page_size_bytes`, `swap_counters_available`.
+
+The two answer different questions, and only the second says whether a host is
+in trouble. A machine that paged something out days ago and has been idle since
+carries resident swap and is perfectly healthy; a machine paying disk latency
+for memory it is using right now is not, and `swap_used_bytes` cannot tell them
+apart. Nor can a consumer recover the difference by differencing occupancy: a
+host paging out and back in at the same rate has flat `swap_used_bytes` while
+thrashing hard, which is the case worth catching. The counters are cumulative
+rather than pre-computed rates because a rate needs two readings and a window,
+and the window belongs to the consumer.
+
+`swap_counters_available` is false when `/proc/vmstat` could not be read, or
+carried neither counter (a kernel built without `CONFIG_SWAP` omits them). The
+counts are zero in that case, and zero is also what a host that has never paged
+reports — so an unread reading must not be mistaken for a quiet one. Multiply
+by `page_size_bytes` for bytes; the kernel counts pages, and that is not 4096
+everywhere.
 
 Hardware: `dimms` (array of `DIMMInfo`), `temp_sensor_detected`.
 

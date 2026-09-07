@@ -556,11 +556,37 @@ type MemoryInfo struct {
 	CachedBytes  uint64 `json:"cached_bytes"`
 	SharedBytes  uint64 `json:"shared_bytes"`
 	SlabBytes    uint64 `json:"slab_bytes"`
-	// Swap
+	// Swap occupancy: how much swap currently holds pages.
 	SwapTotalBytes uint64  `json:"swap_total_bytes"`
 	SwapUsedBytes  uint64  `json:"swap_used_bytes"`
 	SwapFreeBytes  uint64  `json:"swap_free_bytes"`
 	SwapPercent    float64 `json:"swap_percent"`
+	// Swap paging counters: how much swapping is happening. Cumulative page
+	// counts since boot, straight from /proc/vmstat's pswpin and pswpout.
+	//
+	// Occupancy above and rate here answer different questions, and only the
+	// second one says whether a host is in trouble. A machine that paged
+	// something out days ago and has been idle since carries resident swap and
+	// is perfectly healthy; a machine paying disk latency for memory it is
+	// using right now is not, and SwapUsedBytes cannot tell them apart. Nor can
+	// a consumer recover the difference by differencing occupancy: a host
+	// paging out and back in at the same rate has flat SwapUsedBytes while
+	// thrashing hard, which is precisely the case worth catching.
+	//
+	// They are cumulative rather than pre-computed rates because a rate needs
+	// two readings and a window, and the window belongs to the consumer.
+	// Multiply by PageSizeBytes for bytes; the kernel counts pages, and it is
+	// not 4096 everywhere.
+	//
+	// SwapCountersAvailable is false when /proc/vmstat could not be read, or
+	// carried neither counter (a kernel built without CONFIG_SWAP omits them).
+	// The counts are zero in that case, and zero is also what a host that has
+	// never paged reports -- so an unread reading must not be mistaken for a
+	// quiet one.
+	SwapInPages           uint64 `json:"swap_in_pages"`
+	SwapOutPages          uint64 `json:"swap_out_pages"`
+	PageSizeBytes         uint64 `json:"page_size_bytes"`
+	SwapCountersAvailable bool   `json:"swap_counters_available"`
 	// Hardware info
 	DIMMs              []DIMMInfo `json:"dimms"`
 	TempSensorDetected bool       `json:"temp_sensor_detected"`

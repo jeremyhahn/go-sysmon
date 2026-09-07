@@ -70,6 +70,12 @@ func testSnapshot() *types.Snapshot {
 			SwapTotalBytes: 0,
 			SwapUsedBytes:  0,
 			SwapPercent:    0,
+			// Occupancy is zero while the counters show the host has paged
+			// before -- exactly the pair occupancy alone cannot express.
+			SwapInPages:           1204,
+			SwapOutPages:          98213,
+			PageSizeBytes:         4096,
+			SwapCountersAvailable: true,
 			DIMMs: []types.DIMMInfo{
 				{
 					Location:           "DIMMA1",
@@ -514,6 +520,10 @@ func TestRenderMemory(t *testing.T) {
 			"Free:",
 			"Buffers:",
 			"Swap:",
+			// Occupancy is zero in the fixture; the paging counters are not.
+			"Paged:",
+			"4.7 MB in",
+			"383.6 MB out",
 			"Memory Modules (DIMMs):",
 			"DIMMA1",
 			"BANK 0",
@@ -528,6 +538,25 @@ func TestRenderMemory(t *testing.T) {
 			if !strings.Contains(out, want) {
 				t.Errorf("output missing %q\nFull output:\n%s", want, out)
 			}
+		}
+	})
+
+	t.Run("unreadable swap counters render n/a, not zero", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testSnapshot()
+		snap.Memory.SwapCountersAvailable = false
+		snap.Memory.SwapInPages = 0
+		snap.Memory.SwapOutPages = 0
+		if err := RenderMemory(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "Paged:      n/a") {
+			t.Errorf("expected paging counters rendered as n/a\nFull output:\n%s", out)
+		}
+		if strings.Contains(out, "0 B in") {
+			t.Errorf("unread counters must not render as zero paging\nFull output:\n%s", out)
 		}
 	})
 

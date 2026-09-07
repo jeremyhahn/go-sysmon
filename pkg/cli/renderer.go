@@ -387,6 +387,17 @@ func RenderMemory(w io.Writer, snap *types.Snapshot) error {
 		formatBytes(m.SwapTotalBytes),
 		formatPercent(m.SwapPercent),
 	)
+	// The line above is occupancy and says nothing about whether the host is
+	// paging now. These are the cumulative counters; two readings make a rate.
+	if m.SwapCountersAvailable {
+		fmt.Fprintf(w, "%-12s%s in / %s out since boot\n",
+			"Paged:",
+			formatBytes(m.SwapInPages*m.PageSizeBytes),
+			formatBytes(m.SwapOutPages*m.PageSizeBytes),
+		)
+	} else {
+		fmt.Fprintf(w, "%-12sn/a (no swap counters in /proc/vmstat)\n", "Paged:")
+	}
 
 	if len(m.DIMMs) > 0 {
 		fmt.Fprintln(w)

@@ -267,10 +267,22 @@ export interface MemoryInfo {
   cached_bytes: number;
   shared_bytes: number;
   slab_bytes: number;
+  // Swap occupancy: how much swap holds pages.
   swap_total_bytes: number;
   swap_used_bytes: number;
   swap_free_bytes: number;
   swap_percent: number;
+  // Swap paging counters: how much swapping is happening. Cumulative pages
+  // since boot, so a rate is a difference between two snapshots. Occupancy
+  // above says nothing about this — a host paging out and back in at the same
+  // rate has flat swap_used_bytes while thrashing hard.
+  swap_in_pages: number;
+  swap_out_pages: number;
+  page_size_bytes: number;
+  // False when /proc/vmstat could not be read, or carried neither counter.
+  // The counts are zero then, and zero is also what a host that has never
+  // paged reports.
+  swap_counters_available: boolean;
   dimms: DIMMInfo[];
   temp_sensor_detected: boolean;
 }

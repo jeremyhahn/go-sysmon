@@ -447,6 +447,10 @@
   "swap_used_bytes": 18698952704,
   "swap_free_bytes": 493411233792,
   "swap_percent": 3.651353399537592,
+  "swap_in_pages": 1204,
+  "swap_out_pages": 4565760,
+  "page_size_bytes": 4096,
+  "swap_counters_available": true,
   "dimms": [
    {
     "index": 0,
