@@ -390,11 +390,16 @@ jobs:
           cache: npm
           cache-dependency-path: cmd/sysmon/frontend/package-lock.json
 
+      # Through `make frontend-deps`, not a bare `npm ci`: build-frontend and
+      # check-bundle-current key off an install stamp, and an install that does not
+      # create it makes the next make target run npm ci all over again -- a second
+      # full delete-and-reinstall of node_modules per job.
       - name: Install browser dependencies
+        run: make frontend-deps
+
+      - name: Install Playwright browsers
         working-directory: cmd/sysmon/frontend
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run Playwright suite
         run: make test-e2e
@@ -414,6 +419,33 @@ jobs:
   # Builds the image on every push without publishing it, so a broken
   # Dockerfile is caught here rather than at tag time when a release is
   # already half-built.
+  bundle:
+    name: Bundle Currency
+    runs-on: ubuntu-latest
+    needs: [lint]  # staged fail-fast, matching the other second-tier jobs
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: cmd/sysmon/frontend/package-lock.json
+
+      # No separate `npm ci` step: `make check-bundle-current` installs the
+      # toolchain itself, keyed to the lockfile. Installing here as well meant two
+      # full installs per job, because npm ci deletes and recreates node_modules
+      # and the workflow's copy does not create the stamp the Makefile keys on.
+      # setup-node's cache above still makes the one install fast.
+      #
+      # Its own job rather than part of Format/Vet/Lint: this needs the node
+      # toolchain, and requiring node to lint Go would reintroduce the dependency
+      # the committed bundle exists to remove. A failure here also needs to say
+      # "the bundle is stale", which a job named for linting would not.
+      - name: Committed bundle matches its source
+        run: make check-bundle-current
+
   image:
     name: Container Image
     runs-on: ubuntu-latest
@@ -486,7 +518,7 @@ jobs:
   ci-passed:
     name: CI Passed
     runs-on: ubuntu-latest
-    needs: [lint, security, test, extensions, build, fips, image, integration, e2e]
+    needs: [lint, security, test, extensions, bundle, build, fips, image, integration, e2e]
     if: always()
     steps:
       # Each job is listed explicitly rather than using join(needs.*.result).
@@ -502,7 +534,7 @@ jobs:
       # quotes and invalidates the whole file before any job starts.
       - name: Verify every job succeeded
         run: |
-          results="${{ needs.lint.result }},${{ needs.security.result }},${{ needs.test.result }},${{ needs.extensions.result }},${{ needs.build.result }},${{ needs.fips.result }},${{ needs.image.result }},${{ needs.integration.result }},${{ needs.e2e.result }}"
+          results="${{ needs.lint.result }},${{ needs.security.result }},${{ needs.test.result }},${{ needs.extensions.result }},${{ needs.bundle.result }},${{ needs.build.result }},${{ needs.fips.result }},${{ needs.image.result }},${{ needs.integration.result }},${{ needs.e2e.result }}"
           echo "job results: ${results}"
 
           if [ -z "${results//,/}" ]; then

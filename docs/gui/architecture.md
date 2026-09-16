@@ -73,6 +73,23 @@ already caused bugs:
   built with a bare `go build` served a UI one commit behind, with green CI and
   a correct source tree (#55). A rule nothing checks is a rule that holds until
   someone is busy.
+  **Something checks it now** (#129): `make check-bundle-current` builds the
+  frontend to a scratch directory and compares it against the committed copy,
+  and CI runs it as its own **Bundle Currency** job, which `CI Passed` gates on.
+  It happened a third time before the gate existed -- `main` served a dashboard
+  built before #130's PSI card and #132's swap types.
+
+  Two properties worth knowing. It builds to a scratch directory rather than in
+  place, because a check that rebuilds the committed copy destroys the evidence
+  it was meant to report and leaves a dirty tree on the machine where the answer
+  was "yes". And it compares **output**, not timestamps: a whitespace-only change
+  to a Svelte template compiles to the identical bundle and is correctly not
+  flagged, because the question is whether the embedded UI matches what the
+  source compiles to -- not whether someone remembered to run a command.
+
+  It is deliberately NOT part of `make lint`: it needs the node toolchain, and
+  requiring node in order to lint Go would reintroduce the dependency the
+  committed bundle exists to remove.
 - The application chunk and its stylesheet are emitted under **fixed** names,
   `assets/index.js` and `assets/index.css`, not content-hashed ones. A hash
   renamed a *committed* file on every build, so any two branches touching the

@@ -72,9 +72,10 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
           go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
 
+      # Through make, so the install stamp exists and `make ci-fast` below does not
+      # repeat it. See the note on the same step in ci.yml.
       - name: Install frontend dependencies
-        working-directory: cmd/sysmon/frontend
-        run: npm ci
+        run: make frontend-deps
 
       # `make ci-fast` ends in `make build`, which builds the DESKTOP binary
       # too -- and that links GTK and WebKit through cgo. Without these headers

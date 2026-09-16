@@ -34,6 +34,12 @@ PKG_TYPES := ./pkg/types/...
 PKG_CMD := ./cmd/sysmon/...
 
 FRONTEND_DIR := cmd/sysmon/frontend
+# Defined here, beside FRONTEND_DIR, and NOT next to the rule that builds it:
+# prerequisites are expanded when make READS a rule, so a := defined further down
+# the file expands to nothing in `build-frontend: $(FRONTEND_STAMP)` above it --
+# which silently left build-frontend with no prerequisites at all and no install
+# step, so a fresh checkout ran `npm run check` against an absent node_modules.
+FRONTEND_STAMP := $(FRONTEND_DIR)/node_modules/.install-stamp
 DOCKER_IMAGE := go-sysmon-test
 
 # Analysis tools are resolved from PATH FIRST, then from GOBIN.
@@ -72,7 +78,7 @@ DESKTOP_IMAGE := go-sysmon-desktop-test
 ADDR ?= :8081
 INTERVAL ?= 1000
 
-.PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report test test-cli test-collector test-monitor \
+.PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report check-bundle-current frontend-deps test test-cli test-collector test-monitor \
         test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
@@ -134,8 +140,13 @@ build-server: build-frontend
 # svelte-check runs before the bundle: the TypeScript interfaces in
 # frontend/src/lib/types.ts mirror the Go types by hand, and drift between them
 # is otherwise invisible until a panel renders "undefined" at runtime.
-build-frontend:
-	cd $(FRONTEND_DIR) && npm install && npm run check && npm run build
+# Depends on the shared install rather than running its own `npm install`: under
+# `make -j` that raced check-bundle-current's `npm ci` in the same directory, and
+# because npm ci deletes and recreates node_modules either build could observe a
+# half-replaced dependency tree. One install target, keyed to the lockfile, is
+# also what makes a local build match the hosted one.
+build-frontend: $(FRONTEND_STAMP)
+	cd $(FRONTEND_DIR) && npm run check && npm run build
 
 dev:
 	cd cmd/sysmon && wails dev
@@ -317,6 +328,40 @@ check-conflicts:
 check-cgo-clean:
 	CGO_ENABLED=0 go build ./...
 	CGO_ENABLED=0 go vet ./...
+
+# check-bundle-current verifies the committed dashboard bundle matches its source.
+#
+# cmd/sysmon/frontend/dist is generated output that is committed on purpose --
+# //go:embed all:frontend/dist means a clone without it cannot `go build` -- and
+# nothing checked the two copies agreed. They have disagreed three times; most
+# recently `main` served a dashboard built before #130's PSI card and #132's swap
+# types, with every test passing, because no test reads the bundle.
+#
+# NOT a prerequisite of `lint`, deliberately: this needs the node toolchain, and
+# requiring node in order to lint Go would reintroduce the very dependency the
+# committed bundle exists to remove. It is its own CI job instead.
+# frontend-deps installs the node toolchain when it is absent OR older than the
+# lockfile, so check-bundle-current can run from an aggregate target on a fresh
+# checkout without paying for npm every time.
+#
+# Keyed to package-lock.json rather than to vite's presence: an existing checkout
+# whose lockfile has moved on would otherwise build the bundle with a stale
+# dependency graph, while the hosted job's clean `npm ci` uses the new one -- and
+# the two would then disagree about whether the committed bundle is current, which
+# is precisely the question this gate exists to answer.
+# package.json as well as the lockfile: a manifest change without a lockfile
+# change would otherwise leave an existing stamp in place, so a local build would
+# use stale dependencies while a clean CI checkout's npm ci rejects the
+# manifest/lockfile mismatch -- the two disagreeing again, which is the failure
+# this stamp exists to avoid.
+$(FRONTEND_STAMP): $(FRONTEND_DIR)/package-lock.json $(FRONTEND_DIR)/package.json
+	cd $(FRONTEND_DIR) && npm ci
+	@touch $@
+
+frontend-deps: $(FRONTEND_STAMP)
+
+check-bundle-current: frontend-deps
+	@./scripts/check-bundle-current.sh
 
 # lint-workflows validates the GitHub Actions files with the same expression
 # parser GitHub uses. A rejected workflow fails the run before any job starts,
@@ -575,11 +620,16 @@ scan-image-sarif:
 #
 #   make ci          full pipeline
 #   make ci-fast     everything except the container and browser suites
-ci: fmt-check vet lint vulncheck gosec audit-report test test-extensions build build-both integration-test test-e2e
+# ci runs the full pipeline exactly as the GitHub workflow does, so a green local
+# run means a green CI run. Ordered cheapest-first: formatting and vet fail in
+# seconds, the browser suite takes a minute. One dependency graph, so shared
+# prerequisites are built once -- check-bundle-current reads the bundle from HEAD
+# rather than the working tree, so it does not care whether build has run yet.
+ci: fmt-check vet lint vulncheck gosec audit-report test test-extensions check-bundle-current build build-both integration-test test-e2e
 	@echo ""
 	@echo "CI pipeline passed."
 
-ci-fast: fmt-check vet lint vulncheck gosec audit-report test test-extensions build build-both
+ci-fast: fmt-check vet lint vulncheck gosec audit-report test test-extensions check-bundle-current build build-both
 	@echo ""
 	@echo "CI (fast) passed. Container and browser suites were skipped."
 
