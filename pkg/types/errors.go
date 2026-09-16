@@ -26,6 +26,23 @@ func (e *MonitorNotRunningError) Error() string {
 	return "monitor is not running"
 }
 
+// NoSnapshotYetError indicates the poll loop is running and has not completed
+// its first collection.
+//
+// It exists because the absence of a snapshot has two causes and only one of
+// them is a fault. The loop collects on its first tick rather than on Start,
+// so every healthy service passes through this state on the way up, for as
+// long as one collection takes -- SMBIOS, every GPU, every disk and the whole
+// process table on a cold cache. Reporting that as "monitor is not running"
+// sends the reader after a lifecycle bug that does not exist, which it has
+// done in a test helper, in a red CI job (2302a7e), and in the systemd
+// watchdog's own log line on every start on every node in the fleet.
+type NoSnapshotYetError struct{}
+
+func (e *NoSnapshotYetError) Error() string {
+	return "monitor has not collected a snapshot yet"
+}
+
 // MonitorAlreadyRunningError indicates the monitor is already started.
 type MonitorAlreadyRunningError struct{}
 

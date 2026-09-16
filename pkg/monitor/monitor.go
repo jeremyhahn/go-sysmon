@@ -284,11 +284,31 @@ func (m *Monitor) Unsubscribe(id uint64) {
 }
 
 // Snapshot returns the most recently collected snapshot without waiting for
-// the next poll tick. Returns MonitorNotRunningError when the monitor has
-// never collected a snapshot yet (latest is nil).
+// the next poll tick.
+//
+// There are three answers, not two, and the error says which:
+//
+//   - a snapshot and no error -- this run, or the run before a Stop, collected
+//     one. A stopped monitor still answers with its last reading, deliberately,
+//     so a caller can read the final state.
+//   - NoSnapshotYetError -- the loop is running and has not finished its first
+//     collection. Normal, transient, and the state every healthy start passes
+//     through; the caller should retry rather than investigate.
+//   - MonitorNotRunningError -- nothing is collecting and nothing has been
+//     collected. Start was never called, or it was called and Stop cleared the
+//     way for a run that has not begun.
+//
+// Both used to be MonitorNotRunningError, which named the rarer cause of the
+// two and pointed every reader of a warm-up at a lifecycle bug (#33).
+//
+// Running is consulted only when there is no snapshot to return, so the path
+// that has one stays lock-free.
 func (m *Monitor) Snapshot() (*types.Snapshot, error) {
 	snap := m.latest.Load()
 	if snap == nil {
+		if m.Running() {
+			return nil, &types.NoSnapshotYetError{}
+		}
 		return nil, &types.MonitorNotRunningError{}
 	}
 	return snap, nil

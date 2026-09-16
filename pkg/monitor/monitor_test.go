@@ -149,7 +149,9 @@ func TestStop_WhenNotRunning(t *testing.T) {
 
 // ---- Snapshot -----------------------------------------------------------
 
-func TestSnapshot_BeforeAnyPoll(t *testing.T) {
+// TestSnapshot_NeverStarted covers the first of Snapshot's three answers:
+// nothing is collecting and nothing has been collected.
+func TestSnapshot_NeverStarted(t *testing.T) {
 	stub := newStub("host")
 	m, _ := monitor.New(stub, time.Hour) // long interval – won't tick in test
 
@@ -160,6 +162,42 @@ func TestSnapshot_BeforeAnyPoll(t *testing.T) {
 	var notRunErr *types.MonitorNotRunningError
 	if !errors.As(err, &notRunErr) {
 		t.Fatalf("expected MonitorNotRunningError, got %T: %v", err, err)
+	}
+	var noneYet *types.NoSnapshotYetError
+	if errors.As(err, &noneYet) {
+		t.Fatal("a monitor that was never started reported that it is merely warming up")
+	}
+}
+
+// TestSnapshot_StartedAndAwaitingFirstCollection covers the second answer, and
+// is the case #33 exists for: the loop is running, the interval is long enough
+// that no tick has fired, and the honest report is "not yet", not "not
+// running". Deterministic without sleeping, because the loop collects on a
+// tick rather than on Start.
+func TestSnapshot_StartedAndAwaitingFirstCollection(t *testing.T) {
+	stub := newStub("host")
+	m, err := monitor.New(stub, time.Hour)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop() })
+
+	snap, err := m.Snapshot()
+	if snap != nil {
+		t.Fatalf("Snapshot() = %v, want nothing before the first tick", snap)
+	}
+	var noneYet *types.NoSnapshotYetError
+	if !errors.As(err, &noneYet) {
+		t.Fatalf("Snapshot() error = %T (%v), want *types.NoSnapshotYetError", err, err)
+	}
+	// The distinction is the whole change: the old type must NOT also match,
+	// or a caller telling the two apart still cannot.
+	var notRunning *types.MonitorNotRunningError
+	if errors.As(err, &notRunning) {
+		t.Error("a running monitor still reports itself as not running")
 	}
 }
 
@@ -706,8 +744,10 @@ func TestStart_DiscardsThePreviousRunsSnapshot(t *testing.T) {
 	}
 	defer func() { _ = m.Stop() }()
 
-	var notRunning *types.MonitorNotRunningError
-	if snap, err := m.Snapshot(); !errors.As(err, &notRunning) {
+	// NoSnapshotYet, not NotRunning: the loop is collecting, it simply has not
+	// finished. Calling that "not running" is what #33 was about.
+	var noneYet *types.NoSnapshotYetError
+	if snap, err := m.Snapshot(); !errors.As(err, &noneYet) {
 		t.Fatalf("Snapshot() right after a restart = %v, %v; want it to report that "+
 			"this run has collected nothing, not the reading from before the stop",
 			snap, err)

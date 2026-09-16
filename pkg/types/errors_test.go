@@ -69,6 +69,38 @@ func TestMonitorNotRunningError_As(t *testing.T) {
 	}
 }
 
+// ---- NoSnapshotYetError ---------------------------------------------------
+
+func TestNoSnapshotYetError_Error(t *testing.T) {
+	e := &types.NoSnapshotYetError{}
+	want := "monitor has not collected a snapshot yet"
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestNoSnapshotYetError_As(t *testing.T) {
+	var e *types.NoSnapshotYetError
+	err := &types.NoSnapshotYetError{}
+	if !errors.As(err, &e) {
+		t.Error("errors.As failed for NoSnapshotYetError")
+	}
+}
+
+// TestNoSnapshotYetError_IsDistinctFromNotRunning is the point of the type:
+// two states that used to share one error must not match each other, or a
+// caller telling them apart still cannot.
+func TestNoSnapshotYetError_IsDistinctFromNotRunning(t *testing.T) {
+	var notRunning *types.MonitorNotRunningError
+	if errors.As(error(&types.NoSnapshotYetError{}), &notRunning) {
+		t.Error("NoSnapshotYetError matches MonitorNotRunningError")
+	}
+	var noneYet *types.NoSnapshotYetError
+	if errors.As(error(&types.MonitorNotRunningError{}), &noneYet) {
+		t.Error("MonitorNotRunningError matches NoSnapshotYetError")
+	}
+}
+
 // ---- MonitorAlreadyRunningError -------------------------------------------
 
 func TestMonitorAlreadyRunningError_Error(t *testing.T) {

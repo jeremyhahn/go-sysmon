@@ -40,8 +40,20 @@ is unaffected — and they are omitted entirely by a node that does not state it
 build, which is what a binary built without the release `-ldflags` does. An
 absent commit means the node said nothing, never that it agrees with yours.
 
-`503 Service Unavailable` means the monitor has not finished its first
-collection yet. Retry; it will not be long.
+`503 Service Unavailable` means there is no snapshot to serve. The status is
+the same for both reasons a client can see it — a client can act on neither
+differently, so it retries either way — but the plain-text body now names
+which one it is:
+
+| Body                                       | What it means                                                              |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| `monitor has not collected a snapshot yet` | The poll loop is running and its first collection has not finished. Ordinary on the way up, and it will not be long. |
+| `monitor is not running`                   | Nothing is collecting and nothing has been collected.                       |
+
+Both used to read `monitor is not running`, which named the rarer of the two
+causes and sent readers after a lifecycle bug during an ordinary warm-up
+(#33). The status code, the schema and every field are unchanged; only the
+text of the 503 body is new, and it was never a value to branch on.
 
 Field-by-field detail is in the [types reference](../types/reference.md).
 
