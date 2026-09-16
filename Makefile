@@ -72,7 +72,7 @@ DESKTOP_IMAGE := go-sysmon-desktop-test
 ADDR ?= :8081
 INTERVAL ?= 1000
 
-.PHONY: all deps build build-desktop build-server build-frontend dev serve test test-cli test-collector test-monitor \
+.PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report test test-cli test-collector test-monitor \
         test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
@@ -490,10 +490,56 @@ vulncheck:
 	fi
 	$(GOVULNCHECK) ./...
 
-# audit checks the frontend dependency tree. npm audit exits non-zero on any
-# finding, which is the behaviour we want in CI.
+# audit checks the frontend dependency tree, and distinguishes the two ways it
+# can come back non-zero.
+#
+# npm audit exits non-zero both for "these packages have advisories" and for "the
+# advisory endpoint did not answer", and only the first is ours. Classifying that
+# by matching npm's error text does not work: an HTTP 429, a 5xx, a TLS or auth
+# failure and npm's own "audit endpoint returned an error" all read differently,
+# and the list has no end. scripts/audit-gate.py detects the SUCCESS case
+# positively instead -- a report carrying auditReportVersion and
+# metadata.vulnerabilities -- and exits 1 for findings, 2 for an audit that never
+# completed.
+#
+# This target keeps a non-zero exit either way: a developer asking about
+# advisories wants a status to act on. CI does not fail on it (owner ruling
+# 2026-09-16) and tells the two apart by that exit code -- see the Frontend
+# vulnerability scan step in .github/workflows/ci.yml.
+# --no-offline is load-bearing, not tidiness. With NPM_CONFIG_OFFLINE=true in the
+# environment (or offline=true in an inherited .npmrc) npm 11.9.0 emits a complete
+# report schema with zero vulnerabilities and exits 0 WITHOUT contacting the
+# advisory endpoint -- measured, and it does so even against a dead registry. The
+# gate would then report a clean audit that never ran, which is a worse failure
+# than the false alarm this target was written to remove: a security check that
+# passes by not looking. With the flag, an unreachable endpoint produces no report
+# and is classified as "could not run".
+AUDIT_LEVEL ?= low
+# AUDIT_STATUS_FILE, when set, is where the gate records its exit code. GNU make
+# returns 2 for any failed recipe, so a caller cannot tell the gate's 1 from its 2
+# through this target's status -- CI needs the distinction and reads the file.
+AUDIT_STATUS_FILE ?=
+
 audit:
-	cd $(FRONTEND_DIR) && npm audit --audit-level=low
+	@tmp=$$(mktemp -d); \
+	( cd $(FRONTEND_DIR) && npm audit --no-offline --audit-level=$(AUDIT_LEVEL) --json >$$tmp/audit.json 2>$$tmp/audit.err ) || true; \
+	rc=0; AUDIT_STATUS_FILE="$(AUDIT_STATUS_FILE)" python3 scripts/audit-gate.py $$tmp/audit.json $(AUDIT_LEVEL) || rc=$$?; \
+	if [ $$rc -eq 2 ] && [ -s $$tmp/audit.err ]; then \
+		echo "--- what npm said ---"; head -5 $$tmp/audit.err; \
+	fi; \
+	rm -rf $$tmp; exit $$rc
+
+# audit-report is `audit` without the power to stop a pipeline, and it is what the
+# aggregate ci targets use.
+#
+# devops.md §4: CI runs the same targets a developer runs. The hosted workflow does
+# not fail on advisories or on an unreachable advisory endpoint (owner ruling
+# 2026-09-16), so `make ci` must not either -- otherwise the third party's
+# availability still breaks the local pipeline and the two paths disagree about
+# what a red build means. Direct `make audit` keeps its non-zero status, because a
+# developer asking the question wants an answer to act on.
+audit-report:
+	@$(MAKE) --no-print-directory audit || true
 
 # scan-image builds the container and scans it, plus the binaries inside it,
 # for known vulnerabilities. Trivy runs from its own image rather than an
@@ -529,11 +575,11 @@ scan-image-sarif:
 #
 #   make ci          full pipeline
 #   make ci-fast     everything except the container and browser suites
-ci: fmt-check vet lint vulncheck gosec audit test test-extensions build build-both integration-test test-e2e
+ci: fmt-check vet lint vulncheck gosec audit-report test test-extensions build build-both integration-test test-e2e
 	@echo ""
 	@echo "CI pipeline passed."
 
-ci-fast: fmt-check vet lint vulncheck gosec audit test test-extensions build build-both
+ci-fast: fmt-check vet lint vulncheck gosec audit-report test test-extensions build build-both
 	@echo ""
 	@echo "CI (fast) passed. Container and browser suites were skipped."
 

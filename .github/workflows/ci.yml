@@ -181,8 +181,34 @@ jobs:
         working-directory: cmd/sysmon/frontend
         run: npm ci
 
+      # NON-BLOCKING by owner ruling 2026-09-16, and the two reasons it can come
+      # back non-zero are reported differently.
+      #
+      # `npm audit` queries a third party's advisories endpoint, so their outage
+      # failed our build -- a gate nobody chose, which arrived by being the
+      # default. `make audit` now exits 1 for findings and 2 for an audit that
+      # never completed, decided by whether a report body came back rather than by
+      # matching npm's error text, which cannot cover an HTTP 429, a 5xx, a TLS
+      # failure and every other shape an outage takes.
+      #
+      # Anything that must block belongs in the Go vulnerability scan or the Trivy
+      # image gate, which query nothing at build time that we do not host.
+      # The verdict is read from AUDIT_STATUS_FILE, not from make's exit code:
+      # GNU make returns 2 for ANY failed recipe, so a gate exit of 1 (findings)
+      # and 2 (no audit ran) arrive here identically, and classifying on the
+      # process status would label every real advisory "could not run".
       - name: Frontend vulnerability scan
-        run: make audit
+        env:
+          AUDIT_STATUS_FILE: ${{ runner.temp }}/audit-status
+        run: |
+          make audit || true
+          rc=$(cat "$AUDIT_STATUS_FILE" 2>/dev/null || echo missing)
+          case "$rc" in
+            0) ;;
+            1) echo "::warning title=npm audit findings::dependencies have advisories at or above low (non-blocking)" ;;
+            2) echo "::warning title=npm audit could not run::the advisory endpoint returned no report; this is not a finding" ;;
+            *) echo "::warning title=npm audit::the gate recorded no verdict ($rc); treat this step as not having run" ;;
+          esac
 
       # Runs via the Makefile rather than the gosec action so the rule policy
       # (which exclusions, and why) lives in one place that `make ci` also uses.
