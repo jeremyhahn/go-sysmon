@@ -57,7 +57,15 @@ FROM debian:bookworm-slim
 # curl is here for the healthcheck only. The image has no shell-based tooling
 # otherwise, and "is the process alive" is a weak check for a monitor: the
 # failure worth catching is a server that is running but no longer serving.
+# apt-get upgrade, not just install: libpcre2-8-0 arrives as a dependency at the
+# version the base layer was built with, and Debian's security update for it
+# (10.42-1 -> 10.42-1+deb12u1) failed the Trivy gate, which is a required check,
+# on every open pull request. Upgrading here takes the next such fix
+# automatically instead of blocking CI again. Determinism is unaffected: this
+# stage already runs an unpinned update/install, so the layer was never
+# reproducible by pinning.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
