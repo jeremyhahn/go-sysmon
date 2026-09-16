@@ -97,6 +97,13 @@ jobs:
       # commits this PR adds. On a push to main there is no pull_request
       # context, the variable is empty, and the scan reports the history half as
       # SKIPPED rather than as a pass -- which is the distinction #40 is about.
+      # Named separately from `make lint`, which also runs it: this property is
+      # what an external consumer depends on (#8 -- go-quicbaas needs
+      # CGO_ENABLED=0 GOFIPS140=latest), and a failure attributed to "Format, Vet
+      # & Lint" would not say that. The second run is cache-warm and instant.
+      - name: Static build (no cgo), for consumers embedding pkg/collector
+        run: make check-cgo-clean
+
       - run: make lint
         env:
           CONFLICT_SCAN_BASE: ${{ github.event.pull_request.base.sha }}

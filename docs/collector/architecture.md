@@ -317,6 +317,33 @@ log page and INQUIRY decoders, and the mapping onto `RAIDInfo`. The ioctl itself
 was verified by running the built binary on ci-node-1 as the service's own user
 and reading its output; a green test suite does not mean that path was exercised.
 
+## NVIDIA GPUs and the `nvml` build tag
+
+NVML has no pure-Go implementation — go-nvml's generated bindings are cgo — so
+importing it unconditionally made `CGO_ENABLED=0 go build` fail for **every**
+consumer of `pkg/collector`, whether or not it wanted GPU metrics. That is what
+blocked embedding this collector in a static, cross-compiled or FIPS binary (#8).
+
+So the NVML path sits behind the `nvml` build tag:
+
+| Build | NVIDIA GPUs report |
+|---|---|
+| `-tags nvml` (what we ship: `SERVER_TAGS`, `DESKTOP_TAGS`) | everything — memory, utilisation, clocks, temperature, power, ECC, PCIe throughput |
+| default, no tag | identity (model name from `pci.ids`, PCI bus ID, bound driver), PCIe link generation and width, and any hwmon readings the driver registers — `nouveau` does, the proprietary driver does not |
+
+**The default is not a stub.** An NVIDIA card still has an identity and a link in
+sysfs, and the same `pci.ids` lookup the accelerator collector uses names the
+model, so the card appears rather than vanishing. The fields only NVML can fill
+stay at their zero values, which is already how this collector says "unavailable"
+for AMD and Intel.
+
+`make check-cgo-clean` is the gate, run by `make lint` and named explicitly in CI.
+It builds **the whole module**, not just `pkg/collector`, because the property a
+consumer depends on is transitive: one unguarded cgo import anywhere in the import
+graph takes it away, and the failure would appear in their build rather than ours.
+It runs `go vet` too, since that compiles the test binary — which is how an `nvml`
+import in a `_test.go` file would otherwise slip through.
+
 ## Compute accelerators (NPUs)
 
 `NPUCollector` reports the compute accelerators the kernel exposes in its accel

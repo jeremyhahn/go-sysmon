@@ -14,8 +14,12 @@ WITH_SYSTRAY ?= 1
 # users want a realtime monitor with no time-series dependency (owner ruling
 # 2026-09-04, #100). Both shapes are built and tested here and in CI -- a tag
 # that only ever compiles one way is not tested.
-SERVER_TAGS := prometheus
-DESKTOP_TAGS := desktop,production,webkit2_41
+# nvml is on both shipped builds, so go-sysmon's own binaries report NVIDIA GPUs
+# exactly as before. It is NOT on the default build: NVML has no pure-Go
+# implementation, and importing it unconditionally made CGO_ENABLED=0 impossible
+# for anything embedding pkg/collector (#8). See check-cgo-clean below.
+SERVER_TAGS := prometheus,nvml
+DESKTOP_TAGS := desktop,production,webkit2_41,nvml
 ifeq ($(WITH_SYSTRAY),1)
   DESKTOP_TAGS := $(DESKTOP_TAGS),systray
 endif
@@ -72,7 +76,7 @@ INTERVAL ?= 1000
         test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
-        ci ci-fast vulncheck gosec audit check-signed check-conflicts release-build release-build-desktop clean-dist \
+        ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
         build-both \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -273,7 +277,7 @@ uninstall-extension-cinnamon:
 # lint fails the build on any finding. gofmt and vet always run; golangci-lint
 # is resolved from GOBIN/GOPATH because "go install"-ed tools are not on the
 # default PATH that make uses.
-lint: fmt-check vet lint-workflows check-conflicts
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean
 	@if [ ! -x "$(GOLANGCI_LINT)" ] && ! command -v golangci-lint >/dev/null 2>&1; then \
 		echo "golangci-lint not found. Install it with:"; \
 		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
@@ -301,6 +305,18 @@ check-signed:
 # reporting a pass it did not earn.
 check-conflicts:
 	@CONFLICT_SCAN_BASE="$(CONFLICT_SCAN_BASE)" ./scripts/check-conflict-markers.sh
+
+# check-cgo-clean asserts the default build needs no cgo, which is what lets a
+# consumer embed pkg/collector in a static, cross-compiled or FIPS binary (#8).
+#
+# It builds the whole module rather than pkg/collector alone, because the
+# property a consumer depends on is transitive: one unguarded cgo import
+# anywhere in the import graph takes it away, and the failure appears in their
+# build rather than in ours. `go vet` is included because it compiles the test
+# binary too, which is how an nvml import in a _test.go file would slip through.
+check-cgo-clean:
+	CGO_ENABLED=0 go build ./...
+	CGO_ENABLED=0 go vet ./...
 
 # lint-workflows validates the GitHub Actions files with the same expression
 # parser GitHub uses. A rejected workflow fails the run before any job starts,

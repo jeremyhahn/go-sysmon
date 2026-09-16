@@ -1,3 +1,7 @@
+//go:build nvml
+
+// NVML field-value decoding tests; nvml build only (see gpu_nvml.go and #8).
+
 package collector
 
 import (

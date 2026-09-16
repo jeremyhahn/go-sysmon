@@ -40,10 +40,21 @@ ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_DATE=unknown
 
-# CGO is mandatory: pkg/collector imports NVIDIA go-nvml, which does not build
-# with CGO_ENABLED=0. No desktop tag, so no GTK or WebKit is linked.
+# -tags nvml, and therefore CGO_ENABLED=1, because this is a PUBLISHED image.
+#
+# NVML moved behind a build tag so that consumers embedding pkg/collector can
+# build with CGO_ENABLED=0 (#8). The default build reports NVIDIA cards from sysfs
+# and leaves memory, utilisation, clocks, power and ECC empty -- correct for a
+# library consumer, wrong for the image an operator runs on an NVIDIA host, who
+# would get a GPU tab that silently lost half its numbers. The tag has to be named
+# here as well as in the Makefile's SERVER_TAGS, since this build does not go
+# through make.
+#
+# No desktop tag, so no GTK or WebKit is linked. go-nvml loads libnvidia-ml.so
+# at runtime rather than linking it, so the slim runtime image below needs nothing
+# extra: a host without the library reports no NVIDIA GPUs, exactly as before.
 ENV CGO_ENABLED=1
-RUN go build -trimpath \
+RUN go build -trimpath -tags nvml \
       -ldflags "-X main.version=${VERSION} \
                 -X main.gitCommit=${GIT_COMMIT} \
                 -X main.buildDate=${BUILD_DATE} -s -w" \
