@@ -142,11 +142,16 @@ type Alerts struct {
 	NVMeWearPct     float64 `mapstructure:"nvme_wear_pct"`
 	NVMeSparePct    float64 `mapstructure:"nvme_spare_pct"`
 	// CPU and memory
-	CPUPct       float64 `mapstructure:"cpu_pct"`
-	MemoryPct    float64 `mapstructure:"memory_pct"`
-	SwapPct      float64 `mapstructure:"swap_pct"`
-	PSIFullAvg10 float64 `mapstructure:"psi_full_avg10"`
-	LoadPerCore  float64 `mapstructure:"load_per_core"`
+	CPUPct    float64 `mapstructure:"cpu_pct"`
+	MemoryPct float64 `mapstructure:"memory_pct"`
+	// SwapOutPagesPerSec is a PAGING RATE, not an occupancy. Swap that is
+	// merely resident costs nothing: pages parked there by a long-gone burst
+	// stay counted until something reclaims them, so occupancy answers "how
+	// much is out there" and never "is this host paging now". The rate answers
+	// the second, which is the one worth waking someone for.
+	SwapOutPagesPerSec float64 `mapstructure:"swap_out_pages_per_sec"`
+	PSIFullAvg10       float64 `mapstructure:"psi_full_avg10"`
+	LoadPerCore        float64 `mapstructure:"load_per_core"`
 	// Network
 	IfaceErrRate float64 `mapstructure:"iface_err_rate"`
 	NetUtilPct   float64 `mapstructure:"net_util_pct"`
@@ -276,17 +281,22 @@ func Defaults() Config {
 			NVMeSparePct:    10,
 			CPUPct:          90,
 			MemoryPct:       90,
-			SwapPct:         50,
-			PSIFullAvg10:    10,
-			LoadPerCore:     2.0,
-			IfaceErrRate:    1,
-			NetUtilPct:      80,
-			GPUTempWarnC:    85,
-			GPUTempCritC:    95,
-			GPUMemoryPct:    90,
-			GPUPowerPct:     95,
-			ContainerMemPct: 90,
-			ContainerCPUPct: 90,
+			// 200 pages/s is 800 KB/s at the usual 4 KiB page. Sustained
+			// paging at that rate is real work the host is doing instead of
+			// running its workload; a one-off burst from launching something
+			// large goes well above it for a single interval, which is why the
+			// rule requires two consecutive intervals rather than one.
+			SwapOutPagesPerSec: 200,
+			PSIFullAvg10:       10,
+			LoadPerCore:        2.0,
+			IfaceErrRate:       1,
+			NetUtilPct:         80,
+			GPUTempWarnC:       85,
+			GPUTempCritC:       95,
+			GPUMemoryPct:       90,
+			GPUPowerPct:        95,
+			ContainerMemPct:    90,
+			ContainerCPUPct:    90,
 		},
 		Fleet: Fleet{
 			PollIntervalMs: 10000,
@@ -382,6 +392,16 @@ func (l *Loader) Load() (*Config, map[string]string, error) {
 	// threshold, which silently keeps the default while the file says
 	// otherwise. Every key in this file was typed on purpose, so one that maps
 	// to nothing is a mistake worth stopping for, not a comment.
+	// A retired key is checked for first, because strict decode cannot tell it
+	// from a typo: both surface as "invalid keys: alerts.swap_pct". The operator
+	// who wrote a key we later removed made no mistake, so the error names the
+	// replacement instead of leaving them to find it.
+	for key, guidance := range retiredKeys {
+		if fileLoaded && v.InConfig(key) {
+			return nil, nil, &ErrRetiredConfigKey{Path: l.path, Key: key, Guidance: guidance}
+		}
+	}
+
 	var cfg Config
 	if err := v.UnmarshalExact(&cfg); err != nil {
 		return nil, nil, &ErrConfigParse{Path: l.path, Err: err}
@@ -586,6 +606,17 @@ func (c *Config) LocalName() string {
 }
 
 // labelNamePattern is what Prometheus accepts as a label name.
+// retiredKeys maps a key this build has removed to the guidance an operator who
+// still has it needs. Startup stops rather than ignoring it, which is the same
+// judgement the strict decode below makes about a key that maps to nothing: a
+// file that states a threshold the daemon does not apply is worse than a file
+// that will not load.
+var retiredKeys = map[string]string{
+	"alerts.swap_pct": "replaced by alerts.swap_out_pages_per_sec, which is a " +
+		"paging RATE in pages/second rather than an occupancy percentage. Swap " +
+		"that is merely resident is not a condition; the rate is. The default is 200.",
+}
+
 var labelNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // reservedLabels are the label names go-sysmon attaches itself: the two that

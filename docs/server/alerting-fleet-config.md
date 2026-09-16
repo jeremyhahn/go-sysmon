@@ -276,8 +276,41 @@ override is usually the first thing reached for.
 | cpu | `cpu_throttle` | — | — | warning |
 | cpu | `load_high` | `load_per_core` | 2.0 | warning |
 | cpu | `psi_full` (cpu) | `psi_full_avg10` | 10 | warning |
-| memory | `memory_high` / `swap_high` | `memory_pct` / `swap_pct` | 90 / 50 | warning |
+| memory | `memory_high` | `memory_pct` | 90 | warning |
+| memory | `swap_high` | `swap_out_pages_per_sec` | 200 | warning |
 | memory | `psi_full` (memory) | `psi_full_avg10` | 10 | warning |
+
+`swap_high` is a **paging rate**, not an occupancy. Swap that is merely resident
+costs nothing: pages parked there by a burst that ended hours ago stay counted
+until something reclaims them, so occupancy answers "how much is out there" and
+never "is this host paging now". Two healthy fleet nodes sat amber indefinitely
+on the old occupancy threshold while a host genuinely thrashing with a small swap
+device stayed silent.
+
+The rule needs two consecutive intervals over the threshold before it fires,
+because launching something large pages hard for one interval and then stops. It
+stays silent when `/proc/vmstat` could not be read (`swap_counters_available` is
+false), on the first evaluation of a run, and when the counter goes backwards
+across a reboot — in each case there is no rate to report, and reporting zero
+would be indistinguishable from a quiet host.
+
+The old `alerts.swap_pct` key is gone, and a configuration that still sets it
+**will not start**: the loader decodes strictly, so a key with no field behind it
+is an error rather than a comment. Rename it to `alerts.swap_out_pages_per_sec`
+and give it a rate — the value does not carry over, because 50% occupancy and a
+paging rate are not the same quantity.
+
+The error names the replacement rather than leaving you to find it:
+
+```
+/etc/go-sysmon/sysmon.yaml sets alerts.swap_pct, which this build no longer has:
+replaced by alerts.swap_out_pages_per_sec, which is a paging RATE in
+pages/second rather than an occupancy percentage. …
+```
+
+Accepting the key and ignoring it was the alternative, and it is the one thing
+strict decoding exists to prevent: the file would go on stating a threshold the
+daemon no longer applies.
 | network | `iface_down` | — | — | warning |
 | network | `iface_errors` | `iface_err_rate` | 1 per s | warning |
 | network | `iface_util` | `net_util_pct` | 80 | warning |

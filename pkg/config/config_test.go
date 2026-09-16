@@ -1674,3 +1674,49 @@ func TestLoad_ValidConfigStillLoadsUnderStrictDecoding(t *testing.T) {
 		t.Errorf("alerts.disk_full_pct = %v, want 91", cfg.Alerts.DiskFullPct)
 	}
 }
+
+// TestLoad_RetiredSwapKeyNamesItsReplacement covers the upgrade path for a key
+// this build removed. Strict decoding cannot tell it from a typo -- both arrive
+// as viper's "invalid keys" -- so the operator who wrote a key we later retired
+// would get a message saying the key is wrong and not what to write instead.
+func TestLoad_RetiredSwapKeyNamesItsReplacement(t *testing.T) {
+	path := writeConfig(t, "alerts:\n  swap_pct: 50\n")
+
+	_, _, err := config.NewLoader(path).Load()
+	if err == nil {
+		t.Fatal("a retired key loaded cleanly; the file would state a threshold the daemon does not apply")
+	}
+	var retired *config.ErrRetiredConfigKey
+	if !errors.As(err, &retired) {
+		t.Fatalf("err = %#v, want *config.ErrRetiredConfigKey", err)
+	}
+	if retired.Key != "alerts.swap_pct" {
+		t.Errorf("Key = %q, want alerts.swap_pct", retired.Key)
+	}
+	// The whole point is that the message is actionable.
+	if !strings.Contains(retired.Guidance, "swap_out_pages_per_sec") {
+		t.Errorf("guidance does not name the replacement: %q", retired.Guidance)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error does not name the file: %q", err.Error())
+	}
+}
+
+// TestLoad_ShippedExampleLoads is the test that would have caught this: the
+// example is a file operators copy, and it carried the retired key, so the
+// documented upgrade path started a daemon that refused to boot.
+func TestLoad_ShippedExampleLoads(t *testing.T) {
+	// Copied rather than loaded in place, because Loader records the path it
+	// was given and nothing should depend on the repository layout at runtime.
+	body, err := os.ReadFile(filepath.Join("..", "..", "deploy", "sysmon.yaml.example"))
+	if err != nil {
+		t.Fatalf("reading the shipped example: %v", err)
+	}
+	cfg, _, err := config.NewLoader(writeConfig(t, string(body))).Load()
+	if err != nil {
+		t.Fatalf("the shipped example does not load: %v", err)
+	}
+	if cfg.Alerts.SwapOutPagesPerSec <= 0 {
+		t.Errorf("SwapOutPagesPerSec = %v, want the example's rate", cfg.Alerts.SwapOutPagesPerSec)
+	}
+}

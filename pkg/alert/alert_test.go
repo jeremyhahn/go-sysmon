@@ -1089,3 +1089,133 @@ func TestEvaluate_SMARTUnreadableIsPerDrive(t *testing.T) {
 			"has never answered and is a capability fact, not an event", resources)
 	}
 }
+
+// swapSnapshot builds a snapshot whose only interesting content is the swap
+// accounting: pagedOut is the cumulative pswpout counter, and occupancy is what
+// the old rule fired on.
+func swapSnapshot(pagedOut uint64, available bool, occupancyPct float64) *types.Snapshot {
+	return &types.Snapshot{Memory: types.MemoryInfo{
+		SwapTotalBytes:        8 << 30,
+		SwapPercent:           occupancyPct,
+		SwapOutPages:          pagedOut,
+		PageSizeBytes:         4096,
+		SwapCountersAvailable: available,
+	}}
+}
+
+// TestEvaluate_SwapFiresOnSustainedPaging covers the condition the rule exists
+// for: a host paging out steadily, which is work it is doing instead of running
+// its workload.
+func TestEvaluate_SwapFiresOnSustainedPaging(t *testing.T) {
+	e := alert.New()
+	cfg := defaults()
+	t0 := time.Now()
+
+	// First evaluation establishes the baseline; there is no window yet.
+	if a := find(e.Evaluate(cfg, swapSnapshot(0, true, 0), t0), alert.RuleSwapHigh); a != nil {
+		t.Fatalf("first evaluation fired with no previous reading: %+v", a)
+	}
+	// 5000 pages over 10s = 500 pages/s, above the 200 default. One interval is
+	// a burst, so this must still be silent.
+	if a := find(e.Evaluate(cfg, swapSnapshot(5_000, true, 0), t0.Add(10*time.Second)), alert.RuleSwapHigh); a != nil {
+		t.Fatalf("a single interval over the threshold fired: %+v", a)
+	}
+	// Still paging on the next interval: now it is sustained.
+	got := e.Evaluate(cfg, swapSnapshot(10_000, true, 0), t0.Add(20*time.Second))
+	a := find(got, alert.RuleSwapHigh)
+	if a == nil {
+		t.Fatalf("sustained paging produced no swap_high in %+v", got)
+	}
+	if a.Severity != types.SeverityWarning || a.Category != "memory" {
+		t.Errorf("severity/category = %q/%q, want warning/memory", a.Severity, a.Category)
+	}
+	if a.Value != 500 {
+		t.Errorf("value = %v, want 500 pages/s", a.Value)
+	}
+	// The reader thinks in bytes; 500 pages/s at 4 KiB is 2000 KiB/s.
+	if !strings.Contains(a.Message, "2000 KiB/s") {
+		t.Errorf("message = %q, want it to name the byte rate", a.Message)
+	}
+}
+
+// TestEvaluate_SwapSilentOnOccupancyAlone is the defect this change fixes: swap
+// that is merely resident is not a condition. Two fleet nodes sat amber for
+// weeks on exactly this snapshot shape.
+func TestEvaluate_SwapSilentOnOccupancyAlone(t *testing.T) {
+	e := alert.New()
+	cfg := defaults()
+	t0 := time.Now()
+
+	// Nearly full swap, and not one page moving.
+	for i, at := range []time.Time{t0, t0.Add(10 * time.Second), t0.Add(20 * time.Second)} {
+		got := e.Evaluate(cfg, swapSnapshot(4_200, true, 97), at)
+		if a := find(got, alert.RuleSwapHigh); a != nil {
+			t.Fatalf("evaluation %d fired on occupancy alone: %+v", i, a)
+		}
+	}
+}
+
+// TestEvaluate_SwapDegradedInputs covers every way the rate cannot be trusted.
+// Each must stay silent rather than invent a reading.
+func TestEvaluate_SwapDegradedInputs(t *testing.T) {
+	cfg := defaults()
+	t0 := time.Now()
+
+	t.Run("counters unavailable", func(t *testing.T) {
+		// An unreadable /proc/vmstat reports zero, and so does a host that has
+		// never paged. Firing on the first would be inventing quiet's opposite
+		// out of ignorance.
+		e := alert.New()
+		e.Evaluate(cfg, swapSnapshot(0, false, 0), t0)
+		e.Evaluate(cfg, swapSnapshot(1_000_000, false, 0), t0.Add(time.Second))
+		got := e.Evaluate(cfg, swapSnapshot(2_000_000, false, 0), t0.Add(2*time.Second))
+		if a := find(got, alert.RuleSwapHigh); a != nil {
+			t.Errorf("fired with SwapCountersAvailable false: %+v", a)
+		}
+	})
+
+	t.Run("counter went backwards", func(t *testing.T) {
+		// The host rebooted between readings, so the window is not what it
+		// looks like and there is no rate to report.
+		e := alert.New()
+		e.Evaluate(cfg, swapSnapshot(9_000_000, true, 10), t0)
+		got := e.Evaluate(cfg, swapSnapshot(12, true, 10), t0.Add(10*time.Second))
+		if a := find(got, alert.RuleSwapHigh); a != nil {
+			t.Errorf("fired on a counter reset: %+v", a)
+		}
+	})
+
+	t.Run("zero interval", func(t *testing.T) {
+		// Two snapshots at the same instant divide by zero.
+		e := alert.New()
+		e.Evaluate(cfg, swapSnapshot(0, true, 0), t0)
+		got := e.Evaluate(cfg, swapSnapshot(500_000, true, 0), t0)
+		if a := find(got, alert.RuleSwapHigh); a != nil {
+			t.Errorf("fired on a zero-length window: %+v", a)
+		}
+	})
+
+	t.Run("threshold disabled", func(t *testing.T) {
+		cfg := defaults()
+		cfg.SwapOutPagesPerSec = 0
+		e := alert.New()
+		e.Evaluate(cfg, swapSnapshot(0, true, 0), t0)
+		e.Evaluate(cfg, swapSnapshot(5_000_000, true, 0), t0.Add(time.Second))
+		got := e.Evaluate(cfg, swapSnapshot(9_000_000, true, 0), t0.Add(2*time.Second))
+		if a := find(got, alert.RuleSwapHigh); a != nil {
+			t.Errorf("fired with the threshold disabled: %+v", a)
+		}
+	})
+
+	t.Run("burst then quiet clears the run", func(t *testing.T) {
+		// Over, under, over must not add up to two consecutive intervals.
+		e := alert.New()
+		e.Evaluate(cfg, swapSnapshot(0, true, 0), t0)
+		e.Evaluate(cfg, swapSnapshot(5_000, true, 0), t0.Add(10*time.Second))         // 500/s
+		e.Evaluate(cfg, swapSnapshot(5_010, true, 0), t0.Add(20*time.Second))         // 1/s
+		got := e.Evaluate(cfg, swapSnapshot(10_010, true, 0), t0.Add(30*time.Second)) // 500/s
+		if a := find(got, alert.RuleSwapHigh); a != nil {
+			t.Errorf("a quiet interval did not clear the run: %+v", a)
+		}
+	})
+}

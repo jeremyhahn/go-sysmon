@@ -161,6 +161,29 @@ type ErrPrometheusLabel struct {
 	Reason string
 }
 
+// ErrRetiredConfigKey reports a key this build no longer has a field for, naming
+// what replaced it.
+//
+// It exists because the strict decode in Loader.Load cannot tell a typo from a
+// key we removed under the operator. Both arrive as viper's "invalid keys:
+// alerts.swap_pct", which says the key is wrong and not what to write instead --
+// and for a rename we initiated, the operator did nothing wrong and deserves the
+// answer rather than a puzzle.
+//
+// Accepting and ignoring the old key was the alternative, and it is the one thing
+// that strict decode exists to prevent: the file would go on stating a threshold
+// the daemon no longer applies.
+type ErrRetiredConfigKey struct {
+	Path     string
+	Key      string
+	Guidance string
+}
+
+func (e *ErrRetiredConfigKey) Error() string {
+	return fmt.Sprintf("%s sets %s, which this build no longer has: %s",
+		e.Path, e.Key, e.Guidance)
+}
+
 func (e *ErrPrometheusLabel) Error() string {
 	return fmt.Sprintf("config: prometheus.external_labels %q is unusable: %s", e.Name, e.Reason)
 }

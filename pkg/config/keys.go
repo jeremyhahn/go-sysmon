@@ -27,7 +27,7 @@ func scalarKeys() []string {
 		"alerts.nvme_spare_pct",
 		"alerts.cpu_pct",
 		"alerts.memory_pct",
-		"alerts.swap_pct",
+		"alerts.swap_out_pages_per_sec",
 		"alerts.psi_full_avg10",
 		"alerts.load_per_core",
 		"alerts.iface_err_rate",
@@ -58,35 +58,35 @@ func scalarKeys() []string {
 // defaultMap flattens a Config into the dotted keys viper seeds as defaults.
 func defaultMap(c Config) map[string]any {
 	return map[string]any{
-		"server.addr":               c.Server.Addr,
-		"server.interval_ms":        c.Server.IntervalMs,
-		"server.tls_cert":           c.Server.TLSCert,
-		"server.tls_key":            c.Server.TLSKey,
-		"server.watch":              c.Server.Watch,
-		"alerts.disk_full_pct":      c.Alerts.DiskFullPct,
-		"alerts.disk_full_crit_pct": c.Alerts.DiskFullCritPct,
-		"alerts.disk_util_pct":      c.Alerts.DiskUtilPct,
-		"alerts.disk_queue_len":     c.Alerts.DiskQueueLen,
-		"alerts.temp_warn_c":        c.Alerts.TempWarnC,
-		"alerts.temp_crit_c":        c.Alerts.TempCritC,
-		"alerts.nvme_wear_pct":      c.Alerts.NVMeWearPct,
-		"alerts.nvme_spare_pct":     c.Alerts.NVMeSparePct,
-		"alerts.cpu_pct":            c.Alerts.CPUPct,
-		"alerts.memory_pct":         c.Alerts.MemoryPct,
-		"alerts.swap_pct":           c.Alerts.SwapPct,
-		"alerts.psi_full_avg10":     c.Alerts.PSIFullAvg10,
-		"alerts.load_per_core":      c.Alerts.LoadPerCore,
-		"alerts.iface_err_rate":     c.Alerts.IfaceErrRate,
-		"alerts.net_util_pct":       c.Alerts.NetUtilPct,
-		"alerts.gpu_temp_warn_c":    c.Alerts.GPUTempWarnC,
-		"alerts.gpu_temp_crit_c":    c.Alerts.GPUTempCritC,
-		"alerts.gpu_memory_pct":     c.Alerts.GPUMemoryPct,
-		"alerts.gpu_power_pct":      c.Alerts.GPUPowerPct,
-		"alerts.container_mem_pct":  c.Alerts.ContainerMemPct,
-		"alerts.container_cpu_pct":  c.Alerts.ContainerCPUPct,
-		"fleet.local_name":          c.Fleet.LocalName,
-		"fleet.poll_interval_ms":    c.Fleet.PollIntervalMs,
-		"fleet.timeout_ms":          c.Fleet.TimeoutMs,
+		"server.addr":                   c.Server.Addr,
+		"server.interval_ms":            c.Server.IntervalMs,
+		"server.tls_cert":               c.Server.TLSCert,
+		"server.tls_key":                c.Server.TLSKey,
+		"server.watch":                  c.Server.Watch,
+		"alerts.disk_full_pct":          c.Alerts.DiskFullPct,
+		"alerts.disk_full_crit_pct":     c.Alerts.DiskFullCritPct,
+		"alerts.disk_util_pct":          c.Alerts.DiskUtilPct,
+		"alerts.disk_queue_len":         c.Alerts.DiskQueueLen,
+		"alerts.temp_warn_c":            c.Alerts.TempWarnC,
+		"alerts.temp_crit_c":            c.Alerts.TempCritC,
+		"alerts.nvme_wear_pct":          c.Alerts.NVMeWearPct,
+		"alerts.nvme_spare_pct":         c.Alerts.NVMeSparePct,
+		"alerts.cpu_pct":                c.Alerts.CPUPct,
+		"alerts.memory_pct":             c.Alerts.MemoryPct,
+		"alerts.swap_out_pages_per_sec": c.Alerts.SwapOutPagesPerSec,
+		"alerts.psi_full_avg10":         c.Alerts.PSIFullAvg10,
+		"alerts.load_per_core":          c.Alerts.LoadPerCore,
+		"alerts.iface_err_rate":         c.Alerts.IfaceErrRate,
+		"alerts.net_util_pct":           c.Alerts.NetUtilPct,
+		"alerts.gpu_temp_warn_c":        c.Alerts.GPUTempWarnC,
+		"alerts.gpu_temp_crit_c":        c.Alerts.GPUTempCritC,
+		"alerts.gpu_memory_pct":         c.Alerts.GPUMemoryPct,
+		"alerts.gpu_power_pct":          c.Alerts.GPUPowerPct,
+		"alerts.container_mem_pct":      c.Alerts.ContainerMemPct,
+		"alerts.container_cpu_pct":      c.Alerts.ContainerCPUPct,
+		"fleet.local_name":              c.Fleet.LocalName,
+		"fleet.poll_interval_ms":        c.Fleet.PollIntervalMs,
+		"fleet.timeout_ms":              c.Fleet.TimeoutMs,
 
 		"prometheus.remote_write_url":   c.Prometheus.RemoteWriteURL,
 		"prometheus.query_url":          c.Prometheus.QueryURL,
@@ -136,8 +136,8 @@ func (c *Config) value(key string) string {
 		return num(c.Alerts.CPUPct)
 	case "alerts.memory_pct":
 		return num(c.Alerts.MemoryPct)
-	case "alerts.swap_pct":
-		return num(c.Alerts.SwapPct)
+	case "alerts.swap_out_pages_per_sec":
+		return num(c.Alerts.SwapOutPagesPerSec)
 	case "alerts.psi_full_avg10":
 		return num(c.Alerts.PSIFullAvg10)
 	case "alerts.load_per_core":

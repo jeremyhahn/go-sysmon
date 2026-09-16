@@ -37,7 +37,10 @@ alerts:
   cpu_pct: 90              # mean usage across logical CPUs
   load_per_core: 2.0
   memory_pct: 90
-  swap_pct: 50
+  # A paging RATE, not an occupancy: swap that is merely resident costs nothing,
+  # and pages left behind by a burst that ended hours ago stay counted until
+  # something reclaims them. 200 pages/s is 800 KB/s at the usual 4 KiB page.
+  swap_out_pages_per_sec: 200
   psi_full_avg10: 10       # "full" pressure (cpu/memory/io): everything stalled
 
   # --- network ---

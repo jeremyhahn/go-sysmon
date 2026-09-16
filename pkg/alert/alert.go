@@ -125,6 +125,16 @@ type Evaluator struct {
 	prevNet   map[string]netCounters
 	prevThr   map[int]uint64
 	prevAt    time.Time
+	// prevSwapOut is the last pswpout reading, and prevSwapValid says whether
+	// there is one to subtract from -- a zero counter is a real value on a host
+	// that has never paged, so it cannot double as "no reading yet".
+	prevSwapOut   uint64
+	prevSwapValid bool
+	// swapRuns counts consecutive evaluations whose swap-out rate was over the
+	// threshold. Launching something large pages hard for one interval and then
+	// stops; that is the machine working, not a machine in trouble, and it is
+	// not worth a bell.
+	swapRuns int
 	// answered records the RAID members that have returned a SMART reading at
 	// least once in this run, keyed by the same resource string the alert is
 	// filed under. It is what separates "this drive has stopped answering"
@@ -238,7 +248,7 @@ func (e *Evaluator) Evaluate(cfg config.Alerts, snap *types.Snapshot, now time.T
 		elapsed = 0
 	}
 	e.evalStorage(b, snap)
-	e.evalCPUAndMemory(b, snap)
+	e.evalCPUAndMemory(b, snap, elapsed)
 	e.evalNetwork(b, snap, elapsed)
 	evalGPU(b, snap)
 	evalVirt(b, snap)
@@ -489,9 +499,74 @@ func (e *Evaluator) evalStorage(b *builder, snap *types.Snapshot) {
 	}
 }
 
+// evalSwap fires on how fast the host is paging OUT, not on how much swap is
+// occupied.
+//
+// Occupancy is the wrong question and answering it wrongly had a cost: pages
+// parked in swap by a burst that ended hours ago stay counted until something
+// reclaims them, so two healthy fleet nodes sat amber indefinitely while a host
+// genuinely thrashing with a small swap device stayed silent. The counter is
+// cumulative because a rate needs two readings and a window, and the window
+// belongs here.
+//
+// Three things gate it, each for its own reason:
+//
+//   - SwapCountersAvailable. An unreadable /proc/vmstat reports zero, and so
+//     does a host that has never paged. Alerting on the first as if it were the
+//     second would be inventing quiet out of ignorance; not alerting at all is
+//     the honest reading of "we do not know".
+//   - a previous reading to subtract from. The first evaluation of a run has no
+//     window, and prevSwapValid says so rather than treating the whole
+//     lifetime total as one interval's worth.
+//   - two consecutive intervals over the threshold. One is a burst.
+func (e *Evaluator) evalSwap(b *builder, snap *types.Snapshot, elapsed float64) {
+	t := b.cfg
+	m := &snap.Memory
+
+	if t.SwapOutPagesPerSec <= 0 || !m.SwapCountersAvailable {
+		e.swapRuns = 0
+		e.prevSwapValid = false
+		return
+	}
+
+	prev, hadPrev := e.prevSwapOut, e.prevSwapValid
+	e.prevSwapOut, e.prevSwapValid = m.SwapOutPages, true
+	if !hadPrev || elapsed <= 0 {
+		return
+	}
+
+	// A counter that went backwards means the host rebooted between readings,
+	// so the window is not what it appears to be and there is no rate to report.
+	if m.SwapOutPages < prev {
+		e.swapRuns = 0
+		return
+	}
+	rate := float64(m.SwapOutPages-prev) / elapsed
+	if rate < t.SwapOutPagesPerSec {
+		e.swapRuns = 0
+		return
+	}
+	e.swapRuns++
+	if e.swapRuns < 2 {
+		return
+	}
+
+	// Bytes are what the reader thinks in, and the page size is not 4096
+	// everywhere, so it comes from the snapshot rather than from a constant.
+	// Formatted here rather than through pkg/cli's helper, which this package
+	// must not import: the renderer sits above the rules, not beside them.
+	detail := fmt.Sprintf("Paging out %.0f pages/s", rate)
+	if m.PageSizeBytes > 0 {
+		detail = fmt.Sprintf("Paging out %.0f pages/s (%.0f KiB/s)", rate,
+			rate*float64(m.PageSizeBytes)/1024)
+	}
+	b.add(RuleSwapHigh, types.SeverityWarning, catMemory, "", detail,
+		rate, t.SwapOutPagesPerSec)
+}
+
 // evalCPUAndMemory covers processor temperature and throttling, memory, swap,
 // pressure stall and load.
-func (e *Evaluator) evalCPUAndMemory(b *builder, snap *types.Snapshot) {
+func (e *Evaluator) evalCPUAndMemory(b *builder, snap *types.Snapshot, elapsed float64) {
 	t := b.cfg
 
 	// Hottest core.
@@ -549,11 +624,7 @@ func (e *Evaluator) evalCPUAndMemory(b *builder, snap *types.Snapshot) {
 			fmt.Sprintf("Memory is %.0f%% used", snap.Memory.UsedPercent),
 			snap.Memory.UsedPercent, t.MemoryPct)
 	}
-	if t.SwapPct > 0 && snap.Memory.SwapTotalBytes > 0 && snap.Memory.SwapPercent >= t.SwapPct {
-		b.add(RuleSwapHigh, types.SeverityWarning, catMemory, "",
-			fmt.Sprintf("Swap is %.0f%% used", snap.Memory.SwapPercent),
-			snap.Memory.SwapPercent, t.SwapPct)
-	}
+	e.evalSwap(b, snap, elapsed)
 
 	// "full" pressure means every runnable task was stalled, which is a much
 	// stronger signal than "some" and is what is worth alerting on.
