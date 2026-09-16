@@ -259,6 +259,16 @@ func (e *VMIndexNotFoundError) Error() string {
 	return "vm index " + strconv.Itoa(e.Index) + " not found; " + strconv.Itoa(e.Available) + " vm(s) available"
 }
 
+// NPUIndexNotFoundError indicates that the requested NPU index does not exist.
+type NPUIndexNotFoundError struct {
+	Index     int
+	Available int
+}
+
+func (e *NPUIndexNotFoundError) Error() string {
+	return "NPU index " + strconv.Itoa(e.Index) + " not found; " + strconv.Itoa(e.Available) + " NPU(s) available"
+}
+
 // LogFileError indicates the log file could not be opened or created.
 type LogFileError struct {
 	Path  string

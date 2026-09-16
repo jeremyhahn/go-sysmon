@@ -44,6 +44,7 @@ type SystemCollector struct {
 	host    *HostCollector
 	cpu     *CPUCollector
 	gpu     *GPUCollector
+	npu     *NPUCollector
 	memory  *MemoryCollector
 	disk    *DiskCollector
 	network *NetworkCollector
@@ -72,6 +73,7 @@ func NewSystemCollector(logger *slog.Logger) *SystemCollector {
 		host:    NewHostCollector(logger),
 		cpu:     NewCPUCollector(logger),
 		gpu:     NewGPUCollector(logger),
+		npu:     NewNPUCollector(logger),
 		memory:  NewMemoryCollector(logger),
 		disk:    NewDiskCollector(logger),
 		network: NewNetworkCollector(logger),
@@ -139,8 +141,13 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 		{"virt", s.virt.Collect, tierMedium},
 		{"runtime", s.runtime.Collect, tierSlow},
 
-		// Slow tier: expensive I/O (SMART ioctls, DIMM temp module probing).
+		// Slow tier: expensive I/O (SMART ioctls, DIMM temp module probing),
+		// and the NPU, whose driver attributes resume a suspended accelerator
+		// when read. The collector also skips those reads entirely while the
+		// device sleeps, so this tier is the second half of not being the
+		// reason an idle NPU never powers down.
 		{"disk", s.disk.Collect, tierSlow},
+		{"npu", s.npu.Collect, tierSlow},
 	}
 
 	for _, c := range collectors {
@@ -163,6 +170,7 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 	snap.CPUSummary = s.cpu.Summary()
 	snap.CPUs = s.cpu.Info()
 	snap.GPUs = s.gpu.Info()
+	snap.NPUs = s.npu.Info()
 	snap.Memory = s.memory.Info()
 	snap.Disks = s.disk.Info()
 	snap.Networks = s.network.Info()

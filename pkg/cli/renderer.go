@@ -144,6 +144,23 @@ func RenderOverview(w io.Writer, snap *types.Snapshot) error {
 		fmt.Fprintln(w)
 	}
 
+	// NPU block. ResidencyPercent is power-on time, not workload, so the
+	// overview names it "Residency" and reserves "Util" for the genuine
+	// compute-utilisation figure.
+	if len(snap.NPUs) > 0 {
+		fmt.Fprintf(w, "%-12s%d NPUs\n", "NPU:", len(snap.NPUs))
+		for _, n := range snap.NPUs {
+			fmt.Fprintf(w, "%-12s%s | Residency: %.0f%% | Util: %.0f%% | Clients: %d\n",
+				"",
+				n.Name,
+				n.ResidencyPercent,
+				n.UtilPercent,
+				n.ClientCount,
+			)
+		}
+		fmt.Fprintln(w)
+	}
+
 	// Network block
 	physCount, loCount := countNetworkTypes(snap.Networks)
 	primary := primaryInterface(snap.Networks)
@@ -589,6 +606,154 @@ func renderGPU(w io.Writer, g types.GPUInfo) {
 		eccStr = fmt.Sprintf("Enabled (SBE: %d, DBE: %d)", g.ECCSingleBit, g.ECCDoubleBit)
 	}
 	fmt.Fprintf(w, "  %-14s%s\n", "ECC:", eccStr)
+}
+
+// RenderNPU writes NPU (compute accelerator) information to w. When the
+// snapshot contains no NPUs a brief message is printed instead.
+func RenderNPU(w io.Writer, snap *types.Snapshot) error {
+	ew := newErrWriter(w)
+	w = ew
+
+	if snap == nil {
+		return &types.CollectorError{Collector: "cli", Cause: errNilSnapshot}
+	}
+
+	fmt.Fprintln(w, "NPU Information")
+	fmt.Fprintln(w, separator)
+
+	if len(snap.NPUs) == 0 {
+		fmt.Fprintln(w, "No NPUs detected.")
+		return ew.Err()
+	}
+
+	for i, n := range snap.NPUs {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		renderNPU(w, n)
+	}
+	return ew.Err()
+}
+
+// renderNPU writes formatted output for a single accelerator.
+//
+// ResidencyPercent and UtilPercent measure different things and are labelled
+// accordingly: Residency is the share of the interval the device was powered
+// up, Utilization is genuine compute engine busy time. BusyTimeUs is printed
+// only as a raw counter, never as a percentage -- see the NPUInfo doc comment
+// for why that figure tracks power state far more than job execution.
+func renderNPU(w io.Writer, n types.NPUInfo) {
+	fmt.Fprintf(w, "\nNPU %d: %s\n", n.Index, n.Name)
+
+	fmt.Fprintf(w, "  %-14s%s | Vendor: %s | Class: %s\n",
+		"Driver:", dashIfEmpty(n.Driver), dashIfEmpty(n.Vendor), dashIfEmpty(n.DeviceClass))
+	fmt.Fprintf(w, "  %-14s%s\n", "PCI:", dashIfEmpty(n.PCIBusID))
+
+	stateStr := n.State
+	if stateStr == "" {
+		stateStr = "unavailable"
+	}
+	fmt.Fprintf(w, "  %-14s%s | Power state: %s\n", "State:", stateStr, dashIfEmpty(n.PowerState))
+
+	freqStr := "-"
+	if n.FrequencyMHz > 0 || n.FrequencyMaxMHz > 0 {
+		freqStr = fmt.Sprintf("%d / %d MHz", n.FrequencyMHz, n.FrequencyMaxMHz)
+	}
+	fmt.Fprintf(w, "  %-14s%s | Governor: %s | Sched: %s\n",
+		"Frequency:", freqStr, dashIfEmpty(n.Governor), dashIfEmpty(n.SchedMode))
+
+	numaStr := "-"
+	if n.NumaNode >= 0 {
+		numaStr = strconv.Itoa(n.NumaNode)
+	}
+	irqStr := "-"
+	if n.IRQ > 0 {
+		irqStr = strconv.Itoa(n.IRQ)
+	}
+	fmt.Fprintf(w, "  %-14sNUMA node %s | Local CPUs: %s | IRQ: %s\n",
+		"Topology:", numaStr, dashIfEmpty(n.LocalCPUList), irqStr)
+
+	if n.TemperatureC > 0 || n.PowerDrawW > 0 {
+		var parts []string
+		if n.TemperatureC > 0 {
+			parts = append(parts, fmt.Sprintf("%.1f°C", n.TemperatureC))
+		}
+		if n.PowerDrawW > 0 {
+			parts = append(parts, fmt.Sprintf("%.1f W", n.PowerDrawW))
+		}
+		fmt.Fprintf(w, "  %-14s%s\n", "Thermal:", strings.Join(parts, " | "))
+	}
+
+	// Residency vs. Utilization -- see the doc comment above; these are
+	// deliberately never merged into one figure.
+	fmt.Fprintln(w)
+	if n.State == "" {
+		fmt.Fprintf(w, "  %-14sn/a (device reports no runtime power management)\n", "Residency:")
+	} else {
+		fmt.Fprintf(w, "  %-14s%s  %5.1f%% (time powered up, not workload)\n",
+			"Residency:", formatBar(n.ResidencyPercent, 20), n.ResidencyPercent)
+	}
+	fmt.Fprintf(w, "  %-14s%s  %5.1f%% (compute engine busy time)\n",
+		"Utilization:", formatBar(n.UtilPercent, 20), n.UtilPercent)
+
+	if len(n.Engines) > 0 {
+		fmt.Fprintln(w, "  Engines:")
+		for _, e := range n.Engines {
+			fmt.Fprintf(w, "    %-12s%s  %5.1f%%\n",
+				e.Name+":", formatBar(e.BusyPercent, 20), e.BusyPercent)
+		}
+	}
+
+	// BusyTimeUs is the driver's raw cumulative counter. It is presented only
+	// as a counter -- never divided into a percentage -- because it tracks D0
+	// residency far more closely than job execution.
+	if n.BusyTimeUs > 0 {
+		fmt.Fprintf(w, "  %-14s%.1fs busy (cumulative counter, not a utilization percentage)\n",
+			"Busy time:", float64(n.BusyTimeUs)/1e6)
+	}
+
+	if n.MemoryUtilizationBytes > 0 {
+		// Named after the driver attribute it comes from, not called "used".
+		// On Arrow Lake this reads a constant 63.6 GB on a 93 GB host, so it
+		// is not live consumption and must not be presented as any.
+		fmt.Fprintf(w, "  %-14s%s (driver counter npu_memory_utilization)\n",
+			"Memory:", formatBytes(n.MemoryUtilizationBytes))
+	}
+
+	if n.CountersStale {
+		// Age zero means the accelerator has been asleep for every collection
+		// so far, so there is no cached figure to date -- saying "cached 0s
+		// ago" would claim one that does not exist.
+		if n.CountersAgeSec > 0 {
+			fmt.Fprintf(w, "  %-14scached %.0fs ago; NPU suspended\n", "Counters:", n.CountersAgeSec)
+		} else {
+			fmt.Fprintf(w, "  %-14snot sampled; NPU suspended and left asleep\n", "Counters:")
+		}
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  %-14s%d\n", "Clients:", n.ClientCount)
+	if len(n.Clients) > 0 {
+		rows := make([][]string, 0, len(n.Clients))
+		for _, c := range n.Clients {
+			rows = append(rows, []string{
+				strconv.Itoa(c.PID),
+				c.Name,
+				formatPercent(c.BusyPercent),
+				formatBytes(c.MemoryBytes),
+			})
+		}
+		formatTable(w, []string{"PID", "NAME", "BUSY", "MEMORY"}, rows)
+	}
+}
+
+// dashIfEmpty returns "-" in place of an empty string, so an unavailable
+// field reads as unavailable rather than as a blank column.
+func dashIfEmpty(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // renderDisk writes formatted output for a single disk.

@@ -51,7 +51,7 @@ test("a snapshot event populates the applet and refreshes the menu", () => {
 
     // Every section should now have a submenu in the popup.
     const submenus = applet.menu.items.filter((i) => i.menu !== undefined);
-    assert.strictEqual(submenus.length, 9, "expected one submenu per section");
+    assert.strictEqual(submenus.length, 10, "expected one submenu per section");
     assert.ok(submenus[0].label.get_text().startsWith("Host"));
 });
 

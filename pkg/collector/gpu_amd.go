@@ -24,7 +24,7 @@ func collectAMDGPU(cardPath string, index int) types.GPUInfo {
 	}
 
 	// PCI bus ID from uevent.
-	g.PCIBusID = amdPCIBusID(devPath)
+	g.PCIBusID = sysfsPCIBusID(devPath)
 
 	// Device name from sysfs label, falling back to a generic name.
 	g.Name = sysfsDeviceName(devPath)
@@ -47,7 +47,7 @@ func collectAMDGPU(cardPath string, index int) types.GPUInfo {
 	}
 
 	// Hwmon metrics: temperature, fan, power.
-	hwmonPath := amdHwmonPath(devPath)
+	hwmonPath := sysfsHwmonPath(devPath)
 	if hwmonPath != "" {
 		// Temperature: millidegrees → Celsius.
 		rawTemp := readSysfsUint64(filepath.Join(hwmonPath, "temp1_input"))
@@ -91,9 +91,9 @@ func collectAMDGPU(cardPath string, index int) types.GPUInfo {
 	return g
 }
 
-// amdHwmonPath returns the first hwmon subdirectory found under
+// sysfsHwmonPath returns the first hwmon subdirectory found under
 // devPath/hwmon/hwmon* or an empty string if none exists.
-func amdHwmonPath(devPath string) string {
+func sysfsHwmonPath(devPath string) string {
 	pattern := filepath.Join(devPath, "hwmon", "hwmon*")
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {
@@ -102,9 +102,9 @@ func amdHwmonPath(devPath string) string {
 	return matches[0]
 }
 
-// amdPCIBusID reads the PCI slot name from the device uevent file and returns
+// sysfsPCIBusID reads the PCI slot name from the device uevent file and returns
 // it in "domain:bus:device.function" form (e.g. "0000:04:00.0").
-func amdPCIBusID(devPath string) string {
+func sysfsPCIBusID(devPath string) string {
 	uevent := readSysfsString(filepath.Join(devPath, "uevent"))
 	for _, line := range strings.Split(uevent, "\n") {
 		if strings.HasPrefix(line, "PCI_SLOT_NAME=") {

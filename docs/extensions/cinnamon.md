@@ -31,6 +31,7 @@ the same information the CLI and the web dashboard show:
 | Host            | Hostname, OS, kernel, uptime, board and BIOS                         |
 | CPU             | Model, topology, cache, load average, per-core usage/frequency/temp, flags |
 | GPU             | Per device: driver, utilisation, memory, thermals, power, perf state  |
+| NPU             | Per accelerator: driver, state, powered-up residency, compute utilisation, clients, clocks, thermals, per-engine busy |
 | Memory          | Used/free/buffers/cached/slab, swap, and per-DIMM part numbers and speeds |
 | Disks           | Per device: identity, filesystem usage, I/O rates and totals, queue depth, utilisation, peaks, SMART and NVMe health, partitions |
 | Network         | Per interface: kind, state, addresses, MTU, DNS, throughput, counters, errors, drops, bridge/bond membership, wireless details |

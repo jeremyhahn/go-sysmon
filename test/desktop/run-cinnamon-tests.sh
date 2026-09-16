@@ -287,9 +287,13 @@ assert_eval "tooltip reports CPU usage" \
 echo
 echo "== popup menu =="
 
+# Counted twice on purpose -- here against a real Cinnamon session, and in
+# extensions/tests/applet.test.js against the harness. Adding a section to
+# SECTION_BUILDERS means updating BOTH; the NPU section (2026-09-16) was caught
+# by this one after the harness count had already been raised.
 assert_eval "popup has one submenu per section" \
     "String(${APPLET_JS}.menu._getMenuItems().filter(function (i) { return i.menu !== undefined; }).length)" \
-    "9"
+    "10"
 
 assert_eval "submenus are populated" \
     "String(${APPLET_JS}.menu._getMenuItems().filter(function (i) { return i.menu !== undefined; }).every(function (i) { return i.menu._getMenuItems().length > 0; }))" \

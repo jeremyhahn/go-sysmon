@@ -116,6 +116,31 @@ var catalog = []Metric{
 	{Key: "gpu_memory", Name: "sysmon_gpu_memory_percent", Label: "GPU memory", Unit: "percent", SplitBy: "gpu"},
 	{Key: "gpu_temperature", Name: "sysmon_gpu_temperature_celsius", Label: "GPU temperature", Unit: "celsius", SplitBy: "gpu"},
 	{
+		Key: "npu_power", Name: "sysmon_power_watts", Matchers: []string{`source=~"npu:.*"`},
+		Label: "NPU power", Unit: "watts", SplitBy: "source",
+	},
+	// Two charts, because an accelerator has two different numbers that look
+	// like one. The label of each says which: "powered up" is runtime-PM
+	// residency and "utilisation" is engine time from fdinfo. A single chart
+	// titled "NPU" would leave the reader to guess, and on an idle-but-awake
+	// NPU the two disagree by ~100 points.
+	{
+		Key: "npu_residency", Name: "sysmon_npu_residency_percent",
+		Label: "NPU powered up", Unit: "percent", SplitBy: "npu",
+	},
+	{
+		Key: "npu_util", Name: "sysmon_npu_utilization_percent",
+		Label: "NPU utilisation", Unit: "percent", SplitBy: "npu",
+	},
+	{
+		Key: "npu_temperature", Name: "sysmon_npu_temperature_celsius",
+		Label: "NPU temperature", Unit: "celsius", SplitBy: "npu",
+	},
+	{
+		Key: "npu_clients", Name: "sysmon_npu_clients",
+		Label: "NPU clients", Unit: "count", SplitBy: "npu",
+	},
+	{
 		Key: "alerts_critical", Name: "sysmon_alerts_firing", Matchers: []string{`severity="critical"`},
 		Label: "Critical alerts", Unit: "count",
 	},

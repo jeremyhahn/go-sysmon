@@ -53,6 +53,15 @@ func fixtureSnapshot() *types.Snapshot {
 		GPUs: []types.GPUInfo{
 			{Index: 0, Name: "Fixture GPU", DriverVersion: "1.0", MemoryTotalMiB: 8192, MemoryUsedMiB: 1024, TemperatureGPU: 50},
 		},
+		NPUs: []types.NPUInfo{
+			{
+				Index: 0, Name: "Fixture NPU", Driver: "intel_vpu", Vendor: "Intel Corporation",
+				PCIBusID: "0000:00:0b.0", DeviceClass: "Processing accelerators",
+				State: "active", PowerState: "D0", NumaNode: 0,
+				ResidencyPercent: 42, UtilPercent: 12.5, ClientCount: 1,
+				Clients: []types.NPUClient{{PID: 4242, Name: "fixture-proc", BusyPercent: 12.5, MemoryBytes: 1 << 20}},
+			},
+		},
 		LoadAvg:   types.LoadAverage{Load1: 1.5, Load5: 1.0, Load15: 0.5},
 		Processes: types.ProcessSummary{Total: 100, Running: 1, Sleeping: 60, Idle: 38, Zombie: 1},
 	}
@@ -86,17 +95,17 @@ func newTestCmd(buf *bytes.Buffer) *cobra.Command {
 func resetGlobals(t *testing.T) {
 	t.Helper()
 	origJSON, origRefresh := jsonOutput, refreshInterval
-	origCPU, origGPU := cpuIndex, gpuIndex
+	origCPU, origGPU, origNPU := cpuIndex, gpuIndex, npuIndex
 	origMem, origDisk, origNet := memoryIndex, storageIndex, networkIndex
 	origCtr, origVM := containerIndex, vmIndex
 	t.Cleanup(func() {
 		jsonOutput, refreshInterval = origJSON, origRefresh
-		cpuIndex, gpuIndex = origCPU, origGPU
+		cpuIndex, gpuIndex, npuIndex = origCPU, origGPU, origNPU
 		memoryIndex, storageIndex, networkIndex = origMem, origDisk, origNet
 		containerIndex, vmIndex = origCtr, origVM
 	})
 	jsonOutput, refreshInterval = false, 0
-	cpuIndex, gpuIndex, memoryIndex, storageIndex, networkIndex = -1, -1, -1, -1, -1
+	cpuIndex, gpuIndex, npuIndex, memoryIndex, storageIndex, networkIndex = -1, -1, -1, -1, -1, -1
 	containerIndex, vmIndex = -1, -1
 }
 
@@ -121,6 +130,7 @@ func commandCases() []struct {
 		{"storage", runStorageCmd, "nvme0n1", ""},
 		{"network", runNetworkCmd, "eth0", ""},
 		{"gpu", runGPUCmd, "Fixture GPU", "gpus"},
+		{"npu", runNPUCmd, "Fixture NPU", "npus"},
 	}
 }
 
@@ -232,6 +242,7 @@ func TestCommands_IndexFilters(t *testing.T) {
 	}{
 		{"cpu", func() { cpuIndex = 1 }, runCPUCmd, "7.5%", "12.5%"},
 		{"gpu", func() { gpuIndex = 0 }, runGPUCmd, "Fixture GPU", ""},
+		{"npu", func() { npuIndex = 0 }, runNPUCmd, "Fixture NPU", ""},
 		{"storage", func() { storageIndex = 0 }, runStorageCmd, "nvme0n1", ""},
 		{"network", func() { networkIndex = 0 }, runNetworkCmd, "eth0", ""},
 		{"memory", func() { memoryIndex = 0 }, runMemoryCmd, "DIMM0", ""},
@@ -270,6 +281,7 @@ func TestCommands_IndexOutOfRange(t *testing.T) {
 	}{
 		{"cpu", func() { cpuIndex = 99 }, runCPUCmd},
 		{"gpu", func() { gpuIndex = 99 }, runGPUCmd},
+		{"npu", func() { npuIndex = 99 }, runNPUCmd},
 		{"storage", func() { storageIndex = 99 }, runStorageCmd},
 		{"network", func() { networkIndex = 99 }, runNetworkCmd},
 		{"memory", func() { memoryIndex = 99 }, runMemoryCmd},

@@ -32,6 +32,16 @@ func richSnapshot() *types.Snapshot {
 			},
 		},
 		GPUs: []types.GPUInfo{{Index: 0, GPUUtilPercent: 55, MemoryPercent: 70, TemperatureGPU: 60, PowerDrawW: 120}},
+		// An awake accelerator doing no work: residency high, utilisation zero.
+		// That combination is the one the two series exist to tell apart, so it
+		// is the one the fixture carries.
+		NPUs: []types.NPUInfo{{
+			Index: 0, Device: "accel0", Driver: "intel_vpu", State: "active",
+			ResidencyPercent: 97.5, UtilPercent: 0, ClientCount: 1,
+			TemperatureC: 41, PowerDrawW: 1.8, FrequencyMHz: 950,
+			CountersStale: true, CountersAgeSec: 12.5, BusyTimeUs: 1_234_567,
+			Engines: []types.NPUEngine{{Name: "npu", BusyNs: 5_000, BusyPercent: 0}},
+		}},
 		Disks: []types.DiskInfo{
 			{
 				Name: "nvme0n1", TotalBytes: 1000, UsedPercent: 40, UtilPercent: 12,

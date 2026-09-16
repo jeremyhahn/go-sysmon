@@ -12,6 +12,7 @@ export interface Snapshot {
   load_avg: LoadAverage;
   processes: ProcessSummary;
   gpus: GPUInfo[];
+  npus: NPUInfo[];
   sensors: SensorData;
   virtualization: VirtInfo;
   alerts: Alert[];
@@ -208,6 +209,97 @@ export interface GPUInfo {
   ecc_single_bit: number;
   ecc_double_bit: number;
   process_count: number;
+}
+
+/**
+ * NPUInfo mirrors types.NPUInfo: one compute accelerator from
+ * /sys/class/accel/accelN.
+ *
+ * THE THREE UTILISATION FIELDS DO NOT MEAN THE SAME THING, and the panel must
+ * not blur them:
+ *
+ * - residency_percent is the share of the interval the device was POWERED UP,
+ *   derived from runtime-PM counters. It says how much the NPU was awake, not
+ *   how hard it worked. It is meaningless when `state` is empty (the device
+ *   reports no runtime PM at all), and must never be labelled "usage".
+ * - util_percent is genuine compute utilisation, per-client engine time from
+ *   DRM usage-stats fdinfo. It is legitimately 0 when the driver does not
+ *   implement fdinfo, or when this process may not read the owning task's
+ *   fdinfo -- a plain zero, not an error.
+ * - busy_time_us is the driver's RAW cumulative counter, deliberately not a
+ *   percentage: on intel_vpu it tracks D0 residency rather than job execution,
+ *   so any percent derived from it sits near 100% whenever anything keeps the
+ *   device awake. Show it as a counter or not at all.
+ */
+export interface NPUInfo {
+  index: number;
+  device: string;
+  name: string;
+  driver: string;
+  vendor: string;
+  vendor_id: string;
+  device_id: string;
+  device_class: string;
+  label: string;
+  pci_bus_id: string;
+  numa_node: number;
+  local_cpu_list: string;
+  irq: number;
+  /** "active", "suspended", "unsupported", or "" for no runtime PM at all. */
+  state: string;
+  power_state: string;
+  /** Time awake, not work done. Meaningless when state is "". */
+  residency_percent: number;
+  active_time_ms: number;
+  suspended_time_ms: number;
+  autosuspend_delay_ms: number;
+  runtime_usage: number;
+  /** Real compute utilisation from DRM fdinfo; 0 is a valid reading. */
+  util_percent: number;
+  engines: NPUEngine[];
+  clients: NPUClient[];
+  client_count: number;
+  /**
+   * Driver counters below are not re-read while the device sleeps, because
+   * reading them resumes it. counters_stale marks the carried-forward values
+   * and counters_age_sec says how old they are. Normal idle behaviour, not an
+   * error.
+   */
+  counters_stale: boolean;
+  counters_age_sec: number;
+  /** Raw cumulative driver counter in microseconds. Never a percentage. */
+  busy_time_us: number;
+  /** The driver's own counter of this name; not "memory in use". */
+  memory_utilization_bytes: number;
+  sched_mode: string;
+  frequency_mhz: number;
+  frequency_max_mhz: number;
+  governor: string;
+  temperature_c: number;
+  power_draw_w: number;
+  pcie_gen_current: number;
+  pcie_gen_max: number;
+  pcie_width_current: number;
+  pcie_width_max: number;
+}
+
+/** NPUEngine is one hardware engine's busy time across every client. */
+export interface NPUEngine {
+  name: string;
+  busy_ns: number;
+  /** Genuine engine utilisation from fdinfo. */
+  busy_percent: number;
+}
+
+/** NPUClient is one process holding the accelerator open. */
+export interface NPUClient {
+  pid: number;
+  name: string;
+  client_id: string;
+  busy_ns: number;
+  /** Genuine per-client utilisation from fdinfo. */
+  busy_percent: number;
+  memory_bytes: number;
 }
 
 export interface CPUSummary {

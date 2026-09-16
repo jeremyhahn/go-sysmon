@@ -10,6 +10,7 @@ type Snapshot struct {
 	CPUSummary CPUSummary     `json:"cpu_summary"`
 	CPUs       []CPUInfo      `json:"cpus"`
 	GPUs       []GPUInfo      `json:"gpus"`
+	NPUs       []NPUInfo      `json:"npus"`
 	Memory     MemoryInfo     `json:"memory"`
 	Disks      []DiskInfo     `json:"disks"`
 	Networks   []NetworkInfo  `json:"networks"`
@@ -970,6 +971,106 @@ type GPUProcess struct {
 	Type       string  `json:"type"`
 	MemoryMiB  uint64  `json:"memory_mib"`
 	GPUPercent float64 `json:"gpu_percent"`
+}
+
+// NPUInfo describes one compute accelerator exposed through the kernel accel
+// subsystem at /sys/class/accel/accelN. Every in-tree NPU driver registers
+// there -- intel_vpu, amdxdna, qaic, habanalabs, rocket -- so discovery and
+// identity need no per-vendor code and work on hardware this build has never
+// seen.
+//
+// READ THE UTILISATION FIELDS CAREFULLY; THEY DO NOT MEAN THE SAME THING.
+//
+// ResidencyPercent is the portable signal: the share of the sampling interval
+// the device spent powered up, derived from the runtime-PM counters every
+// driver gets for free. It reports how much the NPU was AWAKE, not how hard
+// it was working.
+//
+// UtilPercent is genuine compute utilisation, per-client engine time from the
+// DRM usage-stats fdinfo interface, and is only populated when the driver
+// implements it and this process may read the owning task's fdinfo.
+//
+// BusyTimeUs is the driver's own cumulative counter, exposed raw and
+// DELIBERATELY NOT turned into a percentage. On Arrow Lake (intel_vpu) it was
+// measured advancing at 98.8% of resumed time with no client holding the
+// device at all, and its lifetime total sat within 2% of runtime_active_time
+// -- it tracks D0 residency far more closely than job execution. Dividing it
+// by the sampling interval yields a utilisation figure pinned near 100%
+// whenever anything keeps the NPU awake, including this monitor's own polling.
+// Present it as a counter or not at all.
+type NPUInfo struct {
+	// Identity
+	Index        int    `json:"index"`
+	Device       string `json:"device"`
+	Name         string `json:"name"`
+	Driver       string `json:"driver"`
+	Vendor       string `json:"vendor"`
+	VendorID     string `json:"vendor_id"`
+	DeviceID     string `json:"device_id"`
+	DeviceClass  string `json:"device_class"`
+	Label        string `json:"label"`
+	PCIBusID     string `json:"pci_bus_id"`
+	NumaNode     int    `json:"numa_node"`
+	LocalCPUList string `json:"local_cpu_list"`
+	IRQ          int    `json:"irq"`
+	// Power state and residency. State mirrors power/runtime_status
+	// ("active", "suspended", "unsupported"); an empty State means the device
+	// does not report runtime PM at all, and ResidencyPercent is then
+	// meaningless rather than zero.
+	State              string  `json:"state"`
+	PowerState         string  `json:"power_state"`
+	ResidencyPercent   float64 `json:"residency_percent"`
+	ActiveTimeMs       uint64  `json:"active_time_ms"`
+	SuspendedTimeMs    uint64  `json:"suspended_time_ms"`
+	AutosuspendDelayMs int64   `json:"autosuspend_delay_ms"`
+	RuntimeUsage       int     `json:"runtime_usage"`
+	// Compute utilisation from DRM usage-stats fdinfo.
+	UtilPercent float64     `json:"util_percent"`
+	Engines     []NPUEngine `json:"engines"`
+	Clients     []NPUClient `json:"clients"`
+	ClientCount int         `json:"client_count"`
+	// Driver counters. Reading these resumes a suspended device, so they are
+	// skipped while the NPU sleeps and the last known values are carried
+	// forward with CountersStale set and CountersAgeSec saying how old they
+	// are. A stale figure that says so is worth more than a fresh zero, and
+	// more than waking the hardware to avoid one.
+	CountersStale          bool    `json:"counters_stale"`
+	CountersAgeSec         float64 `json:"counters_age_sec"`
+	BusyTimeUs             uint64  `json:"busy_time_us"`
+	MemoryUtilizationBytes uint64  `json:"memory_utilization_bytes"`
+	SchedMode              string  `json:"sched_mode"`
+	// Clocks
+	FrequencyMHz    uint32 `json:"frequency_mhz"`
+	FrequencyMaxMHz uint32 `json:"frequency_max_mhz"`
+	Governor        string `json:"governor"`
+	// Thermals and power, when the driver registers an hwmon node.
+	TemperatureC float64 `json:"temperature_c"`
+	PowerDrawW   float64 `json:"power_draw_w"`
+	// PCIe
+	PCIeGenCurrent   int `json:"pcie_gen_current"`
+	PCIeGenMax       int `json:"pcie_gen_max"`
+	PCIeWidthCurrent int `json:"pcie_width_current"`
+	PCIeWidthMax     int `json:"pcie_width_max"`
+}
+
+// NPUEngine is one hardware engine's busy time aggregated across every client
+// of the device, from the drm-engine-<name> fdinfo keys.
+type NPUEngine struct {
+	Name        string  `json:"name"`
+	BusyNs      uint64  `json:"busy_ns"`
+	BusyPercent float64 `json:"busy_percent"`
+}
+
+// NPUClient is one process holding the accelerator open, identified by the
+// drm-client-id fdinfo key so that several file descriptors belonging to the
+// same client are counted once.
+type NPUClient struct {
+	PID         int     `json:"pid"`
+	Name        string  `json:"name"`
+	ClientID    string  `json:"client_id"`
+	BusyNs      uint64  `json:"busy_ns"`
+	BusyPercent float64 `json:"busy_percent"`
+	MemoryBytes uint64  `json:"memory_bytes"`
 }
 
 // WirelessInfo holds link statistics for a wifi interface, read from

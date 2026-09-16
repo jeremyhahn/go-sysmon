@@ -164,6 +164,59 @@ func Write(m Sink, snap *types.Snapshot) {
 			"gpu", fmt.Sprintf("%d", g.Index))
 	}
 
+	// Compute accelerators (NPUs).
+	//
+	// A snapshot carries two percentages for an accelerator and they do not
+	// measure the same thing, so the metric names say which is which. Residency
+	// is how long the device was POWERED UP; utilisation is how much work it
+	// did. Exporting either under a name that could be read as the other is the
+	// mistake this block is arranged to prevent: a residency figure alerted on
+	// as utilisation fires on an idle-but-awake NPU, and a utilisation figure
+	// read as residency reads as a powered-down device whenever the driver
+	// publishes no fdinfo.
+	for _, n := range snap.NPUs {
+		npu := fmt.Sprintf("%d", n.Index)
+		m.Gauge("sysmon_power_watts", "Instantaneous power draw.", n.PowerDrawW,
+			"source", "npu:"+npu)
+		m.Gauge("sysmon_npu_residency_percent",
+			"Share of the sampling interval the accelerator was powered up, from runtime-PM counters. Power-on residency, not compute utilisation.",
+			n.ResidencyPercent, "npu", npu)
+		m.Gauge("sysmon_npu_utilization_percent",
+			"Compute utilisation: the busiest engine's share of the interval, from per-client DRM usage-stats fdinfo. Legitimately 0 when the driver implements no fdinfo, or when this process may not read the owning task's fdinfo.",
+			n.UtilPercent, "npu", npu)
+		m.Gauge("sysmon_npu_clients", "Processes holding the accelerator open.",
+			float64(n.ClientCount), "npu", npu)
+		m.Gauge("sysmon_npu_temperature_celsius",
+			"Accelerator temperature, when the driver registers an hwmon node.",
+			n.TemperatureC, "npu", npu)
+		m.Gauge("sysmon_npu_frequency_mhz", "Current accelerator clock.",
+			float64(n.FrequencyMHz), "npu", npu)
+		// Why staleness is a series of its own: the collector deliberately does
+		// not re-read a driver's own attributes while the device is suspended,
+		// because the read resumes the hardware and costs idle power. The
+		// values sourced from them -- the clock above among them -- are then
+		// carried forward, and a flat line with nothing saying why is the
+		// reading most likely to be mistaken for a broken collector.
+		m.Gauge("sysmon_npu_counters_stale",
+			"1 when the driver's own counters were not re-read, because reading them would have resumed a suspended accelerator.",
+			Bool01(n.CountersStale), "npu", npu)
+		m.Gauge("sysmon_npu_counters_age_seconds",
+			"Age of the carried-forward driver counters; 0 when they were read this cycle.",
+			n.CountersAgeSec, "npu", npu)
+		// NPUInfo.BusyTimeUs is deliberately NOT exported here. It is a raw
+		// cumulative driver counter, and this Sink writes gauges only -- every
+		// series it produces is declared `# TYPE gauge`. There is no honest way
+		// to publish a monotonic total through it: as a gauge it invites a
+		// rate() over something the exposition has just declared is not a
+		// counter, and any percentage derived from it would be a utilisation
+		// figure pinned near 100% whenever anything keeps the NPU awake,
+		// including this monitor's own polling (measured at 98.8% of resumed
+		// time with no client on the device; see types.NPUInfo).
+		// sysmon_npu_residency_percent already reports that, and says so in its
+		// name. The snapshot and the API still carry the raw counter for
+		// anybody debugging a specific driver.
+	}
+
 	// Temperatures
 	for _, c := range snap.Sensors.CoreTemps {
 		m.Gauge("sysmon_cpu_temperature_celsius", "CPU core temperature.", c.TempCelsius,

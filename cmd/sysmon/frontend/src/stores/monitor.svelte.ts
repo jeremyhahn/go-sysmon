@@ -163,6 +163,13 @@ class MonitorStore {
   gpuPcieRxHistory = $state<number[][]>([]);
   gpuPcieTxHistory = $state<number[][]>([]);
 
+  // Per-NPU histories — outer index is NPU index, inner array is 60 points.
+  // Two series, kept apart deliberately: residency is time the device spent
+  // powered up, utilisation is compute time from DRM fdinfo. Charting one as
+  // the other would misreport an idle-but-awake accelerator as a busy one.
+  npuResidencyHistory = $state<number[][]>([]);
+  npuUtilHistory = $state<number[][]>([]);
+
   // Sensor histories.
   // Per-core temp history: outer index matches core_temps array order.
   cpuTempHistory = $state<number[][]>([]);
@@ -543,6 +550,8 @@ class MonitorStore {
     this.gpuPowerHistory = [];
     this.gpuPcieRxHistory = [];
     this.gpuPcieTxHistory = [];
+    this.npuResidencyHistory = [];
+    this.npuUtilHistory = [];
     this.cpuTempHistory = [];
     this.packagePowerHistory = makeHistory(0);
     this.psiCpuHistory = makeHistory(0);
@@ -706,6 +715,24 @@ class MonitorStore {
       );
       this.gpuPcieTxHistory = this.gpuPcieTxHistory.map((hist, i) =>
         pushHistory(hist, snap.gpus[i]?.pcie_tx_mbps ?? 0)
+      );
+    }
+
+    // NPU histories. Residency (time awake) and utilisation (compute time from
+    // DRM fdinfo) are separate series because they answer different questions;
+    // a 0 in the utilisation series is a real reading on drivers without
+    // fdinfo, not missing data.
+    const npuCount = snap.npus?.length ?? 0;
+    if (this.npuResidencyHistory.length !== npuCount) {
+      this.npuResidencyHistory = Array.from({ length: npuCount }, () => makeHistory(0));
+      this.npuUtilHistory = Array.from({ length: npuCount }, () => makeHistory(0));
+    }
+    if (npuCount > 0) {
+      this.npuResidencyHistory = this.npuResidencyHistory.map((hist, i) =>
+        pushHistory(hist, snap.npus[i]?.residency_percent ?? 0)
+      );
+      this.npuUtilHistory = this.npuUtilHistory.map((hist, i) =>
+        pushHistory(hist, snap.npus[i]?.util_percent ?? 0)
       );
     }
   }

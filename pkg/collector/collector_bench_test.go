@@ -141,6 +141,17 @@ func BenchmarkRuntimeCollector_Collect(b *testing.B) {
 	benchCollect(b, c.Collect)
 }
 
+// BenchmarkNPUCollector_Collect is dominated by the walk over /proc looking for
+// processes holding an accelerator open, which is what the DRM usage-stats
+// interface costs: a readlink per file descriptor on the system. The device's
+// own sysfs reads are a handful of small files. It is tiered slowest for a
+// different reason -- reading a driver's attributes resumes a suspended
+// accelerator -- but this is the cost that makes the tier worth having anyway.
+func BenchmarkNPUCollector_Collect(b *testing.B) {
+	c := NewNPUCollector(benchLogger())
+	benchCollect(b, c.Collect)
+}
+
 // ---- the whole tick ------------------------------------------------------
 
 // BenchmarkSystemCollector_Snapshot measures a tick as the server takes it,

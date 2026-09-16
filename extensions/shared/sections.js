@@ -190,6 +190,68 @@ function gpuSection(s) {
     };
 }
 
+function npuSection(s) {
+    const npus = s.npus || [];
+
+    if (npus.length === 0) {
+        return {
+            key: "npu",
+            title: "NPU",
+            summary: "none detected",
+            blocks: [block("", [row("", "No NPUs detected")])],
+        };
+    }
+
+    const blocks = npus.map((npu) => {
+        const rows = [
+            row("Driver", fmt.formatValue(npu.driver)),
+            row("Vendor", fmt.formatValue(npu.vendor)),
+            row("State", fmt.formatValue(npu.state)),
+            // Two rows, never one, and labelled so neither can be read as the
+            // other. "Powered up" is runtime-PM residency — how long the
+            // accelerator was awake, which says nothing about work done — and
+            // "Utilisation" is engine time from per-client DRM fdinfo. An NPU
+            // that something keeps awake while doing nothing sits near 100% on
+            // the first row and 0% on the second, so a single row headed
+            // "Usage" would be wrong whichever number it carried.
+            row("Powered up", fmt.formatPercent(npu.residency_percent)),
+            row("Utilisation", fmt.formatPercent(npu.util_percent)),
+            row("Clients", fmt.formatValue(npu.client_count)),
+            row("Frequency", fmt.formatMHz(npu.frequency_mhz) + " / " +
+                fmt.formatMHz(npu.frequency_max_mhz)),
+            row("Temperature", fmt.formatTemp(npu.temperature_c)),
+            row("Power", fmt.formatValue((npu.power_draw_w || 0).toFixed(1), "W")),
+            row("Scheduler", fmt.formatValue(npu.sched_mode)),
+        ];
+
+        for (const engine of npu.engines || []) {
+            rows.push(row("Engine " + fmt.formatValue(engine.name),
+                fmt.formatPercent(engine.busy_percent)));
+        }
+
+        if (npu.counters_stale) {
+            // Not a fault, and worth saying rather than leaving as a flat line:
+            // the collector does not re-read the driver's own counters while
+            // the device sleeps, because the read would wake it.
+            rows.push(row("Driver counters", "stale, " +
+                fmt.formatValue(Math.round(npu.counters_age_sec || 0), "s") + " old"));
+        }
+
+        return block(fmt.formatValue(npu.name), rows);
+    });
+
+    // The summary shows residency, because it is the figure every driver
+    // reports; utilisation is legitimately 0 wherever fdinfo is unavailable,
+    // and a panel summary of "0.0%" on a working accelerator reads as broken.
+    return {
+        key: "npu",
+        title: "NPU",
+        summary: fmt.formatValue(npus[0].name) + " · " +
+            fmt.formatPercent(npus[0].residency_percent) + " powered up",
+        blocks: blocks,
+    };
+}
+
 function memorySection(s) {
     const mem = s.memory || {};
 
@@ -529,6 +591,7 @@ const SECTION_BUILDERS = [
     hostSection,
     cpuSection,
     gpuSection,
+    npuSection,
     memorySection,
     disksSection,
     networkSection,

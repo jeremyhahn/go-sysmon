@@ -988,6 +988,201 @@ func TestRenderGPU(t *testing.T) {
 	})
 }
 
+// testNPUSnapshot builds a snapshot with one active accelerator, populated
+// with figures distinct enough that a mislabeled field (Residency swapped
+// for Utilization, or vice versa) would be caught by an assertion.
+func testNPUSnapshot() *types.Snapshot {
+	snap := testSnapshot()
+	snap.NPUs = []types.NPUInfo{
+		{
+			Index:            0,
+			Name:             "Arrow Lake NPU",
+			Driver:           "intel_vpu",
+			Vendor:           "Intel Corporation",
+			DeviceClass:      "Processing accelerators",
+			PCIBusID:         "0000:00:0b.0",
+			NumaNode:         0,
+			LocalCPUList:     "0-15",
+			IRQ:              124,
+			State:            "active",
+			PowerState:       "D0",
+			ResidencyPercent: 87.0,
+			UtilPercent:      3.5,
+			Engines: []types.NPUEngine{
+				{Name: "compute", BusyNs: 350_000_000, BusyPercent: 3.5},
+			},
+			BusyTimeUs:             98_700_000,
+			MemoryUtilizationBytes: 128 << 20,
+			FrequencyMHz:           800,
+			FrequencyMaxMHz:        1400,
+			Governor:               "performance",
+			SchedMode:              "hw",
+			TemperatureC:           41.0,
+			PowerDrawW:             4.2,
+			ClientCount:            1,
+			Clients: []types.NPUClient{
+				{PID: 4321, Name: "inference-worker", BusyPercent: 3.5, MemoryBytes: 64 << 20},
+			},
+		},
+	}
+	return snap
+}
+
+func TestRenderNPU(t *testing.T) {
+	t.Parallel()
+
+	t.Run("renders npu details", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testNPUSnapshot()
+		if err := RenderNPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+
+		checks := []string{
+			"NPU Information",
+			"NPU 0:",
+			"Arrow Lake NPU",
+			"intel_vpu",
+			"Intel Corporation",
+			"0000:00:0b.0",
+			"Processing accelerators",
+			"active",
+			"D0",
+			"800 / 1400 MHz",
+			"performance",
+			"hw",
+			"NUMA node 0",
+			"0-15",
+			"124",
+			"41.0",
+			"4.2 W",
+			"Residency:",
+			"87.0%",
+			"time powered up, not workload",
+			"Utilization:",
+			"3.5%",
+			"compute engine busy time",
+			"compute:",
+			"98.7s busy",
+			"cumulative counter, not a utilization percentage",
+			"Memory:",
+			"inference-worker",
+			"4321",
+		}
+		for _, want := range checks {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q\nFull output:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("does not mislabel residency as utilization", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testNPUSnapshot()
+		if err := RenderNPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if strings.Contains(out, "Usage:") {
+			t.Errorf("residency must never be labelled Usage; got:\n%s", out)
+		}
+	})
+
+	t.Run("stale counters report their age and suspended state", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testNPUSnapshot()
+		snap.NPUs[0].CountersStale = true
+		snap.NPUs[0].CountersAgeSec = 42
+		if err := RenderNPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "cached 42s ago") || !strings.Contains(out, "NPU suspended") {
+			t.Errorf("expected stale-counter notice with age; got:\n%s", out)
+		}
+	})
+
+	t.Run("negative numa node reads as unavailable", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testNPUSnapshot()
+		snap.NPUs[0].NumaNode = -1
+		if err := RenderNPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "NUMA node -") {
+			t.Errorf("expected a dashed NUMA node when it has no affinity; got:\n%s", out)
+		}
+	})
+
+	t.Run("empty state omits meaningless residency", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testNPUSnapshot()
+		snap.NPUs[0].State = ""
+		snap.NPUs[0].ResidencyPercent = 0
+		if err := RenderNPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "n/a") {
+			t.Errorf("expected residency to read n/a when State is empty; got:\n%s", out)
+		}
+	})
+
+	t.Run("no NPUs prints message", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testSnapshot()
+		snap.NPUs = nil
+		if err := RenderNPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "No NPUs detected") {
+			t.Errorf("expected no-NPU message, got:\n%s", out)
+		}
+	})
+
+	t.Run("multiple npus render all", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testNPUSnapshot()
+		n2 := snap.NPUs[0]
+		n2.Index = 1
+		n2.Name = "amdxdna NPU"
+		snap.NPUs = append(snap.NPUs, n2)
+		if err := RenderNPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "NPU 0:") || !strings.Contains(out, "NPU 1:") {
+			t.Errorf("expected both NPU 0 and NPU 1 in output:\n%s", out)
+		}
+		if !strings.Contains(out, "amdxdna NPU") {
+			t.Errorf("expected second NPU name in output:\n%s", out)
+		}
+	})
+
+	t.Run("nil snapshot returns error", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		err := RenderNPU(&buf, nil)
+		if err == nil {
+			t.Fatal("expected error for nil snapshot")
+		}
+		var ce *types.CollectorError
+		if !errors.As(err, &ce) {
+			t.Errorf("expected CollectorError, got %T: %v", err, err)
+		}
+	})
+}
+
 func TestPrimaryInterface(t *testing.T) {
 	t.Parallel()
 

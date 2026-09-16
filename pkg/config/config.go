@@ -611,6 +611,7 @@ var reservedLabels = map[string]bool{
 	"gpu":       true,
 	"interface": true,
 	"level":     true,
+	"npu":       true,
 	"resource":  true,
 	"rule":      true,
 	"severity":  true,

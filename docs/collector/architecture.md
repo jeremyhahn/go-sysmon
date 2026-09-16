@@ -35,6 +35,7 @@ type Collector interface {
 | `HostCollector`    | gopsutil, DMI   | Hostname, OS, kernel, board, BIOS, uptime         |
 | `CPUCollector`     | gopsutil, sysfs | Per-core usage, model, topology, flags, frequency |
 | `GPUCollector`     | NVML, sysfs     | NVIDIA, Intel and AMD utilisation, memory, thermals |
+| `NPUCollector`     | sysfs, fdinfo   | Accelerators in the kernel accel class: residency, engine time, clocks |
 | `MemoryCollector`  | gopsutil, SMBIOS| RAM and swap usage, buffers, cache, per-DIMM hardware |
 | `DiskCollector`    | gopsutil, SMART | Partitions, I/O counters, SMART and NVMe health   |
 | `NetworkCollector` | gopsutil, sysfs | Interface detail, traffic counters, rates         |
@@ -316,6 +317,130 @@ log page and INQUIRY decoders, and the mapping onto `RAIDInfo`. The ioctl itself
 was verified by running the built binary on ci-node-1 as the service's own user
 and reading its output; a green test suite does not mean that path was exercised.
 
+## Compute accelerators (NPUs)
+
+`NPUCollector` reports the compute accelerators the kernel exposes in its accel
+class, `/sys/class/accel/accelN`. Every in-tree NPU driver registers there —
+`intel_vpu`, `amdxdna`, `qaic`, `habanalabs`, `rocket` — so enumeration,
+identity, power state, thermals, clocks and per-client usage all work on
+hardware this build has never run on. There is no per-vendor discovery code and
+no vendor library.
+
+Model names come from the hwdata PCI identifier database
+(`/usr/share/misc/pci.ids`, then `/usr/share/hwdata/pci.ids`), which is how
+`8086:ad1d` reads as "Arrow Lake NPU". That package is optional, so a built-in
+vendor table, then the firmware label, then the driver name stand in when it is
+absent — a recognisable device rather than a blank row.
+
+The one thing a driver cannot be relied on for is the handful of attributes it
+invents for itself, and those live behind `npuDriverReaders`, a map keyed on the
+bound driver name. It currently has one entry, `intel_vpu`, because that is the
+only NPU there is hardware here to test against. An accelerator missing from it
+is not a failure: everything above still comes from interfaces every accel
+driver shares, and the device gains its extra attributes when someone with that
+hardware adds a row.
+
+### Three numbers that look like utilisation, and only one is
+
+This is the part to read before writing an alert rule or believing a chart.
+
+**`residency_percent` is power-on residency, not utilisation.** It is the share
+of the sampling interval the device spent powered up, computed from the
+runtime-PM counters (`power/runtime_active_time` and `runtime_suspended_time`)
+that every driver gets for free. Those counters are also the denominator, not
+wall clock, so a late collection cycle cannot inflate the figure. It answers
+"was the accelerator awake", and an NPU something keeps awake while doing
+nothing sits near 100%.
+
+**`util_percent` and `engines[].busy_percent` are genuine compute
+utilisation**, derived from per-client engine time in the DRM usage-stats
+`fdinfo` interface — `util_percent` is the busiest engine's share of the
+interval. So is `clients[].busy_percent`: every one of those figures is a
+**delta between samples**, because the `fdinfo` values are cumulative for the life
+of a file descriptor. Dividing a lifetime total by one interval does not merely
+overstate the first window — it pins any client that has ever done real work at
+100% on every sample afterwards, idle or not. `busy_ns` beside it is the raw
+cumulative counter, shown as a counter. A client seen for the first time reports
+0%, since its rate over a window this process did not observe is not knowable. This is standardised across drivers, so it needs no vendor code
+either, but it has two honest zeroes: a driver that does not implement
+usage-stats publishes nothing, and an unprivileged monitor cannot `readlink`
+another user's file descriptors, so clients belonging to other users are
+invisible rather than wrong. A 0 here on a busy device means "not measurable
+from this process", and the device's residency and state are unaffected.
+
+**On Intel, that zero is permanent, and it is the driver's doing.** `intel_vpu`
+does not implement usage-stats at all: measured on 2026-09-16 against a live
+client — an OpenVINO model server holding `/dev/accel/accel0` — whose `fdinfo`
+carried `pos`, `flags`, `mnt_id` and `ino`, and not one `drm-` key. So on an
+Intel NPU the utilisation figure is structurally zero however hard the hardware
+is working, and what the collector can still tell you is **which** processes hold
+the accelerator open, from the device-node link rather than from any counter.
+That much needs privilege: run unprivileged and another user's client is
+invisible, which on that host meant a client count of 0 as `jhahn` and 1 (`ovms`,
+pid 1240079) as root. Residency remains the figure to watch on Intel, and `amdxdna`
+is the driver expected to make utilisation real, since it does implement the
+interface.
+
+**`busy_time_us` is a raw cumulative driver counter and stays raw.** On Arrow
+Lake it was measured advancing at 98.8% of resumed time with no client holding
+the device at all, and its lifetime total sat within 2% of
+`runtime_active_time`: it follows D0 residency, not job execution. Dividing it
+by the sampling interval yields a utilisation figure pinned near 100% whenever
+anything keeps the NPU awake — including this monitor's own polling. So no
+percentage is derived from it anywhere, and `pkg/metrics` does not export it at
+all, because that package writes gauges only and a monotonic total published as
+a gauge invites a `rate()` over something the exposition has just declared is
+not a counter. The snapshot and the API still carry it for anyone debugging a
+specific driver.
+
+### Why counters go stale on purpose, and why this is a slow-tier collector
+
+Reading a driver's own sysfs attributes **resumes a runtime-suspended
+accelerator**. On `intel_vpu` a 10 ms autosuspend delay is no defence against a
+500 ms poll: a monitor that reads those files every cycle is the reason the NPU
+never powers down, and the idle power it costs is charged to the machine for as
+long as the monitor runs.
+
+So a sleeping device is left asleep. Its last known counters are carried forward
+with `counters_stale` set and `counters_age_sec` saying how old they are — a
+stale figure that says it is stale is worth more than a fresh zero, and worth
+more than waking the hardware to avoid one. An accelerator that has been asleep
+for every cycle so far has nothing to carry forward, and reports
+`counters_stale` with an age of zero: never sampled, rather than sampled and
+current. A one-shot `sysmon npu` on an idle machine is usually this case, and
+says "not sampled" rather than quoting a cached figure it does not have. Residency, power state, thermals,
+devfreq clocks and `fdinfo` usage are all unaffected: none of those reads touch
+the device.
+
+The same argument puts this collector on the slow tier, every 30th tick,
+alongside the SMART ioctls. Both are cheap in CPU and expensive in what they do
+to the hardware they read.
+
+### What is exported
+
+Prometheus series, all labelled `npu="<index>"` except the power draw, which
+joins the shared `sysmon_power_watts` under `source="npu:<index>"`:
+
+| Series | Means |
+|---|---|
+| `sysmon_npu_residency_percent` | Share of the interval powered up. **Not** utilisation. |
+| `sysmon_npu_utilization_percent` | Busiest engine's compute time, from `fdinfo`. |
+| `sysmon_npu_clients` | Processes holding the accelerator open. |
+| `sysmon_npu_temperature_celsius` | From the driver's hwmon node, when it registers one. |
+| `sysmon_npu_frequency_mhz` | Current clock, from the driver table or devfreq. |
+| `sysmon_npu_counters_stale` | 1 when the driver counters were left unread because the device was suspended. |
+| `sysmon_npu_counters_age_seconds` | How old the carried-forward counters are. |
+
+The history catalog (`pkg/prom/catalog.go`) publishes `npu_residency`,
+`npu_util`, `npu_temperature`, `npu_clients` and `npu_power` as separate charts.
+Residency and utilisation are deliberately two charts rather than one titled
+"NPU": on an idle-but-awake accelerator they disagree by about a hundred points,
+and a single chart would leave the reader to guess which number it was drawing.
+
+The Cinnamon applet's NPU section (`extensions/shared/sections.js`) makes the
+same split, labelling the rows "Powered up" and "Utilisation", and says in the
+device block when the driver counters are stale and by how much.
+
 ## Frequency tiering
 
 Metrics do not change at the same rate, and some are far more expensive to read
@@ -331,7 +456,7 @@ them:
 |--------|-----------------|-------------------------------------|
 | Fast   | Every tick      | Host, CPU, memory, network, load    |
 | Medium | Every 5th tick  | GPU, process, sensors, virt         |
-| Slow   | Every 30th tick | Disk (the SMART ioctls), runtime    |
+| Slow   | Every 30th tick | Disk (the SMART ioctls), runtime, NPU |
 
 A skipped collector still contributes its last cached value, so the snapshot
 shape never changes and a consumer never has to handle a missing field.

@@ -22,6 +22,22 @@ func populatedSnapshot() *types.Snapshot {
 		},
 		CPUs: []types.CPUInfo{{Index: 0}, {Index: 1}},
 		GPUs: []types.GPUInfo{{Index: 0}, {Index: 1}},
+		// Accelerators are keyed by index, and their clients by PID rather
+		// than by the driver's client ID: a driver that omits drm-client-id
+		// leaves that field empty on every client, and two elements sharing an
+		// empty key would silently merge into one.
+		NPUs: []types.NPUInfo{
+			{
+				Index:   0,
+				Engines: []types.NPUEngine{{Name: "npu"}, {Name: "copy"}},
+				Clients: []types.NPUClient{{PID: 1200, ClientID: "7"}, {PID: 1300, ClientID: "8"}},
+			},
+			{
+				Index:   1,
+				Engines: []types.NPUEngine{{Name: "npu"}, {Name: "copy"}},
+				Clients: []types.NPUClient{{PID: 1400, ClientID: "9"}, {PID: 1500, ClientID: "10"}},
+			},
+		},
 		Memory: types.MemoryInfo{
 			DIMMs: []types.DIMMInfo{{Index: 0}, {Index: 1}},
 		},

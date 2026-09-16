@@ -10,6 +10,7 @@
   import HistoryBanner from "./components/HistoryBanner.svelte";
   import CpuPanel from "./components/CpuPanel.svelte";
   import GpuPanel from "./components/GpuPanel.svelte";
+  import NpuPanel from "./components/NpuPanel.svelte";
   import MemoryPanel from "./components/MemoryPanel.svelte";
   import DiskPanel from "./components/DiskPanel.svelte";
   import NetworkPanel from "./components/NetworkPanel.svelte";
@@ -107,6 +108,7 @@
     | "host"
     | "cpu"
     | "gpu"
+    | "npu"
     | "memory"
     | "storage"
     | "network"
@@ -127,6 +129,7 @@
     { id: "host", label: "Host" },
     { id: "cpu", label: "CPU" },
     { id: "gpu", label: "GPU" },
+    { id: "npu", label: "NPU" },
     { id: "memory", label: "Memory" },
     { id: "storage", label: "Storage" },
     { id: "network", label: "Network" },
@@ -361,6 +364,8 @@
       <CpuPanel />
     {:else if effectiveTab === "gpu"}
       <GpuPanel />
+    {:else if effectiveTab === "npu"}
+      <NpuPanel />
     {:else if effectiveTab === "memory"}
       <MemoryPanel />
     {:else if effectiveTab === "storage"}

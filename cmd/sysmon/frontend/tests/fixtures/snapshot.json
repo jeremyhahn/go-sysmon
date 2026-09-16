@@ -433,6 +433,63 @@
    "process_count": 0
   }
  ],
+ "npus": [
+  {
+   "index": 0,
+   "device": "accel0",
+   "name": "Intel AI Boost",
+   "driver": "intel_vpu",
+   "vendor": "Intel",
+   "vendor_id": "0x8086",
+   "device_id": "0x7d1d",
+   "device_class": "0x120000",
+   "label": "",
+   "pci_bus_id": "0000:00:0b.0",
+   "numa_node": 0,
+   "local_cpu_list": "0-21",
+   "irq": 178,
+   "state": "active",
+   "power_state": "D0",
+   "residency_percent": 12.4,
+   "active_time_ms": 41233,
+   "suspended_time_ms": 903184,
+   "autosuspend_delay_ms": 100,
+   "runtime_usage": 1,
+   "util_percent": 4.7,
+   "engines": [
+    {
+     "name": "npu",
+     "busy_ns": 2144000000,
+     "busy_percent": 4.7
+    }
+   ],
+   "clients": [
+    {
+     "pid": 4821,
+     "name": "openvino_infer",
+     "client_id": "17",
+     "busy_ns": 2144000000,
+     "busy_percent": 4.7,
+     "memory_bytes": 92274688
+    }
+   ],
+   "client_count": 1,
+   "counters_stale": false,
+   "counters_age_sec": 0,
+   "busy_time_us": 40712394,
+   "memory_utilization_bytes": 134217728,
+   "sched_mode": "OS",
+   "frequency_mhz": 1000,
+   "frequency_max_mhz": 1950,
+   "governor": "",
+   "temperature_c": 0,
+   "power_draw_w": 0,
+   "pcie_gen_current": 0,
+   "pcie_gen_max": 0,
+   "pcie_width_current": 0,
+   "pcie_width_max": 0
+  }
+ ],
  "memory": {
   "total_bytes": 100578971648,
   "used_bytes": 58808807424,

@@ -43,7 +43,7 @@ test("every section the CLI covers is present, in order", () => {
 
     assert.deepStrictEqual(
         model.map((s) => s.key),
-        ["host", "cpu", "gpu", "memory", "disks", "network", "sensors", "processes", "virt"]
+        ["host", "cpu", "gpu", "npu", "memory", "disks", "network", "sensors", "processes", "virt"]
     );
 });
 
@@ -78,7 +78,7 @@ test("an entirely empty snapshot still produces every section", () => {
     // renders its empty state instead.
     const model = sections.buildSections({});
 
-    assert.strictEqual(model.length, 9);
+    assert.strictEqual(model.length, 10);
     for (const section of model) {
         assert.ok(section.summary, `${section.key} has no summary for an empty snapshot`);
         const text = allText(section);
@@ -156,6 +156,102 @@ test("gpu section states plainly when there are no GPUs", () => {
 
     assert.strictEqual(gpu.summary, "none detected");
     assert.ok(allText(gpu).includes("No GPUs detected"));
+});
+
+// ---- npu -------------------------------------------------------------------
+
+// The web fixture is captured from a host without an accelerator, so these
+// build their own. An NPU that something keeps awake while no client uses it is
+// the case worth pinning: it is what the hardware this was written against
+// actually does, and the reading most easily mistaken for full utilisation.
+const AWAKE_IDLE_NPU = {
+    index: 0,
+    device: "accel0",
+    name: "Arrow Lake NPU",
+    driver: "intel_vpu",
+    vendor: "Intel Corporation",
+    state: "active",
+    residency_percent: 98.8,
+    util_percent: 0,
+    client_count: 0,
+    frequency_mhz: 950,
+    frequency_max_mhz: 1950,
+    temperature_c: 41,
+    power_draw_w: 1.85,
+    sched_mode: "HW",
+    engines: [{ name: "npu", busy_ns: 0, busy_percent: 0 }],
+};
+
+test("npu section reports one block per accelerator", () => {
+    const npus = [AWAKE_IDLE_NPU];
+    const npu = sectionByKey(build({ npus: npus }), "npu");
+
+    assert.strictEqual(npu.blocks.length, npus.length);
+    for (const want of ["Driver", "State", "Powered up", "Utilisation", "Clients",
+        "Frequency", "Temperature", "Power"]) {
+        assert.ok(labels(npu).includes(want), `npu section is missing the ${want} row`);
+    }
+    assert.ok(labels(npu).includes("Engine npu"), "per-engine busy row is missing");
+});
+
+test("npu section keeps power-on residency and compute utilisation apart", () => {
+    // The whole point of the two rows: residency is runtime-PM wake time and
+    // utilisation is engine time from fdinfo. One row carrying either number
+    // under a shared heading would report this idle accelerator as saturated.
+    const npu = sectionByKey(build({ npus: [AWAKE_IDLE_NPU] }), "npu");
+    const rows = npu.blocks[0].rows;
+
+    const residency = rows.filter((r) => r.label === "Powered up");
+    const util = rows.filter((r) => r.label === "Utilisation");
+    assert.strictEqual(residency.length, 1);
+    assert.strictEqual(util.length, 1);
+    assert.strictEqual(residency[0].value, "98.8%");
+    assert.strictEqual(util[0].value, "0.0%");
+    assert.ok(npu.summary.includes("powered up"),
+        `summary must say which figure it shows: ${npu.summary}`);
+});
+
+test("npu section says when driver counters were left unread", () => {
+    // A suspended accelerator's counters are deliberately not re-read, because
+    // reading them resumes the hardware. The popup has to say so, or the
+    // carried-forward values read as a stuck collector.
+    const stale = Object.assign({}, AWAKE_IDLE_NPU, {
+        state: "suspended",
+        residency_percent: 0,
+        counters_stale: true,
+        counters_age_sec: 12.5,
+    });
+    const npu = sectionByKey(build({ npus: [stale] }), "npu");
+    const rows = npu.blocks[0].rows.filter((r) => r.label === "Driver counters");
+
+    assert.strictEqual(rows.length, 1);
+    assert.ok(rows[0].value.includes("stale"), rows[0].value);
+    assert.ok(rows[0].value.includes("13 s"), rows[0].value);
+});
+
+test("npu section omits the staleness row when the counters are fresh", () => {
+    const npu = sectionByKey(build({ npus: [AWAKE_IDLE_NPU] }), "npu");
+
+    assert.strictEqual(npu.blocks[0].rows.filter((r) => r.label === "Driver counters").length, 0);
+});
+
+test("npu section states plainly when there are no NPUs", () => {
+    const npu = sectionByKey(build({ npus: [] }), "npu");
+
+    assert.strictEqual(npu.summary, "none detected");
+    assert.ok(allText(npu).includes("No NPUs detected"));
+});
+
+test("an accelerator reporting nothing renders no undefined values", () => {
+    // A driver with no hwmon node, no devfreq and no fdinfo is the normal case
+    // on hardware nobody has added a reader for, and the popup must still be
+    // readable rather than showing "undefined" in half its rows.
+    const npu = sectionByKey(build({ npus: [{ index: 0 }] }), "npu");
+    const text = allText(npu);
+
+    assert.ok(!text.includes("undefined"), text);
+    assert.ok(!text.includes("NaN"), text);
+    assert.ok(!text.includes("null"), text);
 });
 
 // ---- memory ----------------------------------------------------------------

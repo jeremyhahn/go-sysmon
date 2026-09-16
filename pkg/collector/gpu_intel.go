@@ -25,7 +25,7 @@ func collectIntelGPU(cardPath string, index int) types.GPUInfo {
 	}
 
 	// PCI bus ID from uevent.
-	g.PCIBusID = amdPCIBusID(devPath) // same uevent format as AMD
+	g.PCIBusID = sysfsPCIBusID(devPath)
 
 	// Device name from sysfs label, falling back to a generic name.
 	g.Name = sysfsDeviceName(devPath)
