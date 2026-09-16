@@ -627,6 +627,15 @@ func TestSCSIHostDriver_SkipsNonHostComponents(t *testing.T) {
 // ioctl-time refusal -- telling the operator the node opened when it had not,
 // and naming a capability that cannot help.
 func TestSMARTOpenError_WrapsBothDenials(t *testing.T) {
+	// State the absence of sandbox evidence rather than inheriting whatever the
+	// build host has. This test read the real /proc/self/mountinfo and the real
+	// /sys/block, so its ENOENT case passed on a host with a devtmpfs /dev and
+	// failed inside CI's container, where /dev is a tmpfs and /sys/block/sda
+	// exists -- the very combination hiddenByNamespace is looking for. The claim
+	// here is about ENOENT ALONE, so the inputs that would make it mean something
+	// more are pinned off.
+	withDevPrivate(t, false)
+
 	tests := []struct {
 		name string
 		err  error
@@ -637,7 +646,9 @@ func TestSMARTOpenError_WrapsBothDenials(t *testing.T) {
 		// the single check covers it, and it does not look like it does.
 		{"EPERM", &os.PathError{Op: "open", Path: "/dev/sda", Err: syscall.EPERM}, refusedAtOpen},
 		{"os.ErrPermission", os.ErrPermission, refusedAtOpen},
-		// Not a refusal, and must not be dressed as one.
+		// Not a refusal, and must not be dressed as one. With no sandbox
+		// evidence it is not a hidden node either; that case is
+		// TestSmartOpenError_HiddenNodeIsDiagnosed.
 		{"ENOENT", &os.PathError{Op: "open", Path: "/dev/sda", Err: syscall.ENOENT}, notRefused},
 		{"ENOTTY", &os.PathError{Op: "open", Path: "/dev/sda", Err: syscall.ENOTTY}, notRefused},
 	}

@@ -1,11 +1,15 @@
 package collector
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -175,6 +179,11 @@ const (
 	// refusedAtIoctl: the node opened and the kernel rejected the passthrough
 	// itself. That is a capability check, which no group membership satisfies.
 	refusedAtIoctl
+	// hiddenByNamespace: the device node is not in this process's /dev at all,
+	// while sysfs still lists the disk. Nothing about the caller's privileges
+	// is involved -- there is no file to be refused -- so neither of the other
+	// two remedies applies, and the fix is to the unit rather than to the user.
+	hiddenByNamespace
 )
 
 // reason returns the sentence to show the operator, naming the remedy that
@@ -185,6 +194,12 @@ func (r refusal) reason() string {
 		return "refused: the device node could not be opened -- add the service user to the 'disk' group, or run as root"
 	case refusedAtIoctl:
 		return "refused by the kernel: the device node opens, but the SMART passthrough itself is rejected. This needs CAP_SYS_RAWIO; group membership does not grant it"
+	case hiddenByNamespace:
+		// Says what was measured, not which directive produced it: a private
+		// /dev can come from PrivateDevices=yes, from a container, or from any
+		// other mount-namespace arrangement, and naming the wrong one sends
+		// the operator to the wrong file.
+		return "the device node is absent from this process's /dev, which is a private tmpfs rather than the host's -- sysfs lists the disk, so the node is hidden rather than missing. No group or capability reaches it: the remedy is to change how this process is run, not who it runs as (under systemd, PrivateDevices=no plus SupplementaryGroups=disk or the capability the transport needs; in a container, map the device in)"
 	default:
 		return ""
 	}
@@ -193,6 +208,10 @@ func (r refusal) reason() string {
 // classifyRefusal reports whether err bottoms out in the kernel refusing the
 // caller rather than the hardware declining to answer, and at which step.
 func classifyRefusal(err error) refusal {
+	var hidden *ErrSMARTDeviceHidden
+	if errors.As(err, &hidden) {
+		return hiddenByNamespace
+	}
 	var perm *ErrSMARTPermission
 	if errors.As(err, &perm) {
 		return refusedAtOpen
@@ -228,7 +247,93 @@ func smartOpenError(devPath string, err error) error {
 	if errors.Is(err, os.ErrPermission) {
 		return &ErrSMARTPermission{DevPath: devPath}
 	}
+	// A node that is not there is not a refusal -- but it is not nothing
+	// either, and reporting "we do not know" for it was leaving a diagnosable
+	// condition undiagnosed. If sysfs still lists the disk and our /dev is a
+	// private tmpfs, the node is hidden from this process rather than gone
+	// from the machine, and that has a remedy nobody could guess from silence.
+	if errors.Is(err, fs.ErrNotExist) && deviceHiddenFromNamespace(devPath) {
+		return &ErrSMARTDeviceHidden{DevPath: devPath}
+	}
 	return err
+}
+
+// ErrSMARTDeviceHidden is returned when the device node is absent from this
+// process's mount namespace while sysfs still lists the disk.
+//
+// It is deliberately NOT a permission error. There is no file to be refused:
+// the node was never in the namespace, so every remedy phrased as "who you are"
+// -- group membership, capabilities, running as root -- is inapplicable, and
+// offering one costs an operator a privilege change on production that buys
+// nothing.
+type ErrSMARTDeviceHidden struct {
+	DevPath string
+}
+
+func (e *ErrSMARTDeviceHidden) Error() string {
+	return fmt.Sprintf("SMART data unavailable for %s: the device node is not "+
+		"present in this process's mount namespace", e.DevPath)
+}
+
+// deviceHiddenFromNamespace reports whether devPath's absence is this
+// process's view rather than the machine's: sysfs still lists the disk, and the
+// /dev we can see is a private tmpfs rather than the host's devtmpfs.
+//
+// Both halves are required. Sysfs alone would call a hot-unplugged disk hidden,
+// and a private /dev alone says nothing about any particular device.
+func deviceHiddenFromNamespace(devPath string) bool {
+	name := filepath.Base(devPath)
+	if name == "" || name == "." || name == "/" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(sysBlockRoot, name)); err != nil {
+		return false
+	}
+	return devIsPrivateTmpfs()
+}
+
+// devIsPrivateTmpfs reports whether /dev in this mount namespace is a tmpfs.
+//
+// The answer cannot change while the process runs, so it is read once. It is a
+// variable holding the memoised reader rather than a plain function so tests can
+// state the answer directly; readDevIsPrivateTmpfs is the parser underneath, and
+// is what the parsing tests call.
+var devIsPrivateTmpfs = sync.OnceValue(readDevIsPrivateTmpfs)
+
+// readDevIsPrivateTmpfs parses /proc/self/mountinfo for the filesystem mounted
+// at /dev.
+//
+// The host mounts devtmpfs there; a sandbox -- systemd's PrivateDevices, or a
+// container -- mounts a tmpfs holding a minimal set of nodes. An unreadable
+// mountinfo answers false: claiming a sandbox we cannot see would send an
+// operator to a unit file over a disk that simply went away.
+func readDevIsPrivateTmpfs() bool {
+	f, err := os.Open(filepath.Join(procRoot, "self", "mountinfo"))
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	// mountinfo: id parent major:minor root MOUNTPOINT opts - FSTYPE source ...
+	// The mount point is field 5 and the filesystem type is the field after
+	// the "-" separator, whose position varies with the number of options.
+	scanner := bufio.NewScanner(f)
+	private := false
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 5 || fields[4] != "/dev" {
+			continue
+		}
+		for i := 5; i < len(fields)-1; i++ {
+			if fields[i] == "-" {
+				// Later lines shadow earlier ones at the same mount point, so
+				// the last /dev entry is the one in effect.
+				private = fields[i+1] == "tmpfs"
+				break
+			}
+		}
+	}
+	return private
 }
 
 // transportCompleted reports whether the command got through and something
