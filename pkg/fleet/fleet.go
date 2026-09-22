@@ -132,6 +132,9 @@ type Poller struct {
 	// has been observed yet.
 	lastRefreshNs atomic.Int64
 
+	// bodies holds each peer's read buffer between cycles; see bodyBuffers.
+	bodies bodyBuffers
+
 	mu    sync.RWMutex
 	peers map[string]*peerState
 }
@@ -203,15 +206,24 @@ func (p *Poller) Enabled() bool {
 func (p *Poller) Run(done <-chan struct{}) {
 	for {
 		cfg := p.cfgFn()
-		if len(cfg.Peers) > 0 {
-			p.refresh(cfg)
-		}
+		p.cycle(cfg)
 		select {
 		case <-done:
 			return
 		case <-time.After(p.effectiveInterval(cfg)):
 		}
 	}
+}
+
+// cycle is one pass of Run: refresh the configured peers, or, when a reload
+// has removed the last of them, release their read buffers -- refresh is what
+// prunes them, and it does not run with no peers to poll.
+func (p *Poller) cycle(cfg config.Fleet) {
+	if len(cfg.Peers) == 0 {
+		p.bodies.forget(nil)
+		return
+	}
+	p.refresh(cfg)
 }
 
 // MinPollInterval is the floor for the peer refresh cadence.
@@ -351,6 +363,7 @@ func (p *Poller) refresh(cfg config.Fleet) {
 		}
 	}
 	p.mu.Unlock()
+	p.bodies.forget(keep)
 }
 
 // fetch retrieves one peer's snapshot.
@@ -401,7 +414,7 @@ func (p *Poller) fetch(peer config.Peer, cfg config.Fleet) (*types.Snapshot, err
 	}
 
 	var snap types.Snapshot
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSnapshotBytes)).Decode(&snap); err != nil {
+	if err := p.bodies.decode(peer.Name, resp.Body, maxSnapshotBytes, &snap); err != nil {
 		return nil, err
 	}
 	// A peer on an older build sends null for a list it has none of, and this

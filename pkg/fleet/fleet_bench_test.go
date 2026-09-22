@@ -71,7 +71,7 @@ func benchSnapshot(host string) *types.Snapshot {
 // The body is encoded once and written verbatim: the peers exist to feed the
 // aggregator, and encoding per request would put the peer's CPU inside the
 // aggregator's measurement.
-func benchFleet(b *testing.B, n int) (*Poller, config.Fleet) {
+func benchFleet(b testing.TB, n int) (*Poller, config.Fleet) {
 	b.Helper()
 
 	body, err := json.Marshal(benchSnapshot("peer"))

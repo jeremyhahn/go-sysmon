@@ -371,6 +371,24 @@ you open when something is wrong, so it must not be served by a machine that
 could itself be the thing that is wrong: an overloaded or swapping workload host
 would take the view of the whole fleet down with it, exactly when it is needed.
 
+**What a poll costs is JSON decoding, almost entirely.** Each cycle fetches every
+peer's full `/api/snapshot` (about 2.9 MB across the fleet in September 2026,
+from 66 KB for gitea to 715 KB for ci-node-2) and decodes it into a
+`types.Snapshot`. Profiled on those real bodies, `encoding/json` is over 80% of
+the cycle. Remote-write sampling of the readings adds about 4%, and serving the
+fleet view about 4 µs per request. Process lists are about 60% of the bytes and
+the per-CPU `flags` arrays about 25%.
+
+Each peer keeps its read buffer between cycles (`pkg/fleet/body.go`). Peers
+answer chunked with no Content-Length, so a fresh reader grows by doubling on
+every poll. Reusing the buffer cut per-cycle allocation by 58% on the fleet's
+real bodies. It took only 7–13% off the CPU, because the decode itself is the
+cost. What remains can only be removed by changing the payload or the decoder,
+and both are open decisions. On the same bodies, dropping process lists would
+cut decode CPU by 56%. Dropping per-CPU flags as well would cut it by 79%.
+Building with `GOEXPERIMENT=jsonv2` would cut it by 43% with no payload change.
+`make bench-fleet` measures the cycle.
+
 `fleet.local_name` sets how a node names itself in the view; it defaults to the
 hostname. It is held to the same name rule as a peer name (below), for the same
 reason: it is the `instance` label this node's history is written under, and the
