@@ -4,13 +4,20 @@ const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"] as const;
 
 /**
  * formatBytes converts a raw byte count to the most readable unit string.
- * e.g. 1536 -> "1.5 KB"
+ * e.g. 1536 -> "1.5 KB", 0.8 -> "0.8 B", -2048 -> "-2.0 KB"
+ *
+ * The unit index is clamped to the table: below one byte, log1024 is negative
+ * and would index before "B" (#175). A negative value is formatted by its
+ * magnitude and keeps its sign, and a non-finite one renders as a dash rather
+ * than as "NaN".
  */
 export function formatBytes(bytes: number, decimals = 1): string {
+  if (!Number.isFinite(bytes)) return "-";
   if (bytes === 0) return "0 B";
+  const magnitude = Math.abs(bytes);
   const k = 1024;
   const i = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(k)),
+    Math.max(Math.floor(Math.log(magnitude) / Math.log(k)), 0),
     BYTE_UNITS.length - 1
   );
   const value = bytes / Math.pow(k, i);
