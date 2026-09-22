@@ -161,9 +161,8 @@
       <tbody>
         {#each visible as row (rowKey(row))}
           <tr
-            class={onRowClick != null
-              ? `cursor-pointer hover:bg-base-300 ${isSelected?.(row) ? "bg-base-300" : ""}`
-              : ""}
+            class:clickable={onRowClick != null}
+            class:selected={onRowClick != null && (isSelected?.(row) ?? false)}
             onclick={onRowClick != null ? () => onRowClick(row) : undefined}
           >
             {@render cells(row)}
@@ -214,3 +213,45 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* A clickable row marks hover and selection with rules, never with a fill.
+     The row keeps the card's own surface, base-200, which is the surface the
+     semantic text colours in app.css are measured against -- and a row's
+     status cells are exactly where those colours appear. A base-300 fill took
+     them below AA in the light theme (#147).
+
+     The rules are inset shadows rather than borders, so a row does not shift
+     when its state changes. Cells come from the caller's snippet, so they are
+     reached through :global. */
+  tr.clickable {
+    cursor: pointer;
+  }
+
+  /* Hover is a pointer affordance. Guarded like Tailwind's hover: variant, so
+     a touch browser that keeps :hover after a tap does not leave a deselected
+     row looking marked. */
+  @media (hover: hover) {
+    tr.clickable:hover > :global(td:first-child) {
+      box-shadow: inset 3px 0 0 color-mix(in oklab, var(--color-base-content) 40%, transparent);
+    }
+  }
+
+  /* Selection edges every cell, top and bottom, so it stays visible when a
+     wide table is scrolled sideways and the first cell is out of view. The
+     first cell adds the heavier left rule. Selection outranks hover: a
+     selected row under the pointer keeps its marker. */
+  tr.selected > :global(td) {
+    box-shadow:
+      inset 0 1px 0 var(--color-primary),
+      inset 0 -1px 0 var(--color-primary);
+  }
+
+  tr.selected > :global(td:first-child),
+  tr.selected:hover > :global(td:first-child) {
+    box-shadow:
+      inset 3px 0 0 var(--color-primary),
+      inset 0 1px 0 var(--color-primary),
+      inset 0 -1px 0 var(--color-primary);
+  }
+</style>

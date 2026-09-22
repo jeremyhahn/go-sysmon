@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { chartPalette, type ThemeName } from '../src/lib/palette';
+import { mockSnapshotFeed } from './fixtures/mock-sse';
 
 /**
  * Readability of the semantic colours.
@@ -83,85 +84,108 @@ test.describe('the chart palette is readable on its own surface', () => {
   }
 });
 
-/** Measures a daisyUI text colour against a card, as the browser resolves it. */
-async function measure(page: Page, klass: string): Promise<number> {
-  return page.evaluate((cls) => {
-    const card = document.createElement('div');
-    card.className = 'card bg-base-200';
-    const probe = document.createElement('span');
-    probe.className = cls;
-    probe.textContent = 'probe';
-    card.appendChild(probe);
-    document.body.appendChild(card);
-
-    // Painted onto a canvas and read back, rather than parsed out of the
-    // computed value. Modern CSS colours resolve as oklch(), and a naive
-    // "grab the three numbers" parser reads 0.76 0.177 163.223 as an RGB
-    // triple and produces a plausible-looking figure from nonsense -- which is
-    // exactly what the first version of this test did. Letting the browser do
-    // the conversion cannot be wrong about it.
-    const toRGB = (value: string): [number, number, number] => {
-      const c = document.createElement('canvas');
-      c.width = c.height = 1;
-      const ctx = c.getContext('2d')!;
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, 1, 1);
-      ctx.fillStyle = value;
-      ctx.fillRect(0, 0, 1, 1);
-      const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-      return [r / 255, g / 255, b / 255];
-    };
-    const fg = toRGB(getComputedStyle(probe).color);
-    const bg = toRGB(getComputedStyle(card).backgroundColor);
-    card.remove();
-
-    const lum = ([r, g, b]: [number, number, number]) => {
-      const lin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
-      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
-    };
-    const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
-    return (hi + 0.05) / (lo + 0.05);
-  }, klass);
-}
-
 /**
- * Measures a muted text level against a card, compositing the text over the
- * background the way the screen does. Opacity is not free: `text-base-content`
- * at 50% is not half as readable, it is a real blend, and on a light surface
- * it lands below AA whatever colour the token holds.
+ * Installs the in-page measuring helpers, window.__contrast, before any page
+ * script runs. Every browser-side measurement in this file goes through them,
+ * so there is one conversion, one composite and one ratio rather than a copy
+ * per test.
+ *
+ * Colours are painted onto a canvas and read back, rather than parsed out of
+ * the computed value. Modern CSS colours resolve as oklch(), and a naive "grab
+ * the three numbers" parser reads 0.76 0.177 163.223 as an RGB triple and
+ * produces a plausible-looking figure from nonsense -- which is exactly what
+ * the first version of this test did. Letting the browser do the conversion
+ * cannot be wrong about it.
+ *
+ * Text is composited over its background before it is measured, because
+ * opacity is not free: `text-base-content` at 50% is not half as readable, it
+ * is a real blend, and on a light surface it lands below AA whatever colour the
+ * token holds.
  */
-async function measureOpacity(page: Page, klass: string): Promise<number> {
-  return page.evaluate((cls) => {
-    const card = document.createElement('div');
-    card.className = 'card bg-base-200';
-    const probe = document.createElement('span');
-    probe.className = cls;
-    card.appendChild(probe);
-    document.body.appendChild(card);
+async function installContrastProbe(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    type RGBA = [number, number, number, number];
 
-    const toRGBA = (v: string): number[] => {
+    const rgba = (value: string): RGBA => {
       const c = document.createElement('canvas');
       c.width = c.height = 1;
       const ctx = c.getContext('2d')!;
-      ctx.fillStyle = v;
+      ctx.fillStyle = value;
       ctx.fillRect(0, 0, 1, 1);
       const d = ctx.getImageData(0, 0, 1, 1).data;
       return [d[0] / 255, d[1] / 255, d[2] / 255, d[3] / 255];
     };
-    const raw = toRGBA(getComputedStyle(probe).color);
-    const bg = toRGBA(getComputedStyle(card).backgroundColor);
-    card.remove();
 
-    // Composite: the alpha is what makes a muted level muted.
-    const a = raw[3];
-    const fg = [0, 1, 2].map((i) => raw[i] * a + bg[i] * (1 - a));
-    const lum = (c: number[]) => {
+    const lum = (c: RGBA) => {
       const l = (x: number) => (x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4);
       return 0.2126 * l(c[0]) + 0.7152 * l(c[1]) + 0.0722 * l(c[2]);
     };
-    const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
-    return (hi + 0.05) / (lo + 0.05);
-  }, klass);
+
+    /** The painted surface under an element: the first opaque ancestor fill. */
+    const surfaceOf = (el: Element): string => {
+      for (let e: Element | null = el; e != null; e = e.parentElement) {
+        const bg = getComputedStyle(e).backgroundColor;
+        if (rgba(bg)[3] > 0) return bg;
+      }
+      return getComputedStyle(document.body).backgroundColor;
+    };
+
+    /** WCAG contrast of `fg`, composited over the opaque `bg`. */
+    const ratio = (fg: string, bg: string): number => {
+      const f = rgba(fg);
+      const b = rgba(bg);
+      const a = f[3];
+      const mixed: RGBA = [0, 1, 2].map((i) => f[i] * a + b[i] * (1 - a)) as unknown as RGBA;
+      mixed[3] = 1;
+      const [hi, lo] = [lum(mixed), lum(b)].sort((x, y) => y - x);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+
+    /** Contrast of a text class set inside `parent`, on the surface it lands on. */
+    const textIn = (parent: Element, cls: string): number => {
+      const probe = document.createElement('span');
+      probe.className = cls;
+      probe.textContent = 'probe';
+      parent.appendChild(probe);
+      const r = ratio(getComputedStyle(probe).color, surfaceOf(probe));
+      probe.remove();
+      return r;
+    };
+
+    /** Contrast of a text class on a freshly made card of `surface`. */
+    const textOn = (cls: string, surface: string): number => {
+      const card = document.createElement('div');
+      card.className = `card ${surface}`;
+      document.body.appendChild(card);
+      const r = textIn(card, cls);
+      card.remove();
+      return r;
+    };
+
+    Object.assign(window, { __contrast: { rgba, ratio, surfaceOf, textIn, textOn } });
+  });
+}
+
+/** The measuring helpers installContrastProbe puts on the page. */
+interface ContrastProbe {
+  ratio(fg: string, bg: string): number;
+  surfaceOf(el: Element): string;
+  textIn(parent: Element, cls: string): number;
+  textOn(cls: string, surface: string): number;
+}
+
+declare global {
+  interface Window {
+    __contrast: ContrastProbe;
+  }
+}
+
+/** Measures a text class on a card of the given surface, as the browser resolves both. */
+async function measure(page: Page, klass: string, surface = 'bg-base-200'): Promise<number> {
+  return page.evaluate(
+    ([cls, bg]) => window.__contrast.textOn(cls, bg),
+    [klass, surface] as const
+  );
 }
 
 test.describe('the muted text ladder stays above the floor', () => {
@@ -188,11 +212,12 @@ test.describe('the muted text ladder stays above the floor', () => {
 
   for (const scheme of ['light', 'dark'] as const) {
     test(`${scheme} theme`, async ({ page }) => {
+      await installContrastProbe(page);
       await page.emulateMedia({ colorScheme: scheme });
       await page.goto('/');
 
       for (const klass of TEXT_LEVELS) {
-        const ratio = await measureOpacity(page, klass);
+        const ratio = await measure(page, klass);
         expect(
           ratio,
           `${scheme}: .${klass} on a card is ${ratio.toFixed(2)}:1, below AA`
@@ -253,31 +278,184 @@ test.describe('the muted text ladder stays above the floor', () => {
   });
 });
 
-test.describe('daisyUI semantic text is readable in both themes', () => {
-  // Exactly the classes usageColor(), tempColor() and the alert helpers return.
-  const CLASSES = [
-    'text-success',
-    'text-warning',
-    'text-error',
-    'text-info',
-    'text-base-content',
-  ];
+
+/** Exactly the classes usageColor(), tempColor() and the alert helpers return. */
+const SEMANTIC = ['text-success', 'text-warning', 'text-error', 'text-info', 'text-base-content'];
+
+/** Waits for the theme the emulated OS preference selects to be applied. */
+async function openIn(page: Page, scheme: ThemeName, path = '/'): Promise<void> {
+  await installContrastProbe(page);
+  await page.emulateMedia({ colorScheme: scheme });
+  await page.goto(path);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.getAttribute('data-theme')))
+    .toBe(scheme);
+}
+
+test.describe('semantic text is readable on every surface it is painted on', () => {
+  /**
+   * The flat surfaces that carry semantic text: base-200 is the card, base-100
+   * the navbar, tab strip and footer. A clickable table row has its own test
+   * below, measured on the rendered row rather than on a class name.
+   *
+   * The ratios recorded in app.css were measured on base-200 alone, and this
+   * suite used to check nothing else -- which is how a selected table row came
+   * to paint status text on base-300, a surface nobody had measured (#147).
+   *
+   * base-300 is deliberately NOT in this list, and not because it passes. In
+   * the light theme it measures 4.20-4.26:1 for the four semantic colours,
+   * below AA, and the GPU, NPU and SMART detail tiles still paint semantic text
+   * on it. That is the same gap outside the table, and fixing it is a design
+   * decision of its own (#156). Add base-300 here when it is ruled on.
+   */
+  const SURFACES = ['bg-base-100', 'bg-base-200'];
 
   for (const scheme of ['light', 'dark'] as const) {
     test(`${scheme} theme`, async ({ page }) => {
-      await page.emulateMedia({ colorScheme: scheme });
-      await page.goto('/');
-      await expect.poll(() =>
-        page.evaluate(() => document.documentElement.getAttribute('data-theme'))
-      ).toBe(scheme);
-
-      for (const klass of CLASSES) {
-        const ratio = await measure(page, klass);
-        expect(
-          ratio,
-          `${scheme}: .${klass} on a card is ${ratio.toFixed(2)}:1, below AA`
-        ).toBeGreaterThanOrEqual(TEXT_AA);
+      await openIn(page, scheme);
+      for (const surface of SURFACES) {
+        for (const klass of SEMANTIC) {
+          const ratio = await measure(page, klass, surface);
+          expect(
+            ratio,
+            `${scheme}: .${klass} on ${surface} is ${ratio.toFixed(2)}:1, below AA`
+          ).toBeGreaterThanOrEqual(TEXT_AA);
+        }
       }
+    });
+  }
+});
+
+/** The container listing: a DataTable whose rows are clickable and selectable. */
+function containerRows(page: Page) {
+  return page
+    .locator('table')
+    .filter({ has: page.getByRole('columnheader', { name: /^Name/ }) })
+    .locator('tbody tr');
+}
+
+/** What one table row paints: its surface, its state rule, and its text. */
+interface RowPaint {
+  surface: string;
+  card: string;
+  rule: string;
+  ruleRatio: number;
+  /** The leading shadow colour of every cell: the selection edge, cell by cell. */
+  edges: string[];
+  /** Contrast of each cell's own text, as rendered. */
+  cells: { text: string; ratio: number }[];
+  /** Contrast of each semantic class placed in the row. */
+  semantic: Record<string, number>;
+}
+
+async function paintOf(page: Page, index: number): Promise<RowPaint> {
+  return containerRows(page)
+    .nth(index)
+    .evaluate((row, classes) => {
+      const c = window.__contrast;
+      const first = row.querySelector('td')!;
+      const surface = c.surfaceOf(first);
+      // The rules are inset box-shadows; a cell's colour is the leading token.
+      const edgeOf = (td: Element) => {
+        const shadow = getComputedStyle(td).boxShadow;
+        return shadow === 'none' ? '' : (shadow.match(/^[a-z]+\([^)]*\)/)?.[0] ?? '');
+      };
+      const rule = edgeOf(first);
+      const semantic: Record<string, number> = {};
+      for (const cls of classes) semantic[cls] = c.textIn(first, cls);
+      return {
+        surface,
+        card: c.surfaceOf(row.closest('.card')!),
+        rule,
+        ruleRatio: rule === '' ? 0 : c.ratio(rule, surface),
+        edges: Array.from(row.querySelectorAll('td')).map(edgeOf),
+        cells: Array.from(row.querySelectorAll('td')).map((td) => ({
+          text: td.textContent!.trim(),
+          ratio: c.ratio(getComputedStyle(td).color, c.surfaceOf(td)),
+        })),
+        semantic,
+      };
+    }, SEMANTIC);
+}
+
+/**
+ * A selected or hovered row keeps the card's surface (#147).
+ *
+ * It used to be filled with base-300, and the status cells of a row -- the
+ * text that says a container is at 94% CPU -- are exactly the semantic
+ * colours, whose light-theme values clear AA on base-200 by 0.1 or so. Owner
+ * ruling: the row keeps base-200 and marks its state with a rule down the left
+ * edge instead, so the tokens stay where they were measured.
+ */
+test.describe('a selected or hovered table row keeps a readable surface', () => {
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`${scheme} theme`, async ({ page }) => {
+      await mockSnapshotFeed(page, { containers: 6 });
+      await openIn(page, scheme);
+      await page.getByRole('button', { name: 'Containers', exact: true }).click();
+      await expect(containerRows(page)).toHaveCount(6);
+
+      // Hover the third row away from the second, then select the second.
+      await containerRows(page).nth(1).click();
+      await page.mouse.move(0, 0);
+      const resting = await paintOf(page, 3);
+      const selected = await paintOf(page, 1);
+      await containerRows(page).nth(2).hover();
+      const hovered = await paintOf(page, 2);
+      await containerRows(page).nth(1).hover();
+      const selectedHovered = await paintOf(page, 1);
+
+      const primary = await page.evaluate(() => {
+        const probe = document.createElement('span');
+        probe.className = 'text-primary';
+        document.body.appendChild(probe);
+        const color = getComputedStyle(probe).color;
+        probe.remove();
+        return color;
+      });
+
+      const states = { resting, selected, hovered, 'selected and hovered': selectedHovered };
+      for (const [state, paint] of Object.entries(states)) {
+        // No fill: the row shows the card through it.
+        expect(paint.surface, `${scheme}: a ${state} row paints its own fill`).toBe(paint.card);
+
+        for (const [cls, ratio] of Object.entries(paint.semantic)) {
+          expect(
+            ratio,
+            `${scheme}: .${cls} in a ${state} row is ${ratio.toFixed(2)}:1, below AA`
+          ).toBeGreaterThanOrEqual(TEXT_AA);
+        }
+        for (const cell of paint.cells) {
+          expect(
+            cell.ratio,
+            `${scheme}: "${cell.text}" in a ${state} row is ${cell.ratio.toFixed(2)}:1, below AA`
+          ).toBeGreaterThanOrEqual(TEXT_AA);
+        }
+      }
+
+      // The state is still visible, now as a rule rather than a fill.
+      expect(resting.edges, `${scheme}: a resting row carries a rule`).toEqual(
+        resting.edges.map(() => '')
+      );
+      expect(hovered.rule, `${scheme}: a hovered row shows no rule`).not.toBe('');
+
+      // Selection is information, so its marker is held to the non-text
+      // contrast floor (WCAG 1.4.11); it must also outlast the pointer and
+      // differ from hover, or clicking a row would look like nothing happened.
+      for (const paint of [selected, selectedHovered]) {
+        expect(paint.rule, `${scheme}: the selected row's rule is not primary`).toBe(primary);
+        // Every cell, not just the first: a wide table scrolled sideways takes
+        // the first cell out of view, and the selection must not go with it.
+        expect(
+          paint.edges,
+          `${scheme}: some cells of the selected row carry no primary edge`
+        ).toEqual(paint.edges.map(() => primary));
+        expect(
+          paint.ruleRatio,
+          `${scheme}: the selection rule is ${paint.ruleRatio.toFixed(2)}:1 on its row`
+        ).toBeGreaterThanOrEqual(GRAPHIC_AA);
+      }
+      expect(hovered.rule, `${scheme}: hover and selection look the same`).not.toBe(selected.rule);
     });
   }
 });

@@ -52,6 +52,31 @@ reads as green, amber or red.
 The matching `-content` tokens go to white. They ship dark, for dark text on a
 light chip; against these they would be dark on dark.
 
+### Which surfaces the guarantee covers
+
+The margins above are thin, 0.1 to 0.17 over AA, so a darker surface undoes
+them. The contrast suite measures the tokens on every surface the guarantee
+covers, not on `base-200` alone:
+
+| surface | where | light |
+|---|---|---|
+| `base-100` | navbar, tab strip, footer | 4.88:1 and up |
+| `base-200` | cards | 4.59:1 and up |
+| a clickable table row, hovered or selected | `DataTable` | same as its card |
+| `base-300` | GPU, NPU and SMART detail tiles | **4.20:1, fails**, see #156 |
+
+**Mark row state with a rule, not a fill.** A `DataTable` row used to take a
+`base-300` fill when hovered or selected, which took its status cells below AA
+the moment a user clicked it (#147). A row now stays on its card's surface.
+Hover shows a 3px `base-content`/40 rule down the left edge, only on devices
+that can hover. Selection draws a 3px `primary` rule on the left and a `primary`
+hairline along the top and bottom of every cell, so the row stays visibly
+selected even when a wide table is scrolled sideways. The selection marker is
+held to the 3:1 non-text floor.
+
+**`text-primary` is not a text colour on a dark card.** It measures 3.60:1 on
+dark `base-200`. Keep it for rules, rings, spinners and icons.
+
 ### The dark theme is already correct
 
 Do not "fix" it. Against dark `base-200` (`#191e24`):

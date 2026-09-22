@@ -469,7 +469,9 @@
 {/snippet}
 
 {#snippet containerCells(c: ContainerInfo)}
-  <td class="font-medium {selectedId === c.id ? 'text-primary' : ''}">{c.name}</td>
+  <!-- Weight, not text-primary: primary is 3.6:1 on a dark card, below AA, and
+       DataTable's rule already marks the selection in that colour (#147). -->
+  <td class={selectedId === c.id ? "font-semibold" : "font-medium"}>{c.name}</td>
   <td class="font-mono text-xs text-base-content/60">{c.short_id}</td>
   <td class="text-base-content/70">{c.runtime}</td>
   <td class="text-right {usageColor(c.cpu_percent)}">{formatPercent(c.cpu_percent)}</td>
