@@ -806,6 +806,60 @@ browser. The sample interval is deliberately separate from `server.interval_ms`:
 that one is the dashboard's stream rate, and a browser watching at 250ms must
 not write four samples a second into a database.
 
+#### Every sample is a real measurement
+
+Owner ruling on #173, 2026-09-22: **a reading is written once, stamped with the
+time it was collected, and never again.** Every `sample_interval_ms` the
+exporter looks at the node's latest snapshot; if that snapshot has been written
+already it writes nothing. So `sample_interval_ms` is a ceiling on the write
+rate, not the write rate: a dashboard collecting every 60s under the default 15s
+sampling writes one reading a minute, and one collecting every second writes the
+latest one every 15s.
+
+The exporter used to write the cached snapshot at every tick, re-dated to the
+tick. With collection slower than sampling, gauges drew a staircase of copies
+presented as fresh measurements, and a counter's `rate()` over a short window
+saw a flat run and then a jump — zero, then a spike — instead of the rate that
+happened. Now the time between two stored samples is the time between two
+collections, and any rate taken over them is the true one.
+
+Timestamps strictly increase per series, because remote write requires it: a
+receiver refuses an out-of-order or duplicate sample with a 4xx for the **whole
+request**, so one such sample would cost every other series in its batch. The
+exporter therefore keeps the newest timestamp written for each source — this
+node, and each peer separately (below) — and:
+
+| The latest reading is… | What happens |
+|---|---|
+| newer than the last one written | written, at its collection time |
+| the same one (same collection time) | nothing — it is not a new measurement |
+| not newer, but a different reading — the source's clock **stepped backwards** | dropped, its samples counted in `sysmon_remote_write_samples_dropped_total_current`, logged once per step |
+| undated (a zero time) | dropped and counted, logged once — there is no truthful time to write it at |
+
+A backwards clock step therefore leaves a gap exactly as long as the step, and
+the series resumes by itself as soon as the clock passes the newest timestamp
+written. Nothing is re-dated to fill the gap: the receiver already holds those
+timestamps for the series and would refuse the readings anyway, and a re-dated
+reading is one the history would then misreport. A large step (a clock that ran
+hours ahead and was corrected) is a gap of that size; the fix is the host's
+clock, and the dropped counter and the log line say which source it was.
+
+**Gaps and the 5-minute lookback.** Prometheus answers each point of a range
+query with the newest sample in the five minutes before it, and remote write
+sends no staleness markers. Readings land less than one collection interval
+plus one sample interval apart — at most 75s at the slowest dashboard rate (60s)
+and the default sampling — well inside the lookback, so a chart at any step is
+continuous: at a step finer than the collection interval it holds each reading
+until the next, which is what was measured. Only a real absence longer than five
+minutes — a stopped monitor, an unreachable peer, a clock step of that size —
+leaves points missing, and it should. (So does a `sample_interval_ms` above five
+minutes, which was already true.) A monitor that stops no longer has its last
+snapshot written forever, so a stopped node now shows as stopped.
+
+For a counter's `rate()`, the window has to hold at least two samples at the
+**collection** cadence, not the sample cadence: a window sized from
+`sample_interval_ms` alone is empty whenever the dashboard collects more slowly.
+
 The receiver needs `--web.enable-remote-write-receiver`.
 
 Both clients refuse a redirect that leaves the configured host or steps https
@@ -873,13 +927,24 @@ on a time-series database, and one machine holds the fleet's past.
 Two properties of that write path are deliberate and neither is a detail:
 
 - **The timestamp is the reading's, not the aggregator's clock.** A peer's
-  history says when that peer measured, not when this node heard about it.
-- **The cadence is the fleet poll interval, and nothing is resampled.** One
-  reading in, one set of samples out. Writing on the exporter's own interval
-  instead would either repeat a reading that happened once or discard readings
-  that did happen — inventing observations in the first case, hiding them in the
-  second. The resolution of a fleet series therefore *is*
-  `fleet.poll_interval_ms`.
+  history says when that peer measured, not when this node heard about it. The
+  peer's clock is used even though it may disagree with the aggregator's: a
+  constant skew shifts that peer's series in time but leaves every rate over it
+  exact, whereas the aggregator's receive time would jitter each interval by up
+  to a poll interval and falsify exactly the rates #173 set out to fix. Keep the
+  fleet on NTP and the skew is milliseconds.
+- **Each reading is written once, and nothing is resampled.** Every poll offers
+  the peer's reading to the exporter, which writes it only if the peer has
+  collected since the reading last written for that peer — a peer polled twice
+  between its collections contributes one sample, not two (#173). Writing on the
+  exporter's own interval instead would either repeat a reading that happened
+  once or discard readings that did happen. The resolution of a fleet series is
+  therefore the slower of `fleet.poll_interval_ms` and the peer's own collection
+  interval.
+- **Each peer is ordered against its own clock.** The newest timestamp written
+  is kept per peer, so a peer whose clock runs behind the aggregator's is skew,
+  not a backwards step, and is written normally. A peer whose own clock steps
+  backwards is handled as above: a gap as long as the step, then it resumes.
 
 **A peer that does not answer contributes nothing.** The poller keeps its last
 good snapshot so the fleet card shows stale data rather than emptying, but that

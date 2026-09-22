@@ -95,6 +95,7 @@ func (r *recorder) deliveredInstances(t *testing.T) []string {
 type wireSeries struct {
 	instance string
 	values   []float64
+	times    []int64
 }
 
 // deliveredSeries decodes what the receiver actually got.
@@ -128,6 +129,7 @@ func (r *recorder) deliveredSeries(t *testing.T) []wireSeries {
 					}
 				case fieldSamples:
 					got.values = append(got.values, decodeSampleValue(body))
+					got.times = append(got.times, decodeSampleTime(body))
 				}
 			})
 			out = append(out, got)
@@ -168,6 +170,35 @@ func decodeSampleValue(buf []byte) float64 {
 			_, n := uvarint(buf)
 			if n <= 0 {
 				return 0
+			}
+			buf = buf[n:]
+		case wire == wireFixed64 && len(buf) >= 8:
+			buf = buf[8:]
+		default:
+			return 0
+		}
+	}
+	return 0
+}
+
+// decodeSampleTime reads a Sample's timestamp, a varint. An omitted timestamp
+// is the proto3 default, zero.
+func decodeSampleTime(buf []byte) int64 {
+	for len(buf) > 0 {
+		key, n := uvarint(buf)
+		if n <= 0 {
+			return 0
+		}
+		buf = buf[n:]
+		field, wire := int(key>>3), int(key&7)
+		switch {
+		case wire == wireVarint:
+			v, n := uvarint(buf)
+			if n <= 0 {
+				return 0
+			}
+			if field == fieldSampleTime {
+				return int64(v)
 			}
 			buf = buf[n:]
 		case wire == wireFixed64 && len(buf) >= 8:
@@ -258,12 +289,27 @@ func fixedOptions(url string) Options {
 	}
 }
 
-// countingCollector adds one sample per call and reports how often it ran.
+// baseMs dates the readings the test collectors produce.
+const baseMs int64 = 1788300000000
+
+// countingCollector offers a new reading, one sample, on every call and
+// reports how often it ran.
 func countingCollector(calls *atomic.Int64) Collect {
-	return func(b *Builder, timeMs int64) error {
-		calls.Add(1)
-		b.Add("sysmon_up", 1, timeMs)
-		return nil
+	return func() (Measurement, error) {
+		n := calls.Add(1)
+		return Measurement{TimeMs: baseMs + n, Write: func(b *Builder, timeMs int64) {
+			b.Add("sysmon_up", 1, timeMs)
+		}}, nil
+	}
+}
+
+// newReadingEveryCall is a collector whose every call is a fresh collection,
+// for the tests about batching and delivery rather than about which readings
+// are new.
+func newReadingEveryCall(write func(b *Builder, timeMs int64)) Collect {
+	var n atomic.Int64
+	return func() (Measurement, error) {
+		return Measurement{TimeMs: baseMs + n.Add(1), Write: write}, nil
 	}
 }
 
@@ -432,10 +478,9 @@ func TestExporter_BacklogIsBounded(t *testing.T) {
 		o := fixedOptions(rec.srv.URL)
 		o.BatchSize = 1
 		return o
-	}, func(b *Builder, timeMs int64) error {
+	}, newReadingEveryCall(func(b *Builder, timeMs int64) {
 		b.Add("sysmon_up", 1, timeMs)
-		return nil
-	}, quietLogger())
+	}), quietLogger())
 	runExporter(t, e)
 
 	waitFor(t, "the backlog to reach its bound", func() bool { return e.Stats().SamplesDropped > 0 })
@@ -505,10 +550,9 @@ func TestExporter_ReloadRetargets(t *testing.T) {
 	target.Store(1)
 	e := NewExporter(func() Options {
 		return fixedOptions(url.Load().(string))
-	}, func(b *Builder, timeMs int64) error {
+	}, newReadingEveryCall(func(b *Builder, timeMs int64) {
 		b.Add("sysmon_up", float64(target.Load()), timeMs)
-		return nil
-	}, quietLogger())
+	}), quietLogger())
 	runExporter(t, e)
 
 	waitFor(t, "a backlog to build against the first receiver", func() bool {
@@ -581,12 +625,11 @@ func TestExporter_NewestBatchSurvivesTheBound(t *testing.T) {
 		o := fixedOptions(rec.srv.URL)
 		o.BatchSize = 1
 		return o
-	}, func(b *Builder, timeMs int64) error {
+	}, newReadingEveryCall(func(b *Builder, timeMs int64) {
 		for i := 0; i < 50; i++ {
 			b.Add("sysmon_disk_used_percent", float64(i), timeMs, "device", "sd"+string(rune('a'+i%26)))
 		}
-		return nil
-	}, quietLogger())
+	}), quietLogger())
 	runExporter(t, e)
 
 	waitFor(t, "the bound to start dropping", func() bool { return e.Stats().SamplesDropped > 0 })
@@ -642,12 +685,14 @@ func TestExporter_CollectFailureIsNotFatal(t *testing.T) {
 	rec := newRecorder(t)
 	var calls atomic.Int64
 
-	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, func(b *Builder, timeMs int64) error {
-		if calls.Add(1) <= 3 {
-			return &ErrNoQueryEndpoint{} // any error will do
+	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, func() (Measurement, error) {
+		n := calls.Add(1)
+		if n <= 3 {
+			return Measurement{}, &ErrNoQueryEndpoint{} // any error will do
 		}
-		b.Add("sysmon_up", 1, timeMs)
-		return nil
+		return Measurement{TimeMs: baseMs + n, Write: func(b *Builder, timeMs int64) {
+			b.Add("sysmon_up", 1, timeMs)
+		}}, nil
 	}, quietLogger())
 	runExporter(t, e)
 
@@ -839,9 +884,9 @@ func TestExporter_SubmitWritesUnderTheSubmittedInstance(t *testing.T) {
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
 	runExporter(t, e)
 
-	if !e.Submit(func(b *Builder) {
-		b.Add("sysmon_up", 1, 1700000000000, "instance", "omega")
-	}) {
+	if !e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000, Write: func(b *Builder, timeMs int64) {
+		b.Add("sysmon_up", 1, timeMs, "instance", "omega")
+	}}) {
 		t.Fatal("Submit refused a sample with an empty queue")
 	}
 
@@ -887,7 +932,9 @@ func TestExporter_SubmitDropsRatherThanBlocks(t *testing.T) {
 	accepted, refused := 0, 0
 	for i := 0; i < sane && refused == 0; i++ {
 		start := time.Now()
-		ok := e.Submit(func(b *Builder) { b.Add("sysmon_up", 1, 1700000000000) })
+		ok := e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000, Write: func(b *Builder, timeMs int64) {
+			b.Add("sysmon_up", 1, timeMs)
+		}})
 		if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 			t.Fatalf("Submit blocked for %v on call %d; it must never wait on the exporter", elapsed, i)
 		}
@@ -904,8 +951,8 @@ func TestExporter_SubmitDropsRatherThanBlocks(t *testing.T) {
 	if dropped := e.Stats().SamplesDropped; dropped != int64(refused) {
 		t.Errorf("SamplesDropped = %d after %d refusals, want them counted", dropped, refused)
 	}
-	if e.Submit(nil) {
-		t.Error("Submit accepted a nil function")
+	if e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000}) {
+		t.Error("Submit accepted a measurement with nothing to write")
 	}
 }
 
@@ -926,7 +973,9 @@ func TestExporter_SubmitDiscardedWhileDisabled(t *testing.T) {
 	}, countingCollector(new(atomic.Int64)), quietLogger())
 	runExporter(t, e)
 
-	e.Submit(func(b *Builder) { b.Add("sysmon_stale", 1, 1600000000000, "instance", "omega") })
+	e.Submit(Measurement{Source: "omega", TimeMs: 1600000000000, Write: func(b *Builder, timeMs int64) {
+		b.Add("sysmon_stale", 1, timeMs, "instance", "omega")
+	}})
 	waitFor(t, "the disabled exporter to discard the submission", func() bool {
 		return e.Stats().SamplesDropped >= 1
 	})

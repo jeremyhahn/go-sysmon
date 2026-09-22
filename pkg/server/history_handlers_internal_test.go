@@ -360,7 +360,7 @@ func TestHandleMetrics_ExporterHealthOnlyWhenPushing(t *testing.T) {
 	enabled := ""
 	exporter := prom.NewExporter(func() prom.Options {
 		return prom.Options{RemoteWriteURL: enabled, SampleInterval: time.Hour, FlushInterval: time.Hour}
-	}, func(*prom.Builder, int64) error { return nil }, quietServerLogger())
+	}, func() (prom.Measurement, error) { return prom.Measurement{}, nil }, quietServerLogger())
 
 	s := newServer(Config{Monitor: mon, Exporter: exporter}, nil)
 

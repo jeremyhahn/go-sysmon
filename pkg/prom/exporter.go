@@ -47,9 +47,14 @@ type Options struct {
 	// RemoteWriteURL is the receiver. Empty disables the exporter entirely:
 	// nothing is collected, nothing is buffered, and no request is ever made.
 	RemoteWriteURL string
-	// SampleInterval is how often a set of samples is taken. It is deliberately
-	// independent of the dashboard's stream rate: a browser watching at 250ms
-	// must not write four samples a second into a time-series database.
+	// SampleInterval is how often the exporter looks for a new reading to
+	// write. It is deliberately independent of the dashboard's stream rate: a
+	// browser watching at 250ms must not write four samples a second into a
+	// time-series database.
+	//
+	// It is a ceiling on the write rate, not the write rate. A reading is
+	// written once, at the time it was taken, so when collection is slower
+	// than this the series advance at the collection interval instead (#173).
 	SampleInterval time.Duration
 	// FlushInterval bounds how long a sample waits before being sent.
 	FlushInterval time.Duration
@@ -63,10 +68,54 @@ type Options struct {
 	Labels []Label
 }
 
-// Collect adds one instant's samples to b, stamped timeMs. Returning an error
-// means this tick produced nothing; the exporter logs it and carries on rather
-// than stopping, since a collector that fails once usually succeeds next time.
-type Collect func(b *Builder, timeMs int64) error
+// Measurement is one reading, dated by when it was taken.
+//
+// A reading is written once, stamped with its own time, and never again (owner
+// ruling on #173, 2026-09-22). Stamping the exporter's clock instead re-dated
+// the latest cached reading at every sample tick whenever collection was
+// slower than sampling: gauges drew a staircase of copies presented as fresh
+// measurements, and a counter's rate() over a short window read a flat run and
+// then a jump -- zero, then a spike -- instead of the rate that happened.
+// Written once at its own time, Prometheus holds only what was measured.
+type Measurement struct {
+	// Source names whose clock TimeMs was read from and whose series Write
+	// adds to: "" for this node, a peer's fleet name for a peer's reading.
+	// Readings are ordered per source, never across sources, because two
+	// machines' clocks agree only as well as their NTP does.
+	Source string
+	// TimeMs is when the reading was taken, in milliseconds since the Unix
+	// epoch on Source's clock. It is also the reading's identity: a reading
+	// offered again with the same TimeMs -- this node's cached snapshot at a
+	// second sample tick, or a peer's polled twice between its collections --
+	// is the same measurement and is not written again.
+	TimeMs int64
+	// Write adds the reading's samples to b, every one stamped timeMs. It is
+	// called on the exporter's goroutine; it must not retain b or block.
+	Write func(b *Builder, timeMs int64)
+}
+
+// Collect returns this node's latest reading. The exporter decides whether it
+// is new; the collector only has to date it truthfully.
+//
+// Returning an error means there is nothing to offer this tick; the exporter
+// logs it and carries on rather than stopping, since a collector that fails
+// once usually succeeds next time.
+type Collect func() (Measurement, error)
+
+// watermark is what the exporter knows of one source's readings.
+type watermark struct {
+	// writtenMs is the time of the newest reading written; zero before the
+	// first.
+	writtenMs int64
+	// offeredMs is the time of the newest reading offered, written or not. A
+	// reading offered again with this time is the same reading, so it is
+	// neither written nor counted a second time.
+	offeredMs int64
+	// refusing is set while the source's readings are being dropped -- its
+	// clock stepped backwards, or it sends no time at all -- so the cause is
+	// logged once rather than at every poll until it clears.
+	refusing bool
+}
 
 // Stats is what the exporter reports about itself.
 //
@@ -102,12 +151,21 @@ type Exporter struct {
 	writer         *Writer
 	writerURL      string
 	writerTimeout  time.Duration
+	// marks holds the newest reading written per source. Every series of a
+	// reading shares its timestamp, so one mark per source keeps each series'
+	// timestamps strictly increasing, which remote write requires: a receiver
+	// rejects an out-of-order or duplicate sample with a 4xx for the WHOLE
+	// request, so a single one would cost every other series in its batch.
+	marks map[string]watermark
+	// scratch sizes a reading that is dropped rather than written, so the
+	// loss is counted in samples like every other drop.
+	scratch *Builder
 
 	// submitted carries samples produced outside the exporter's own cadence --
 	// the aggregator writing a peer's reading as it arrives. A channel rather
 	// than a lock because Run owns the Builder and must keep owning it: the
 	// closure is applied on Run's goroutine, never on the caller's.
-	submitted chan func(*Builder)
+	submitted chan Measurement
 
 	enabled  atomic.Bool
 	buffered atomic.Int64
@@ -127,7 +185,8 @@ func NewExporter(opts func() Options, collect Collect, log *slog.Logger) *Export
 		opts:      opts,
 		collect:   collect,
 		log:       log,
-		submitted: make(chan func(*Builder), submitQueue),
+		marks:     make(map[string]watermark),
+		submitted: make(chan Measurement, submitQueue),
 	}
 }
 
@@ -143,8 +202,9 @@ func (e *Exporter) Stats() Stats {
 	}
 }
 
-// Submit hands the exporter samples that were produced on someone else's
-// schedule, to be added to the current batch when Run next wakes.
+// Submit hands the exporter a reading taken on someone else's schedule, to be
+// added to the current batch when Run next wakes -- if it is new. The same
+// reading submitted twice is written once; see Measurement.
 //
 // It exists for fleet aggregation: a peer's reading arrives when the fleet
 // poller fetches it, not when this exporter decides to sample, and writing it
@@ -152,17 +212,14 @@ func (e *Exporter) Stats() Stats {
 // several times or discarding readings that did happen. Both fabricate the
 // record -- the first invents observations, the second hides them.
 //
-// add is called on Run's goroutine with the live Builder. It must not retain
-// the Builder, and it must not block.
-//
-// Returns false when the queue is full, having counted the loss as a drop.
-// Never blocks.
-func (e *Exporter) Submit(add func(*Builder)) bool {
-	if add == nil {
+// Returns false when the queue is full, having counted the loss as a drop, and
+// for a measurement with no Write. Never blocks.
+func (e *Exporter) Submit(m Measurement) bool {
+	if m.Write == nil {
 		return false
 	}
 	select {
-	case e.submitted <- add:
+	case e.submitted <- m:
 		return true
 	default:
 		e.dropped.Add(1)
@@ -176,7 +233,7 @@ func (e *Exporter) Submit(add func(*Builder)) bool {
 func (e *Exporter) drain(o Options) {
 	for {
 		select {
-		case add := <-e.submitted:
+		case m := <-e.submitted:
 			// A submission arriving while remote write is off is discarded
 			// rather than buffered: the exporter holds nothing in that state,
 			// and a queue that filled up during an outage would flush a burst
@@ -186,7 +243,7 @@ func (e *Exporter) drain(o Options) {
 				continue
 			}
 			e.ensureBuilder(o)
-			add(e.builder)
+			e.record(m)
 			e.buffered.Store(int64(e.pendingSamples + e.builder.Len()))
 		default:
 			return
@@ -250,7 +307,8 @@ func due(last, now time.Time, interval, fallback time.Duration) bool {
 	return !now.Before(last.Add(positive(interval, fallback)))
 }
 
-// sample collects one instant, and flushes early if the batch is full.
+// sample takes this node's latest reading, writes it if it is new, and flushes
+// early if the batch is full.
 func (e *Exporter) sample(o Options) {
 	if o.RemoteWriteURL == "" {
 		e.disable()
@@ -259,15 +317,80 @@ func (e *Exporter) sample(o Options) {
 	e.enabled.Store(true)
 	e.ensureBuilder(o)
 
-	if err := e.collect(e.builder, time.Now().UnixMilli()); err != nil {
+	m, err := e.collect()
+	if err != nil {
 		e.log.Debug("prom: nothing to sample this tick", "error", err)
 		return
 	}
+	e.record(m)
 	e.buffered.Store(int64(e.pendingSamples + e.builder.Len()))
 
 	if o.BatchSize > 0 && e.builder.Len() >= o.BatchSize {
 		e.flush(o)
 	}
+}
+
+// record adds a reading to the batch, stamped with its own time, unless it has
+// been written already or is older than one that has.
+//
+// Older happens when a source's clock steps backwards -- an NTP step, or a
+// clock corrected after running ahead. Those readings are real, but the
+// receiver already holds later timestamps for the same series and would
+// refuse them as out of order, taking the rest of their batch with them. So
+// they are dropped here, counted, and the source's history resumes by itself
+// the moment its clock passes the newest timestamp written. The gap is exactly
+// as long as the step; nothing is re-dated to fill it, because a re-dated
+// reading is one the history would then misreport.
+//
+// A reading with no usable time -- a peer on a build that did not send one --
+// is dropped for the same reason: there is no truthful time to write it at.
+// Such readings cannot be told apart, so a source sending them is counted once
+// per run of them, not once per poll.
+//
+// Every drop is counted in samples, the unit SamplesDropped reports in.
+func (e *Exporter) record(m Measurement) {
+	if m.Write == nil {
+		return
+	}
+	mark, seen := e.marks[m.Source]
+	if seen && m.TimeMs == mark.offeredMs {
+		return // the same reading, offered again
+	}
+	mark.offeredMs = m.TimeMs
+
+	undated := m.TimeMs <= 0
+	if undated || m.TimeMs <= mark.writtenMs {
+		e.dropped.Add(e.samplesIn(m))
+		if !mark.refusing {
+			mark.refusing = true
+			if undated {
+				e.log.Warn("prom: a source sends readings with no collection time; they are dropped",
+					"source", m.Source)
+			} else {
+				e.log.Warn("prom: a clock stepped backwards; its readings are dropped until it passes the newest one written",
+					"source", m.Source, "reading_ms", m.TimeMs, "newest_written_ms", mark.writtenMs,
+					"step", time.Duration(mark.writtenMs-m.TimeMs)*time.Millisecond)
+			}
+		}
+		e.marks[m.Source] = mark
+		return
+	}
+	if mark.refusing {
+		e.log.Info("prom: a source's readings are being written again", "source", m.Source)
+	}
+	e.marks[m.Source] = watermark{writtenMs: m.TimeMs, offeredMs: m.TimeMs}
+	m.Write(e.builder, m.TimeMs)
+}
+
+// samplesIn counts the samples a reading would have written.
+func (e *Exporter) samplesIn(m Measurement) int64 {
+	if e.scratch == nil {
+		e.scratch = NewBuilder(nil)
+	}
+	m.Write(e.scratch, m.TimeMs)
+	n := e.scratch.Len()
+	e.scratch.Drain()
+	return int64(n)
 }
 
 // discard drops everything held and accounts for it, so a gap in the recorded
@@ -313,11 +436,20 @@ func (e *Exporter) ensureBuilder(o Options) {
 		}
 		e.builder = NewBuilder(o.Labels)
 		e.commonKey = key
+		// The marks are kept. Not every series changes with these labels --
+		// a peer's instance is its own -- and the receiver still holds the
+		// newest timestamps of those that do not. Keeping them costs a
+		// renamed series at most one collection interval before its first
+		// sample; clearing them could write a lagging clock's reading out of
+		// order into a series that was never renamed.
 	}
 	timeout := positive(o.Timeout, 10*time.Second)
 	if e.writer == nil || e.writerURL != o.RemoteWriteURL || e.writerTimeout != timeout {
 		if e.writer != nil && e.writerURL != o.RemoteWriteURL {
 			e.discard("the remote-write endpoint changed")
+			// The new receiver holds none of what the old one was sent, so
+			// the current reading is new to it.
+			clear(e.marks)
 		}
 		e.writer = NewWriter(o.RemoteWriteURL, timeout)
 		e.writerURL, e.writerTimeout = o.RemoteWriteURL, timeout

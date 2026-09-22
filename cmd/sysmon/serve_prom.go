@@ -64,40 +64,56 @@ func promQueryOptions(mgr *config.Manager) func() prom.QueryOptions {
 	}
 }
 
-// snapshotSamples is the exporter's collect step: the same description of a
-// snapshot that GET /metrics renders, stamped with one instant and handed to
-// the remote-write builder.
-// peerSamples writes a peer's reading into the exporter's current batch, under
-// that peer's own instance label and stamped with the time the peer collected
-// it.
+// peerSamples offers each peer reading to the exporter as it arrives, under
+// that peer's own instance label and dated by the time the peer collected it.
 //
-// Two properties are deliberate. The timestamp is the READING's, not the
-// aggregator's clock, so a peer's history says when the peer measured rather
-// than when this node heard about it. And there is no cadence here at all: one
-// reading in, one set of samples out, at whatever rate the fleet poller runs.
-// Resampling to the exporter's own interval would either repeat a reading that
-// happened once or drop readings that happened -- inventing observations in the
-// first case, hiding them in the second.
-func peerSamples(exporter *prom.Exporter) fleet.Reading {
+// Three properties are deliberate. The timestamp is the READING's, taken from
+// the peer's clock, not this node's: a peer's history says when the peer
+// measured rather than when this node heard about it, and a rate() taken over
+// it divides by the peer's own collection intervals, which a receive time would
+// jitter by up to a poll interval. The source is the peer's name, so the
+// exporter orders each peer's readings against its own clock only -- skew
+// between two machines never makes one of them look out of order. And there is
+// no cadence here: every poll is offered, and the exporter writes the reading
+// only if the peer has collected since the last one it wrote (#173). A peer
+// polled faster than it collects therefore contributes each reading once,
+// neither repeated under new timestamps nor thinned to the exporter's own
+// interval.
+func peerSamples(submit func(prom.Measurement) bool) fleet.Reading {
 	return func(node string, snap *types.Snapshot) {
 		if snap == nil || node == "" {
 			return
 		}
-		timeMs := snap.Timestamp.UnixMilli()
-		exporter.Submit(func(b *prom.Builder) {
-			metrics.Write(metrics.SampleSink{Builder: b, TimeMs: timeMs, Instance: node}, snap)
+		submit(prom.Measurement{
+			Source: node,
+			TimeMs: snap.Timestamp.UnixMilli(),
+			Write: func(b *prom.Builder, timeMs int64) {
+				metrics.Write(metrics.SampleSink{Builder: b, TimeMs: timeMs, Instance: node}, snap)
+			},
 		})
 	}
 }
 
+// snapshotSamples is the exporter's collect step: the monitor's latest
+// snapshot, described exactly as GET /metrics renders it and dated by the
+// time the collector took it.
+//
+// The date is what keeps the history honest when the dashboard collects more
+// slowly than the exporter samples. The monitor caches one snapshot between
+// collections; offered at every sample tick, it carries the same time each
+// time, and the exporter writes it only once (#173).
 func snapshotSamples(mon *monitor.Monitor) prom.Collect {
-	return func(b *prom.Builder, timeMs int64) error {
+	return func() (prom.Measurement, error) {
 		snap, err := mon.Snapshot()
 		if err != nil {
-			return err
+			return prom.Measurement{}, err
 		}
-		metrics.Write(metrics.SampleSink{Builder: b, TimeMs: timeMs}, snap)
-		return nil
+		return prom.Measurement{
+			TimeMs: snap.Timestamp.UnixMilli(),
+			Write: func(b *prom.Builder, timeMs int64) {
+				metrics.Write(metrics.SampleSink{Builder: b, TimeMs: timeMs}, snap)
+			},
+		}, nil
 	}
 }
 
@@ -125,5 +141,5 @@ func observePeers(poller *fleet.Poller, exporter server.MetricsExporter) {
 	if poller == nil || exporter == nil {
 		return
 	}
-	poller.Observe(peerSamples(exporter))
+	poller.Observe(peerSamples(exporter.Submit))
 }
