@@ -1,8 +1,9 @@
 package prom
 
 import (
-	"regexp"
 	"strings"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 )
 
 // The history catalog.
@@ -165,43 +166,35 @@ func Lookup(key string) (Metric, error) {
 	return Metric{}, &ErrUnknownMetric{Key: key}
 }
 
-// instancePattern is what a node name may look like. Fleet names are hostnames
-// or short labels, so this is deliberately narrower than PromQL would allow:
-// with the value constrained to characters that carry no meaning inside a
-// matcher, building the selector by concatenation cannot be turned into a
-// different query. Escaping alone would also work, and would leave the safety
-// of every future call site depending on someone remembering to do it.
-var instancePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$`)
-
 // ErrInvalidInstance reports a node name that cannot appear in a selector.
+// The rule it broke is pkg/nodename's, which is also what the configuration
+// loader holds every fleet peer name to.
 type ErrInvalidInstance struct {
 	Instance string
 }
 
 func (e *ErrInvalidInstance) Error() string {
-	return "prom: " + quote(e.Instance) + " is not a usable node name"
+	return "prom: " + quote(e.Instance) + " is not a usable node name: " + nodename.Rule
 }
 
-func quote(s string) string {
-	if len(s) > 64 {
-		s = s[:64] + "..."
-	}
-	return `"` + strings.Map(func(r rune) rune {
-		if r < 0x20 || r == '"' || r == '\\' {
-			return '.'
-		}
-		return r
-	}, s) + `"`
-}
+// quote renders an untrusted value for an error message; see nodename.Quote.
+func quote(s string) string { return nodename.Quote(s) }
+
+// labelValueEscaper escapes a string for use inside a double-quoted PromQL
+// string literal.
+var labelValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 
 // Expr builds the PromQL for one metric on one node.
 //
-// instance is the only caller-supplied part, and it is validated rather than
-// escaped; see instancePattern.
+// instance is the only caller-supplied part. It is validated against
+// nodename's rule AND escaped. The rule alone already leaves nothing to escape;
+// the escaping is underneath it rather than instead of it, so the matcher stays
+// a single literal even if the rule is ever widened (ruling on #37, 2026-09-02).
 func (m Metric) Expr(instance string) (string, error) {
-	if !instancePattern.MatchString(instance) {
+	if err := nodename.Validate(instance); err != nil {
 		return "", &ErrInvalidInstance{Instance: instance}
 	}
+	instance = labelValueEscaper.Replace(instance)
 	matchers := make([]string, 0, len(m.Matchers)+1)
 	matchers = append(matchers, `instance="`+instance+`"`)
 	matchers = append(matchers, m.Matchers...)

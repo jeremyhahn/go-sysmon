@@ -29,6 +29,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 )
 
 // Source describes where an effective value came from.
@@ -501,6 +503,17 @@ func (c *Config) normalize(sources map[string]string) error {
 		return err
 	}
 
+	// This node's own configured name is held to the same rule as a peer's:
+	// it is the instance label this node's history is written under, and the
+	// name a peer entry on an aggregator must match (#37). Only a configured
+	// value is checked here -- the hostname fallback depends on the machine,
+	// and parsing must not, so ValidateLocalName covers that.
+	if c.Fleet.LocalName != "" {
+		if err := nodename.Validate(c.Fleet.LocalName); err != nil {
+			return &ErrLocalName{Name: c.Fleet.LocalName, Err: err}
+		}
+	}
+
 	// A peer's name is its identity everywhere downstream: the poller stores
 	// results under it, the fleet view renders one card per name and the
 	// per-peer config lookup selects by it. Two peers sharing a name therefore
@@ -527,7 +540,7 @@ func (c *Config) normalize(sources map[string]string) error {
 		}
 
 		// The URL is validated before anything copies it. An unnamed peer takes
-		// its name from its URL and ErrDuplicatePeer quotes URLs, so checking
+		// its name from its URL's host and ErrDuplicatePeer quotes URLs, so checking
 		// credentials first is what keeps a secret out of a peer name, out of
 		// an error message and out of the settings view.
 		u, err := url.Parse(p.URL)
@@ -546,10 +559,27 @@ func (c *Config) normalize(sources map[string]string) error {
 			return &ErrPeerURL{Name: peerLabel(p.Name, u.Host), Reason: reason}
 		}
 
-		// Default the name after validation, so two unnamed peers are compared
-		// by the URL that will actually identify them.
-		if p.Name == "" {
-			p.Name = p.URL
+		// A peer's name is its fleet-wide identity: the name that node calls
+		// itself (its fleet.local_name) and therefore the Prometheus instance
+		// label its history is written and queried under (ruling on #37). An
+		// unnamed peer takes its URL's host, which is what a node's name
+		// defaults to on its own side -- the whole URL could never be an
+		// instance label, so the old default produced a name that could not
+		// work by construction.
+		//
+		// A name that cannot be that label is a startup error, not a history
+		// request that 400s later or a chart that stays empty: the mistake is
+		// reported once, at the line that made it, naming the peer.
+		//
+		// Defaulting happens after URL validation, so a credential can never
+		// reach a name, and before the uniqueness check, so two unnamed peers
+		// on one host collide as the one node they claim to be.
+		defaulted := p.Name == ""
+		if defaulted {
+			p.Name = u.Hostname()
+		}
+		if err := nodename.Validate(p.Name); err != nil {
+			return &ErrPeerName{Name: p.Name, Host: u.Host, Defaulted: defaulted, Err: err}
 		}
 		if first, dup := seen[p.Name]; dup {
 			return &ErrDuplicatePeer{Name: p.Name, URLs: []string{first, p.URL}}
@@ -562,11 +592,19 @@ func (c *Config) normalize(sources map[string]string) error {
 	return nil
 }
 
-// ValidateAgainstLocalName rejects a peer carrying the name this node publishes
-// as its own. Such a peer is resolved as the local machine by the fleet
-// handlers, which consult the local name before the peer cache, so the
-// configured host is never polled while the dashboard shows a card that looks
-// like it.
+// ValidateLocalName checks local, the name this node publishes as its own, as
+// resolved by LocalName.
+//
+// The name must satisfy nodename.Rule: it is this node's fleet-wide identity
+// and the Prometheus instance label its history is written under (#37). A
+// configured fleet.local_name was already held to the rule while parsing, so
+// what this adds is the hostname fallback, which is reported as such so the
+// operator knows the fix is to set fleet.local_name.
+//
+// It also rejects a peer carrying that name. Such a peer is resolved as the
+// local machine by the fleet handlers, which consult the local name before the
+// peer cache, so the configured host is never polled while the dashboard shows
+// a card that looks like it.
 //
 // It is deliberately separate from normalize and takes the name as an argument
 // rather than calling LocalName itself. Loading configuration must not depend
@@ -575,9 +613,12 @@ func (c *Config) normalize(sources map[string]string) error {
 // of a config loader and which duly broke a test whose fixture happened to
 // share a build agent's hostname. The caller resolves the name once, and the
 // fleet publishes that same name.
-func (c *Config) ValidateAgainstLocalName(local string) error {
+func (c *Config) ValidateLocalName(local string) error {
 	if local == "" {
 		return nil
+	}
+	if err := nodename.Validate(local); err != nil {
+		return &ErrLocalName{Name: local, FromHostname: c.Fleet.LocalName == "", Err: err}
 	}
 	for _, p := range c.Fleet.Peers {
 		if p.Name == local {

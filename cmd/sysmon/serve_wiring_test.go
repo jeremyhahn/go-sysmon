@@ -141,6 +141,17 @@ func TestLoadServeConfig_RejectsCollisionIntroducedByReload(t *testing.T) {
 	}
 }
 
+// TestLoadServeConfig_RejectsUnusableLocalName proves serve refuses to start
+// on a fleet.local_name that cannot be an instance label (owner ruling on #37).
+func TestLoadServeConfig_RejectsUnusableLocalName(t *testing.T) {
+	withServeConfig(t, "fleet:\n  local_name: 'agg regator'\n")
+
+	var bad *config.ErrLocalName
+	if _, err := loadServeConfig(nil); !errors.As(err, &bad) {
+		t.Fatalf("loadServeConfig() = %v, want a *config.ErrLocalName", err)
+	}
+}
+
 // TestLoadServeConfig_AcceptsAnOrdinaryFleet is the no-regression guard: the
 // validator must not reject a fleet whose peers are simply other machines.
 func TestLoadServeConfig_AcceptsAnOrdinaryFleet(t *testing.T) {

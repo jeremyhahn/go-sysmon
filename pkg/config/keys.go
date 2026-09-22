@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 
@@ -292,9 +291,8 @@ func (m *Manager) View() types.ConfigView {
 	peers := make([]Peer, len(cfg.Fleet.Peers))
 	copy(peers, cfg.Fleet.Peers)
 	sort.Slice(peers, func(i, j int) bool { return peers[i].Name < peers[j].Name })
-	unnamed := 0
 	for _, p := range peers {
-		// A named peer is keyed by its name, kept deliberately: it is how the
+		// A peer is keyed by its name, kept deliberately: it is how the
 		// dashboard, the fleet proxy and the history queries all address a node,
 		// and it is the peer's identity everywhere an operator meets it. The URL
 		// behind it is the scheme, host and port of another machine on the
@@ -302,27 +300,15 @@ func (m *Manager) View() types.ConfigView {
 		// reaches a peer through /api/fleet/{name}/... on this node, never by
 		// dialling it.
 		//
-		// A peer with no name of its own is a different matter. normalize takes
-		// its URL as its name, so keying by the name would put the address back
-		// on the wire in the key while the value beside it read "(configured)" --
-		// and half a redaction is not a redaction. Such a peer is numbered
-		// instead. The same test catches an operator who typed the URL into
-		// `name:`, which is the right outcome for this endpoint.
-		key := p.Name
-		if key == p.URL {
-			unnamed++
-			// Positional, and deliberately not a hash of the URL. A truncated
-			// digest would look protective without being so: peer URLs are drawn
-			// from private address space and a handful of ports, so the whole
-			// input space can be enumerated offline in seconds and the address
-			// read straight back out. A number discloses nothing. It is not an
-			// identity either -- adding a peer renumbers the rest -- which is
-			// the honest state of a peer nobody named, and naming it is the fix.
-			key = fmt.Sprintf("(unnamed %d)", unnamed)
-		}
+		// Every name can be shown. A name is held to nodename.Rule at load, which
+		// admits no scheme and no path, so no name can carry a URL back onto the
+		// wire. An unnamed peer is named after its URL's host (#37), and that
+		// host is then its fleet identity -- the same string GET /api/fleet
+		// titles its card with and routes it by -- so withholding it here would
+		// hide nothing.
 		entries = append(entries, types.ConfigEntry{
 			Section: "fleet",
-			Key:     fmt.Sprintf("fleet.peers.%s", key),
+			Key:     "fleet.peers." + p.Name,
 			Value:   redactPath(p.URL),
 			Source:  peerSource,
 		})

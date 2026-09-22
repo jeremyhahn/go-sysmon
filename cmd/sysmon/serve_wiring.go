@@ -115,7 +115,8 @@ func loadServeConfig(cmd *cobra.Command) (*config.Manager, error) {
 		return nil, err
 	}
 
-	// The local-name collision is checked here rather than during parsing,
+	// The local name -- its shape (#37) and its collision with a peer -- is
+	// checked here rather than during parsing,
 	// because the name depends on this machine (it falls back to the hostname)
 	// and configuration loading must not -- the same file has to load the same
 	// way wherever it runs. Registered as a validator so a reload that
@@ -128,7 +129,7 @@ func loadServeConfig(cmd *cobra.Command) (*config.Manager, error) {
 	// manager still holds the previous generation, so consulting it would check
 	// the incoming peers against the outgoing name.
 	mgr.OnValidate(func(c *config.Config) error {
-		return c.ValidateAgainstLocalName(c.LocalName())
+		return c.ValidateLocalName(c.LocalName())
 	})
 	if err := mgr.Validate(mgr.Current()); err != nil {
 		return nil, err

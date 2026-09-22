@@ -185,13 +185,13 @@ buys a client nothing and hands an anonymous one the internal topology. Together
 with the config file's path it let a single reachable listener enumerate
 hostnames, ports, transport choices and filesystem layout (#16).
 
-**A peer with no `name:` is reported as `fleet.peers.(unnamed 1)`.** Such a peer
-is legal configuration and takes its URL as its name (see *Peer names must be
-unique* below), so keying the entry by the name would put the address back on
-the wire in the key while the value beside it read `(configured)` — half a
-redaction. The number is positional, not an identity: adding a peer renumbers
-the rest. **Name your peers** — the name is the routing identity everywhere else
-in the fleet, and an unnamed peer is unidentifiable in this view by design.
+**A peer with no `name:` is keyed by its URL's host**, which is its name (see
+*A peer's name is its fleet-wide identity* below). Before #37 such a peer took
+its whole URL as its name and was listed as `fleet.peers.(unnamed 1)` so the
+address stayed off the wire; that is no longer needed. No name can carry a
+scheme, port or path, and the host is the node's identity — the string
+`GET /api/fleet` titles its card with and routes `/api/fleet/{name}/...` by —
+so withholding it here would hide nothing.
 
 `GET /api/fleet` still carries each peer's `url`, which the fleet card renders.
 That is the same exposure on a different endpoint and is tracked separately.
@@ -372,7 +372,51 @@ could itself be the thing that is wrong: an overloaded or swapping workload host
 would take the view of the whole fleet down with it, exactly when it is needed.
 
 `fleet.local_name` sets how a node names itself in the view; it defaults to the
-hostname.
+hostname. It is held to the same name rule as a peer name (below), for the same
+reason: it is the `instance` label this node's history is written under, and the
+name an aggregator's peer entry for this node must carry. **An unusable
+`fleet.local_name` is a startup error** naming the value and the rule, and a
+reload carrying one is refused with the running configuration kept. **When it is
+unset and the hostname itself breaks the rule, that is a startup error too**,
+naming the hostname and telling you to set `fleet.local_name` — the fallback is
+not silently repaired, because a repaired name would be one no peer entry
+matches. The configured value is checked while parsing; the hostname fallback is
+checked with the other machine-dependent rules below.
+
+**A peer's name is its fleet-wide identity** (ruling on #37). It is the name
+that node calls itself — its own `fleet.local_name`, or its hostname — and so it
+is also the Prometheus `instance` label that peer's history is written and
+queried under. Two names for one node agree right up until someone edits one of
+them, and the disagreement shows up as an empty chart indistinguishable from a
+quiet period, so there is no separate alias: **name each peer exactly what it
+calls itself.**
+
+- **A peer with no `name:` is named after its URL's host.**
+  `url: http://db-01:8081` is the node `db-01` — the port is not part of the
+  name. Before #37 it took the whole URL, which no `instance` label can be, so
+  its history was a 400 on an otherwise valid peer.
+- **The name is checked at load, and a name that cannot be an `instance` label
+  is a startup error** (owner ruling, 2026-09-22). It must start with a letter
+  or digit and contain only letters, digits, `.`, `_`, `:` and `-`, at most 253
+  characters (`pkg/nodename`). The error names the peer and the rule; on a
+  reload the file is refused and the running configuration kept. An unnamed
+  peer whose host cannot stand in for a name — an IPv6 literal such as
+  `http://[fe80::1]:8081` — fails the same way, and the fix is to give it a
+  `name:`.
+- The history query escapes the label value as well, underneath the check
+  rather than instead of it.
+
+What the load cannot check is **correspondence**: that the name configured here
+is the one the peer actually writes under. That value lives on the peer. A peer
+aliased `database` pointing at a node that calls itself `db-01` still loads; it
+is the operator's rule above that prevents it, not a check.
+
+**Upgrading:** a file that loaded before #37 can now fail at startup. Look for a
+peer named with a URL or with spaces or other punctuation, two unnamed peers on
+one host (they are now the same node, and fail the uniqueness check), unnamed
+IPv6 peers, a `fleet.local_name` outside the rule, and — with `fleet.local_name`
+unset — a hostname outside it. An unnamed peer's card, `/api/fleet/{name}/...` path and
+history identity change from its URL to its host.
 
 **An unrecognised key is an error, not a comment.** The file is decoded
 strictly: a key that maps to no setting fails the load and names itself. This
@@ -398,7 +442,7 @@ none can be fetched: accepting them would publish a peer the poller can never
 reach while the service reports a clean start, which is the failure mode least
 likely to be noticed.
 
-**A peer may not share this node's name.** `fleet.local_name`, or the hostname
+**This node's own name must be usable, and a peer may not share it.** `fleet.local_name`, or the hostname
 when it is unset, identifies the local node, and the fleet endpoints resolve
 that name before consulting the peer cache — so a peer named after this node
 would render as a second same-named card and answer with the LOCAL machine's
@@ -411,7 +455,7 @@ Unlike the other fleet rules, this one is **not** checked while parsing. The
 local name falls back to the hostname, so folding it into the parse would make
 the same file valid on one machine and invalid on another — a config file has to
 mean the same thing wherever it is read. The check therefore takes the name as
-an input (`(*Config).ValidateAgainstLocalName`) and the serve command registers
+an input (`(*Config).ValidateLocalName`) and the serve command registers
 it as a validator; the name is read from the configuration being validated, not
 from the running one, because `fleet.local_name` is itself reloadable.
 
@@ -445,8 +489,9 @@ name would render as one card showing whichever host answered last alongside
 the other's configuration, so a duplicate is rejected at load rather than
 silently de-duplicated: dropping one would leave a real host unmonitored while
 the dashboard looked complete. A peer with no `name` is identified by its
-`url`, which is applied before the uniqueness check — so two unnamed peers on
-different hosts are fine, and the same URL listed twice is not.
+URL's host, which is applied before the uniqueness check — so two unnamed peers
+on different hosts are fine, and two on the same host, whether the same URL
+twice or two ports, are not.
 
 - `GET /api/fleet` — one summary per node: status, alert counts, CPU, memory,
   load per core, worst filesystem, RAID, SMART, temperature, power, throughput,
@@ -714,7 +759,9 @@ grows. Fleet polling stays what it is: an answer to "is this healthy right now",
 never to "what happened on Tuesday".
 
 Series are labelled `instance=<fleet.local_name>` and `job=go-sysmon`, so a node
-relabelled in the fleet view is relabelled in its history too. `external_labels`
+relabelled in the fleet view is relabelled in its history too — and the peer
+entry naming it on an aggregator must be renamed with it (see *A peer's name is
+its fleet-wide identity*). `external_labels`
 adds what only a deployment knows. A name that collides with one go-sysmon sets
 itself — `instance`, `job`, or any label its metrics carry (`device`,
 `interface`, `resource`, `gpu`, …) — is **rejected at load** rather than

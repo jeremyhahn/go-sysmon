@@ -77,11 +77,18 @@ fleet:
   # How this node names itself in the fleet view. Defaults to the hostname,
   # which is usually right -- but a machine repurposed from an earlier role can
   # carry a hostname that no longer describes it, and relabelling a dashboard is
-  # cheaper than renaming a running host.
+  # cheaper than renaming a running host. Held to the same rule as a peer name
+  # below: letters, digits, '.', '_', ':' and '-' only, or the service will not
+  # start -- and if this is unset and the hostname breaks that rule, set it.
   # local_name: netmon
   poll_interval_ms: 10000
   timeout_ms: 3000
   peers: []
+  # A peer's name is its fleet-wide identity: set it to exactly what that node
+  # calls itself (its fleet.local_name, or its hostname), because it is also the
+  # Prometheus instance label its history is stored under. Letters, digits,
+  # '.', '_', ':' and '-' only; anything else stops the service at startup. A
+  # peer with no name is named after its url's host (http://fs:8081 -> fs).
   # peers:
   #   - name: fs
   #     url: http://198.51.100.10:8081

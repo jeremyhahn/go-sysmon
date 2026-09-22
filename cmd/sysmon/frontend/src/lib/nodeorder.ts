@@ -8,8 +8,9 @@
 // This used to be `a.name.localeCompare(b.name)`, which is locale-aware and
 // therefore cannot match Go: it puts "a" before "B" where Go's bytewise
 // comparison puts "B" first, and orders accented characters differently again.
-// Node names are unrestricted strings -- an unnamed peer defaults to its URL --
-// so that was reachable, not theoretical.
+// Node names mix case and punctuation -- '.', '_', ':' and '-' in a peer name,
+// and whatever fleet.local_name or the hostname says for the node itself -- so
+// that was reachable, not theoretical.
 //
 // The rule is described once, in pkg/fleet/order.go. In short: fold A-Z to
 // lower case and nothing else, compare by code point, tie-break on the

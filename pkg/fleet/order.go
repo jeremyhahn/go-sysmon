@@ -12,8 +12,9 @@ import "strings"
 // That is harder than it sounds across two languages. Go compares strings
 // bytewise; JavaScript's localeCompare is locale-aware and collates "a" before
 // "B" where Go puts "B" first, and orders accented characters differently
-// again. Node names are unrestricted strings -- an unnamed peer defaults to its
-// URL -- so this is reachable rather than theoretical.
+// again. Node names mix case and punctuation -- a peer name may carry '.', '_',
+// ':' and '-', and this node's own name is whatever fleet.local_name or the
+// hostname says -- so this is reachable rather than theoretical.
 //
 // The rule below is therefore chosen to be implementable identically in both,
 // with no locale data and no library:

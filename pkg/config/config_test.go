@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -420,25 +421,21 @@ fleet:
 	}
 }
 
-// TestView_UnnamedPeerDoesNotLeakItsURLThroughTheKey is the case the first pass
-// at #16 missed. A peer with no `name:` is legal configuration, and normalize
-// adopts its URL as its name -- so redacting only the entry's VALUE left the
-// address on the wire in the entry's KEY, as
-// `fleet.peers.http://198.51.100.10:8081` beside a value reading
-// "(configured)". Half a redaction is not a redaction.
+// TestView_PeersAreKeyedByNameWithoutTheirURL covers the peer half of the
+// settings view. Every peer is keyed by its name and its URL is withheld.
 //
-// The middle peer is named after its own URL by hand, which must be treated the
-// same way: the endpoint withholds peer addresses, however they got into the
-// name.
-func TestView_UnnamedPeerDoesNotLeakItsURLThroughTheKey(t *testing.T) {
+// An unnamed peer used to take its whole URL as its name, and so leaked the
+// address through the entry's KEY while its value read "(configured)" (#16).
+// Since #37 it takes its URL's host instead: that host is its fleet identity,
+// shown and routed by on GET /api/fleet, so it appears here too -- but the
+// scheme and port, which nothing outside the poller needs, still must not.
+func TestView_PeersAreKeyedByNameWithoutTheirURL(t *testing.T) {
 	path := writeConfig(t, `
 fleet:
   peers:
     - url: http://198.51.100.10:8081
-    - name: https://198.51.100.91:9443
-      url: https://198.51.100.91:9443
     - name: omega
-      url: http://198.51.100.90:8081
+      url: https://198.51.100.90:9443
 `)
 	mgr, err := config.NewManager(l(path))
 	if err != nil {
@@ -450,10 +447,7 @@ fleet:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{
-		"198.51.100.10", "198.51.100.90", "198.51.100.91",
-		"8081", "9443", "http://", "https://",
-	} {
+	for _, secret := range []string{"198.51.100.90", "8081", "9443", "http://", "https://"} {
 		if strings.Contains(string(body), secret) {
 			t.Errorf("/api/config payload still contains %q: %s", secret, body)
 		}
@@ -468,10 +462,8 @@ fleet:
 			}
 		}
 	}
-	// Sorted by the name normalize settled on, so both URL-named peers precede
-	// "omega". The named peer keeps its name; the other two are numbered.
-	if !slices.Equal(keys, []string{"(unnamed 1)", "(unnamed 2)", "omega"}) {
-		t.Errorf("peer keys = %v, want the two address-named peers numbered and omega named", keys)
+	if !slices.Equal(keys, []string{"198.51.100.10", "omega"}) {
+		t.Errorf("peer keys = %v, want the unnamed peer keyed by its host and omega by its name", keys)
 	}
 }
 
@@ -784,9 +776,10 @@ fleet:
 }
 
 // TestLoad_UnnamedPeersAreNamedBeforeTheUniquenessCheck covers the interaction
-// between the two rules: an omitted name defaults to the peer's URL, so two
-// unnamed peers on different hosts are distinct and must still load, while two
-// pointing at the same URL are the same node listed twice and must not.
+// between the two rules: an omitted name defaults to the peer's URL host
+// (#37), so two unnamed peers on different hosts are distinct and must still
+// load, while two on the same host -- whether the same URL twice or two ports
+// -- claim the same fleet identity and must not.
 func TestLoad_UnnamedPeersAreNamedBeforeTheUniquenessCheck(t *testing.T) {
 	distinct := writeConfig(t, `
 fleet:
@@ -801,8 +794,9 @@ fleet:
 	if len(cfg.Fleet.Peers) != 2 {
 		t.Fatalf("peers = %+v, want both retained", cfg.Fleet.Peers)
 	}
-	if cfg.Fleet.Peers[0].Name != "http://10.0.0.1:8081" {
-		t.Errorf("unnamed peer name = %q, want it defaulted to its URL", cfg.Fleet.Peers[0].Name)
+	if cfg.Fleet.Peers[0].Name != "10.0.0.1" || cfg.Fleet.Peers[1].Name != "10.0.0.2" {
+		t.Errorf("unnamed peer names = %q, %q, want each defaulted to its URL's host",
+			cfg.Fleet.Peers[0].Name, cfg.Fleet.Peers[1].Name)
 	}
 
 	same := writeConfig(t, `
@@ -814,6 +808,113 @@ fleet:
 	var dup *config.ErrDuplicatePeer
 	if _, _, err := l(same).Load(); !errors.As(err, &dup) {
 		t.Fatalf("Load() with the same URL listed twice = %v, want a *config.ErrDuplicatePeer", err)
+	}
+
+	// Two ports on one host are two processes, but unnamed they would both be
+	// the node "10.0.0.1" -- one card, one history. That is for the operator to
+	// settle by naming them, not for the loader to guess.
+	ports := writeConfig(t, `
+fleet:
+  peers:
+    - url: http://10.0.0.1:8081
+    - url: http://10.0.0.1:9081
+`)
+	if _, _, err := l(ports).Load(); !errors.As(err, &dup) {
+		t.Fatalf("Load() with two unnamed peers on one host = %v, want a *config.ErrDuplicatePeer", err)
+	}
+}
+
+// TestLoad_UnnamedPeerTakesItsURLHost pins the default itself: the host, not
+// the URL, and not the port. That is what the node's own fleet.local_name
+// defaults to on its side, and it is a usable Prometheus instance label, which
+// the whole URL never was.
+func TestLoad_UnnamedPeerTakesItsURLHost(t *testing.T) {
+	path := writeConfig(t, `
+fleet:
+  peers:
+    - url: https://db-01.example.com:9443/
+`)
+	cfg, _, err := l(path).Load()
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if got := cfg.Fleet.Peers[0].Name; got != "db-01.example.com" {
+		t.Errorf("unnamed peer name = %q, want %q", got, "db-01.example.com")
+	}
+}
+
+// TestLoad_RejectsPeerNameThatCannotBeAnInstance is the owner ruling on #37: a
+// peer name that breaks the node-name rule is a startup error naming the peer
+// and the rule, not a history request that 400s later or a chart left empty.
+func TestLoad_RejectsPeerNameThatCannotBeAnInstance(t *testing.T) {
+	for _, name := range []string{
+		"http://db-01:8081", // a URL typed into name:, which was the old default
+		"db 01",
+		"-db01",
+		"db01/",
+		`"db01"`,
+	} {
+		path := writeConfig(t, "fleet:\n  peers:\n    - name: '"+name+"'\n      url: http://10.0.0.1:8081\n")
+		_, _, err := l(path).Load()
+		var bad *config.ErrPeerName
+		if !errors.As(err, &bad) {
+			t.Errorf("Load() with peer name %q = %v, want a *config.ErrPeerName", name, err)
+			continue
+		}
+		if bad.Name != name || bad.Defaulted {
+			t.Errorf("ErrPeerName = %+v, want Name %q and not defaulted", bad, name)
+		}
+		var invalid *nodename.ErrInvalid
+		if !errors.As(err, &invalid) {
+			t.Errorf("ErrPeerName does not unwrap to *nodename.ErrInvalid: %v", err)
+		}
+		if !strings.Contains(err.Error(), nodename.Rule) {
+			t.Errorf("error %q does not state the rule it broke", err)
+		}
+	}
+}
+
+// TestLoad_RejectsUnnamedPeerWhoseHostCannotBeAName covers the one host that
+// passes URL validation and still cannot be a name: an IPv6 literal, whose
+// colons lead. The operator has to name it, and the message has to say so
+// without quoting the URL.
+func TestLoad_RejectsUnnamedPeerWhoseHostCannotBeAName(t *testing.T) {
+	path := writeConfig(t, "fleet:\n  peers:\n    - url: http://[::1]:8081/secret-path\n")
+	_, _, err := l(path).Load()
+	var bad *config.ErrPeerName
+	if !errors.As(err, &bad) {
+		t.Fatalf("Load() = %v, want a *config.ErrPeerName", err)
+	}
+	if !bad.Defaulted || bad.Name != "::1" {
+		t.Errorf("ErrPeerName = %+v, want the defaulted host ::1", bad)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "give it a name") || !strings.Contains(msg, "[::1]:8081") {
+		t.Errorf("error %q does not name the peer or say how to fix it", msg)
+	}
+	if strings.Contains(msg, "http://") || strings.Contains(msg, "secret-path") {
+		t.Errorf("error %q quotes the URL", msg)
+	}
+}
+
+// TestLoad_ReloadKeepsRunningConfigOnBadPeerName checks the rule holds on a
+// reload as well as at startup: a file edited to carry an unusable name is
+// refused with the running peers left in place.
+func TestLoad_ReloadKeepsRunningConfigOnBadPeerName(t *testing.T) {
+	path := writeConfig(t, "fleet:\n  peers:\n    - name: db-01\n      url: http://10.0.0.1:8081\n")
+	mgr, err := config.NewManager(l(path))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+	if err := os.WriteFile(path, []byte("fleet:\n  peers:\n    - name: 'db 01'\n      url: http://10.0.0.1:8081\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var bad *config.ErrPeerName
+	if _, err := mgr.Reload(); !errors.As(err, &bad) {
+		t.Fatalf("Reload() = %v, want a *config.ErrPeerName", err)
+	}
+	if got := mgr.Current().Fleet.Peers[0].Name; got != "db-01" {
+		t.Errorf("running peer name = %q after a refused reload, want db-01", got)
 	}
 }
 
@@ -1194,8 +1295,9 @@ func TestLoad_PeerBareUsernameIsRejected(t *testing.T) {
 }
 
 // TestLoad_UnnamedCredentialedPeerIsNamedByHost checks the leak path that opens
-// when the operator omits the name: an unnamed peer is otherwise identified by
-// its URL, which is the one string that must not be quoted.
+// when the operator omits the name: the error is raised before the name is
+// defaulted, so it must label the peer by its host rather than by its URL,
+// which is the one string that must not be quoted.
 func TestLoad_UnnamedCredentialedPeerIsNamedByHost(t *testing.T) {
 	const token = "another-secret"
 	path := writeConfig(t, "fleet:\n  peers:\n    - url: https://u:"+token+"@10.0.0.2:8081\n")
@@ -1320,12 +1422,12 @@ func TestLoad_PeerURLMustBePollable(t *testing.T) {
 	}
 }
 
-// TestValidateAgainstLocalName_PeerNamedLikeThisNodeIsRejected covers the
+// TestValidateLocalName_PeerNamedLikeThisNodeIsRejected covers the
 // explicit case. The fleet handlers resolve the local name before consulting the
 // peer cache, so such a peer answers with THIS machine's snapshot and
 // configuration: the configured host is never polled, and the dashboard shows a
 // card that looks like it.
-func TestValidateAgainstLocalName_PeerNamedLikeThisNodeIsRejected(t *testing.T) {
+func TestValidateLocalName_PeerNamedLikeThisNodeIsRejected(t *testing.T) {
 	path := writeConfig(t, `
 fleet:
   local_name: aggregator
@@ -1339,8 +1441,8 @@ fleet:
 	}
 
 	var clash *config.ErrPeerIsLocalName
-	if err := cfg.ValidateAgainstLocalName(cfg.LocalName()); !errors.As(err, &clash) {
-		t.Fatalf("ValidateAgainstLocalName() = %v, want a *config.ErrPeerIsLocalName", err)
+	if err := cfg.ValidateLocalName(cfg.LocalName()); !errors.As(err, &clash) {
+		t.Fatalf("ValidateLocalName() = %v, want a *config.ErrPeerIsLocalName", err)
 	} else if clash.Name != "aggregator" {
 		t.Errorf("ErrPeerIsLocalName.Name = %q, want %q", clash.Name, "aggregator")
 	}
@@ -1371,22 +1473,101 @@ func TestLoad_DoesNotDependOnTheHostname(t *testing.T) {
 
 	// The collision is still caught -- just at the layer that knows the name.
 	var clash *config.ErrPeerIsLocalName
-	if err := cfg.ValidateAgainstLocalName(host); !errors.As(err, &clash) {
-		t.Errorf("ValidateAgainstLocalName(%q) = %v, want a *config.ErrPeerIsLocalName", host, err)
+	if err := cfg.ValidateLocalName(host); !errors.As(err, &clash) {
+		t.Errorf("ValidateLocalName(%q) = %v, want a *config.ErrPeerIsLocalName", host, err)
 	}
 }
 
-// TestValidateAgainstLocalName_UnknownLocalNameChecksNothing guards the
+// TestValidateLocalName_UnknownLocalNameChecksNothing guards the
 // degenerate input: with no name resolved there is nothing to collide with, and
 // treating "" as a name would reject every unnamed peer.
-func TestValidateAgainstLocalName_UnknownLocalNameChecksNothing(t *testing.T) {
+func TestValidateLocalName_UnknownLocalNameChecksNothing(t *testing.T) {
 	path := writeConfig(t, "fleet:\n  local_name: aggregator\n  peers:\n    - name: fs\n      url: http://10.0.0.1:8081\n")
 	cfg, _, err := l(path).Load()
 	if err != nil {
 		t.Fatalf("Load(): %v", err)
 	}
-	if err := cfg.ValidateAgainstLocalName(""); err != nil {
-		t.Errorf("ValidateAgainstLocalName(\"\") = %v, want no error", err)
+	if err := cfg.ValidateLocalName(""); err != nil {
+		t.Errorf("ValidateLocalName(\"\") = %v, want no error", err)
+	}
+}
+
+// TestLoad_RejectsLocalNameThatCannotBeAnInstance is the owner ruling of
+// 2026-09-22 on #37: fleet.local_name is this node's fleet-wide identity and
+// the instance label its history is written under, so it is held to the same
+// rule as a peer name. A configured value depends only on the file, so it is
+// checked while parsing and fails the same way on every machine.
+func TestLoad_RejectsLocalNameThatCannotBeAnInstance(t *testing.T) {
+	for _, name := range []string{"db 01", "http://db-01:8081", "-db01", "db01/"} {
+		path := writeConfig(t, "fleet:\n  local_name: '"+name+"'\n")
+		_, _, err := l(path).Load()
+		var bad *config.ErrLocalName
+		if !errors.As(err, &bad) {
+			t.Errorf("Load() with local_name %q = %v, want a *config.ErrLocalName", name, err)
+			continue
+		}
+		if bad.Name != name || bad.FromHostname {
+			t.Errorf("ErrLocalName = %+v, want Name %q from the file", bad, name)
+		}
+		var invalid *nodename.ErrInvalid
+		if !errors.As(err, &invalid) {
+			t.Errorf("ErrLocalName does not unwrap to *nodename.ErrInvalid: %v", err)
+		}
+		if msg := err.Error(); !strings.Contains(msg, nodename.Rule) || !strings.Contains(msg, "fleet.local_name") {
+			t.Errorf("error %q does not name the setting and the rule", msg)
+		}
+	}
+}
+
+// TestLoad_ReloadKeepsRunningConfigOnBadLocalName: a file edited to carry an
+// unusable local_name is refused on reload, with the running name kept.
+func TestLoad_ReloadKeepsRunningConfigOnBadLocalName(t *testing.T) {
+	path := writeConfig(t, "fleet:\n  local_name: aggregator\n")
+	mgr, err := config.NewManager(l(path))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+	if err := os.WriteFile(path, []byte("fleet:\n  local_name: 'agg regator'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var bad *config.ErrLocalName
+	if _, err := mgr.Reload(); !errors.As(err, &bad) {
+		t.Fatalf("Reload() = %v, want a *config.ErrLocalName", err)
+	}
+	if got := mgr.Current().LocalName(); got != "aggregator" {
+		t.Errorf("running local name = %q after a refused reload, want aggregator", got)
+	}
+}
+
+// TestValidateLocalName_RejectsUnusableHostname covers the fallback. With
+// fleet.local_name unset the node is named after its hostname, and a hostname
+// that breaks the rule would be written as an instance label nothing can query.
+// It depends on the machine, so it is caught by ValidateLocalName rather than
+// the parse, and the message tells the operator to set fleet.local_name.
+func TestValidateLocalName_RejectsUnusableHostname(t *testing.T) {
+	cfg := &config.Config{}
+	err := cfg.ValidateLocalName("my host")
+	var bad *config.ErrLocalName
+	if !errors.As(err, &bad) {
+		t.Fatalf("ValidateLocalName(\"my host\") = %v, want a *config.ErrLocalName", err)
+	}
+	if !bad.FromHostname || bad.Name != "my host" {
+		t.Errorf("ErrLocalName = %+v, want the hostname %q", bad, "my host")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "set fleet.local_name") || !strings.Contains(msg, nodename.Rule) {
+		t.Errorf("error %q does not say to set fleet.local_name and state the rule", msg)
+	}
+}
+
+// TestValidateLocalName_AcceptsUsableNames is the no-regression guard for the
+// fallback: an ordinary hostname, and the constant used when there is none,
+// must pass.
+func TestValidateLocalName_AcceptsUsableNames(t *testing.T) {
+	cfg := &config.Config{}
+	for _, name := range []string{"vm-host-1", "host.example.com", "local"} {
+		if err := cfg.ValidateLocalName(name); err != nil {
+			t.Errorf("ValidateLocalName(%q) = %v, want nil", name, err)
+		}
 	}
 }
 
@@ -1420,7 +1601,7 @@ func TestManagerReload_KeepsConfigWhenPeerTakesTheLocalName(t *testing.T) {
 		t.Fatalf("NewManager(): %v", err)
 	}
 	mgr.OnValidate(func(c *config.Config) error {
-		return c.ValidateAgainstLocalName(c.LocalName())
+		return c.ValidateLocalName(c.LocalName())
 	})
 
 	var applied int
@@ -1459,7 +1640,7 @@ func TestManagerReload_ValidatesAgainstTheIncomingLocalName(t *testing.T) {
 		t.Fatalf("NewManager(): %v", err)
 	}
 	mgr.OnValidate(func(c *config.Config) error {
-		return c.ValidateAgainstLocalName(c.LocalName())
+		return c.ValidateLocalName(c.LocalName())
 	})
 
 	// Renaming this node onto the name of an existing peer is a collision that

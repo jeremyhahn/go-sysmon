@@ -220,7 +220,7 @@ dashboard.
 **The query is built from a fixed catalog, never from the request.** This service
 has no authentication of its own; forwarding an expression would make it an open
 PromQL proxy for the whole time-series database. The node name is validated
-against a hostname pattern rather than escaped, **and** checked against this
+against the node-name rule (`pkg/nodename`) and escaped as well, **and** checked against this
 node's name and its configured peers: a whole fleet writes into one Prometheus,
 so a merely well-formed name would let anyone reaching one dashboard read the
 history of every machine in the database.

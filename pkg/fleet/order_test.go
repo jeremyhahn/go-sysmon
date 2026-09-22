@@ -49,8 +49,8 @@ var orderInputs = []struct {
 		input: []string{"vstation-10", "vstation-2", "vstation.1", "vstationa", "vstation"},
 	},
 	{
-		name:  "a URL, which is what an unnamed peer is called",
-		why:   "peer names are unrestricted strings and default to the URL, so the scheme's punctuation has to order predictably",
+		name:  "URL-shaped punctuation",
+		why:   "an unnamed peer was once named after its URL, and a node's own name is not held to the peer-name rule, so ':' '/' and '.' still have to order predictably",
 		input: []string{"http://198.51.100.11:8081", "https://fs:8081", "fs", "HTTP://a"},
 	},
 	{

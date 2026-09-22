@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 )
 
 func TestCatalog_KeysAreUnique(t *testing.T) {
@@ -169,5 +171,37 @@ func TestCatalog_CPUPowerIsATotal(t *testing.T) {
 	if whole.Aggregate != "" || whole.SplitBy != "source" {
 		t.Errorf("the per-source power entry = aggregate %q split %q, want it split by source",
 			whole.Aggregate, whole.SplitBy)
+	}
+}
+
+// TestLabelValueEscaper covers the escaping Expr applies beneath validation.
+// Validation leaves nothing for it to do today, which is exactly why it is
+// tested on its own: were the name rule ever widened, this is what keeps the
+// instance matcher a single string literal.
+func TestLabelValueEscaper(t *testing.T) {
+	cases := map[string]string{
+		"mon0":          "mon0",
+		`a"b`:           `a\"b`,
+		`a\b`:           `a\\b`,
+		"a\nb":          `a\nb`,
+		`x"} or up{y="`: `x\"} or up{y=\"`,
+	}
+	for in, want := range cases {
+		if got := labelValueEscaper.Replace(in); got != want {
+			t.Errorf("escape(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestErrInvalidInstance_StatesTheRule. The history endpoint returns this text
+// as its 400, so it has to say what a usable name looks like.
+func TestErrInvalidInstance_StatesTheRule(t *testing.T) {
+	m, err := Lookup("cpu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.Expr("http://db-01:8081")
+	if err == nil || !strings.Contains(err.Error(), nodename.Rule) {
+		t.Errorf("Expr(url) error = %v, want it to state %q", err, nodename.Rule)
 	}
 }

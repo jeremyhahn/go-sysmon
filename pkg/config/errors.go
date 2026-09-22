@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"strings"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 )
 
 // ErrConfigParse reports a config file that exists but could not be read or
@@ -89,6 +91,59 @@ type ErrPeerURL struct {
 func (e *ErrPeerURL) Error() string {
 	return fmt.Sprintf("config: fleet peer %q has an unusable url: %s", e.Name, e.Reason)
 }
+
+// ErrPeerName reports a fleet peer whose name cannot be its fleet-wide
+// identity. A peer's name is also the Prometheus instance label its history is
+// stored under, so it is held to nodename.Rule at load: a name that breaks it
+// would otherwise surface as a history request that fails, or a chart that is
+// simply empty, long after the file was written.
+//
+// Defaulted marks a peer with no `name:` whose URL host was tried in its place
+// -- an IPv6 literal is the usual case -- so the message can say the fix is to
+// name it. Host is the URL's host and port, never the URL, for the reason
+// ErrPeerCredentials gives.
+type ErrPeerName struct {
+	Name      string
+	Host      string
+	Defaulted bool
+	Err       error
+}
+
+func (e *ErrPeerName) Error() string {
+	if e.Defaulted {
+		return fmt.Sprintf("config: fleet peer at %s has no name, and its url's host %s cannot stand in for one "+
+			"(%s); give it a name: equal to that node's fleet.local_name", e.Host, nodename.Quote(e.Name), nodename.Rule)
+	}
+	return fmt.Sprintf("config: fleet peer %s (%s) has an unusable name: %s; a peer's name is its fleet-wide "+
+		"identity and the Prometheus instance label its history is stored under", nodename.Quote(e.Name), e.Host, nodename.Rule)
+}
+
+func (e *ErrPeerName) Unwrap() error { return e.Err }
+
+// ErrLocalName reports a name for this node that cannot be its fleet-wide
+// identity. It is held to nodename.Rule for the same reason a peer name is:
+// this node's history is written under it as the Prometheus instance label,
+// and an aggregator's peer entry for this node must carry the same name.
+//
+// FromHostname marks the fallback: fleet.local_name was unset and the host's
+// own name broke the rule, so the fix is to set fleet.local_name rather than
+// to rename the machine.
+type ErrLocalName struct {
+	Name         string
+	FromHostname bool
+	Err          error
+}
+
+func (e *ErrLocalName) Error() string {
+	if e.FromHostname {
+		return fmt.Sprintf("config: fleet.local_name is not set and this host's name %s cannot stand in for it "+
+			"(%s); set fleet.local_name", nodename.Quote(e.Name), nodename.Rule)
+	}
+	return fmt.Sprintf("config: fleet.local_name %s is unusable: %s; it is this node's fleet-wide identity "+
+		"and the Prometheus instance label its history is stored under", nodename.Quote(e.Name), nodename.Rule)
+}
+
+func (e *ErrLocalName) Unwrap() error { return e.Err }
 
 // ErrPeerIsLocalName reports a fleet peer configured with this node's own name.
 //

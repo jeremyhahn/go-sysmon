@@ -195,7 +195,6 @@ fleet:
 		path,                     // the config file's absolute path
 		"198.51.100.10", "8081", // a peer's host and port
 		"198.51.100.91", "9443",
-		"198.51.100.90",      // the unnamed peer, whose NAME is its URL
 		"http://", "https://", // the transport choice
 		"/etc/ssl/private/node.pem", // the TLS material's location
 	} {
@@ -204,9 +203,11 @@ fleet:
 		}
 	}
 
-	// The third peer has no `name:`, so normalize adopts its URL as its name --
+	// The third peer has no `name:`. It used to adopt its whole URL as its name,
 	// which is how the address survived the first pass at this fix, in the entry
-	// KEY rather than its value.
+	// KEY rather than its value. Since #37 it is named after its URL's host --
+	// its fleet identity, the name GET /api/fleet already shows and routes by --
+	// so the host may appear while the port and scheme above still must not.
 	//
 	// What survives is what the dialog is for: the peers, named where they have
 	// names, and the fact that a config file is in force.
