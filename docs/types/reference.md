@@ -7,6 +7,47 @@ and the frontend decodes them — so this file is the contract between all four.
 It imports nothing from the other packages, which is what stops the dependency
 graph from becoming a circle.
 
+## Lists are never null
+
+Every slice in these types reaches the wire as a JSON array, never as `null`: a
+host with none of something sends `[]`. A nil Go slice encodes as `null`, and
+the dashboard reads these lists with `.map`, `.length` and spreads, so a single
+`null` used to be a thrown exception that blanked a panel. The owner ruled on
+#151 that an empty list and "none" are the same answer, and dropped the
+distinction.
+
+`types.ReplaceNilSlices` does it. It walks a value by reflection and replaces
+every nil slice it can reach through structs, pointers, slices and arrays with
+an empty one, so a list field added later is covered without anyone listing
+it. It runs wherever a value is finished and
+before it is shared:
+
+| Where | Covers |
+|-------|--------|
+| `collector.SystemCollector.Snapshot` | every snapshot, served or printed by the CLI |
+| the monitor, before it publishes | anything a `Snapshotter` returns, including the alerts attached on the way |
+| `fleet`, as a peer's snapshot or configuration is decoded | a peer on an older build that still sends `null` |
+| the server's `writeJSON` | every REST response built per request: fleet view, settings, history |
+
+It writes only to a slice that is nil, so a value that has been through it
+once is only read by later passes — which is what makes the later passes safe
+over published, shared data. A pass over a busy host's snapshot costs a few
+microseconds, about 1–3% of encoding it (`BenchmarkReplaceNilSlices`).
+
+The guard is `TestReplaceNilSlices_NoListInAnyPayloadEncodesAsNull`. It builds
+every wire payload with nil lists at every depth, driven by reflection over
+these types, and fails if any list encodes as `null` — or if the fixture ever
+stops reaching a list field, so it cannot pass by checking nothing. Tests at
+each call site above use `typestest.NullSlices` to check their own output the
+same way.
+
+Maps, interfaces and unexported embedded structs are not entered: a map's
+values are not addressable, rewriting one in place would write to a map other
+goroutines may be reading, and reflection will not set a field promoted from an
+unexported embedding. No payload has any of these today, and
+`TestWirePayloads_HoldNothingTheWalkCannotEnter` fails if one is added, so the
+lists inside it cannot be skipped silently.
+
 ## Snapshot
 
 The top-level structure. One of these per collection.

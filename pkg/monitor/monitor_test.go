@@ -1,6 +1,7 @@
 package monitor_test
 
 import (
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
+	"github.com/jeremyhahn/go-sysmon/pkg/types/typestest"
 )
 
 // stubSnapshotter is a test double that returns a fixed snapshot or error.
@@ -751,5 +753,53 @@ func TestStart_DiscardsThePreviousRunsSnapshot(t *testing.T) {
 		t.Fatalf("Snapshot() right after a restart = %v, %v; want it to report that "+
 			"this run has collected nothing, not the reading from before the stop",
 			snap, err)
+	}
+}
+
+// ---- The published snapshot carries no null lists (#151) -----------------
+
+// TestPublish_FillsNilListsBeforeAnyoneSeesTheSnapshot: whatever a Snapshotter
+// returns -- the collector, the serve wrapper that attaches alerts, or a
+// library caller's own -- the snapshot a subscriber receives and the one
+// Snapshot answers with encode every list as [], never null.
+func TestPublish_FillsNilListsBeforeAnyoneSeesTheSnapshot(t *testing.T) {
+	stub := &stubSnapshotter{snapshot: &types.Snapshot{
+		NPUs: []types.NPUInfo{{Name: "accel0"}}, // no engines, no clients
+	}}
+	m, err := monitor.New(stub, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
+
+	var received *types.Snapshot
+	select {
+	case received = <-sub.Ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a snapshot")
+	}
+	latest, err := m.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	for name, snap := range map[string]*types.Snapshot{"subscriber": received, "Snapshot": latest} {
+		raw, err := json.Marshal(snap)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		nulls, err := typestest.NullSlices(raw, snap)
+		if err != nil {
+			t.Fatalf("%s: NullSlices: %v", name, err)
+		}
+		if len(nulls) != 0 {
+			t.Errorf("%s: lists encoded as null: %v", name, nulls)
+		}
 	}
 }

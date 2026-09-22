@@ -16,6 +16,7 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
+	"github.com/jeremyhahn/go-sysmon/pkg/types/typestest"
 )
 
 func quiet() *slog.Logger {
@@ -905,5 +906,77 @@ func TestObserve_SilentWhileAPeerIsUnreachable(t *testing.T) {
 	}
 	if !found {
 		t.Error("the unreachable peer disappeared from the view")
+	}
+}
+
+// TestPeerPayloads_AnOlderPeersNullListsAreNotPassedOn covers #151 at the
+// fleet's door. A peer on a build from before the fix sends null for every list
+// it has none of, and this node serves that snapshot, and that configuration,
+// on as its own -- so they are normalised as they arrive, or the dashboard
+// would meet the null the local collector no longer produces.
+func TestPeerPayloads_AnOlderPeersNullListsAreNotPassedOn(t *testing.T) {
+	// Encoded from Go values with nil lists, exactly as an older build would.
+	oldSnapshot, err := json.Marshal(types.Snapshot{
+		Host: types.HostInfo{Hostname: "old"},
+		NPUs: []types.NPUInfo{{Name: "accel0"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	oldConfig, err := json.Marshal(types.ConfigView{ConfigFile: "(not set)"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(oldSnapshot), `"engines":null`) || !strings.Contains(string(oldConfig), `"entries":null`) {
+		t.Fatal("the fixture no longer carries null lists, so it cannot stand for an older peer")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string][]byte{"/api/snapshot": oldSnapshot, "/api/config": oldConfig}[r.URL.Path]
+		if body == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Errorf("writing peer response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := config.Fleet{Peers: []config.Peer{{Name: "old", URL: srv.URL}}, PollIntervalMs: 10000, TimeoutMs: 2000}
+	p := fleet.New(func() config.Fleet { return cfg },
+		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+
+	done := make(chan struct{})
+	go p.Run(done)
+	waitFor(t, func() bool { _, ok := p.PeerSnapshot("old"); return ok })
+	close(done)
+
+	peer, ok := p.PeerSnapshot("old")
+	if !ok {
+		t.Fatal("PeerSnapshot(old) returned nothing")
+	}
+	assertNoNullLists(t, "peer snapshot", peer)
+
+	view, err := p.PeerConfig("old")
+	if err != nil {
+		t.Fatalf("PeerConfig(old): %v", err)
+	}
+	assertNoNullLists(t, "peer config", view)
+}
+
+// assertNoNullLists fails if any list in v's encoding is null.
+func assertNoNullLists(t *testing.T, what string, v any) {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("%s: marshal: %v", what, err)
+	}
+	nulls, err := typestest.NullSlices(raw, v)
+	if err != nil {
+		t.Fatalf("%s: NullSlices: %v", what, err)
+	}
+	if len(nulls) != 0 {
+		t.Errorf("%s: lists encoded as null: %v", what, nulls)
 	}
 }

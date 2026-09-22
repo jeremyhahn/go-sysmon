@@ -4,6 +4,14 @@ Two ways in: poll `/api/snapshot`, or connect to `/api/events` and let the
 server push. Both carry identical JSON. Use the event stream unless you have a
 reason not to — polling re-encodes a snapshot the server already has.
 
+**Lists are never `null`.** Every array field in every JSON response and
+stream frame is `[]` when there is nothing in it — a host with no GPUs sends
+`"gpus": []`, an NPU with no engines `"engines": []`, a standalone node's fleet
+view `"nodes": []`. An empty list and "none" mean the same thing; the
+distinction is deliberately not made (#151). See
+[the types reference](../types/reference.md#lists-are-never-null) for how this
+is enforced.
+
 ## GET /api/snapshot
 
 The most recent snapshot, as JSON.

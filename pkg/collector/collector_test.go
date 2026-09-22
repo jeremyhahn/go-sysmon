@@ -2,12 +2,14 @@ package collector_test
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
+	"github.com/jeremyhahn/go-sysmon/pkg/types/typestest"
 )
 
 func silentLogger() *slog.Logger {
@@ -37,6 +39,20 @@ func TestSystemCollector_Snapshot(t *testing.T) {
 	}
 	if snap.Host.Hostname == "" {
 		t.Error("expected non-empty hostname in Snapshot")
+	}
+
+	// Whatever this host lacks -- GPUs, NPUs, RAID, containers -- is sent as
+	// an empty list, never null (#151).
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	nulls, err := typestest.NullSlices(raw, snap)
+	if err != nil {
+		t.Fatalf("NullSlices: %v", err)
+	}
+	if len(nulls) != 0 {
+		t.Errorf("this host's snapshot encodes these lists as null: %v", nulls)
 	}
 }
 

@@ -404,6 +404,10 @@ func (p *Poller) fetch(peer config.Peer, cfg config.Fleet) (*types.Snapshot, err
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSnapshotBytes)).Decode(&snap); err != nil {
 		return nil, err
 	}
+	// A peer on an older build sends null for a list it has none of, and this
+	// node serves the snapshot on as its own. Normalised here, before it is
+	// cached and shared, so this node's wire never carries null (#151).
+	types.ReplaceNilSlices(&snap)
 	return &snap, nil
 }
 
@@ -796,6 +800,8 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSnapshotBytes)).Decode(&view); err != nil {
 		return nil, err
 	}
+	// The same older-peer case as a snapshot's lists (#151).
+	types.ReplaceNilSlices(&view)
 	return &view, nil
 }
 

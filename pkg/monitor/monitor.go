@@ -355,6 +355,12 @@ func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 				// A collection error is non-fatal; the loop continues on the next tick.
 				continue
 			}
+			// Normalised here, before it is published, because this is the
+			// one door every served snapshot passes through: whatever the
+			// Snapshotter is, and whatever was attached to its result on the
+			// way (the alerts are). Once stored it is shared, and every later
+			// pass over it only reads (#151).
+			types.ReplaceNilSlices(snap)
 			m.latest.Store(snap)
 			m.broadcast(snap)
 		}

@@ -208,10 +208,13 @@ snapshot without a `full` frame ever arriving: `{"seq":2,"patch":{"r":null}}` is
 contiguous and well formed, and a cast rather than a check would have rendered
 the `null`.
 
-`gpus` and `alerts` are deliberately **not** required, and that is measured
-rather than assumed: a real snapshot from this build carries `"alerts": null` on
-a healthy node, because a nil Go slice marshals to null. The store reads both
-through `?? []`.
+`gpus` and `alerts` are deliberately **not** required. They were left out
+because a snapshot used to carry `"alerts": null` on a healthy node — a nil Go
+slice marshals to null — and the store reads both through `?? []`. The server
+no longer sends `null` for any list (#151, see
+[the types reference](../types/reference.md#lists-are-never-null)), and a patch
+that empties a list describes it as `[]`: an empty keyed order, or a
+replacement with `[]`. The leniency is now unused rather than necessary.
 
 The shape is three dotted-path tables, **derived from the `Snapshot` type**
 rather than from the fields anyone happened to think of. That distinction is

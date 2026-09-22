@@ -556,7 +556,16 @@ func (s *Server) handleSetInterval(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeJSON encodes v as a JSON response body.
-func writeJSON(w http.ResponseWriter, v any) {
+//
+// Every list in the body is sent as [] rather than null (#151). Response
+// values are built per request -- an empty fleet view, a history answer, the
+// settings view -- and are normalised here, so a handler added later cannot
+// forget to. v is taken by value, so its top level is this call's own copy;
+// what it points or refers into is either built for this request too, or is
+// shared state -- a snapshot above all -- that was normalised before it was
+// published, and which the walk therefore only reads.
+func writeJSON[T any](w http.ResponseWriter, v T) {
+	types.ReplaceNilSlices(&v)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("response encode", "err", err)

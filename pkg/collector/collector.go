@@ -164,8 +164,15 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 		}
 	}
 
-	// Always read the latest cached data from every collector,
-	// even those that were skipped on this tick.
+	s.assemble(&snap)
+	return snap, nil
+}
+
+// assemble fills snap from the latest cached data of every collector, even
+// those skipped on this tick, and joins the sections that refer to each other.
+// It reads only what the collectors have already cached, so on a collector that
+// has never run it produces the snapshot of a host with none of anything.
+func (s *SystemCollector) assemble(snap *types.Snapshot) {
 	snap.Host = s.host.Info()
 	snap.CPUSummary = s.cpu.Summary()
 	snap.CPUs = s.cpu.Info()
@@ -192,7 +199,12 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 	// Merge per-core temperatures into CPUInfo entries.
 	mergeSensorIntoCPUs(snap.CPUs, snap.Sensors)
 
-	return snap, nil
+	// A list this host has none of -- no GPUs, no RAID members, no containers
+	// -- is left nil by the collector that builds it, and a nil slice encodes
+	// as JSON null. The wire never carries null for a list (#151), and this is
+	// the one point every snapshot, served or printed by the CLI, leaves the
+	// collector.
+	types.ReplaceNilSlices(snap)
 }
 
 // mergeSensorIntoCPUs populates CPUInfo.TemperatureCelsius and VoltageV
