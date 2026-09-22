@@ -119,7 +119,7 @@
         <!-- Utilization bars + memory summary -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <!-- Utilization bars -->
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3 space-y-2">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium">
                 Utilization
@@ -148,7 +148,7 @@
           </div>
 
           <!-- Memory summary -->
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3 space-y-2">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium">
                 Memory
@@ -171,7 +171,7 @@
 
         <!-- Gauges row -->
         <div class="grid grid-cols-2 gap-4">
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-2 items-center">
               <p class="text-xs text-base-content/60 uppercase tracking-wider">
                 GPU Util
@@ -179,7 +179,7 @@
               <GaugeChart value={gpu.gpu_util_percent} label="GPU" height="140px" />
             </div>
           </div>
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-2 items-center">
               <p class="text-xs text-base-content/60 uppercase tracking-wider">
                 VRAM
@@ -191,7 +191,7 @@
 
         <!-- Charts grid -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 GPU Usage ({windowLabel})
@@ -212,7 +212,7 @@
             </div>
           </div>
 
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 Memory Usage ({windowLabel})
@@ -233,7 +233,7 @@
             </div>
           </div>
 
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 Temperature ({windowLabel})
@@ -254,7 +254,7 @@
             </div>
           </div>
 
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 Power Draw ({windowLabel})
@@ -275,7 +275,7 @@
             </div>
           </div>
 
-          <div class="card bg-base-300 shadow-none lg:col-span-2">
+          <div class="card bg-base-100 border border-base-300 shadow-none lg:col-span-2">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 PCIe Throughput ({windowLabel})

@@ -529,7 +529,7 @@
 
           <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
             <!-- CPU PSI -->
-            <div class="card bg-base-300 shadow-none">
+            <div class="card bg-base-100 border border-base-300 shadow-none">
               <div class="card-body p-3 space-y-2">
                 <h4
                   class="text-xs text-base-content/60 uppercase tracking-wider font-medium"
@@ -560,7 +560,7 @@
             </div>
 
             <!-- Memory PSI -->
-            <div class="card bg-base-300 shadow-none">
+            <div class="card bg-base-100 border border-base-300 shadow-none">
               <div class="card-body p-3 space-y-2">
                 <h4
                   class="text-xs text-base-content/60 uppercase tracking-wider font-medium"
@@ -591,7 +591,7 @@
             </div>
 
             <!-- IO PSI -->
-            <div class="card bg-base-300 shadow-none">
+            <div class="card bg-base-100 border border-base-300 shadow-none">
               <div class="card-body p-3 space-y-2">
                 <h4
                   class="text-xs text-base-content/60 uppercase tracking-wider font-medium"

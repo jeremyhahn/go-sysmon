@@ -63,7 +63,7 @@ covers, not on `base-200` alone:
 | `base-100` | navbar, tab strip, footer | 4.88:1 and up |
 | `base-200` | cards | 4.59:1 and up |
 | a clickable table row, hovered or selected | `DataTable` | same as its card |
-| `base-300` | GPU, NPU and SMART detail tiles | **4.20:1, fails**, see #156 |
+| `base-300` | the page behind the cards, a table header | **4.20:1, fails**: carries no semantic text |
 
 **Mark row state with a rule, not a fill.** A `DataTable` row used to take a
 `base-300` fill when hovered or selected, which took its status cells below AA
@@ -74,8 +74,28 @@ hairline along the top and bottom of every cell, so the row stays visibly
 selected even when a wide table is scrolled sideways. The selection marker is
 held to the 3:1 non-text floor.
 
-**`text-primary` is not a text colour on a dark card.** It measures 3.60:1 on
-dark `base-200`. Keep it for rules, rings, spinners and icons.
+**`base-300` carries no semantic text.** The four status colours measure
+4.20-4.26:1 on it in the light theme. A tile nested inside a card — the GPU,
+NPU and SMART detail tiles, the Overview pressure tiles — sits on `base-100`
+with a `base-300` border, not on a `base-300` fill (#156). What text does remain
+on `base-300` (a `DataTable` header, the DNS line on the page background) is
+`base-content` at `/70` or stronger: `/60` is 4.45:1 there. The contrast suite
+walks every tab of a fully populated fixture and fails on any semantic colour
+painted over `base-300`, or any text there below AA.
+
+**`primary` is a text colour in both themes.** daisyUI's dark `primary`,
+`#605dff`, measures 3.40:1 on dark `base-100` and 3.60:1 on `base-200`, and the
+active tab label is `text-primary`. The dark theme's `primary` is lightened to
+`oklch(68% 0.233 277.117)`, `#7b7fff` (hue and chroma kept), and its
+`primary-content` goes dark so a primary badge stays readable:
+
+| token | value | hex | on `base-100` | on `base-200` |
+|---|---|---|---|---|
+| `primary` (dark) | `oklch(68% 0.233 277.117)` | `#7b7fff` | 4.77:1 | 5.05:1 |
+| `primary-content` (dark) | `oklch(22% 0.07 277.117)` | `#14153a` | 5.28:1 on `primary` | |
+| `primary` (light, stock) | `oklch(45% 0.24 277.023)` | `#422ad5` | 8.32:1 | 7.84:1 |
+
+The charts draw nothing in `primary`, so the chart palette is unaffected.
 
 ### The dark theme is already correct
 
@@ -205,7 +225,9 @@ A short scale, used consistently:
 | `mb-3` / `mb-2` | title to content |
 
 Surfaces are three deep and no deeper: `base-300` page, `base-200` card,
-`base-300` nested card. A fourth level stops reading as depth.
+`base-100` nested tile with a `base-300` border. A fourth level stops reading
+as depth. The nested tile is not filled with `base-300`: that surface carries no
+semantic text (§1).
 
 ---
 
@@ -342,7 +364,7 @@ wrong.
 
 | | |
 |---|---|
-| light palette override | `src/app.css` |
+| light palette and dark `primary` overrides | `src/app.css` |
 | chart palette, both themes | `src/lib/palette.ts` |
 | theme state and bootstrap | `src/lib/theme.svelte.ts`, `index.html` |
 | the control | `src/components/ThemeToggle.svelte` |

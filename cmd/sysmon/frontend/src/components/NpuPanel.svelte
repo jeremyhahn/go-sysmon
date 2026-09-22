@@ -189,7 +189,7 @@
 
         <!-- Residency and utilisation, kept visibly separate -->
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3 space-y-2">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium flex items-center gap-1">
                 Residency
@@ -220,7 +220,7 @@
             </div>
           </div>
 
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3 space-y-2">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium flex items-center gap-1">
                 Utilization
@@ -246,7 +246,7 @@
         </div>
 
         <!-- Raw driver counters: counters only, never percentages -->
-        <div class="card bg-base-300 shadow-none">
+        <div class="card bg-base-100 border border-base-300 shadow-none">
           <div class="card-body p-3 space-y-2">
             <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium">
               Driver counters
@@ -308,7 +308,7 @@
 
         <!-- Charts: one series each, never mixed -->
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 Residency ({windowLabel})
@@ -338,7 +338,7 @@
             </div>
           </div>
 
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 Utilization ({windowLabel})
@@ -364,7 +364,7 @@
 
         <!-- Engines -->
         {#if npu.engines.length > 0}
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 Engines
@@ -397,7 +397,7 @@
 
         <!-- Clients -->
         {#if npu.clients.length > 0}
-          <div class="card bg-base-300 shadow-none">
+          <div class="card bg-base-100 border border-base-300 shadow-none">
             <div class="card-body p-3">
               <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
                 Clients

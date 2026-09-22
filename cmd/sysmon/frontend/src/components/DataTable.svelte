@@ -146,9 +146,11 @@
     <table class="table table-sm">
       <thead>
         <tr>
+          <!-- The header sits on base-300, where daisyUI's /60 header text
+               measures 4.45:1 in the light theme. /70 reads (#156). -->
           {#each columns as col (col.key)}
             <th
-              class="bg-base-300 whitespace-nowrap {col.align === 'right' ? 'text-right' : ''} {col.sortValue != null ? 'cursor-pointer select-none hover:bg-base-200' : ''}"
+              class="bg-base-300 text-base-content/70 whitespace-nowrap {col.align === 'right' ? 'text-right' : ''} {col.sortValue != null ? 'cursor-pointer select-none hover:bg-base-200' : ''}"
               title={col.title ?? (col.sortValue != null ? `Sort by ${col.label}` : undefined)}
               onclick={() => toggleSort(col)}
               aria-sort={ariaSort(col)}

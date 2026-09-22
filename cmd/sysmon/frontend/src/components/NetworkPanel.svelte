@@ -53,13 +53,15 @@
   <AlertBanner alerts={networkAlerts} title="Network Alert" />
 
   {#if dnsServers.length > 0}
-    <div class="text-xs text-base-content/60">
-      <span class="text-base-content/60">DNS:</span>
+    <!-- On the page background, base-300: /60 is 4.45:1 there in the light
+         theme, so this line takes /70 (#156). -->
+    <div class="text-xs text-base-content/70">
+      <span class="text-base-content/70">DNS:</span>
       {#each dnsServers as ns (ns)}
         <span class="badge badge-ghost badge-xs font-mono ml-1">{ns}</span>
       {/each}
       {#if dnsSearch.length > 0}
-        <span class="text-base-content/60 ml-2">search:</span> {dnsSearch.join(" ")}
+        <span class="text-base-content/70 ml-2">search:</span> {dnsSearch.join(" ")}
       {/if}
     </div>
   {/if}

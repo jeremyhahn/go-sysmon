@@ -168,6 +168,7 @@ async function installContrastProbe(page: Page): Promise<void> {
 
 /** The measuring helpers installContrastProbe puts on the page. */
 interface ContrastProbe {
+  rgba(value: string): [number, number, number, number];
   ratio(fg: string, bg: string): number;
   surfaceOf(el: Element): string;
   textIn(parent: Element, cls: string): number;
@@ -279,8 +280,20 @@ test.describe('the muted text ladder stays above the floor', () => {
 });
 
 
-/** Exactly the classes usageColor(), tempColor() and the alert helpers return. */
-const SEMANTIC = ['text-success', 'text-warning', 'text-error', 'text-info', 'text-base-content'];
+/**
+ * Exactly the classes usageColor(), tempColor() and the alert helpers return,
+ * plus text-primary: the active tab label and several panels' accent figures
+ * are painted in it, and in the dark theme daisyUI's stock value measured
+ * 3.40:1 on base-100 until app.css lightened it (#156).
+ */
+const SEMANTIC = [
+  'text-success',
+  'text-warning',
+  'text-error',
+  'text-info',
+  'text-primary',
+  'text-base-content',
+];
 
 /** Waits for the theme the emulated OS preference selects to be applied. */
 async function openIn(page: Page, scheme: ThemeName, path = '/'): Promise<void> {
@@ -302,11 +315,12 @@ test.describe('semantic text is readable on every surface it is painted on', () 
    * suite used to check nothing else -- which is how a selected table row came
    * to paint status text on base-300, a surface nobody had measured (#147).
    *
-   * base-300 is deliberately NOT in this list, and not because it passes. In
-   * the light theme it measures 4.20-4.26:1 for the four semantic colours,
-   * below AA, and the GPU, NPU and SMART detail tiles still paint semantic text
-   * on it. That is the same gap outside the table, and fixing it is a design
-   * decision of its own (#156). Add base-300 here when it is ruled on.
+   * base-300 is not in this list, by rule rather than by omission. In the
+   * light theme the four status colours measure 4.20-4.26:1 on it, below AA,
+   * so the owner ruled that base-300 carries no semantic text at all: the GPU,
+   * NPU and SMART detail tiles that used to be filled with it now sit on
+   * base-100 with a border (#156). That rule is what the next describe block
+   * enforces, on the rendered tabs rather than on a class name.
    */
   const SURFACES = ['bg-base-100', 'bg-base-200'];
 
@@ -322,6 +336,139 @@ test.describe('semantic text is readable on every surface it is painted on', () 
           ).toBeGreaterThanOrEqual(TEXT_AA);
         }
       }
+    });
+  }
+});
+
+/** One piece of rendered text, as the base-300 walk sees it. */
+interface PaintedText {
+  text: string;
+  /** The semantic class whose colour the text is painted in, or '' if none. */
+  semantic: string;
+  onBase300: boolean;
+  ratio: number;
+}
+
+/**
+ * Every visible text element on the page: its colour, its surface, and its
+ * contrast there, measured as rendered.
+ */
+async function paintedText(page: Page, classes: string[]): Promise<PaintedText[]> {
+  return page.evaluate((classes) => {
+    const c = window.__contrast;
+    const key = (value: string) => c.rgba(value).slice(0, 3).map((x) => Math.round(x * 255)).join(',');
+
+    const colourOf = (cls: string) => {
+      const probe = document.createElement('span');
+      probe.className = cls;
+      document.body.appendChild(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    };
+    const semanticByColour = new Map(classes.map((cls) => [key(colourOf(cls)), cls]));
+    const tile = document.createElement('div');
+    tile.className = 'bg-base-300';
+    document.body.appendChild(tile);
+    const base300 = key(getComputedStyle(tile).backgroundColor);
+    tile.remove();
+
+    const seen = new Set<Element>();
+    const out: PaintedText[] = [];
+    const walker = document.createTreeWalker(document.querySelector('main')!, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n != null; n = walker.nextNode()) {
+      const el = n.parentElement;
+      if (el == null || seen.has(el) || n.textContent!.trim() === '') continue;
+      seen.add(el);
+      const style = getComputedStyle(el);
+      if (el.getClientRects().length === 0 || style.visibility === 'hidden') continue;
+      const surface = c.surfaceOf(el);
+      out.push({
+        text: n.textContent!.trim().slice(0, 40),
+        semantic: semanticByColour.get(key(style.color)) ?? '',
+        onBase300: key(surface) === base300,
+        ratio: c.ratio(style.color, surface),
+      });
+    }
+    return out;
+  }, classes);
+}
+
+/**
+ * base-300 carries no semantic text (#156).
+ *
+ * The owner's ruling, enforced where it can actually be broken: on the pages
+ * as rendered. Every tab is opened on a fixture that fills in the panels this
+ * was about -- a discrete GPU, an NPU, an NVMe disk reporting wear, spare,
+ * media errors and time over its temperature thresholds -- and every visible
+ * piece of text is checked for the colour it is painted in and the surface
+ * under it. A tile moved back onto a base-300 fill fails here, whichever
+ * panel it is in.
+ *
+ * base-300 still exists as the page behind the cards and as a table header;
+ * the text there is base-content, which reads on it, and is measured too.
+ */
+test.describe('base-300 carries no semantic text', () => {
+  const STATUS = SEMANTIC.filter((cls) => cls !== 'text-base-content');
+
+  /** Every tab, with a piece of text that shows its panel has rendered. */
+  const TABS: [string, RegExp][] = [
+    ['Overview', /Pressure/],
+    ['Host', /Load Averages/],
+    ['CPU', /CPU Usage/],
+    ['GPU', /Utilization/],
+    ['NPU', /Residency/],
+    ['Memory', /Memory Usage/],
+    ['Storage', /Health & Endurance/],
+    ['Network', /Traffic Rate/],
+    ['Virtualization', /Virtual Machines/],
+    ['Containers', /Containers?/],
+  ];
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`${scheme} theme`, async ({ page }) => {
+      await mockSnapshotFeed(page, {
+        gpus: 1,
+        containers: 3,
+        vms: 2,
+        images: 2,
+        smartAttrs: true,
+        disks: [
+          {
+            life_remaining_percent: 12,
+            wear_level_percent: 88,
+            available_spare_percent: 4,
+            spare_threshold_percent: 10,
+            media_errors: 3,
+            error_log_entries: 7,
+            unsafe_shutdowns: 41,
+            warning_temp_time_minutes: 18,
+            critical_temp_time_minutes: 2,
+          },
+        ],
+      });
+      await openIn(page, scheme);
+
+      const offenders: string[] = [];
+      let measuredSemantic = 0;
+      for (const [label, marker] of TABS) {
+        await page.getByRole('button', { name: label, exact: true }).click();
+        await expect(page.locator('main').getByText(marker).first()).toBeVisible();
+
+        for (const t of await paintedText(page, STATUS)) {
+          if (t.semantic !== '') measuredSemantic++;
+          if (t.onBase300 && t.semantic !== '') {
+            offenders.push(`${label}: "${t.text}" is .${t.semantic} on base-300`);
+          }
+          if (t.ratio < TEXT_AA && (t.semantic !== '' || t.onBase300)) {
+            offenders.push(`${label}: "${t.text}" is ${t.ratio.toFixed(2)}:1, below AA`);
+          }
+        }
+      }
+
+      // Not vacuous: the fixture really does put status text on the page.
+      expect(measuredSemantic, `${scheme}: no semantic text was rendered`).toBeGreaterThan(20);
+      expect(offenders, `${scheme}: text on base-300 or below AA`).toEqual([]);
     });
   }
 });

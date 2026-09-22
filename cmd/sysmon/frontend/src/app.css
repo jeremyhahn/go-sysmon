@@ -64,3 +64,45 @@
   --color-info: oklch(53.5% 0.136 232.661);          /* #0078ae  4.61:1 */
   --color-info-content: oklch(100% 0 0);
 }
+
+/* The dark theme's primary, lightened until it can be read as text.
+ *
+ * daisyUI ships oklch(58% 0.233 277.117), #605dff, which is a button fill
+ * rather than a text colour: 3.40:1 on base-100 and 3.60:1 on base-200, below
+ * AA on both. It is text here -- the active tab label is text-primary, and so
+ * are the accent figures and icons on several panels.
+ *
+ * Hue and chroma are unchanged; only the lightness moves, as with the light
+ * theme's semantic colours above. The browser resolves it to #7b7fff:
+ *
+ *     on base-100  4.77:1      on base-200  5.05:1
+ *
+ * The -content token goes dark for the same reason the light theme's went
+ * white. daisyUI's near-white primary-content was already only 4.14:1 on the
+ * stock fill and falls to 2.96:1 on this one, so a primary badge would have
+ * become unreadable; the dark ink is 5.28:1 on it.
+ *
+ * The light theme's primary is untouched: #422ad5 reads at 7.84:1 on base-200
+ * and 8.32:1 on base-100.
+ */
+:root[data-theme="dark"] {
+  --color-primary: oklch(68% 0.233 277.117);         /* #7b7fff */
+  --color-primary-content: oklch(22% 0.07 277.117);  /* #14153a  5.28:1 on primary */
+}
+
+/* The surfaces, and which of them may carry meaning.
+ *
+ * daisyUI defines three: base-100 (navbar, tab strip, footer, a tile nested in
+ * a card), base-200 (the card) and base-300 (the page behind the cards, a
+ * table header, a hairline border). The semantic colours -- success, warning,
+ * error, info and primary -- are measured and guaranteed readable on base-100
+ * and base-200 only.
+ *
+ * base-300 must not carry semantic text. It is the darkest light-theme
+ * surface, and the light semantic colours above clear AA on base-200 by a
+ * margin of 0.1 or so: on base-300 they measure 4.20-4.26:1 and fail. A tile
+ * nested inside a card therefore sits on base-100 with a base-300 border, not
+ * on a base-300 fill (#156), and a selected table row keeps its card's surface
+ * and marks itself with a rule (#147). tests/contrast.spec.ts walks the
+ * rendered tabs and fails if any semantic colour lands on base-300.
+ */

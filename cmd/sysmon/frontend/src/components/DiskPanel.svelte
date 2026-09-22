@@ -477,7 +477,7 @@
               <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                 <!-- Life Remaining -->
                 {#if disk.life_remaining_percent > 0}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1">
+                  <div class="bg-base-100 border border-base-300 rounded-lg p-3 space-y-1">
                     <p class="text-xs text-base-content/60">Life Remaining</p>
                     <p class="text-lg font-bold {lifeColor(disk.life_remaining_percent)}">
                       {disk.life_remaining_percent}%
@@ -492,7 +492,7 @@
 
                 <!-- Wear Level -->
                 {#if disk.wear_level_percent > 0}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1">
+                  <div class="bg-base-100 border border-base-300 rounded-lg p-3 space-y-1">
                     <p class="text-xs text-base-content/60">Wear Level</p>
                     <p class="text-lg font-bold {lifeColor(100 - disk.wear_level_percent)}">
                       {disk.wear_level_percent}% used
@@ -508,7 +508,7 @@
                 <!-- Available Spare -->
                 {#if disk.available_spare_percent > 0}
                   {@const spareAlert = disk.spare_threshold_percent > 0 && disk.available_spare_percent < disk.spare_threshold_percent}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1 {spareAlert ? 'border border-error/50' : ''}">
+                  <div class="bg-base-100 border rounded-lg p-3 space-y-1 {spareAlert ? 'border-error/50' : 'border-base-300'}">
                     <p class="text-xs text-base-content/60">Available Spare</p>
                     <p class="text-lg font-bold {spareAlert ? 'text-error' : 'text-success'}">
                       {disk.available_spare_percent}%
@@ -523,7 +523,7 @@
 
                 <!-- Estimated Time Remaining -->
                 {#if disk.estimated_hours_left > 0}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1">
+                  <div class="bg-base-100 border border-base-300 rounded-lg p-3 space-y-1">
                     <p class="text-xs text-base-content/60">Est. Life Left</p>
                     <p class="text-sm font-semibold text-base-content">
                       {formatHoursHuman(disk.estimated_hours_left)}
@@ -533,7 +533,7 @@
 
                 <!-- Data Written -->
                 {#if disk.data_units_written > 0}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1">
+                  <div class="bg-base-100 border border-base-300 rounded-lg p-3 space-y-1">
                     <p class="text-xs text-base-content/60">Data Written</p>
                     <p class="text-sm font-semibold text-base-content">
                       {formatDataUnits(disk.data_units_written)}
@@ -543,7 +543,7 @@
 
                 <!-- Data Read -->
                 {#if disk.data_units_read > 0}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1">
+                  <div class="bg-base-100 border border-base-300 rounded-lg p-3 space-y-1">
                     <p class="text-xs text-base-content/60">Data Read</p>
                     <p class="text-sm font-semibold text-base-content">
                       {formatDataUnits(disk.data_units_read)}
@@ -552,7 +552,7 @@
                 {/if}
 
                 <!-- Media Errors -->
-                <div class="bg-base-300 rounded-lg p-3 space-y-1 {disk.media_errors > 0 ? 'border border-error/50' : ''}">
+                <div class="bg-base-100 border rounded-lg p-3 space-y-1 {disk.media_errors > 0 ? 'border-error/50' : 'border-base-300'}">
                   <p class="text-xs text-base-content/60">Media Errors</p>
                   <p class="text-lg font-bold {disk.media_errors > 0 ? 'text-error' : 'text-success'}">
                     {disk.media_errors}
@@ -560,7 +560,7 @@
                 </div>
 
                 <!-- Error Log Entries -->
-                <div class="bg-base-300 rounded-lg p-3 space-y-1 {disk.error_log_entries > 0 ? 'border border-error/50' : ''}">
+                <div class="bg-base-100 border rounded-lg p-3 space-y-1 {disk.error_log_entries > 0 ? 'border-error/50' : 'border-base-300'}">
                   <p class="text-xs text-base-content/60">Error Log Entries</p>
                   <p class="text-lg font-bold {disk.error_log_entries > 0 ? 'text-error' : 'text-success'}">
                     {disk.error_log_entries}
@@ -568,7 +568,7 @@
                 </div>
 
                 <!-- Unsafe Shutdowns -->
-                <div class="bg-base-300 rounded-lg p-3 space-y-1">
+                <div class="bg-base-100 border border-base-300 rounded-lg p-3 space-y-1">
                   <p class="text-xs text-base-content/60">Unsafe Shutdowns</p>
                   <p class="text-lg font-bold text-base-content">
                     {disk.unsafe_shutdowns}
@@ -577,7 +577,7 @@
 
                 <!-- Warning Temp Time -->
                 {#if disk.warning_temp_time_minutes > 0}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1 border border-warning/50">
+                  <div class="bg-base-100 border border-warning/50 rounded-lg p-3 space-y-1">
                     <p class="text-xs text-base-content/60">Warn Temp Time</p>
                     <p class="text-sm font-semibold text-warning">
                       {disk.warning_temp_time_minutes} min
@@ -587,7 +587,7 @@
 
                 <!-- Critical Temp Time -->
                 {#if disk.critical_temp_time_minutes > 0}
-                  <div class="bg-base-300 rounded-lg p-3 space-y-1 border border-error/50">
+                  <div class="bg-base-100 border border-error/50 rounded-lg p-3 space-y-1">
                     <p class="text-xs text-base-content/60">Crit Temp Time</p>
                     <p class="text-sm font-semibold text-error">
                       {disk.critical_temp_time_minutes} min
