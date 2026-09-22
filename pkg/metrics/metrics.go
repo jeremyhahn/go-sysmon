@@ -16,25 +16,32 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// Sink receives one gauge. It is the seam between "what the metrics are", which
-// is this file, and "where they go", which is an HTTP response body or a
+// Sink receives one sample. It is the seam between "what the metrics are",
+// which is this file, and "where they go", which is an HTTP response body or a
 // remote-write batch.
 //
+// Gauge and Counter are separate methods because the type is part of what a
+// sample means, not a formatting detail. rate() and increase() treat a drop in
+// a counter as a reset and a drop in a gauge as a decrease, so a monotonic
+// total published as a gauge is read wrongly after every reboot -- silently,
+// and on exactly the host an operator is asking about.
+//
 // Labels are alternating name/value pairs rather than a map, because the order
-// of a gauge's labels is part of the exposition text and a map has none.
+// of a sample's labels is part of the exposition text and a map has none.
 type Sink interface {
+	// Gauge records a value that can go up or down.
 	Gauge(name, help string, value float64, labels ...string)
+	// Counter records a cumulative total that only resets, never decreases.
+	// Its name carries the _total suffix, per Prometheus convention.
+	Counter(name, help string, value float64, labels ...string)
 }
 
-// SampleSink adapts a prom.Builder, stamping every gauge with one instant so a
-// whole snapshot arrives in the time series as a single moment rather than
-// smeared across however long the collection took.
 // Prometheus text exposition, written by hand.
 //
 // The client library would pull in a large dependency tree to re-express data
 // this package already holds in a finished form: every value is a plain gauge
-// taken from the latest snapshot, with no registry, no collectors and no
-// concurrency of its own to manage. Writing the four-line text format directly
+// or counter taken from the latest snapshot, with no registry, no collectors
+// and no concurrency of its own to manage. Writing the four-line text format directly
 // keeps the dependency surface small, which matters for something deployed onto
 // small hosts.
 //
@@ -51,10 +58,27 @@ type TextWriter struct {
 // String returns the accumulated exposition body.
 func (m *TextWriter) String() string { return m.b.String() }
 
+// Metric types, as the exposition's TYPE line spells them.
+const (
+	typeGauge   = "gauge"
+	typeCounter = "counter"
+)
+
 // Gauge writes one gauge with optional labels, preceded by HELP and TYPE the
 // first time that metric name is seen.
 func (m *TextWriter) Gauge(name, help string, value float64, labels ...string) {
-	m.header(name, help)
+	m.sample(typeGauge, name, help, value, labels)
+}
+
+// Counter writes one counter with optional labels, preceded by HELP and TYPE
+// the first time that metric name is seen.
+func (m *TextWriter) Counter(name, help string, value float64, labels ...string) {
+	m.sample(typeCounter, name, help, value, labels)
+}
+
+// sample writes one line of either type.
+func (m *TextWriter) sample(kind, name, help string, value float64, labels []string) {
+	m.header(kind, name, help)
 	m.b.WriteString(name)
 	if len(labels) > 0 {
 		m.b.WriteByte('{')
@@ -70,7 +94,7 @@ func (m *TextWriter) Gauge(name, help string, value float64, labels ...string) {
 }
 
 // header emits the HELP/TYPE preamble the first time a metric name is used.
-func (m *TextWriter) header(name, help string) {
+func (m *TextWriter) header(kind, name, help string) {
 	if m.emitted == nil {
 		m.emitted = make(map[string]bool)
 	}
@@ -78,7 +102,7 @@ func (m *TextWriter) header(name, help string) {
 		return
 	}
 	m.emitted[name] = true
-	fmt.Fprintf(&m.b, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name)
+	fmt.Fprintf(&m.b, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, kind)
 }
 
 // escapeLabel escapes the characters the exposition format reserves in label
@@ -98,10 +122,14 @@ func Bool01(b bool) float64 {
 	return 0
 }
 
-// Write describes snap to sink. It is total over a non-nil snapshot: a field
+// Write describes snap to sink. It is total over a non-nil snapshot: a gauge
 // the collector could not fill is exported as its zero rather than omitted, so
 // an alerting rule watching a series never sees it disappear at the moment it
 // matters.
+//
+// Counters are the exception, and deliberately. A counter stuck at zero reads
+// as a quiet host rather than an unmeasured one, and a zero after a real value
+// reads as a reset, so an unread counter is omitted rather than published.
 func Write(m Sink, snap *types.Snapshot) {
 	m.Gauge("sysmon_up", "1 when the exporter produced this scrape.", 1)
 	m.Gauge("sysmon_uptime_seconds", "Host uptime in seconds.", float64(snap.Host.Uptime))
@@ -124,6 +152,18 @@ func Write(m Sink, snap *types.Snapshot) {
 	m.Gauge("sysmon_memory_used_bytes", "Used physical memory.", float64(snap.Memory.UsedBytes))
 	m.Gauge("sysmon_memory_used_percent", "Used physical memory as a percentage.", snap.Memory.UsedPercent)
 	m.Gauge("sysmon_swap_used_percent", "Used swap as a percentage.", snap.Memory.SwapPercent)
+	// Paging, not occupancy: rate() over these is how much swapping is
+	// happening now, which resident swap cannot say. Gated on availability
+	// because an unreadable /proc/vmstat reports zero, and a zero counter is
+	// indistinguishable from a host that has never paged (#135).
+	if snap.Memory.SwapCountersAvailable {
+		m.Counter("sysmon_swap_in_pages_total",
+			"Pages swapped in since boot (/proc/vmstat pswpin). Multiply by the page size for bytes.",
+			float64(snap.Memory.SwapInPages))
+		m.Counter("sysmon_swap_out_pages_total",
+			"Pages swapped out since boot (/proc/vmstat pswpout). Multiply by the page size for bytes.",
+			float64(snap.Memory.SwapOutPages))
+	}
 
 	// Pressure stall: "full" is the strong signal and is the one worth alerting
 	// on, so both are exported and labelled.
@@ -203,18 +243,16 @@ func Write(m Sink, snap *types.Snapshot) {
 		m.Gauge("sysmon_npu_counters_age_seconds",
 			"Age of the carried-forward driver counters; 0 when they were read this cycle.",
 			n.CountersAgeSec, "npu", npu)
-		// NPUInfo.BusyTimeUs is deliberately NOT exported here. It is a raw
-		// cumulative driver counter, and this Sink writes gauges only -- every
-		// series it produces is declared `# TYPE gauge`. There is no honest way
-		// to publish a monotonic total through it: as a gauge it invites a
-		// rate() over something the exposition has just declared is not a
-		// counter, and any percentage derived from it would be a utilisation
+		// NPUInfo.BusyTimeUs is deliberately NOT exported here, not even as
+		// a counter. It is a raw cumulative driver counter, but it follows D0
+		// residency rather than job execution: rate() over it is a utilisation
 		// figure pinned near 100% whenever anything keeps the NPU awake,
 		// including this monitor's own polling (measured at 98.8% of resumed
-		// time with no client on the device; see types.NPUInfo).
-		// sysmon_npu_residency_percent already reports that, and says so in its
-		// name. The snapshot and the API still carry the raw counter for
-		// anybody debugging a specific driver.
+		// time with no client on the device; see types.NPUInfo). A correctly
+		// typed counter would still invite that reading.
+		// sysmon_npu_residency_percent already reports what it measures, and
+		// says so in its name. The snapshot and the API still carry the raw
+		// counter for anybody debugging a specific driver.
 	}
 
 	// Temperatures

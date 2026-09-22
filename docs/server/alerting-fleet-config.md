@@ -654,9 +654,30 @@ sysmon_alerts_firing{severity="critical"} 1
 A healthy array still exports `sysmon_raid_degraded 0`. A missing series and a
 healthy one must not look the same to an alerting rule.
 
+Everything above is a gauge. The swap paging totals are **counters**, declared
+`# TYPE ... counter`:
+
+```
+# TYPE sysmon_swap_out_pages_total counter
+sysmon_swap_out_pages_total 5310
+```
+
+`sysmon_swap_in_pages_total` and `sysmon_swap_out_pages_total` are pages
+swapped in and out since boot (`/proc/vmstat` `pswpin`/`pswpout`). Query them
+with `rate()`: that is how much swapping is happening now, which
+`sysmon_swap_used_percent` cannot say. The type matters because `rate()` treats
+a counter's drop as a reset — a reboot zeroes both — where over a gauge it
+would read as a large decrease. Multiply by the host's page size for bytes.
+
+Unlike the gauges, these are **omitted** when `/proc/vmstat` could not be read,
+rather than exported as zero. A counter stuck at zero reads as a host that has
+never paged, and one that drops to zero reads as a reset; an absent series is
+a gap somebody can see. A host that has genuinely never paged reads the file
+and exports `0`.
+
 The exposition is written directly rather than through the client library: every
-value is a plain gauge already held in finished form, so the library would add a
-large dependency tree for no gain on hosts this is deployed to.
+value is a plain gauge or counter already held in finished form, so the library
+would add a large dependency tree for no gain on hosts this is deployed to.
 
 ### Remote write and history
 

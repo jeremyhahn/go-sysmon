@@ -21,7 +21,10 @@ func richSnapshot() *types.Snapshot {
 		CPUs:       []types.CPUInfo{{UsagePercent: 10}, {UsagePercent: 30}},
 		CPUSummary: types.CPUSummary{TotalThreads: 2},
 		LoadAvg:    types.LoadAverage{Load1: 1, Load5: 2, Load15: 3},
-		Memory:     types.MemoryInfo{TotalBytes: 100, UsedBytes: 60, UsedPercent: 60, SwapPercent: 5},
+		Memory: types.MemoryInfo{
+			TotalBytes: 100, UsedBytes: 60, UsedPercent: 60, SwapPercent: 5,
+			SwapInPages: 1204, SwapOutPages: 5310, SwapCountersAvailable: true,
+		},
 		Sensors: types.SensorData{
 			CoreTemps:    []types.CoreTemp{{CoreID: 0, TempCelsius: 44}},
 			PackagePower: []types.PackagePower{{PackageName: "package-0", PowerW: 25}},
@@ -240,5 +243,55 @@ func TestSampleSink_DoesNotWriteIntoTheCallersLabels(t *testing.T) {
 		if reused[i] != "" {
 			t.Fatalf("the sink wrote %q into the caller's slice at index %d", reused[i], i)
 		}
+	}
+}
+
+// TestSampleSink_CounterIsPushedLikeAGauge: remote write carries samples and
+// labels only, with no TYPE, so a counter arrives exactly as a gauge would --
+// same name, value, single timestamp and instance stamping. What makes it a
+// counter downstream is the _total name and the TYPE the scrape endpoint
+// declares, and both of those are Write's job, not this sink's.
+func TestSampleSink_CounterIsPushedLikeAGauge(t *testing.T) {
+	b := prom.NewBuilder([]prom.Label{{Name: "instance", Value: "mon0"}})
+	SampleSink{Builder: b, TimeMs: 1700000000000, Instance: "omega"}.
+		Counter("sysmon_swap_out_pages_total", "", 5310, "k", "v")
+
+	series := b.Drain()
+	if len(series) != 1 {
+		t.Fatalf("got %d series, want 1", len(series))
+	}
+	got := make(map[string]string)
+	for _, l := range series[0].Labels {
+		got[l.Name] = l.Value
+	}
+	if got["__name__"] != "sysmon_swap_out_pages_total" || got["instance"] != "omega" || got["k"] != "v" {
+		t.Errorf("labels = %v, want the counter's name, its own label and instance omega", got)
+	}
+	if len(series[0].Samples) != 1 {
+		t.Fatalf("got %d samples, want 1", len(series[0].Samples))
+	}
+	if s := series[0].Samples[0]; s.Value != 5310 || s.TimeMs != 1700000000000 {
+		t.Errorf("sample = %+v, want value 5310 at 1700000000000", s)
+	}
+}
+
+// TestSampleSink_PushesTheSwapCounters: with the counters readable, both are
+// pushed. The scrape-versus-push test would catch one side dropping them, but
+// only if the fixture carries them; this pins that it does.
+func TestSampleSink_PushesTheSwapCounters(t *testing.T) {
+	b := prom.NewBuilder(nil)
+	Write(SampleSink{Builder: b, TimeMs: 1}, richSnapshot())
+
+	pushed := make(map[string]float64)
+	for _, s := range b.Drain() {
+		for _, l := range s.Labels {
+			if l.Name == "__name__" && len(s.Samples) > 0 {
+				pushed[l.Value] = s.Samples[0].Value
+			}
+		}
+	}
+	if pushed["sysmon_swap_in_pages_total"] != 1204 || pushed["sysmon_swap_out_pages_total"] != 5310 {
+		t.Errorf("swap counters pushed as in=%v out=%v, want 1204 and 5310",
+			pushed["sysmon_swap_in_pages_total"], pushed["sysmon_swap_out_pages_total"])
 	}
 }

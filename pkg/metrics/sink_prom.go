@@ -10,6 +10,9 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/prom"
 )
 
+// SampleSink adapts a prom.Builder, stamping every sample with one instant so a
+// whole snapshot arrives in the time series as a single moment rather than
+// smeared across however long the collection took.
 type SampleSink struct {
 	Builder *prom.Builder
 	TimeMs  int64
@@ -24,6 +27,19 @@ type SampleSink struct {
 // Gauge implements Sink. The help text is dropped: remote write carries samples
 // and labels, and Prometheus takes its HELP from the scrape endpoint.
 func (s SampleSink) Gauge(name, _ string, value float64, labels ...string) {
+	s.add(name, value, labels)
+}
+
+// Counter implements Sink. Remote write has no per-sample type, so a counter is
+// pushed exactly as a gauge is; its _total name and the TYPE the scrape
+// endpoint declares are what mark it as a counter downstream.
+func (s SampleSink) Counter(name, _ string, value float64, labels ...string) {
+	s.add(name, value, labels)
+}
+
+// add appends one sample, stamped with the sink's instant and, when set, the
+// node it describes.
+func (s SampleSink) add(name string, value float64, labels []string) {
 	if s.Instance != "" {
 		// Copied rather than appended in place: labels is the caller's backing
 		// array, and appending into spare capacity would write a label into a

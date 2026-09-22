@@ -415,10 +415,9 @@ the device at all, and its lifetime total sat within 2% of
 by the sampling interval yields a utilisation figure pinned near 100% whenever
 anything keeps the NPU awake — including this monitor's own polling. So no
 percentage is derived from it anywhere, and `pkg/metrics` does not export it at
-all, because that package writes gauges only and a monotonic total published as
-a gauge invites a `rate()` over something the exposition has just declared is
-not a counter. The snapshot and the API still carry it for anyone debugging a
-specific driver.
+all — not even as a counter, because a correctly typed counter would still
+invite exactly that `rate()`. The snapshot and the API still carry it for anyone
+debugging a specific driver.
 
 ### Why counters go stale on purpose, and why this is a slow-tier collector
 

@@ -90,6 +90,11 @@ reports — so an unread reading must not be mistaken for a quiet one. Multiply
 by `page_size_bytes` for bytes; the kernel counts pages, and that is not 4096
 everywhere.
 
+`GET /metrics` exports the two totals as Prometheus counters,
+`sysmon_swap_in_pages_total` and `sysmon_swap_out_pages_total`, and only when
+`swap_counters_available` is true — see
+[the Prometheus section](../server/alerting-fleet-config.md#prometheus).
+
 Hardware: `dimms` (array of `DIMMInfo`), `temp_sensor_detected`.
 
 ### DIMMInfo

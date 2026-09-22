@@ -235,3 +235,116 @@ func TestRender_NoSyncPercentWhenTheSyncStateWasNeverRead(t *testing.T) {
 		t.Error("the hardware volume lost its other RAID series too")
 	}
 }
+
+// TestTextWriter_GaugeAndCounterDeclareTheirTypes pins the exact exposition
+// text for both kinds. The TYPE line is what tells Prometheus how rate() and
+// increase() must treat a drop: over a counter it is a reset, over a gauge it
+// is a decrease. Declaring the wrong one is silent and produces the wrong
+// answer on exactly the host that rebooted.
+func TestTextWriter_GaugeAndCounterDeclareTheirTypes(t *testing.T) {
+	m := &TextWriter{}
+	m.Gauge("sysmon_g", "A gauge.", 1.5, "device", "sda")
+	m.Gauge("sysmon_g", "A gauge.", 2, "device", "sdb")
+	m.Counter("sysmon_c_total", "A counter.", 42)
+	m.Counter("sysmon_l_total", "A labelled counter.", 7, "a", "x", "b", "y")
+
+	want := "# HELP sysmon_g A gauge.\n" +
+		"# TYPE sysmon_g gauge\n" +
+		"sysmon_g{device=\"sda\"} 1.5\n" +
+		"sysmon_g{device=\"sdb\"} 2\n" +
+		"# HELP sysmon_c_total A counter.\n" +
+		"# TYPE sysmon_c_total counter\n" +
+		"sysmon_c_total 42\n" +
+		"# HELP sysmon_l_total A labelled counter.\n" +
+		"# TYPE sysmon_l_total counter\n" +
+		"sysmon_l_total{a=\"x\",b=\"y\"} 7\n"
+	if got := m.String(); got != want {
+		t.Errorf("exposition mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestTextWriter_CounterKeepsFullPrecision guards the value formatting for
+// counters in particular: a page count since boot runs well past the range
+// where a short float rendering would round it, and a rounded counter moves in
+// steps that rate() reads as bursts.
+func TestTextWriter_CounterKeepsFullPrecision(t *testing.T) {
+	m := &TextWriter{}
+	m.Counter("sysmon_c_total", "A counter.", 123456789)
+	if !strings.Contains(m.String(), "sysmon_c_total 1.23456789e+08\n") {
+		t.Errorf("counter value lost precision:\n%s", m.String())
+	}
+}
+
+// TestWrite_SwapPagingCountersAreCounters is the point of #135: the cumulative
+// pswpin/pswpout totals are exported, under _total names, declared as counters.
+func TestWrite_SwapPagingCountersAreCounters(t *testing.T) {
+	out := render(&types.Snapshot{Memory: types.MemoryInfo{
+		SwapInPages: 1204, SwapOutPages: 5310, SwapCountersAvailable: true,
+	}})
+
+	for _, want := range []string{
+		"# TYPE sysmon_swap_in_pages_total counter\n",
+		"sysmon_swap_in_pages_total 1204\n",
+		"# TYPE sysmon_swap_out_pages_total counter\n",
+		"sysmon_swap_out_pages_total 5310\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("exposition is missing %q\n---\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{
+		"# TYPE sysmon_swap_in_pages_total gauge",
+		"# TYPE sysmon_swap_out_pages_total gauge",
+	} {
+		if strings.Contains(out, bad) {
+			t.Errorf("a monotonic total was declared a gauge: %q", bad)
+		}
+	}
+}
+
+// TestWrite_SwapCountersOmittedWhenUnread: when /proc/vmstat could not be read
+// the collector reports zero, and a counter sitting at zero reads as a host
+// that has never paged. An absent series is a gap somebody can see; a
+// fabricated zero is not.
+func TestWrite_SwapCountersOmittedWhenUnread(t *testing.T) {
+	out := render(&types.Snapshot{Memory: types.MemoryInfo{SwapCountersAvailable: false}})
+
+	if strings.Contains(out, "sysmon_swap_in_pages_total") ||
+		strings.Contains(out, "sysmon_swap_out_pages_total") {
+		t.Errorf("an unread paging counter was exported:\n%s", out)
+	}
+	// The occupancy gauge is unaffected: it comes from /proc/meminfo, and the
+	// gauge rule of exporting a zero rather than dropping the series holds.
+	if !strings.Contains(out, "sysmon_swap_used_percent 0\n") {
+		t.Errorf("sysmon_swap_used_percent must still be exported:\n%s", out)
+	}
+}
+
+// TestWrite_ZeroSwapCountersExportedWhenRead: a host that genuinely has never
+// paged reads its counters successfully and reports zero. That zero is a
+// measurement, and it has to be published, or the series would only appear
+// the first time the host swaps.
+func TestWrite_ZeroSwapCountersExportedWhenRead(t *testing.T) {
+	out := render(&types.Snapshot{Memory: types.MemoryInfo{SwapCountersAvailable: true}})
+
+	for _, want := range []string{
+		"sysmon_swap_in_pages_total 0\n",
+		"sysmon_swap_out_pages_total 0\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("exposition is missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// TestWrite_IsDeterministicWithCounters: the same snapshot rendered twice is
+// byte-identical, counters included. The scrape-versus-push comparison and any
+// diff of two scrapes rely on it.
+func TestWrite_IsDeterministicWithCounters(t *testing.T) {
+	snap := &types.Snapshot{Memory: types.MemoryInfo{
+		SwapInPages: 1, SwapOutPages: 2, SwapCountersAvailable: true,
+	}}
+	if first, second := render(snap), render(snap); first != second {
+		t.Errorf("two renders differ\n--- first ---\n%s\n--- second ---\n%s", first, second)
+	}
+}
