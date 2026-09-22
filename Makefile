@@ -28,6 +28,7 @@ PKG_ALL := ./...
 PKG_CLI := ./pkg/cli/...
 PKG_COLLECTOR := ./pkg/collector/...
 PKG_FLEET := ./pkg/fleet/...
+PKG_METRICS := ./pkg/metrics/...
 PKG_MONITOR := ./pkg/monitor/...
 PKG_SERVER := ./pkg/server/...
 PKG_TYPES := ./pkg/types/...
@@ -79,7 +80,7 @@ ADDR ?= :8081
 INTERVAL ?= 1000
 
 .PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report check-bundle-current frontend-deps test test-cli test-collector test-monitor \
-        test-server test-types coverage-cli coverage-collector coverage-monitor coverage-server \
+        test-server test-types test-metrics coverage-cli coverage-collector coverage-monitor coverage-server coverage-metrics \
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
@@ -183,6 +184,9 @@ test-server:
 test-types:
 	go test $(PKG_TYPES) -v -count=1
 
+test-metrics:
+	go test $(PKG_METRICS) -v -count=1
+
 test-cmd:
 	go test $(PKG_CMD) -v -count=1
 
@@ -207,6 +211,10 @@ coverage-server:
 coverage-types:
 	go test $(PKG_TYPES) -coverprofile=/tmp/coverage-types.out -count=1
 	go tool cover -func=/tmp/coverage-types.out
+
+coverage-metrics:
+	go test $(PKG_METRICS) -coverprofile=/tmp/coverage-metrics.out -count=1
+	go tool cover -func=/tmp/coverage-metrics.out
 
 ## Benchmark targets
 

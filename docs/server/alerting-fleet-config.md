@@ -724,6 +724,12 @@ The exposition is written directly rather than through the client library: every
 value is a plain gauge or counter already held in finished form, so the library
 would add a large dependency tree for no gain on hosts this is deployed to.
 
+Label values come from the host (device, interface and mount names, sensor and
+accelerator names), so they are escaped exactly as the format specifies:
+backslash, double quote and line feed become `\\`, `\"` and `\n`, and every
+other byte, including non-ASCII UTF-8, is written verbatim. `HELP` text escapes
+only backslash and line feed.
+
 ### Remote write and history
 
 `GET /metrics` answers "what is true now". To keep a past, add a `prometheus`

@@ -86,7 +86,10 @@ func (m *TextWriter) sample(kind, name, help string, value float64, labels []str
 			if i > 0 {
 				m.b.WriteByte(',')
 			}
-			fmt.Fprintf(&m.b, "%s=%q", labels[i], escapeLabel(labels[i+1]))
+			m.b.WriteString(labels[i])
+			m.b.WriteString(`="`)
+			m.b.WriteString(escapeLabel(labels[i+1]))
+			m.b.WriteByte('"')
 		}
 		m.b.WriteByte('}')
 	}
@@ -102,16 +105,26 @@ func (m *TextWriter) header(kind, name, help string) {
 		return
 	}
 	m.emitted[name] = true
-	fmt.Fprintf(&m.b, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, kind)
+	fmt.Fprintf(&m.b, "# HELP %s %s\n# TYPE %s %s\n", name, escapeHelp(help), name, kind)
 }
 
-// escapeLabel escapes the characters the exposition format reserves in label
-// values.
-func escapeLabel(v string) string {
-	v = strings.ReplaceAll(v, `\`, `\\`)
-	v = strings.ReplaceAll(v, `"`, `\"`)
-	return strings.ReplaceAll(v, "\n", `\n`)
-}
+// The exposition format defines exactly these escapes. Label values escape
+// backslash, double quote and line feed; HELP text escapes only backslash and
+// line feed, because a quote carries no meaning in a comment line. Every other
+// byte -- non-ASCII UTF-8, tabs, other control characters -- is written
+// verbatim, since the format has no other escape sequences and a parser would
+// either reject one or store it literally.
+var (
+	labelEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
+	helpEscaper  = strings.NewReplacer(`\`, `\\`, "\n", `\n`)
+)
+
+// escapeLabel escapes a label value for the text exposition format. The
+// result is written between double quotes as-is; it must not be quoted again.
+func escapeLabel(v string) string { return labelEscaper.Replace(v) }
+
+// escapeHelp escapes HELP text for the text exposition format.
+func escapeHelp(v string) string { return helpEscaper.Replace(v) }
 
 // Bool01 renders a boolean as the 1/0 Prometheus expects. Exported because
 // every sink that describes a flag needs it and there should be one of it.

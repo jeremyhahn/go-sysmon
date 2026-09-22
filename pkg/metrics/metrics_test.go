@@ -121,6 +121,124 @@ func TestEscapeLabel(t *testing.T) {
 	}
 }
 
+// TestTextWriter_LabelValueExposition pins the exact bytes a label value
+// produces. The exposition format escapes only backslash, double quote and
+// line feed; every other byte, including non-ASCII UTF-8 and control
+// characters, is passed through verbatim. Escaping twice, or using Go's %q,
+// changes the string Prometheus stores.
+func TestTextWriter_LabelValueExposition(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"plain", "sda", `m{device="sda"} 1`},
+		{"empty", "", `m{device=""} 1`},
+		{"quote", `q"u`, `m{device="q\"u"} 1`},
+		{"backslash", `a\b`, `m{device="a\\b"} 1`},
+		{"newline", "a\nb", `m{device="a\nb"} 1`},
+		{"latin", "café", `m{device="café"} 1`},
+		{"cjk", "温度", `m{device="温度"} 1`},
+		{"control", "a\x01b", "m{device=\"a\x01b\"} 1"},
+		{"tab", "a\tb", "m{device=\"a\tb\"} 1"},
+		{"all reserved", "\\\"\n", `m{device="\\\"\n"} 1`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var w TextWriter
+			w.Gauge("m", "h", 1, "device", tc.value)
+			want := "# HELP m h\n# TYPE m gauge\n" + tc.want + "\n"
+			if got := w.String(); got != want {
+				t.Errorf("exposition for %q:\n got %q\nwant %q", tc.value, got, want)
+			}
+			if got := parseLabelValue(t, w.String()); got != tc.value {
+				t.Errorf("round trip: got %q, want %q", got, tc.value)
+			}
+		})
+	}
+}
+
+// TestTextWriter_MultipleLabels checks the separator and that each value is
+// escaped independently.
+func TestTextWriter_MultipleLabels(t *testing.T) {
+	var w TextWriter
+	w.Gauge("m", "h", 2, "a", `x"`, "b", "ü")
+	want := "# HELP m h\n# TYPE m gauge\n" + `m{a="x\"",b="ü"} 2` + "\n"
+	if got := w.String(); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestTextWriter_HelpEscaping follows the exposition spec for HELP text:
+// backslash and line feed are escaped, and nothing else is -- a quote in HELP
+// is literal. An unescaped newline would end the comment line early and turn
+// the rest of the help text into a malformed sample line.
+func TestTextWriter_HelpEscaping(t *testing.T) {
+	cases := []struct {
+		name string
+		help string
+		want string
+	}{
+		{"plain", "Host uptime.", `Host uptime.`},
+		{"newline", "line one\nline two", `line one\nline two`},
+		{"backslash", `C:\path`, `C:\\path`},
+		{"quote is literal", `say "hi"`, `say "hi"`},
+		{"utf8", "Température", `Température`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var w TextWriter
+			w.Gauge("m", tc.help, 1)
+			want := "# HELP m " + tc.want + "\n# TYPE m gauge\nm 1\n"
+			if got := w.String(); got != want {
+				t.Errorf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// parseLabelValue reads back the single label value of the one sample in an
+// exposition body, undoing the three escapes the format defines. It is an
+// independent reading of the spec: no Prometheus parser is in the module
+// graph, and a test that reused escapeLabel's inverse would only prove the
+// code agrees with itself.
+func parseLabelValue(t *testing.T, body string) string {
+	t.Helper()
+	start := strings.Index(body, `="`)
+	if start < 0 {
+		t.Fatalf("no label in %q", body)
+	}
+	var out strings.Builder
+	for i := start + 2; i < len(body); i++ {
+		c := body[i]
+		switch c {
+		case '"':
+			return out.String()
+		case '\\':
+			i++
+			if i >= len(body) {
+				t.Fatalf("dangling escape in %q", body)
+			}
+			switch body[i] {
+			case '\\':
+				out.WriteByte('\\')
+			case '"':
+				out.WriteByte('"')
+			case 'n':
+				out.WriteByte('\n')
+			default:
+				t.Fatalf("undefined escape \\%c in %q", body[i], body)
+			}
+		case '\n':
+			t.Fatalf("raw line feed inside a label value in %q", body)
+		default:
+			out.WriteByte(c)
+		}
+	}
+	t.Fatalf("unterminated label value in %q", body)
+	return ""
+}
+
 // TestWrite_ZeroSpareIsExported pairs with the alerting fix: a
 // suppressed zero would remove sysmon_disk_spare_percent from the scrape at the
 // exact moment spare capacity is exhausted, so a Prometheus rule watching it
