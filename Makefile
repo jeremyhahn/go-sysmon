@@ -247,6 +247,8 @@ test-e2e: build-server build-frontend
 # test-extensions is tier 1 and tier 2: the shared modules' unit tests plus a
 # harness that loads applet.js against stand-in GObject Introspection objects.
 # Both run in-process under Node, need no display, and are part of `make ci`.
+# It also runs the tier 3 runner script against stand-in desktop tools, to prove
+# its session gate fails closed.
 test-extensions:
 	node --test 'extensions/tests/*.test.js'
 

@@ -100,6 +100,55 @@ What only this tier can prove:
 - the popup builds against the actual `PopupMenu` implementation
 - the applet reaches a real server over a real event stream
 
+### The session gate
+
+No applet assertion may pass until the run has proven the desktop is there to
+be asserted on. Every setup step either proves it worked or ends the run: the
+server has to answer, Xvfb has to report its display ready (`-displayfd`, not a
+sleep), and `gsettings` has to enable the applet. After that, in order:
+
+1. Cinnamon finished starting: `Main.runState` is `RUNNING`, which Cinnamon
+   sets only after `AppletManager.init()` has resolved
+2. the panel exists
+3. the sysmon applet is in the loaded set
+4. `Main.xlet_startup_error` is false
+5. the log says `Loaded applet sysmon-go@sysmon` and has no error tagged with
+   the UUID
+
+Each step runs only if the one before it passed. When one fails, every later
+check prints as `n/a ... (not run)` instead of being evaluated, and the run
+exits non-zero even if the counters say otherwise. A desktop that never came up
+reports one failure and a list of checks that were never made.
+
+This replaced a one-shot check made as soon as Cinnamon answered D-Bus. Eval
+answers before the panel exists and before applets load, so that check raced
+startup. Job 42277 (2026-09-03) lost the race by 55 ms: "an applet is
+registered" failed, Cinnamon logged "Loaded applet" right after, and every later
+check passed. Waiting for Cinnamon's own run state removes the race.
+
+`extensions/tests/desktop-runner.test.js` runs the real script against
+stand-in executables for the desktop stack, one scenario per startup shape. It
+runs under `make test-extensions`. Healthy, slow and broken starts are covered.
+In every broken one the stand-in `gdbus` would pass any applet assertion put to
+it, so a single `ok` after a failed gate step fails the test.
+
+### The `-nan` mutter warning
+
+Every run logs this, passing runs included:
+
+```
+mutter-WARNING: Failed to use linear monitor configuration:
+                Invalid mode 1280x1024 (-nan) for monitor 'unknown unknown'
+```
+
+It is harmless. Xvfb's only RandR mode has no timings: `xrandr --verbose`
+shows dot clock, htotal and vtotal all at 0, so the refresh rate mutter works
+out is 0/0. mutter rejects its linear and fallback layouts, keeps the X server's
+current configuration, and the desktop comes up normally. Adding a timed mode
+with `xrandr --newmode`/`--addmode` does not help, because Xvfb frees the mode
+when the `xrandr` client that created it exits. The warning did not cause the
+2026-09-03 failure: that log has the same two lines as every healthy run.
+
 ### Why it is not in `make ci`
 
 It needs a Cinnamon install and software GL. The image is large, the run takes
