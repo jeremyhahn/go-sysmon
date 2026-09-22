@@ -78,6 +78,11 @@ export interface MockOptions {
    * states used to decide whether six tests ran (#35).
    */
   gpus?: number;
+  /**
+   * Replaces the NPU list. Default: the fixture's one Intel NPU. Pass 0 for a
+   * host without one, which is what decides whether the NPU tab exists.
+   */
+  npus?: number;
 }
 
 /** Builds `count` discrete GPUs with memory, utilisation and ECC populated. */
@@ -100,6 +105,17 @@ export function makeGPUs(count: number) {
     power_draw_w: 180,
     power_limit_w: 600,
     ecc_enabled: true,
+  }));
+}
+
+/** Builds `count` NPUs from the fixture's, each with a distinct utilisation. */
+export function makeNPUs(count: number) {
+  const template = snapshot.npus[0];
+  return Array.from({ length: count }, (_, i) => ({
+    ...template,
+    index: i,
+    device: `accel${i}`,
+    util_percent: 20 + i,
   }));
 }
 
@@ -212,6 +228,7 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
   }
 
   const gpus = opts.gpus == null ? snapshot.gpus : makeGPUs(opts.gpus);
+  const npus = opts.npus == null ? snapshot.npus : makeNPUs(opts.npus);
 
   const virtualization = {
     ...snapshot.virtualization,
@@ -234,6 +251,7 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
     ...snapshot,
     disks,
     gpus,
+    npus,
     virtualization,
     processes: {
       ...snapshot.processes,

@@ -42,6 +42,7 @@
   const procs = $derived(snapshot?.processes ?? null);
   const disks = $derived(snapshot?.disks ?? []);
   const gpus = $derived(snapshot?.gpus ?? []);
+  const npus = $derived(snapshot?.npus ?? []);
 
   // Sensor summary values from the monitor store derived properties.
   const maxCpuTemp = $derived(monitor.maxCpuTemp);
@@ -206,6 +207,25 @@
               VRAM {formatPercent(gpu.memory_percent)}
               {#if gpu.temperature_gpu > 0}
                 &bull; {gpu.temperature_gpu}°C
+              {/if}
+            </p>
+          </div>
+        </div>
+      {/each}
+      <!-- The gauge is fdinfo compute utilisation, the only NPU figure that
+           measures work. Residency (time awake) stays on the NPU tab, where it
+           is labelled for what it is. -->
+      {#each npus as npu (npu.index)}
+        <div class="card bg-base-200 shadow-sm">
+          <div class="card-body p-2 items-center">
+            <p class="text-xs text-base-content/60 uppercase tracking-wider">
+              NPU {npus.length > 1 ? npu.index : ""}
+            </p>
+            <GaugeChart value={npu.util_percent} label="NPU" height="140px" />
+            <p class="text-xs text-base-content/60 -mt-1">
+              {npu.state || "no runtime PM"}
+              {#if npu.temperature_c > 0}
+                &bull; {formatTemp(npu.temperature_c)}
               {/if}
             </p>
           </div>

@@ -16,19 +16,12 @@ test.describe('GPU Panel', () => {
   }
 
   test('GPU tab is visible and clickable', async ({ page }) => {
+    await mockSnapshotFeed(page, { gpus: 1 });
     await page.goto('/');
     const gpuTab = page.getByRole('button', { name: 'GPU' });
     await expect(gpuTab).toBeVisible();
     await gpuTab.click();
     await expect(gpuTab).toHaveClass(/tab-active/);
-  });
-
-  test('GPU panel shows either GPU cards or no-GPU message after data loads', async ({ page }) => {
-    await openGpuPanel(page);
-
-    // After data arrives, the panel shows either GPU cards or the empty message.
-    const content = page.locator('.card-body').first().or(page.getByText('No GPUs detected'));
-    await expect(content).toBeVisible({ timeout: 5000 });
   });
 
   test('event stream snapshot contains a gpus array', async ({ page }) => {
@@ -162,20 +155,17 @@ test.describe('GPU Panel', () => {
 /**
  * The state that used to be a skip condition, now asserted.
  *
- * "No GPUs detected" was read six times to decide whether a test should run,
- * and never once checked to be correct. A host without a GPU is the ordinary
- * case on most of this fleet, so it is the message most operators see and the
- * one that had no coverage at all (#35).
+ * A host without a GPU is the ordinary case on most of this fleet. It used to
+ * get a tab that opened onto "No GPUs detected"; it now gets no tab at all
+ * (#153), and accelerator-tabs.spec.ts covers the tab coming and going.
  */
 test.describe('GPU Panel, with no GPU', () => {
-  test('says so, rather than rendering an empty panel', async ({ page }) => {
+  test('has no GPU tab to open', async ({ page }) => {
     await mockSnapshotFeed(page, { gpus: 0 });
 
     await page.goto('/');
     await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
-    await page.getByRole('button', { name: 'GPU' }).click();
-    await page.waitForTimeout(500);
 
-    await expect(page.getByText('No GPUs detected')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'GPU', exact: true })).toHaveCount(0);
   });
 });

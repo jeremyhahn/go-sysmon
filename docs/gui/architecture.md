@@ -249,6 +249,20 @@ the single thing that makes every chart's effect re-run and ask again. Without
 it the data would be cleared and never re-fetched, and every chart would sit on
 "Loading…" looking exactly like a slow Prometheus.
 
+## Tabs
+
+The tab list is derived, not fixed. Fleet appears only when the node has
+peers, GPU only when the viewed snapshot has a non-empty `gpus`, and NPU only
+when it has a non-empty `npus`. Most hosts have neither accelerator, so they
+get no tab that would open onto "none detected". The check follows the node
+being viewed, so drilling into a peer shows that peer's hardware.
+
+When the active tab disappears, the dashboard shows the Overview. That happens
+when fleet mode is switched off or a peer lacks the previous node's GPU or NPU.
+The Overview draws one gauge per GPU and per NPU. The NPU gauge is `util_percent`,
+fdinfo compute time. Residency is time the device was awake, not work it did,
+so it stays on the NPU tab under its own label.
+
 ## Tables
 
 Every table that can grow without bound uses the shared `DataTable` component,

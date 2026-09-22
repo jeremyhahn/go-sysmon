@@ -137,9 +137,18 @@
     { id: "containers", label: "Containers" },
   ];
 
+  // Accelerator tabs appear only when the node being viewed has that hardware:
+  // most hosts have neither, and a tab that always opens onto "none detected"
+  // is noise. Keyed on the snapshot, so drilling into a peer shows the peer's
+  // hardware rather than this host's. Nil Go slices arrive as null (#151).
+  const hardwarePresent = $derived<Partial<Record<Tab, boolean>>>({
+    gpu: (snapshot?.gpus?.length ?? 0) > 0,
+    npu: (snapshot?.npus?.length ?? 0) > 0,
+  });
+
   const tabs = $derived<{ id: Tab; label: string }[]>([
     ...(fleetEnabled ? [{ id: "fleet" as Tab, label: "Fleet" }] : []),
-    ...baseTabs,
+    ...baseTabs.filter((t) => hardwarePresent[t.id] ?? true),
   ]);
 
   // Settings live in a dialog, not a tab: they are a reference you consult
@@ -157,12 +166,11 @@
     activeTab = "fleet";
   }
 
-  // A standalone node has no Fleet tab, so never leave the user stranded on
-  // one if fleet mode is turned off while the page is open.
-  // Never leave the user stranded on a tab the node does not have, which
-  // happens when fleet mode is turned off while the page is open.
+  // Never leave the user stranded on a tab the node does not have: fleet mode
+  // can be turned off while the page is open, and a peer drilled into may lack
+  // the GPU or NPU the previous node had.
   const effectiveTab = $derived<Tab>(
-    activeTab === "fleet" && !fleetEnabled ? "overview" : activeTab
+    tabs.some((t) => t.id === activeTab) ? activeTab : "overview"
   );
 
   // Fleet is the landing tab when the node has peers — but only until the user

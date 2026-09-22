@@ -71,11 +71,10 @@
   const windowLabel = $derived(history.windowLabel);
   const palette = $derived(chartPalette(theme.resolved));
 
-  const snapshot = $derived(monitor.snapshot);
   const npuResidencyHistory = $derived(monitor.npuResidencyHistory);
   const npuUtilHistory = $derived(monitor.npuUtilHistory);
 
-  const npus = $derived<NPUInfo[]>(snapshot?.npus ?? []);
+  const npus = $derived<NPUInfo[]>(monitor.snapshot?.npus ?? []);
 
   /** stateBadge styles runtime-PM state; suspended is idle, not a problem. */
   function stateBadge(state: string): string {
@@ -107,469 +106,442 @@
 </script>
 
 <div class="space-y-4">
-  {#if snapshot == null}
-    <div class="flex justify-center items-center h-32">
-      <span class="loading loading-spinner loading-md text-primary"></span>
-    </div>
-  {:else if npus.length === 0}
-    <div class="flex flex-col items-center justify-center h-64 gap-3">
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        class="h-12 w-12 text-base-content/20"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-        stroke-width="1.5"
-      >
-        <rect x="6" y="6" width="12" height="12" rx="2" />
-        <path
-          d="M10 10h4v4h-4zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"
-          stroke-linecap="round"
-        />
-      </svg>
-      <p class="text-base-content/60 text-sm">No NPUs detected</p>
-      <p class="text-base-content/60 text-xs">
-        No compute accelerator is registered under /sys/class/accel on this system.
-      </p>
-    </div>
-  {:else}
-    {#each npus as npu (npu.index)}
-      {@const residencyHistData = npuResidencyHistory[npu.index] ?? []}
-      {@const utilHistData = npuUtilHistory[npu.index] ?? []}
-      <!-- An empty state means the device reports no runtime PM at all, and
-           residency is then meaningless rather than zero. -->
-      {@const hasResidency = npu.state !== ""}
-      <!-- Stale with a zero age means the counters were never read at all:
-           the device has been asleep for every sample, so the figures are
-           unknown rather than zero. -->
-      {@const countersUnread = npu.counters_stale && npu.counters_age_sec <= 0}
+  {#each npus as npu (npu.index)}
+    {@const residencyHistData = npuResidencyHistory[npu.index] ?? []}
+    {@const utilHistData = npuUtilHistory[npu.index] ?? []}
+    <!-- An empty state means the device reports no runtime PM at all, and
+         residency is then meaningless rather than zero. -->
+    {@const hasResidency = npu.state !== ""}
+    <!-- Stale with a zero age means the counters were never read at all:
+         the device has been asleep for every sample, so the figures are
+         unknown rather than zero. -->
+    {@const countersUnread = npu.counters_stale && npu.counters_age_sec <= 0}
 
-      <div class="card bg-base-200 shadow-sm">
-        <div class="card-body p-4 space-y-4">
+    <div class="card bg-base-200 shadow-sm">
+      <div class="card-body p-4 space-y-4">
 
-          <!-- NPU header -->
-          <div class="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h3 class="font-bold text-base">
-                NPU {npu.index}: {npu.name}
-              </h3>
-              <p class="text-xs text-base-content/60 mt-0.5">
-                Driver: {npu.driver || "unknown"}
-                {#if npu.vendor}
-                  &bull; {npu.vendor}
-                {/if}
-                {#if npu.device}
-                  &bull; {npu.device}
-                {/if}
-              </p>
-            </div>
-            <div class="flex flex-wrap gap-2 text-xs">
-              {#if npu.pci_bus_id}
-                <span class="badge badge-outline badge-xs font-mono">
-                  PCI {npu.pci_bus_id}
-                </span>
+        <!-- NPU header -->
+        <div class="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 class="font-bold text-base">
+              NPU {npu.index}: {npu.name}
+            </h3>
+            <p class="text-xs text-base-content/60 mt-0.5">
+              Driver: {npu.driver || "unknown"}
+              {#if npu.vendor}
+                &bull; {npu.vendor}
               {/if}
-              {#if npu.pcie_gen_current > 0}
-                <span class="badge badge-outline badge-xs">
-                  PCIe Gen{npu.pcie_gen_current}
-                  {#if npu.pcie_width_current > 0}
-                    x{npu.pcie_width_current}
-                  {/if}
-                  {#if npu.pcie_gen_max > 0 && npu.pcie_width_max > 0}
-                    / Gen{npu.pcie_gen_max} x{npu.pcie_width_max}
-                  {/if}
-                </span>
+              {#if npu.device}
+                &bull; {npu.device}
               {/if}
-              {#if npu.state}
-                <span class="badge badge-xs {stateBadge(npu.state)}">{npu.state}</span>
-              {:else}
-                <span
-                  class="tooltip tooltip-left"
-                  data-tip="This device does not report runtime power management, so no residency figure is available."
-                >
-                  <span class="badge badge-outline badge-xs">no runtime PM</span>
-                </span>
-              {/if}
-              {#if npu.power_state}
-                <span class="badge badge-outline badge-xs font-mono">{npu.power_state}</span>
-              {/if}
-              {#if npu.sched_mode}
-                <span class="badge badge-outline badge-xs">sched: {npu.sched_mode}</span>
-              {/if}
-              {#if npu.counters_stale}
-                <!-- Informational, not a warning: see STALE_HELP. -->
-                <span
-                  class="tooltip tooltip-left"
-                  data-tip={countersUnread ? UNREAD_HELP : STALE_HELP}
-                >
-                  <span class="badge badge-info badge-outline badge-xs gap-1">
-                    {#if countersUnread}
-                      counters not read while suspended
-                    {:else}
-                      counters cached &bull; {formatAge(npu.counters_age_sec)} old
-                    {/if}
-                  </span>
-                </span>
-              {/if}
-            </div>
+            </p>
           </div>
-
-          <!-- Residency and utilisation, kept visibly separate -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="card bg-base-300 shadow-none">
-              <div class="card-body p-3 space-y-2">
-                <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium flex items-center gap-1">
-                  Residency
-                  <span class="tooltip tooltip-right" data-tip={RESIDENCY_HELP}>
-                    <span class="badge badge-ghost badge-xs cursor-help">?</span>
-                  </span>
-                </h4>
-                {#if hasResidency}
-                  <p class="text-sm font-semibold {usageColor(npu.residency_percent)}">
-                    {formatPercent(npu.residency_percent)}
-                  </p>
-                  <progress
-                    class="progress w-full h-2 {usageProgressColor(npu.residency_percent)}"
-                    value={npu.residency_percent}
-                    max="100"
-                  ></progress>
-                  <p class="text-xs text-base-content/60">
-                    Time powered up, not work done &bull; awake {formatMs(npu.active_time_ms)},
-                    suspended {formatMs(npu.suspended_time_ms)}
-                  </p>
-                {:else}
-                  <p class="text-sm font-semibold text-base-content/60">Not reported</p>
-                  <p class="text-xs text-base-content/60">
-                    This device exposes no runtime power management, so there is no
-                    residency to report.
-                  </p>
+          <div class="flex flex-wrap gap-2 text-xs">
+            {#if npu.pci_bus_id}
+              <span class="badge badge-outline badge-xs font-mono">
+                PCI {npu.pci_bus_id}
+              </span>
+            {/if}
+            {#if npu.pcie_gen_current > 0}
+              <span class="badge badge-outline badge-xs">
+                PCIe Gen{npu.pcie_gen_current}
+                {#if npu.pcie_width_current > 0}
+                  x{npu.pcie_width_current}
                 {/if}
-              </div>
-            </div>
+                {#if npu.pcie_gen_max > 0 && npu.pcie_width_max > 0}
+                  / Gen{npu.pcie_gen_max} x{npu.pcie_width_max}
+                {/if}
+              </span>
+            {/if}
+            {#if npu.state}
+              <span class="badge badge-xs {stateBadge(npu.state)}">{npu.state}</span>
+            {:else}
+              <span
+                class="tooltip tooltip-left"
+                data-tip="This device does not report runtime power management, so no residency figure is available."
+              >
+                <span class="badge badge-outline badge-xs">no runtime PM</span>
+              </span>
+            {/if}
+            {#if npu.power_state}
+              <span class="badge badge-outline badge-xs font-mono">{npu.power_state}</span>
+            {/if}
+            {#if npu.sched_mode}
+              <span class="badge badge-outline badge-xs">sched: {npu.sched_mode}</span>
+            {/if}
+            {#if npu.counters_stale}
+              <!-- Informational, not a warning: see STALE_HELP. -->
+              <span
+                class="tooltip tooltip-left"
+                data-tip={countersUnread ? UNREAD_HELP : STALE_HELP}
+              >
+                <span class="badge badge-info badge-outline badge-xs gap-1">
+                  {#if countersUnread}
+                    counters not read while suspended
+                  {:else}
+                    counters cached &bull; {formatAge(npu.counters_age_sec)} old
+                  {/if}
+                </span>
+              </span>
+            {/if}
+          </div>
+        </div>
 
-            <div class="card bg-base-300 shadow-none">
-              <div class="card-body p-3 space-y-2">
-                <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium flex items-center gap-1">
-                  Utilization
-                  <span class="tooltip tooltip-left" data-tip={UTILIZATION_HELP}>
-                    <span class="badge badge-ghost badge-xs cursor-help">?</span>
-                  </span>
-                </h4>
-                <p class="text-sm font-semibold {usageColor(npu.util_percent)}">
-                  {formatPercent(npu.util_percent)}
+        <!-- Residency and utilisation, kept visibly separate -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="card bg-base-300 shadow-none">
+            <div class="card-body p-3 space-y-2">
+              <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium flex items-center gap-1">
+                Residency
+                <span class="tooltip tooltip-right" data-tip={RESIDENCY_HELP}>
+                  <span class="badge badge-ghost badge-xs cursor-help">?</span>
+                </span>
+              </h4>
+              {#if hasResidency}
+                <p class="text-sm font-semibold {usageColor(npu.residency_percent)}">
+                  {formatPercent(npu.residency_percent)}
                 </p>
                 <progress
-                  class="progress w-full h-2 {usageProgressColor(npu.util_percent)}"
-                  value={npu.util_percent}
+                  class="progress w-full h-2 {usageProgressColor(npu.residency_percent)}"
+                  value={npu.residency_percent}
                   max="100"
                 ></progress>
                 <p class="text-xs text-base-content/60">
-                  Compute time from DRM fdinfo &bull;
-                  {npu.client_count}
-                  {npu.client_count === 1 ? "client" : "clients"}
+                  Time powered up, not work done &bull; awake {formatMs(npu.active_time_ms)},
+                  suspended {formatMs(npu.suspended_time_ms)}
                 </p>
-              </div>
+              {:else}
+                <p class="text-sm font-semibold text-base-content/60">Not reported</p>
+                <p class="text-xs text-base-content/60">
+                  This device exposes no runtime power management, so there is no
+                  residency to report.
+                </p>
+              {/if}
             </div>
           </div>
 
-          <!-- Raw driver counters: counters only, never percentages -->
           <div class="card bg-base-300 shadow-none">
             <div class="card-body p-3 space-y-2">
-              <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium">
-                Driver counters
-                {#if npu.counters_stale}
-                  <span
-                    class="tooltip tooltip-right"
-                    data-tip={countersUnread ? UNREAD_HELP : STALE_HELP}
-                  >
-                    <span class="badge badge-info badge-outline badge-xs ml-1">
-                      {#if countersUnread}
-                        not read while suspended
-                      {:else}
-                        cached {formatAge(npu.counters_age_sec)} ago
-                      {/if}
-                    </span>
-                  </span>
-                {/if}
+              <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium flex items-center gap-1">
+                Utilization
+                <span class="tooltip tooltip-left" data-tip={UTILIZATION_HELP}>
+                  <span class="badge badge-ghost badge-xs cursor-help">?</span>
+                </span>
               </h4>
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs text-base-content/80">
-                <div class="flex justify-between gap-2">
-                  <span class="text-base-content/60 flex items-center gap-1">
-                    Busy time (cumulative)
-                    <span class="tooltip tooltip-right" data-tip={BUSY_TIME_HELP}>
-                      <span class="badge badge-ghost badge-xs cursor-help">?</span>
-                    </span>
-                  </span>
-                  <span class="font-semibold {npu.counters_stale ? 'text-base-content/60' : ''}">
-                    {#if countersUnread && npu.busy_time_us === 0}
-                      not read
+              <p class="text-sm font-semibold {usageColor(npu.util_percent)}">
+                {formatPercent(npu.util_percent)}
+              </p>
+              <progress
+                class="progress w-full h-2 {usageProgressColor(npu.util_percent)}"
+                value={npu.util_percent}
+                max="100"
+              ></progress>
+              <p class="text-xs text-base-content/60">
+                Compute time from DRM fdinfo &bull;
+                {npu.client_count}
+                {npu.client_count === 1 ? "client" : "clients"}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Raw driver counters: counters only, never percentages -->
+        <div class="card bg-base-300 shadow-none">
+          <div class="card-body p-3 space-y-2">
+            <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium">
+              Driver counters
+              {#if npu.counters_stale}
+                <span
+                  class="tooltip tooltip-right"
+                  data-tip={countersUnread ? UNREAD_HELP : STALE_HELP}
+                >
+                  <span class="badge badge-info badge-outline badge-xs ml-1">
+                    {#if countersUnread}
+                      not read while suspended
                     {:else}
-                      {formatCounterUs(npu.busy_time_us)}
-                      {#if npu.counters_stale}
-                        <span class="text-info">(cached)</span>
-                      {/if}
+                      cached {formatAge(npu.counters_age_sec)} ago
                     {/if}
                   </span>
-                </div>
-                <div class="flex justify-between gap-2">
-                  <span class="text-base-content/60 flex items-center gap-1">
-                    memory_utilization
-                    <span class="tooltip tooltip-left" data-tip={MEMORY_COUNTER_HELP}>
-                      <span class="badge badge-ghost badge-xs cursor-help">?</span>
-                    </span>
+                </span>
+              {/if}
+            </h4>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs text-base-content/80">
+              <div class="flex justify-between gap-2">
+                <span class="text-base-content/60 flex items-center gap-1">
+                  Busy time (cumulative)
+                  <span class="tooltip tooltip-right" data-tip={BUSY_TIME_HELP}>
+                    <span class="badge badge-ghost badge-xs cursor-help">?</span>
                   </span>
-                  <span class="font-semibold {npu.counters_stale ? 'text-base-content/60' : ''}">
-                    {#if countersUnread && npu.memory_utilization_bytes === 0}
-                      not read
-                    {:else}
-                      {formatBytes(npu.memory_utilization_bytes)}
-                      {#if npu.counters_stale}
-                        <span class="text-info">(cached)</span>
-                      {/if}
+                </span>
+                <span class="font-semibold {npu.counters_stale ? 'text-base-content/60' : ''}">
+                  {#if countersUnread && npu.busy_time_us === 0}
+                    not read
+                  {:else}
+                    {formatCounterUs(npu.busy_time_us)}
+                    {#if npu.counters_stale}
+                      <span class="text-info">(cached)</span>
                     {/if}
+                  {/if}
+                </span>
+              </div>
+              <div class="flex justify-between gap-2">
+                <span class="text-base-content/60 flex items-center gap-1">
+                  memory_utilization
+                  <span class="tooltip tooltip-left" data-tip={MEMORY_COUNTER_HELP}>
+                    <span class="badge badge-ghost badge-xs cursor-help">?</span>
                   </span>
-                </div>
+                </span>
+                <span class="font-semibold {npu.counters_stale ? 'text-base-content/60' : ''}">
+                  {#if countersUnread && npu.memory_utilization_bytes === 0}
+                    not read
+                  {:else}
+                    {formatBytes(npu.memory_utilization_bytes)}
+                    {#if npu.counters_stale}
+                      <span class="text-info">(cached)</span>
+                    {/if}
+                  {/if}
+                </span>
               </div>
             </div>
           </div>
+        </div>
 
-          <!-- Charts: one series each, never mixed -->
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div class="card bg-base-300 shadow-none">
-              <div class="card-body p-3">
-                <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  Residency ({windowLabel})
-                </h4>
-                {#if hasResidency}
-                  <!-- No catalogued history metric for NPUs, so this is the
-                       live series only. -->
-                  <MetricChart
-                    series={[
-                      {
-                        label: "Residency %",
-                        data: residencyHistData,
-                        color: usageEchartsColor(npu.residency_percent, palette.usage),
-                        formatter: (v) => `${v.toFixed(1)}%`,
-                      },
-                    ]}
-                    height="120px"
-                  />
-                  <p class="text-xs text-base-content/60 mt-1">
-                    Share of each interval the device was powered up.
-                  </p>
-                {:else}
-                  <p class="text-xs text-base-content/60">
-                    No runtime power management on this device.
-                  </p>
-                {/if}
-              </div>
-            </div>
-
-            <div class="card bg-base-300 shadow-none">
-              <div class="card-body p-3">
-                <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  Utilization ({windowLabel})
-                </h4>
+        <!-- Charts: one series each, never mixed -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="card bg-base-300 shadow-none">
+            <div class="card-body p-3">
+              <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
+                Residency ({windowLabel})
+              </h4>
+              {#if hasResidency}
+                <!-- No catalogued history metric for NPUs, so this is the
+                     live series only. -->
                 <MetricChart
                   series={[
                     {
-                      label: "Utilization %",
-                      data: utilHistData,
-                      color: "#38bdf8",
+                      label: "Residency %",
+                      data: residencyHistData,
+                      color: usageEchartsColor(npu.residency_percent, palette.usage),
                       formatter: (v) => `${v.toFixed(1)}%`,
                     },
                   ]}
                   height="120px"
                 />
                 <p class="text-xs text-base-content/60 mt-1">
-                  Compute time from DRM fdinfo. A flat 0% means no work, or a
-                  driver that does not report it.
+                  Share of each interval the device was powered up.
                 </p>
-              </div>
+              {:else}
+                <p class="text-xs text-base-content/60">
+                  No runtime power management on this device.
+                </p>
+              {/if}
             </div>
           </div>
 
-          <!-- Engines -->
-          {#if npu.engines.length > 0}
-            <div class="card bg-base-300 shadow-none">
-              <div class="card-body p-3">
-                <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  Engines
-                </h4>
-                <div class="overflow-x-auto">
-                  <table class="table table-xs table-zebra">
-                    <thead>
+          <div class="card bg-base-300 shadow-none">
+            <div class="card-body p-3">
+              <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
+                Utilization ({windowLabel})
+              </h4>
+              <MetricChart
+                series={[
+                  {
+                    label: "Utilization %",
+                    data: utilHistData,
+                    color: "#38bdf8",
+                    formatter: (v) => `${v.toFixed(1)}%`,
+                  },
+                ]}
+                height="120px"
+              />
+              <p class="text-xs text-base-content/60 mt-1">
+                Compute time from DRM fdinfo. A flat 0% means no work, or a
+                driver that does not report it.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Engines -->
+        {#if npu.engines.length > 0}
+          <div class="card bg-base-300 shadow-none">
+            <div class="card-body p-3">
+              <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
+                Engines
+              </h4>
+              <div class="overflow-x-auto">
+                <table class="table table-xs table-zebra">
+                  <thead>
+                    <tr>
+                      <th>Engine</th>
+                      <th>Utilization</th>
+                      <th>Engine time (cumulative)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each npu.engines as engine (engine.name)}
                       <tr>
-                        <th>Engine</th>
-                        <th>Utilization</th>
-                        <th>Engine time (cumulative)</th>
+                        <td class="font-mono">{engine.name}</td>
+                        <td class="{usageColor(engine.busy_percent)} font-semibold">
+                          {formatPercent(engine.busy_percent)}
+                        </td>
+                        <td>{formatCounterNs(engine.busy_ns)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {#each npu.engines as engine (engine.name)}
-                        <tr>
-                          <td class="font-mono">{engine.name}</td>
-                          <td class="{usageColor(engine.busy_percent)} font-semibold">
-                            {formatPercent(engine.busy_percent)}
-                          </td>
-                          <td>{formatCounterNs(engine.busy_ns)}</td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
+                    {/each}
+                  </tbody>
+                </table>
               </div>
             </div>
-          {/if}
+          </div>
+        {/if}
 
-          <!-- Clients -->
-          {#if npu.clients.length > 0}
-            <div class="card bg-base-300 shadow-none">
-              <div class="card-body p-3">
-                <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
-                  Clients
-                </h4>
-                <div class="overflow-x-auto">
-                  <table class="table table-xs table-zebra">
-                    <thead>
+        <!-- Clients -->
+        {#if npu.clients.length > 0}
+          <div class="card bg-base-300 shadow-none">
+            <div class="card-body p-3">
+              <h4 class="text-xs text-base-content/60 uppercase tracking-wider font-medium mb-2">
+                Clients
+              </h4>
+              <div class="overflow-x-auto">
+                <table class="table table-xs table-zebra">
+                  <thead>
+                    <tr>
+                      <th>PID</th>
+                      <th>Process</th>
+                      <th>Utilization</th>
+                      <th>Memory</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each npu.clients as client (client.client_id || client.pid)}
                       <tr>
-                        <th>PID</th>
-                        <th>Process</th>
-                        <th>Utilization</th>
-                        <th>Memory</th>
+                        <td class="font-mono">{client.pid}</td>
+                        <td>{client.name}</td>
+                        <td class="{usageColor(client.busy_percent)} font-semibold">
+                          {formatPercent(client.busy_percent)}
+                        </td>
+                        <td>{formatBytes(client.memory_bytes)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {#each npu.clients as client (client.client_id || client.pid)}
-                        <tr>
-                          <td class="font-mono">{client.pid}</td>
-                          <td>{client.name}</td>
-                          <td class="{usageColor(client.busy_percent)} font-semibold">
-                            {formatPercent(client.busy_percent)}
-                          </td>
-                          <td>{formatBytes(client.memory_bytes)}</td>
-                        </tr>
-                      {/each}
-                    </tbody>
-                  </table>
-                </div>
+                    {/each}
+                  </tbody>
+                </table>
               </div>
             </div>
-          {/if}
+          </div>
+        {/if}
 
-          <!-- Device detail footer -->
-          <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-2 text-xs text-base-content/80">
+        <!-- Device detail footer -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-x-6 gap-y-2 text-xs text-base-content/80">
+          <div class="flex justify-between gap-2">
+            <span class="text-base-content/60">Device</span>
+            <span class="font-semibold font-mono">{npu.device || "—"}</span>
+          </div>
+          <div class="flex justify-between gap-2">
+            <span class="text-base-content/60">Driver</span>
+            <span class="font-semibold">{npu.driver || "—"}</span>
+          </div>
+          <div class="flex justify-between gap-2">
+            <span class="text-base-content/60">Vendor</span>
+            <span class="font-semibold">
+              {npu.vendor || "—"}
+              {#if npu.vendor_id}
+                <span class="text-base-content/60 font-mono">
+                  [{npu.vendor_id}{npu.device_id ? `:${npu.device_id}` : ""}]
+                </span>
+              {/if}
+            </span>
+          </div>
+          {#if npu.device_class}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/60">Device</span>
-              <span class="font-semibold font-mono">{npu.device || "—"}</span>
+              <span class="text-base-content/60">Class</span>
+              <span class="font-semibold font-mono">{npu.device_class}</span>
             </div>
+          {/if}
+          {#if npu.label}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/60">Driver</span>
-              <span class="font-semibold">{npu.driver || "—"}</span>
+              <span class="text-base-content/60">Label</span>
+              <span class="font-semibold">{npu.label}</span>
             </div>
+          {/if}
+          <div class="flex justify-between gap-2">
+            <span class="text-base-content/60">Power state</span>
+            <span class="font-semibold font-mono">{npu.power_state || "—"}</span>
+          </div>
+          {#if npu.frequency_mhz > 0}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/60">Vendor</span>
+              <span class="text-base-content/60">Frequency</span>
               <span class="font-semibold">
-                {npu.vendor || "—"}
-                {#if npu.vendor_id}
-                  <span class="text-base-content/60 font-mono">
-                    [{npu.vendor_id}{npu.device_id ? `:${npu.device_id}` : ""}]
-                  </span>
+                {formatMHz(npu.frequency_mhz)}
+                {#if npu.frequency_max_mhz > 0}
+                  / {formatMHz(npu.frequency_max_mhz)}
                 {/if}
               </span>
             </div>
-            {#if npu.device_class}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Class</span>
-                <span class="font-semibold font-mono">{npu.device_class}</span>
-              </div>
-            {/if}
-            {#if npu.label}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Label</span>
-                <span class="font-semibold">{npu.label}</span>
-              </div>
-            {/if}
+          {:else if npu.frequency_max_mhz > 0}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/60">Power state</span>
-              <span class="font-semibold font-mono">{npu.power_state || "—"}</span>
+              <span class="text-base-content/60">Max frequency</span>
+              <span class="font-semibold">{formatMHz(npu.frequency_max_mhz)}</span>
             </div>
-            {#if npu.frequency_mhz > 0}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Frequency</span>
-                <span class="font-semibold">
-                  {formatMHz(npu.frequency_mhz)}
-                  {#if npu.frequency_max_mhz > 0}
-                    / {formatMHz(npu.frequency_max_mhz)}
-                  {/if}
-                </span>
-              </div>
-            {:else if npu.frequency_max_mhz > 0}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Max frequency</span>
-                <span class="font-semibold">{formatMHz(npu.frequency_max_mhz)}</span>
-              </div>
-            {/if}
-            {#if npu.governor}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Governor</span>
-                <span class="font-semibold">{npu.governor}</span>
-              </div>
-            {/if}
-            {#if npu.sched_mode}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Sched mode</span>
-                <span class="font-semibold">{npu.sched_mode}</span>
-              </div>
-            {/if}
+          {/if}
+          {#if npu.governor}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/60">NUMA node</span>
-              <span class="font-semibold">{npu.numa_node >= 0 ? npu.numa_node : "—"}</span>
+              <span class="text-base-content/60">Governor</span>
+              <span class="font-semibold">{npu.governor}</span>
             </div>
-            {#if npu.local_cpu_list}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Local CPUs</span>
-                <span class="font-semibold font-mono">{npu.local_cpu_list}</span>
-              </div>
-            {/if}
-            {#if npu.irq > 0}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">IRQ</span>
-                <span class="font-semibold">{npu.irq}</span>
-              </div>
-            {/if}
-            {#if npu.temperature_c > 0}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Temperature</span>
-                <span class="font-semibold {tempColor(npu.temperature_c, 0)}">
-                  {formatTemp(npu.temperature_c)}
-                </span>
-              </div>
-            {/if}
-            {#if npu.power_draw_w > 0}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Power draw</span>
-                <span class="font-semibold">{formatWatts(npu.power_draw_w)}</span>
-              </div>
-            {/if}
-            {#if npu.autosuspend_delay_ms >= 0}
-              <div class="flex justify-between gap-2">
-                <span class="text-base-content/60">Autosuspend delay</span>
-                <span class="font-semibold">{npu.autosuspend_delay_ms} ms</span>
-              </div>
-            {/if}
+          {/if}
+          {#if npu.sched_mode}
             <div class="flex justify-between gap-2">
-              <span class="text-base-content/60">Runtime usage</span>
-              <span class="font-semibold">{npu.runtime_usage}</span>
+              <span class="text-base-content/60">Sched mode</span>
+              <span class="font-semibold">{npu.sched_mode}</span>
             </div>
-            <div class="flex justify-between gap-2">
-              <span class="text-base-content/60">Clients</span>
-              <span class="font-semibold">{npu.client_count}</span>
-            </div>
+          {/if}
+          <div class="flex justify-between gap-2">
+            <span class="text-base-content/60">NUMA node</span>
+            <span class="font-semibold">{npu.numa_node >= 0 ? npu.numa_node : "—"}</span>
           </div>
-
+          {#if npu.local_cpu_list}
+            <div class="flex justify-between gap-2">
+              <span class="text-base-content/60">Local CPUs</span>
+              <span class="font-semibold font-mono">{npu.local_cpu_list}</span>
+            </div>
+          {/if}
+          {#if npu.irq > 0}
+            <div class="flex justify-between gap-2">
+              <span class="text-base-content/60">IRQ</span>
+              <span class="font-semibold">{npu.irq}</span>
+            </div>
+          {/if}
+          {#if npu.temperature_c > 0}
+            <div class="flex justify-between gap-2">
+              <span class="text-base-content/60">Temperature</span>
+              <span class="font-semibold {tempColor(npu.temperature_c, 0)}">
+                {formatTemp(npu.temperature_c)}
+              </span>
+            </div>
+          {/if}
+          {#if npu.power_draw_w > 0}
+            <div class="flex justify-between gap-2">
+              <span class="text-base-content/60">Power draw</span>
+              <span class="font-semibold">{formatWatts(npu.power_draw_w)}</span>
+            </div>
+          {/if}
+          {#if npu.autosuspend_delay_ms >= 0}
+            <div class="flex justify-between gap-2">
+              <span class="text-base-content/60">Autosuspend delay</span>
+              <span class="font-semibold">{npu.autosuspend_delay_ms} ms</span>
+            </div>
+          {/if}
+          <div class="flex justify-between gap-2">
+            <span class="text-base-content/60">Runtime usage</span>
+            <span class="font-semibold">{npu.runtime_usage}</span>
+          </div>
+          <div class="flex justify-between gap-2">
+            <span class="text-base-content/60">Clients</span>
+            <span class="font-semibold">{npu.client_count}</span>
+          </div>
         </div>
+
       </div>
-    {/each}
-  {/if}
+    </div>
+  {/each}
 </div>
