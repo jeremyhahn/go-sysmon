@@ -11,7 +11,7 @@
 # dependency on a third-party action being fetchable from the runner.
 #
 # Required environment:
-#   GITEA_API    e.g. http://198.51.100.91:3001/api/v1
+#   GITEA_API    e.g. http://git.example.internal/api/v1
 #   GITEA_REPO   owner/name
 #   GITEA_TOKEN  token with write access to the repository
 #   RELEASE_TAG  e.g. v0.1.0
