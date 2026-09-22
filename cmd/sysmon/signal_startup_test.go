@@ -37,9 +37,14 @@ func TestServe_StopDuringStartupIsHandled(t *testing.T) {
 		}
 	}
 
-	previousInterval := serveIntervalMs
-	serveIntervalMs = 1000
-	t.Cleanup(func() { serveIntervalMs = previousInterval })
+	// The test needs a bound listener to race the signal against, not a
+	// particular one. Taking the default :8080 made it fail on any host already
+	// serving that port -- with the same non-nil error a regression here would
+	// produce (#152). Port 0 lets the kernel choose; loopback keeps the suite
+	// from opening a port to the network mid-run.
+	previousAddr, previousInterval := serveAddr, serveIntervalMs
+	serveAddr, serveIntervalMs = "127.0.0.1:0", 1000
+	t.Cleanup(func() { serveAddr, serveIntervalMs = previousAddr, previousInterval })
 
 	done := make(chan error, 1)
 	go func() { done <- runServeCmd(nil, nil) }()
