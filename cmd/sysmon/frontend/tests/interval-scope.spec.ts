@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
+import { openTab } from './fixtures/tabs';
 
 /**
  * The interval control has to drive the poller that is actually feeding the
@@ -98,7 +99,7 @@ test.describe('Interval scope', () => {
     await install();
     await page.goto('/');
 
-    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /fs/ }).first().click();
 
     await selectInterval(page, '5s');
@@ -113,7 +114,7 @@ test.describe('Interval scope', () => {
     await install();
     await page.goto('/');
 
-    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /fs/ }).first().click();
 
     // 250ms is below the aggregator's floor, so peers still refresh every

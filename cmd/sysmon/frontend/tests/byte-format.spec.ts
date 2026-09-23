@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
+import { openTab } from './fixtures/tabs';
 
 /**
  * Byte figures below one byte, or below zero, still carry a unit (#175).
@@ -22,7 +23,7 @@ async function serveProcessRates(page: Page, read: number, write: number) {
   );
   await page.goto('/');
   await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
-  await page.getByRole('button', { name: 'Host', exact: true }).click();
+  await openTab(page, 'Host');
 }
 
 test.describe('Byte rate formatting', () => {

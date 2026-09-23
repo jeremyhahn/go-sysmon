@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
 /**
  * A health indicator must not be green because there was nothing to check.
@@ -56,7 +57,7 @@ async function fleetWith(page: Page, nodes: unknown[]) {
     })
   );
   await page.goto('/');
-  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+  await openTab(page, 'Fleet');
 }
 
 /**

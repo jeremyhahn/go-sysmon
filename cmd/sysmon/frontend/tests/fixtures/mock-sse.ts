@@ -15,6 +15,8 @@ import snapshot from "./snapshot.json" with { type: "json" };
  * undefined.
  */
 import templates from "./entry-templates.json" with { type: "json" };
+import type { Alert } from "../../src/lib/types";
+import { TAB_IDS, type TabLabel } from "./tabs";
 
 /**
  * Serves a deterministic snapshot over a mocked /api/events stream.
@@ -83,6 +85,33 @@ export interface MockOptions {
    * host without one, which is what decides whether the NPU tab exists.
    */
   npus?: number;
+  /**
+   * Alerts the snapshot reports as firing. Default: none, so no spec depends
+   * on the alert state of the host it runs on. `alertEveryTab()` builds one
+   * per tab, the noisiest state the tab bar can be in (#163).
+   */
+  alerts?: Alert[];
+}
+
+/**
+ * Builds one firing alert per tab, each in that tab's category.
+ *
+ * Each message names its tab's label, because that is the collision a loose
+ * locator falls into: `{ name: 'Storage' }` matches an alert row that says
+ * "Storage" as readily as it matches the tab.
+ */
+export function alertEveryTab(): Alert[] {
+  return (Object.entries(TAB_IDS) as [TabLabel, string][]).map(([label, category], i) => ({
+    id: `fixture-${category}`,
+    rule: `fixture_${category}`,
+    severity: i % 2 === 0 ? "critical" : "warning",
+    category,
+    resource: `${category}0`,
+    message: `${label} fixture alert`,
+    value: 95,
+    threshold: 90,
+    since: "2026-01-01T00:00:00Z",
+  }));
 }
 
 /** Builds `count` discrete GPUs with memory, utilisation and ECC populated. */
@@ -265,13 +294,18 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
     },
   } as Snapshot;
 
+  // The fixture file has no alerts key, so it is not part of Snapshot, which is
+  // the fixture's own shape; the frame gets one here. An empty list, not the
+  // host's, unless a spec asks for alerts.
+  const frame = { ...payload, alerts: opts.alerts ?? [] };
+
   // A "full" frame of the delta protocol, which is what the dashboard opens
   // the stream in. One frame is all the UI needs to render; the sequence number
   // matters only to a test that goes on to send deltas, which delta.spec.ts
   // does with its own feed.
   const body =
     `retry: 1000\n\n` +
-    `event: full\ndata: ${JSON.stringify({ seq: 1, snapshot: payload })}\n\n`;
+    `event: full\ndata: ${JSON.stringify({ seq: 1, snapshot: frame })}\n\n`;
 
   // The path may carry a query string -- the dashboard opens the stream with
   // ?deltas=1 -- so the pattern must not be anchored at the end of the path. It

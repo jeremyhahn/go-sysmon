@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
 /**
  * The fleet list is ordered by name (owner ruling 2026-09-01).
@@ -74,7 +75,7 @@ async function setup(page: Page) {
 test('the fleet list is ordered by name, not by severity', async ({ page }) => {
   await setup(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+  await openTab(page, 'Fleet');
 
   // Each node is a card whose name is the only h3 inside it, so the h3 order is
   // the rendered order.
@@ -86,7 +87,7 @@ test('the fleet list is ordered by name, not by severity', async ({ page }) => {
 test('a degraded node is still counted even though it sorts last', async ({ page }) => {
   await setup(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+  await openTab(page, 'Fleet');
 
   // Ordering by name only costs nothing in discoverability because the summary
   // counts faults independently of position. If this ever stops being true,
@@ -124,7 +125,7 @@ test('an unreachable node says how long, and the summary reports the worst', asy
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+  await openTab(page, 'Fleet');
 
   // The brief one is not dressed as an outage...
   await expect(page.getByText(/Unreachable for 9s/)).toBeVisible();
@@ -156,7 +157,7 @@ test('a node that never reported says so, rather than reporting a zero-second ga
   });
 
   await page.goto('/');
-  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+  await openTab(page, 'Fleet');
 
   await expect(page.getByText(/Unreachable, never reported/)).toBeVisible();
   await expect(page.getByText(/Unreachable for 0s/)).toHaveCount(0);

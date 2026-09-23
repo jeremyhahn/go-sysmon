@@ -1,4 +1,6 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator } from '@playwright/test';
+import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { dashboardTab, openTab, type TabLabel } from './fixtures/tabs';
 
 test.describe('Core Application', () => {
   test('page loads successfully with correct title', async ({ page }) => {
@@ -29,21 +31,28 @@ test.describe('Core Application', () => {
   });
 
   test('tab navigation renders each panel', async ({ page }) => {
+    // Served from the fixture, which has every panel's hardware, so each tab
+    // is asserted on what it draws rather than on "main is still there" --
+    // which held for any tab and any host, and so tested neither (#163).
+    await mockSnapshotFeed(page, { gpus: 1, npus: 1, containers: 1 });
     await page.goto('/');
 
-    const tabs: Array<{ label: string; contentMatcher: string }> = [
-      { label: 'Overview', contentMatcher: 'text=Waiting for system data' },
-      { label: 'Host', contentMatcher: 'text=Waiting' },
-      { label: 'CPU', contentMatcher: 'text=Overall CPU' },
-      { label: 'Memory', contentMatcher: 'text=RAM Usage' },
-      { label: 'Storage', contentMatcher: 'main' },
-      { label: 'Network', contentMatcher: 'main' },
+    const tabs: Array<{ label: TabLabel; content: Locator }> = [
+      { label: 'Host', content: page.getByRole('heading', { name: 'fixture-host' }) },
+      { label: 'CPU', content: page.getByText('Overall CPU') },
+      { label: 'GPU', content: page.getByText('GPU Util').first() },
+      { label: 'NPU', content: page.getByText('Intel AI Boost').first() },
+      { label: 'Memory', content: page.getByText('RAM Usage') },
+      { label: 'Storage', content: page.locator('h3').filter({ hasText: '/dev/nvme0n1' }) },
+      { label: 'Network', content: page.locator('h3').filter({ hasText: /^\s*enp131s0\s*$/ }) },
+      { label: 'Virtualization', content: page.getByRole('heading', { name: 'Virtual Machines' }) },
+      { label: 'Containers', content: page.getByText('container-0').first() },
+      { label: 'Overview', content: page.getByText('Load Avg') },
     ];
 
     for (const tab of tabs) {
-      await page.getByRole('button', { name: tab.label }).click();
-      // The main content area should be present after each tab click
-      await expect(page.locator('main')).toBeVisible();
+      await openTab(page, tab.label);
+      await expect(tab.content, `${tab.label} panel`).toBeVisible();
     }
   });
 
@@ -54,8 +63,8 @@ test.describe('Core Application', () => {
     // one tab is active, and it is the expected one for this server) rather
     // than hard-coding Overview, which silently couples this test to the
     // harness running without peers.
-    const fleetBtn = page.getByRole('button', { name: 'Fleet' });
-    const expected = (await fleetBtn.count()) > 0 ? fleetBtn : page.getByRole('button', { name: 'Overview' });
+    const fleetBtn = dashboardTab(page, 'Fleet');
+    const expected = (await fleetBtn.count()) > 0 ? fleetBtn : dashboardTab(page, 'Overview');
     await expect(expected).toHaveClass(/tab-active/);
     await expect(page.locator('.tab-active')).toHaveCount(1);
   });

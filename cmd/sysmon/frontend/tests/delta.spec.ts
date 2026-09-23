@@ -5,6 +5,7 @@ import cases from '../../../../pkg/delta/testdata/cases.json' with { type: 'json
 import refusals from '../../../../pkg/delta/testdata/refusals.json' with { type: 'json' };
 import accepted from '../../../../pkg/delta/testdata/accepted.json' with { type: 'json' };
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
+import { openTab } from './fixtures/tabs';
 
 /**
  * Delta streaming.
@@ -370,7 +371,7 @@ const ACCEPTABLE_SNAPSHOTS: Array<[string, unknown]> = [
 async function openHostTab(page: Page) {
   await installFakeEventSource(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Host', exact: true }).click();
+  await openTab(page, 'Host');
   await expect.poll(() => connections(page)).toBeGreaterThan(0);
 }
 
@@ -839,7 +840,7 @@ test.describe('the delta stream', () => {
     await expect(bar).toBeVisible();
     await expect(bar).toContainText('still show live values');
 
-    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /alpha/ }).first().click();
 
     // Selected, and it has answered nothing. The local stream is still up.

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
 /**
  * The drives behind a hardware RAID controller.
@@ -64,7 +65,7 @@ function member(id: number, serial: string, temp: number, status: string) {
 async function openStorage(page: Page, disks: unknown[]) {
   await mockSnapshotFeed(page, { disks: disks as never });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Storage' }).click();
+  await openTab(page, 'Storage');
 }
 
 function volumeCard(page: Page, device: string) {

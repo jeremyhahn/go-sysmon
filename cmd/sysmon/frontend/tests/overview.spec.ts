@@ -1,10 +1,18 @@
 import { test, expect } from '@playwright/test';
+import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
+/**
+ * Served from the fixture snapshot, not from the host running the suite: what
+ * this panel draws is a property of the panel, and a spec whose outcome depends
+ * on the machine it runs on tests the machine (#163).
+ */
 test.describe('Overview Tab', () => {
   test.beforeEach(async ({ page }) => {
+    await mockSnapshotFeed(page);
     await page.goto('/');
     // Ensure we are on the Overview tab (default)
-    await page.getByRole('button', { name: 'Overview' }).click();
+    await openTab(page, 'Overview');
     // Wait for the spinner to disappear — snapshot data has arrived
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
   });
@@ -32,11 +40,7 @@ test.describe('Overview Tab', () => {
 
   test('host info banner displays hostname and OS details', async ({ page }) => {
     // The host banner shows hostname as a heading and OS/kernel as a sub-line
-    const hostHeading = page.locator('h2').first();
-    await expect(hostHeading).toBeVisible();
-    // Hostname should be non-empty text
-    const hostname = await hostHeading.textContent();
-    expect(hostname?.trim().length).toBeGreaterThan(0);
+    await expect(page.locator('h2').first()).toHaveText('fixture-host');
 
     // OS / kernel info text contains bullet separators
     const hostSubtext = page.locator('p.text-xs').first();

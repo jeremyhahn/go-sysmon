@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { mockSnapshotFeed, systemdMatchCount } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
 // These exercise the shared DataTable component through the Host tab's process
 // table. The data is injected over a mocked event stream rather than read from
@@ -14,7 +15,7 @@ test.describe('DataTable behaviour', () => {
   test.beforeEach(async ({ page }) => {
     await mockSnapshotFeed(page, { processCount: TOTAL });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Host', exact: true }).click();
+    await openTab(page, 'Host');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
     await page.waitForSelector('table tbody tr', { timeout: 15000 });
   });
@@ -87,7 +88,7 @@ test.describe('DataTable sorting', () => {
   test.beforeEach(async ({ page }) => {
     await mockSnapshotFeed(page, { processCount: TOTAL });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Host', exact: true }).click();
+    await openTab(page, 'Host');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
     await page.waitForSelector('table tbody tr', { timeout: 15000 });
   });
@@ -125,7 +126,7 @@ test.describe('Images table', () => {
     await mockSnapshotFeed(page, { images: 30 });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Containers', exact: true }).click();
+    await openTab(page, 'Containers');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
 
     await expect(page.getByPlaceholder(/Search tag or ID/)).toBeVisible();
@@ -147,7 +148,7 @@ test.describe('SMART attributes table', () => {
     await mockSnapshotFeed(page, { smartAttrs: true });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Storage', exact: true }).click();
+    await openTab(page, 'Storage');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
 
     await page.getByRole('button', { name: /SMART Attributes/ }).first().click();

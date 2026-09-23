@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed, type MockOptions } from './fixtures/mock-sse';
+import { dashboardTab, openTab } from './fixtures/tabs';
 
 /**
  * The GPU and NPU tabs exist only on a node that reports the hardware (#153).
@@ -16,55 +17,49 @@ async function openDashboard(page: Page, opts: MockOptions) {
   await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
 }
 
-function tab(page: Page, label: string) {
-  return page.getByRole('button', { name: label, exact: true });
-}
-
 test.describe('Accelerator tabs', () => {
   test('show when the node has a GPU and an NPU', async ({ page }) => {
     await openDashboard(page, { gpus: 1, npus: 1 });
 
-    await expect(tab(page, 'GPU')).toBeVisible();
-    await expect(tab(page, 'NPU')).toBeVisible();
+    await expect(dashboardTab(page, 'GPU')).toBeVisible();
+    await expect(dashboardTab(page, 'NPU')).toBeVisible();
   });
 
   test('are absent when the node has neither', async ({ page }) => {
     await openDashboard(page, { gpus: 0, npus: 0 });
 
-    await expect(tab(page, 'GPU')).toHaveCount(0);
-    await expect(tab(page, 'NPU')).toHaveCount(0);
+    await expect(dashboardTab(page, 'GPU')).toHaveCount(0);
+    await expect(dashboardTab(page, 'NPU')).toHaveCount(0);
     // The tabs every node has are unaffected.
-    await expect(tab(page, 'CPU')).toBeVisible();
+    await expect(dashboardTab(page, 'CPU')).toBeVisible();
   });
 
   test('are decided independently', async ({ page }) => {
     await openDashboard(page, { gpus: 0, npus: 1 });
 
-    await expect(tab(page, 'GPU')).toHaveCount(0);
-    await expect(tab(page, 'NPU')).toBeVisible();
+    await expect(dashboardTab(page, 'GPU')).toHaveCount(0);
+    await expect(dashboardTab(page, 'NPU')).toBeVisible();
   });
 
   test('NPU tab opens the NPU panel', async ({ page }) => {
     await openDashboard(page, { gpus: 0, npus: 1 });
 
-    await tab(page, 'NPU').click();
+    await openTab(page, 'NPU');
 
-    await expect(tab(page, 'NPU')).toHaveClass(/tab-active/);
     await expect(page.getByText('Intel AI Boost').first()).toBeVisible();
   });
 
   test('a user on a tab that disappears lands on the Overview', async ({ page }) => {
     await openDashboard(page, { gpus: 1 });
-    await tab(page, 'GPU').click();
-    await expect(tab(page, 'GPU')).toHaveClass(/tab-active/);
+    await openTab(page, 'GPU');
 
     // The fixture stream ends after one frame and the page reconnects. The
     // newest route wins, so the next frame is a node without a GPU -- the same
     // shape as drilling into a peer that lacks one.
     await mockSnapshotFeed(page, { gpus: 0 });
 
-    await expect(tab(page, 'GPU')).toHaveCount(0, { timeout: 10000 });
-    await expect(tab(page, 'Overview')).toHaveClass(/tab-active/);
+    await expect(dashboardTab(page, 'GPU')).toHaveCount(0, { timeout: 10000 });
+    await expect(dashboardTab(page, 'Overview')).toHaveClass(/tab-active/);
     await expect(page.locator('.tab-active')).toHaveCount(1);
   });
 });

@@ -261,6 +261,22 @@ alone is measuring something it does not own, and the package run is where that
 shows — which is an argument for running the package, not the test, before
 believing a green result.
 
+**A browser spec served by the host it runs on.** `storage.spec.ts` ran against
+the live server and failed five tests on one workstation. The report blamed a
+substring tab locator matching storage-alert text, and that fit the symptom. It
+was wrong: the page had thrown Svelte's `each_key_duplicate`, because a btrfs
+volume mounted at two paths listed one device twice and the partition rows were
+keyed on the device, so the Storage tab never rendered (#163). One run with
+`page.on('pageerror')` found it. **When a browser test says an element is
+missing, check for page errors before theorising about locators.**
+
+The spec had passed CI only because no runner mounts a device twice, so it was
+testing the runner. Panel specs are now served from `mockSnapshotFeed`, and tabs
+are opened through the one helper in `tests/fixtures/tabs.ts`. Specs that read
+the wire itself (`api`, `transport`) stay live, but they assert shape and never
+contents. `tests/tab-alerts.spec.ts` covers the noisy host: every tab present,
+each with an alert firing.
+
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
 within the hour: that machine's RAID10 lays two spans over *one* array, so

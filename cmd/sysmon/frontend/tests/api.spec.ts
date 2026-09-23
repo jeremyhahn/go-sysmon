@@ -44,13 +44,16 @@ test.describe('REST API', () => {
     const response = await request.get('/api/snapshot');
     const snap = (await response.json()) as Snapshot;
 
+    // Every Linux host has a CPU. What its model string says does not belong
+    // here: some kernels report none at all (many ARM boards), and a spec that
+    // requires one tests the machine it runs on (#163).
     expect(snap.cpus.length).toBeGreaterThan(0);
-    const cpu = snap.cpus[0];
-    expect(typeof cpu.model_name).toBe('string');
-    expect(cpu.model_name.length).toBeGreaterThan(0);
-    expect(typeof cpu.usage_percent).toBe('number');
-    expect(cpu.usage_percent).toBeGreaterThanOrEqual(0);
-    expect(cpu.usage_percent).toBeLessThanOrEqual(100);
+    for (const cpu of snap.cpus) {
+      expect(typeof cpu.model_name).toBe('string');
+      expect(typeof cpu.usage_percent).toBe('number');
+      expect(cpu.usage_percent).toBeGreaterThanOrEqual(0);
+      expect(cpu.usage_percent).toBeLessThanOrEqual(100);
+    }
   });
 
   test('memory total_bytes is greater than zero', async ({ request }) => {
@@ -73,14 +76,18 @@ test.describe('REST API', () => {
     expect(typeof snap.host.kernel_version).toBe('string');
   });
 
-  test('disks array contains at least one entry with a name', async ({ request }) => {
+  test('every disk entry has a name', async ({ request }) => {
     const response = await request.get('/api/snapshot');
     const snap = (await response.json()) as Snapshot;
 
-    expect(snap.disks.length).toBeGreaterThan(0);
-    const disk = snap.disks[0];
-    expect(typeof disk.name).toBe('string');
-    expect(disk.name.length).toBeGreaterThan(0);
+    // Whether the host has any disk the collector can see is the host's
+    // business -- a container may see none -- so this checks every entry the
+    // server returned rather than demanding one (#163).
+    expect(Array.isArray(snap.disks)).toBe(true);
+    for (const disk of snap.disks) {
+      expect(typeof disk.name).toBe('string');
+      expect(disk.name.length).toBeGreaterThan(0);
+    }
   });
 
   test('networks array contains at least one interface', async ({ request }) => {

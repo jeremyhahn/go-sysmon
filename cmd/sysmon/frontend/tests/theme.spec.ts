@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
 /**
  * Light/dark theming.
@@ -263,7 +264,7 @@ test.describe('theme', () => {
     await page.emulateMedia({ colorScheme: 'dark' });
     await mockSnapshotFeed(page);
     await page.goto('/');
-    await page.getByRole('button', { name: 'Memory', exact: true }).click();
+    await openTab(page, 'Memory');
 
     // The RAM gauge and the memory line chart, in DOM order. Both are fed by
     // the fixed snapshot the mock serves.

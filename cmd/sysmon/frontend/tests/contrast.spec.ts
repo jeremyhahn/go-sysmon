@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { chartPalette, type ThemeName } from '../src/lib/palette';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab, type TabLabel } from './fixtures/tabs';
 
 /**
  * Readability of the semantic colours.
@@ -412,7 +413,7 @@ test.describe('base-300 carries no semantic text', () => {
   const STATUS = SEMANTIC.filter((cls) => cls !== 'text-base-content');
 
   /** Every tab, with a piece of text that shows its panel has rendered. */
-  const TABS: [string, RegExp][] = [
+  const TABS: [TabLabel, RegExp][] = [
     ['Overview', /Pressure/],
     ['Host', /Load Averages/],
     ['CPU', /CPU Usage/],
@@ -452,7 +453,7 @@ test.describe('base-300 carries no semantic text', () => {
       const offenders: string[] = [];
       let measuredSemantic = 0;
       for (const [label, marker] of TABS) {
-        await page.getByRole('button', { name: label, exact: true }).click();
+        await openTab(page, label);
         await expect(page.locator('main').getByText(marker).first()).toBeVisible();
 
         for (const t of await paintedText(page, STATUS)) {
@@ -539,7 +540,7 @@ test.describe('a selected or hovered table row keeps a readable surface', () => 
     test(`${scheme} theme`, async ({ page }) => {
       await mockSnapshotFeed(page, { containers: 6 });
       await openIn(page, scheme);
-      await page.getByRole('button', { name: 'Containers', exact: true }).click();
+      await openTab(page, 'Containers');
       await expect(containerRows(page)).toHaveCount(6);
 
       // Hover the third row away from the second, then select the second.

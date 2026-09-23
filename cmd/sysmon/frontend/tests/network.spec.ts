@@ -1,18 +1,24 @@
 import { test, expect } from '@playwright/test';
+import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
+/**
+ * Served from the fixture snapshot, not from the host running the suite: what
+ * this panel draws is a property of the panel, and a spec whose outcome depends
+ * on the machine it runs on tests the machine (#163).
+ */
 test.describe('Network Tab', () => {
   test.beforeEach(async ({ page }) => {
+    await mockSnapshotFeed(page);
     await page.goto('/');
-    await page.getByRole('button', { name: 'Network' }).click();
+    await openTab(page, 'Network');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
   });
 
-  test('at least one network interface card is rendered', async ({ page }) => {
-    // Each interface renders its name as an h3 heading
-    const ifaceHeading = page.locator('h3').first();
-    await expect(ifaceHeading).toBeVisible();
-    const name = await ifaceHeading.textContent();
-    expect(name?.trim().length).toBeGreaterThan(0);
+  test('one card is rendered per interface', async ({ page }) => {
+    // Each interface renders its name as an h3 heading.
+    await expect(page.locator('h3').filter({ hasText: /^\s*lo\s*$/ })).toBeVisible();
+    await expect(page.locator('h3').filter({ hasText: /^\s*enp131s0\s*$/ })).toBeVisible();
   });
 
   test('interface status badge is visible', async ({ page }) => {
@@ -22,25 +28,15 @@ test.describe('Network Tab', () => {
   });
 
   test('hardware address (MAC) or "no MAC" is shown', async ({ page }) => {
-    // Each card's sub-line shows the hardware_addr or the fallback "no MAC"
-    const macText = page.locator('p.text-xs').first();
-    await expect(macText).toBeVisible();
-    const text = await macText.textContent();
-    // Either a colon-separated MAC address or the literal "no MAC"
-    expect(text).toMatch(/([0-9a-f]{2}:){5}[0-9a-f]{2}|no MAC/i);
+    // The fixture's ethernet port has a MAC; its loopback has none.
+    await expect(page.locator('p.text-xs').filter({ hasText: '00:00:5e:00:53:01' })).toBeVisible();
+    await expect(page.locator('p.text-xs').filter({ hasText: /no MAC/i })).toBeVisible();
   });
 
   test('IP address badges are rendered for interfaces with addresses', async ({ page }) => {
-    // IP badges are rendered as badge-outline items in the address flex container
-    const addrBadge = page.locator('.badge.badge-outline.font-mono').first();
-    const count = await addrBadge.count();
-    if (count > 0) {
-      await expect(addrBadge).toBeVisible();
-      const addr = await addrBadge.textContent();
-      // Should look like an IPv4 or IPv6 address with optional prefix length
-      expect(addr?.trim().length).toBeGreaterThan(0);
-    }
-    // Loopback-only systems or pure bridged setups may have no non-empty address list.
+    await expect(
+      page.locator('.badge.badge-outline.font-mono').filter({ hasText: '192.0.2.10/24' })
+    ).toBeVisible();
   });
 
   test('traffic rate indicators are shown (sent and received)', async ({ page }) => {

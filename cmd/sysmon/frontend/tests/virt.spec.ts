@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
 /**
  * containersTable scopes to the container listing.
@@ -20,8 +21,11 @@ function containersTable(page: Page) {
 
 test.describe('Containers Tab', () => {
   test.beforeEach(async ({ page }) => {
+    // The fixture, not the host: which rollups render is the panel's
+    // business, whatever the machine running the suite has (#163).
+    await mockSnapshotFeed(page);
     await page.goto('/');
-    await page.getByRole('button', { name: 'Containers', exact: true }).click();
+    await openTab(page, 'Containers');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
   });
 
@@ -49,7 +53,7 @@ test.describe('Containers Tab, with containers', () => {
   test.beforeEach(async ({ page }) => {
     await mockSnapshotFeed(page, { containers: 6 });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Containers', exact: true }).click();
+    await openTab(page, 'Containers');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
   });
 
@@ -91,7 +95,7 @@ test.describe('Containers Tab, with none', () => {
   test('says there are none rather than rendering an empty table', async ({ page }) => {
     await mockSnapshotFeed(page, { containers: 0 });
     await page.goto('/');
-    await page.getByRole('button', { name: 'Containers', exact: true }).click();
+    await openTab(page, 'Containers');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
 
     // The rollup still renders -- a host with no containers is a fact about
@@ -107,8 +111,9 @@ test.describe('Containers Tab, with none', () => {
 
 test.describe('Virtualization Tab', () => {
   test.beforeEach(async ({ page }) => {
+    await mockSnapshotFeed(page);
     await page.goto('/');
-    await page.getByRole('button', { name: 'Virtualization' }).click();
+    await openTab(page, 'Virtualization');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
   });
 

@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
+import { openTab, type TabLabel } from './fixtures/tabs';
 
 /**
  * The date range control.
@@ -102,10 +103,16 @@ async function mockHistory(
 
 const picker = (page: Page) => page.getByLabel('Date range');
 const banner = (page: Page) => page.getByRole('status');
+/**
+ * The history error, which renders above the panels. A bare
+ * `getByRole('alert')` also matched the alert banner a panel draws for a firing
+ * alert, so these tests passed only on a quiet snapshot (#163).
+ */
+const historyError = (page: Page) => page.locator('[role="alert"]:not(main [role="alert"])');
 
-async function openPanel(page: Page, tab: string) {
+async function openPanel(page: Page, tab: TabLabel) {
   await page.goto('/');
-  await page.getByRole('button', { name: tab, exact: true }).click();
+  await openTab(page, tab);
 }
 
 test.describe('the date range control', () => {
@@ -217,15 +224,15 @@ test.describe('the date range control', () => {
     // applied, for every heading at once. Host is here because it phrases the
     // window differently -- "— 60s history" rather than "(60s)" -- and was
     // missed by the first pass for exactly that reason.
-    await page.getByRole('button', { name: 'Memory', exact: true }).click();
+    await openTab(page, 'Memory');
     await expect(page.getByText(/^Memory Usage \(/)).toHaveText('Memory Usage (30 days)');
 
-    await page.getByRole('button', { name: 'Host', exact: true }).click();
+    await openTab(page, 'Host');
     await expect(page.getByText(/^Load Average \(1m\) —/)).toHaveText(
       'Load Average (1m) — 30 days history'
     );
 
-    await page.getByRole('button', { name: 'Memory', exact: true }).click();
+    await openTab(page, 'Memory');
 
     // Custom says so rather than spelling out two dates in a heading; the
     // dates are already in the picker and the banner.
@@ -271,7 +278,7 @@ test.describe('the date range control', () => {
     await picker(page).selectOption('1h');
     await expect.poll(() => mock.requests.length).toBeGreaterThan(0);
 
-    await page.getByRole('button', { name: 'Memory', exact: true }).click();
+    await openTab(page, 'Memory');
     await expect(banner(page)).toBeVisible();
     await expect(picker(page)).toHaveValue('1h');
 
@@ -281,7 +288,7 @@ test.describe('the date range control', () => {
     // belong to the dashboard, not to a panel that remounts: if each panel
     // held its own, every tab change would re-ask Prometheus for what it
     // already had.
-    await page.getByRole('button', { name: 'CPU', exact: true }).click();
+    await openTab(page, 'CPU');
     await page.waitForTimeout(400);
     const cpuRequests = mock.requests.filter((r) => r.get('metric') === 'cpu').length;
     expect(cpuRequests, 'cpu was re-fetched on returning to its panel').toBe(1);
@@ -358,13 +365,13 @@ test.describe('the date range control', () => {
     );
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /alpha/ }).first().click();
     await expect(page.locator('nav').getByText('alpha', { exact: true })).toBeVisible();
     // The stream really is down; this is not a test of the connected path.
     await expect(page.locator('nav').getByText('Disconnected')).toBeVisible();
 
-    await page.getByRole('button', { name: 'CPU', exact: true }).click();
+    await openTab(page, 'CPU');
     await picker(page).selectOption('24h');
     await expect(banner(page)).toBeVisible();
     await expect.poll(() => mock.requests.length).toBeGreaterThan(0);
@@ -419,11 +426,11 @@ test.describe('the date range control', () => {
     );
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /alpha/ }).first().click();
     await expect(page.locator('nav').getByText('alpha', { exact: true })).toBeVisible();
 
-    await page.getByRole('button', { name: 'CPU', exact: true }).click();
+    await openTab(page, 'CPU');
     await picker(page).selectOption('24h');
     await expect(banner(page)).toBeVisible();
     await expect.poll(() => mock.requests.length).toBeGreaterThan(0);
@@ -486,11 +493,11 @@ test.describe('the date range control', () => {
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /alpha/ }).first().click();
     await expect(page.locator('nav').getByText('alpha', { exact: true })).toBeVisible();
 
-    await page.getByRole('button', { name: 'CPU', exact: true }).click();
+    await openTab(page, 'CPU');
     await picker(page).selectOption('24h');
     await expect(banner(page)).toBeVisible();
     await expect.poll(() => mock.requests.length).toBeGreaterThan(0);
@@ -563,7 +570,7 @@ test.describe('the date range control', () => {
     );
 
     await page.goto('/');
-    await page.getByRole('button', { name: 'CPU', exact: true }).click();
+    await openTab(page, 'CPU');
     await picker(page).selectOption('1h');
     await expect.poll(() => mock.requests.length).toBeGreaterThan(0);
     for (const r of mock.requests) {
@@ -571,7 +578,7 @@ test.describe('the date range control', () => {
     }
 
     mock.requests.length = 0;
-    await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+    await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /alpha/ }).first().click();
     await expect(page.locator('nav').getByText('alpha', { exact: true })).toBeVisible();
 
@@ -907,7 +914,7 @@ test.describe('the date range control', () => {
     // A node that was switched off for the window genuinely has no data. That
     // is an answer, not a failure.
     await expect(page.getByText('No data recorded for this range.').first()).toBeVisible();
-    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(historyError(page)).toHaveCount(0);
   });
 
   test('a failure is surfaced with the reason the server gave', async ({ page }) => {
@@ -922,7 +929,7 @@ test.describe('the date range control', () => {
     await openPanel(page, 'CPU');
     await picker(page).selectOption('1h');
 
-    const alert = page.getByRole('alert');
+    const alert = historyError(page);
     await expect(alert).toBeVisible();
     await expect(alert).toContainText('cannot read history from prometheus');
   });

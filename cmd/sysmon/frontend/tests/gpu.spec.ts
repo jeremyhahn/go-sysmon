@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { dashboardTab, openTab } from './fixtures/tabs';
 
 test.describe('GPU Panel', () => {
   // Helper: navigate to the GPU tab and wait for snapshot data.
@@ -9,16 +10,14 @@ test.describe('GPU Panel', () => {
     // snapshot by polling for the "Updated:" label, which only renders once
     // snapshot != null.
     await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
-    // Switch to the GPU tab.
-    await page.getByRole('button', { name: 'GPU' }).click();
-    // Give Svelte a moment to re-render the tab content.
-    await page.waitForTimeout(500);
+    // Switch to the GPU tab. openTab waits until the tab bar reports it open.
+    await openTab(page, 'GPU');
   }
 
   test('GPU tab is visible and clickable', async ({ page }) => {
     await mockSnapshotFeed(page, { gpus: 1 });
     await page.goto('/');
-    const gpuTab = page.getByRole('button', { name: 'GPU' });
+    const gpuTab = dashboardTab(page, 'GPU');
     await expect(gpuTab).toBeVisible();
     await gpuTab.click();
     await expect(gpuTab).toHaveClass(/tab-active/);
@@ -57,7 +56,7 @@ test.describe('GPU Panel', () => {
     expect(Array.isArray(gpus)).toBe(true);
   });
 
-  test('GPU snapshot entries have expected fields when GPUs are present', async ({ page }) => {
+  test('every GPU entry on the wire has the expected fields', async ({ page }) => {
     await page.goto('/');
 
     const gpus = await page.evaluate((): Promise<unknown[]> => {
@@ -88,17 +87,18 @@ test.describe('GPU Panel', () => {
     });
 
     expect(Array.isArray(gpus)).toBe(true);
-    if (gpus.length === 0) {
-      return;
+    // Every entry the host reported, and no early return when it reported
+    // none: vacuous on a host without a GPU, but it still runs, and what it
+    // asserts is the wire shape rather than this host's hardware (#163).
+    for (const entry of gpus) {
+      const gpu = entry as Record<string, unknown>;
+      expect(typeof gpu.index).toBe('number');
+      expect(typeof gpu.name).toBe('string');
+      expect(typeof gpu.ecc_enabled).toBe('boolean');
+      expect(typeof gpu.gpu_util_percent).toBe('number');
+      expect(typeof gpu.memory_total_mib).toBe('number');
+      expect(typeof gpu.pci_bus_id).toBe('string');
     }
-
-    const gpu = gpus[0] as Record<string, unknown>;
-    expect(typeof gpu.index).toBe('number');
-    expect(typeof gpu.name).toBe('string');
-    expect(typeof gpu.ecc_enabled).toBe('boolean');
-    expect(typeof gpu.gpu_util_percent).toBe('number');
-    expect(typeof gpu.memory_total_mib).toBe('number');
-    expect(typeof gpu.pci_bus_id).toBe('string');
   });
 
   test('GPU panel shows Utilization section when GPUs are present', async ({ page }) => {
@@ -166,6 +166,6 @@ test.describe('GPU Panel, with no GPU', () => {
     await page.goto('/');
     await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
 
-    await expect(page.getByRole('button', { name: 'GPU', exact: true })).toHaveCount(0);
+    await expect(dashboardTab(page, 'GPU')).toHaveCount(0);
   });
 });

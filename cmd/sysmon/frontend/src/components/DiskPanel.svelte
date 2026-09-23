@@ -615,7 +615,14 @@
                     </tr>
                   </thead>
                   <tbody>
-                    {#each disk.partitions as part (part.device)}
+                    <!-- Unkeyed on purpose. These are mounts, not devices: one
+                         filesystem mounted twice (btrfs subvolumes, a bind
+                         mount) is one device on two rows, and a mountpoint can
+                         be stacked too. Keying on device threw Svelte's
+                         each_key_duplicate and left the whole Storage tab
+                         unrendered (#163); the rows hold no state, so a key
+                         buys nothing. -->
+                    {#each disk.partitions as part}
                       <tr>
                         <td class="font-mono text-xs">{part.device}</td>
                         <td class="font-mono text-xs">{part.mountpoint}</td>

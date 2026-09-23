@@ -125,9 +125,10 @@ test.describe('Server-sent events transport', () => {
 
     expect(Array.isArray(snap.cpus)).toBe(true);
     expect(snap.cpus.length).toBeGreaterThan(0);
+    // The field's presence and type, not its contents: some kernels report no
+    // model string at all, and that is a fact about the host (#163).
     const firstCpu = snap.cpus[0] as { model_name?: string; usage_percent?: number };
     expect(typeof firstCpu.model_name).toBe('string');
-    expect(firstCpu.model_name!.length).toBeGreaterThan(0);
     expect(typeof firstCpu.usage_percent).toBe('number');
   });
 
@@ -149,10 +150,11 @@ test.describe('Server-sent events transport', () => {
     const snap = (await firstSnapshot(page)) as { disks: unknown[] };
 
     expect(Array.isArray(snap.disks)).toBe(true);
-    // Any real machine has at least one block device.
-    expect(snap.disks.length).toBeGreaterThan(0);
-    const disk = snap.disks[0] as { name?: string };
-    expect(typeof disk.name).toBe('string');
+    // Every entry, rather than demanding one: a container may see no block
+    // device the collector reports, and that is a fact about the host (#163).
+    for (const disk of snap.disks as { name?: string }[]) {
+      expect(typeof disk.name).toBe('string');
+    }
   });
 
   test('snapshot contains a networks array', async ({ page }) => {

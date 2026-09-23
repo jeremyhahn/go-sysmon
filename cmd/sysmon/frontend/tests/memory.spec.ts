@@ -1,9 +1,17 @@
 import { test, expect } from '@playwright/test';
+import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { openTab } from './fixtures/tabs';
 
+/**
+ * Served from the fixture snapshot, not from the host running the suite: what
+ * this panel draws is a property of the panel, and a spec whose outcome depends
+ * on the machine it runs on tests the machine (#163).
+ */
 test.describe('Memory Tab', () => {
   test.beforeEach(async ({ page }) => {
+    await mockSnapshotFeed(page);
     await page.goto('/');
-    await page.getByRole('button', { name: 'Memory' }).click();
+    await openTab(page, 'Memory');
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
   });
 
@@ -47,28 +55,17 @@ test.describe('Memory Tab', () => {
   });
 
   test('swap section is present when swap exists', async ({ page }) => {
-    // Swap section is conditionally rendered only when swap_total_bytes > 0.
-    // We simply verify that either the section or the loading state is coherent.
-    const swapSection = page.getByText('Swap').first();
-    // The "Swap" StatCard on the Overview also uses this text, so check the card heading
-    const swapHeading = page.locator('h3').filter({ hasText: /^Swap$/ });
-    const hasSwap = await swapHeading.count();
-    if (hasSwap > 0) {
-      await expect(swapHeading.first()).toBeVisible();
-    }
-    // If swap is not present, the test still passes — hardware may have no swap.
-    void swapSection;
+    // The fixture has swap configured, so the section must render.
+    await expect(page.locator('h3').filter({ hasText: /^Swap$/ })).toBeVisible();
   });
 
-  test('DIMM table is rendered when DIMM data is available', async ({ page }) => {
-    const dimmHeading = page.locator('h3').filter({ hasText: /Memory Modules/ });
-    const hasDimms = await dimmHeading.count();
-    if (hasDimms > 0) {
-      await expect(dimmHeading.first()).toBeVisible();
-      await expect(page.getByRole('columnheader', { name: 'Location' })).toBeVisible();
-      await expect(page.getByRole('columnheader', { name: 'Size' })).toBeVisible();
-      await expect(page.getByRole('columnheader', { name: 'Type' })).toBeVisible();
+  test('DIMM table lists each module', async ({ page }) => {
+    await expect(page.locator('h3').filter({ hasText: /Memory Modules/ })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Location' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Size' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Type' })).toBeVisible();
+    for (const slot of ['DIMMA1', 'DIMMA2', 'DIMMB1', 'DIMMB2']) {
+      await expect(page.getByRole('cell', { name: slot, exact: true })).toBeVisible();
     }
-    // On systems without DMI DIMM info the section is simply absent — that is correct behavior.
   });
 });

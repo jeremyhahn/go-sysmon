@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
+import { openTab } from './fixtures/tabs';
 
 /**
  * Regression test for stale peer data presented as live.
@@ -102,7 +103,7 @@ function setup(page: Page) {
 
 /** Opens the fleet dashboard and drills into the peer. */
 async function selectPeer(page: Page) {
-  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+  await openTab(page, 'Fleet');
   await page.getByRole('button', { name: /fs/ }).first().click();
 }
 

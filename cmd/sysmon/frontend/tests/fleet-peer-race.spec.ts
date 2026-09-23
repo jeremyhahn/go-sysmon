@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
+import { openTab } from './fixtures/tabs';
 
 /**
  * Regression test for the stale peer-response race.
@@ -123,7 +124,7 @@ async function setupFleet(page: Page) {
 
 /** Clicks a node card on the fleet dashboard. */
 async function selectNode(page: Page, name: string) {
-  await page.getByRole('button', { name: 'Fleet', exact: true }).click();
+  await openTab(page, 'Fleet');
   await page.getByRole('button', { name: new RegExp(name) }).first().click();
 }
 
@@ -190,7 +191,7 @@ test.describe('Fleet peer selection race', () => {
     await selectNode(page, 'bravo');
 
     // Bravo's data is what the panels must show.
-    await page.getByRole('button', { name: 'Host', exact: true }).click();
+    await openTab(page, 'Host');
     const hostname = page.locator('main h2').first();
     await expect(hostname).toHaveText('bravo-host');
 
@@ -213,7 +214,7 @@ test.describe('Fleet peer selection race', () => {
     await page.goto('/');
 
     await selectNode(page, 'bravo');
-    await page.getByRole('button', { name: 'Host', exact: true }).click();
+    await openTab(page, 'Host');
 
     await expect(page.locator('main h2').first()).toHaveText('bravo-host');
   });
