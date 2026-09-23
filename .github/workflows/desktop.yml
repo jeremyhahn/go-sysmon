@@ -1,6 +1,6 @@
 name: Desktop Tests
 
-# Tier 3 of the desktop test strategy: a real Cinnamon session under Xvfb,
+# Tier 3 of the desktop test strategy: a real Cinnamon session on headless Xorg,
 # driven through the org.Cinnamon D-Bus Eval method. Tiers 1 and 2 run on every
 # push in ci.yml; this one needs a Cinnamon install and software GL, so it takes
 # minutes and is not perfectly reliable. Nightly, plus on demand, plus whenever

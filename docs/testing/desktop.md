@@ -84,7 +84,7 @@ make test-extensions-desktop
 ```
 
 Builds `test/desktop/Dockerfile` and runs `test/desktop/run-cinnamon-tests.sh`
-inside it. The container starts a real `sysmon serve`, an Xvfb display, a D-Bus
+inside it. The container starts a real `sysmon serve`, a headless Xorg display (the dummy video driver), a D-Bus
 session bus and Cinnamon itself under llvmpipe, with the applet installed
 exactly as `make install-extension-cinnamon` would install it.
 
@@ -114,16 +114,48 @@ What only this tier can prove:
 
 No applet assertion may pass until the run has proven the desktop is there to
 be asserted on. Every setup step either proves it worked or ends the run: the
-server has to answer, Xvfb has to report its display ready (`-displayfd`, not a
-sleep), and `gsettings` has to enable the applet. After that, in order:
+server has to answer, Xorg has to report its display ready (`-displayfd`, not a
+sleep), RandR has to report a real refresh rate for the current mode, and
+`gsettings` has to enable the applet. After that, in order:
 
 1. Cinnamon finished starting: `Main.runState` is `RUNNING`, which Cinnamon
    sets only after `AppletManager.init()` has resolved
-2. the panel exists
-3. the sysmon applet is in the loaded set
-4. `Main.xlet_startup_error` is false
-5. the log says `Loaded applet sysmon-go@sysmon` and has no error tagged with
+2. mutter accepted the display mode: the log has no `Invalid mode` or `(-nan)`
+   line
+3. the panel exists
+4. the sysmon applet is in the loaded set
+5. `Main.xlet_startup_error` is false
+6. the log says `Loaded applet sysmon-go@sysmon` and has no error tagged with
    the UUID
+7. the log has no warning or error of any kind: GLib `WARNING`/`CRITICAL`/`ERROR`,
+   GJS `JS WARNING`/`JS ERROR`, LookingGlass error or warning, or Xlib. The
+   same check runs again over the whole log after the applet checks.
+
+Two lines are exempt. The first, by owner ruling (2026-09-22), is matched as a whole
+line, byte for byte, display included:
+
+```
+Xlib:  extension "DPMS" missing on display ":99".
+```
+
+muffin calls `DPMSCapable()` unconditionally
+(`meta-monitor-manager-xrandr.c:150` in muffin 6.0.1), and libXext prints this
+line when the server lacks DPMS. Xorg only registers DPMS when a screen's
+driver implements it (`Xext/dpms.c`, `DPMSSupported()`). No headless server
+that runs in a container does: not xf86-video-dummy (up to its latest source),
+not Xvfb, not Xvnc. Getting it would take a kernel DRM device such as vkms on
+the host. Any other Xlib line, this line on another display, or a warning next
+to it still fails the run; the runner tests pin each case.
+
+The second, XApp's fallback when switcheroo-control is absent, is described
+under "GPUs" below.
+
+The system bus's own stderr is held to the same standard: anything
+`dbus-daemon --system` prints at startup aborts the run. cinnamon hard-depends
+on network-manager-gnome, and NetworkManager's bus policy names a `whoopsie`
+user. So the image installs `whoopsie` for its system user (the daemon is
+never started), which removes the bus's `Unknown username "whoopsie"` warning
+at its source.
 
 Each step runs only if the one before it passed. When one fails, every later
 check prints as `n/a ... (not run)` instead of being evaluated, and the run
@@ -142,22 +174,66 @@ runs under `make test-extensions`. Healthy, slow and broken starts are covered.
 In every broken one the stand-in `gdbus` would pass any applet assertion put to
 it, so a single `ok` after a failed gate step fails the test.
 
-### The `-nan` mutter warning
+### The display: Xorg with the dummy driver, not Xvfb
 
-Every run logs this, passing runs included:
+The suite used to run on Xvfb, and every run logged this:
 
 ```
 mutter-WARNING: Failed to use linear monitor configuration:
                 Invalid mode 1280x1024 (-nan) for monitor 'unknown unknown'
 ```
 
-It is harmless. Xvfb's only RandR mode has no timings: `xrandr --verbose`
-shows dot clock, htotal and vtotal all at 0, so the refresh rate mutter works
-out is 0/0. mutter rejects its linear and fallback layouts, keeps the X server's
-current configuration, and the desktop comes up normally. Adding a timed mode
-with `xrandr --newmode`/`--addmode` does not help, because Xvfb frees the mode
-when the `xrandr` client that created it exits. The warning did not cause the
-2026-09-03 failure: that log has the same two lines as every healthy run.
+Xvfb's only RandR mode has no timings. `xrandr --verbose` shows dot clock,
+htotal and vtotal all at 0, so the refresh rate mutter works out is 0/0. mutter
+rejected its own layouts and fell back to the X server's, so the desktop still
+came up, but on a display mode nobody had configured. The warning did not cause
+the 2026-09-03 failure; the startup race above did. Adding a timed mode later
+with `xrandr --newmode` does not work either, because Xvfb frees the mode as
+soon as the `xrandr` client that created it exits.
+
+`test/desktop/xorg-dummy.conf` runs Xorg with `xserver-xorg-video-dummy`
+instead, the standard way to get real mode timings from a headless X server.
+Its Modeline is the VESA 1280x1024 @ 60 Hz timing (108 MHz / (1688 x 1066) =
+60.02 Hz), so the mode has timings from the moment the server starts. The
+runner checks this twice. Before Cinnamon starts, the current mode's RandR
+refresh rate must be a positive number. Once Cinnamon is running, the log must
+have no `Invalid mode` line. Either one failing fails the run.
+
+### The system bus and its services
+
+At startup Cinnamon reaches udisks2 on the system bus, through GVFS's volume
+monitor. A container has no init to start it. Without it, every run logged a
+GVFS warning. Before starting Cinnamon, the runner starts a real system bus
+(`dbus-daemon --system`) and `udisksd`, and waits for
+`org.freedesktop.UDisks2` to be owned. polkitd is started by bus activation.
+Anything the bus itself prints at startup aborts the run.
+
+### GPUs: one view on every host, and no switcheroo-control
+
+What the desktop stack logs at startup depends on the DRM devices it can see.
+switcheroo-control 2.6 lists only cards whose driver is `nvidia` or that udev
+tagged with `ID_PATH_TAG`, and a container has no udev database. On a
+workstation with an NVIDIA card it reported a default GPU and the log was
+clean. On a CI runner with only a Matrox card it reported none. XApp 2.8.2 then
+logged `No default GPU exists` and returned its GTask twice, which is a second
+CRITICAL.
+
+- `make test-extensions-desktop` mounts an empty tmpfs over `/sys/class/drm`,
+  so every host shows the container the same zero DRM devices. The runner
+  refuses to start on any other view.
+- By owner ruling (2026-09-23), switcheroo-control is not installed. The
+  runner aborts if its bus name is owned. XApp then takes its designed
+  fallback: it finds no name owner, logs one warning, and continues with a
+  synthetic default GPU. That warning is the second exempt line:
+
+  ```
+  (cinnamon:<pid>): XApp-WARNING **: <hh:mm:ss.mmm>: Switcheroo-control doesn't appear to be running, checking for Ubuntu support...
+  ```
+
+  GLib stamps the process id and the time into the line, so those two fields
+  are the only ones not compared. The rest is compared byte for byte. Any
+  other XApp line fails the run, including the same text at another level or
+  with another message.
 
 ### Why it is not in `make ci`
 

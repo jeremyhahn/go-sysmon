@@ -2,8 +2,9 @@
 //
 // The runner is itself a gate, and a gate can be wrong in the direction that
 // hurts most: reporting passes about a desktop that never ran. These tests run
-// the real script against stand-in executables for the desktop stack (Xvfb,
-// dbus-launch, gsettings, cinnamon, gdbus) and the server, so each startup
+// the real script against stand-in executables for the desktop stack (Xorg,
+// xrandr, dbus-daemon, udisksd, dbus-launch, gsettings, cinnamon, gdbus) and
+// the server, so each startup
 // shape -- healthy, slow, broken -- can be produced on demand instead of
 // waiting for CI to hit it by chance.
 //
@@ -20,8 +21,12 @@ const { spawnSync } = require("node:child_process");
 
 const RUNNER = path.join(__dirname, "..", "..", "test", "desktop", "run-cinnamon-tests.sh");
 
+// What mutter logged on every run while the display was Xvfb, whose only mode
+// has no timings.
+const NAN_MODE_WARNING =
+    "(cinnamon:56): mutter-WARNING **: Failed to use linear monitor configuration: Invalid mode 1280x1024 (-nan) for monitor 'unknown unknown'";
+
 const LOADED_LOG = [
-    "(cinnamon:56): mutter-WARNING **: Failed to use linear monitor configuration: Invalid mode 1280x1024 (-nan) for monitor 'unknown unknown'",
     "Gjs-Message: JS LOG: [LookingGlass/info] Loaded applet sysmon-go@sysmon in 11 ms",
     "Gjs-Message: JS LOG: [LookingGlass/info] Cinnamon took 87 ms to start",
 ].join("\n");
@@ -38,14 +43,33 @@ exec sleep 60 </dev/null >/dev/null 2>&1
 [ "$FAKE_SERVER" = "down" ] && exit 7
 exit 0
 `,
-    Xvfb: `#!/bin/sh
-[ "$FAKE_XVFB" = "dies" ] && exit 1
+    Xorg: `#!/bin/sh
+[ "$FAKE_XORG" = "dies" ] && exit 1
 fd=""
 while [ $# -gt 0 ]; do
     [ "$1" = "-displayfd" ] && fd="$2"
     shift
 done
 eval "printf '99\\n' >&$fd"
+exec sleep 60 </dev/null >/dev/null 2>&1
+`,
+    // xrandr --verbose, trimmed to the lines the runner reads. FAKE_REFRESH is
+    // the v: clock of the current mode; Xvfb reports 0.00Hz.
+    xrandr: `#!/bin/sh
+cat <<EOF
+screen connected 1280x1024+0+0 (0x3a) normal (normal) 0mm x 0mm
+  1280x1024 (0x5e) 108.000MHz +HSync +VSync *current +preferred
+        h: width  1280 start 1328 end 1440 total 1688 skew    0 clock  63.98KHz
+        v: height 1024 start 1025 end 1028 total 1066           clock  $FAKE_REFRESH
+EOF
+`,
+    "dbus-daemon": `#!/bin/sh
+[ "$FAKE_SYSTEM_BUS" = "fails" ] && { echo "Failed to start message bus" >&2; exit 1; }
+[ "$FAKE_SYSTEM_BUS" = "complains" ] && echo 'dbus[1]: Unknown username "whoopsie" in message bus configuration file' >&2
+sleep 60 </dev/null >/dev/null 2>&1 &
+echo $!
+`,
+    udisksd: `#!/bin/sh
 exec sleep 60 </dev/null >/dev/null 2>&1
 `,
     "dbus-launch": `#!/bin/sh
@@ -67,6 +91,16 @@ exec sleep 60 </dev/null >/dev/null 2>&1
     // only once it has -- AppletManager.init() resolves before RUNNING is set.
     gdbus: `#!/bin/sh
 for js; do :; done
+if [ "$2" = "--system" ]; then
+    # udisks2 is on the bus unless the scenario removes it; switcheroo-control
+    # is absent unless the scenario puts it there.
+    case "$js" in
+        "$FAKE_MISSING_SERVICE") echo "(false,)" ;;
+        net.hadess.SwitcherooControl) [ "$FAKE_SWITCHEROO" = "running" ] && echo "(true,)" || echo "(false,)" ;;
+        *) echo "(true,)" ;;
+    esac
+    exit 0
+fi
 count_file="$FAKE_DIR/runstate-polls"
 polls=$(cat "$count_file" 2>/dev/null || echo 0)
 running=false
@@ -85,7 +119,9 @@ case "$js" in
         if [ "$FAKE_APPLET" = "missing" ] || [ "$running" = "false" ]; then reply false; fi
         reply true ;;
     *"xlet_startup_error"*) [ "$FAKE_APPLET" = "missing" ] && reply true; reply false ;;
-    *"i.menu !== undefined; }).length)") reply 10 ;;
+    *"i.menu !== undefined; }).length)")
+        [ -n "$FAKE_LATE_LOG" ] && printf '%s\\n' "$FAKE_LATE_LOG" >> "$CINNAMON_LOG"
+        reply 10 ;;
     *"indexOf('undefined')"*) reply false ;;
     *"get_text()") reply "CPU: 12%" ;;
     *"queue_repaint"*) reply queued ;;
@@ -107,6 +143,13 @@ function runRunner(scenario = {}) {
     try {
         const bin = path.join(dir, "bin");
         fs.mkdirSync(bin);
+        // The masked GPU view make test-extensions-desktop gives the container:
+        // an empty DRM class directory, unless the scenario leaks a card in.
+        const drmDir = path.join(dir, "drm");
+        fs.mkdirSync(drmDir);
+        for (const card of scenario.hostGpus ?? []) {
+            fs.mkdirSync(path.join(drmDir, card));
+        }
         for (const [name, body] of Object.entries(FAKES)) {
             fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
         }
@@ -122,6 +165,9 @@ function runRunner(scenario = {}) {
                 TMPDIR: dir,
                 XDG_RUNTIME_DIR: path.join(dir, "run"),
                 CINNAMON_LOG: path.join(dir, "cinnamon.log"),
+                DRM_CLASS_DIR: drmDir,
+                SYSTEM_BUS_DIR: path.join(dir, "run-dbus"),
+                UDISKSD: path.join(bin, "udisksd"),
                 STARTUP_TIMEOUT: "2",
                 DATA_TIMEOUT: "2",
                 FAKE_DIR: dir,
@@ -131,8 +177,13 @@ function runRunner(scenario = {}) {
                 FAKE_GAUGE: scenario.gauge ?? "painted",
                 FAKE_PAINT_ERROR: scenario.paintError ?? "",
                 FAKE_SERVER: scenario.server ?? "up",
-                FAKE_XVFB: scenario.xvfb ?? "ok",
+                FAKE_XORG: scenario.xorg ?? "ok",
+                FAKE_REFRESH: scenario.refresh ?? "60.02Hz",
                 FAKE_GSETTINGS: scenario.gsettings ?? "ok",
+                FAKE_SYSTEM_BUS: scenario.systemBus ?? "ok",
+                FAKE_MISSING_SERVICE: scenario.missingService ?? "",
+                FAKE_SWITCHEROO: scenario.switcheroo ?? "absent",
+                FAKE_LATE_LOG: scenario.lateLog ?? "",
             },
         });
         assert.ifError(result.error);
@@ -156,7 +207,7 @@ test("a healthy session passes every check and exits zero", () => {
     assert.strictEqual(run.status, 0, run.stdout);
     assert.deepStrictEqual(run.failed, []);
     assert.deepStrictEqual(run.notRun, []);
-    assert.strictEqual(run.ok.length, 16, run.stdout);
+    assert.strictEqual(run.ok.length, 18, run.stdout);
     assert.match(run.stdout, /inconclusive: 0/);
 });
 
@@ -183,7 +234,7 @@ test("a session that never finishes starting passes nothing", () => {
     assert.deepStrictEqual(run.failed, [
         "FAIL Cinnamon never finished starting (runState did not reach RUNNING)",
     ]);
-    assert.strictEqual(run.notRun.length, 15, run.stdout);
+    assert.strictEqual(run.notRun.length, 17, run.stdout);
 });
 
 test("an applet Cinnamon dropped fails the gate and nothing after it runs", () => {
@@ -195,8 +246,139 @@ test("an applet Cinnamon dropped fails the gate and nothing after it runs", () =
     assert.strictEqual(run.status, 1, run.stdout);
     assert.deepStrictEqual(run.failed, ["FAIL the sysmon applet is registered with the panel"]);
     // Only the steps that really were proven may pass.
-    assert.deepStrictEqual(run.ok, ["ok   Cinnamon finished starting", "ok   the panel exists"]);
+    assert.deepStrictEqual(run.ok, [
+        "ok   Cinnamon finished starting",
+        "ok   mutter accepted the display mode",
+        "ok   the panel exists",
+    ]);
     assert.ok(run.notRun.some((l) => l.includes("applet received a snapshot")), run.stdout);
+});
+
+// Issue #83: mutter logged this on every run hosted by Xvfb. It must now fail
+// the run, and nothing about the applet may pass on a display mutter rejected.
+test("a NaN display-mode warning fails the gate", () => {
+    const run = runRunner({ log: `${NAN_MODE_WARNING}\n${LOADED_LOG}` });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL mutter rejected the display mode"]);
+    assert.deepStrictEqual(run.ok, ["ok   Cinnamon finished starting"]);
+    assert.match(run.stdout, /Invalid mode 1280x1024 \(-nan\)/);
+});
+
+// There is no allow-list: every form of warning or error the stack writes
+// fails the gate, and the line is shown so the failure names the gap.
+for (const line of [
+    "(cinnamon:56): GVFS-RemoteVolumeMonitor-WARNING **: remote volume monitor with dbus name org.gtk.vfs.UDisks2VolumeMonitor is not supported",
+    "(cinnamon:56): XApp-CRITICAL **: Could not create switcheroo proxy",
+    "(cinnamon:56): Gjs-ERROR **: fatal",
+    "Gjs-Message: JS ERROR: TypeError: x is undefined",
+    "Gjs-Message: JS WARNING: [resource:///org/cinnamon/js/ui/panel.js 1]: reference to undefined property",
+    "Gjs-Message: JS LOG: [LookingGlass/error] something failed",
+    "Gjs-Message: JS LOG: [LookingGlass/warning] something is off",
+    'Xlib:  extension "RANDR" missing on display ":99".',
+    // muffin writes its own warnings without GLib's logger.
+    "Window manager warning: media-keys-9 - Overwriting existing binding of keysym 1008ff14 with keysym 1008ff31 (keycode a2).",
+    "Window manager error: Unable to open X display :99",
+    "Bug in window manager: something impossible happened",
+    // Near misses of the one exempt line: the exemption is that exact line,
+    // not a pattern, so each of these must still fail.
+    'Xlib:  extension "DPMS" missing on display ":98".',
+    'Xlib:  extension "DPMS" missing on display ":99".  ',
+    'Xlib: extension "DPMS" missing on display ":99".',
+    '(cinnamon:56): Gjs-WARNING **: Xlib:  extension "DPMS" missing on display ":99".',
+]) {
+    test(`a startup log line "${line.slice(0, 48)}..." fails the gate`, () => {
+        const run = runRunner({ log: `${LOADED_LOG}\n${line}` });
+
+        assert.strictEqual(run.status, 1, run.stdout);
+        assert.deepStrictEqual(run.failed, ["FAIL Cinnamon logged warnings or errors while starting"]);
+        assert.ok(run.stdout.includes(`  ${line}`), run.stdout);
+        assert.ok(!run.ok.some((l) => l.includes("snapshot")), run.stdout);
+    });
+}
+
+// The owner-ruled exemption (2026-09-22): muffin's DPMS probe on a server that
+// cannot have DPMS. Exactly this line, and only this line, passes.
+test("the exact DPMS probe line is the one exempt line", () => {
+    const dpms = 'Xlib:  extension "DPMS" missing on display ":99".';
+    const run = runRunner({ log: `${dpms}\n${dpms}\n${LOADED_LOG}` });
+
+    assert.strictEqual(run.status, 0, run.stdout);
+    assert.deepStrictEqual(run.failed, []);
+});
+
+test("the exempt line does not hide another problem beside it", () => {
+    const dpms = 'Xlib:  extension "DPMS" missing on display ":99".';
+    const run = runRunner({ log: `${dpms}\n${LOADED_LOG}\n(cinnamon:56): St-WARNING **: something` });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL Cinnamon logged warnings or errors while starting"]);
+    assert.ok(run.stdout.includes("  (cinnamon:56): St-WARNING **: something"), run.stdout);
+    assert.ok(!run.stdout.includes(`  ${dpms}`), "the exempt line was reported as a problem");
+});
+
+// The second exemption (owner ruling 2026-09-23): XApp's designed fallback
+// with switcheroo-control absent. GLib's pid and timestamp vary; everything
+// else must match byte for byte.
+const XAPP_FALLBACK =
+    "XApp-WARNING **: 03:27:20.581: Switcheroo-control doesn't appear to be running, checking for Ubuntu support...";
+
+test("the exact XApp no-switcheroo fallback line is exempt, whatever its pid and time", () => {
+    const run = runRunner({
+        log: `(cinnamon:91): ${XAPP_FALLBACK}\n${LOADED_LOG}\n(cinnamon:4242): XApp-WARNING **: 23:59:59.999: Switcheroo-control doesn't appear to be running, checking for Ubuntu support...`,
+    });
+
+    assert.strictEqual(run.status, 0, run.stdout);
+    assert.deepStrictEqual(run.failed, []);
+});
+
+// Near misses of the XApp exemption, and the lines XApp logs on its other
+// paths: every one must still fail.
+for (const line of [
+    // the buggy no-default-GPU path the ruling avoids
+    "(cinnamon:120): XApp-CRITICAL **: 02:18:34.593: Could not get gpu info from switcheroo proxy: (0): No default GPU exists.",
+    "(cinnamon:120): GLib-GIO-CRITICAL **: 02:18:34.593: g_task_return_boolean: assertion '!task->ever_returned' failed",
+    // the same message at another level
+    "(cinnamon:91): XApp-CRITICAL **: 03:27:20.581: Switcheroo-control doesn't appear to be running, checking for Ubuntu support...",
+    // another domain
+    "(cinnamon:91): Gjs-WARNING **: 03:27:20.581: Switcheroo-control doesn't appear to be running, checking for Ubuntu support...",
+    // another program
+    "(nemo:91): XApp-WARNING **: 03:27:20.581: Switcheroo-control doesn't appear to be running, checking for Ubuntu support...",
+    // a changed message: truncated, extended, re-cased
+    "(cinnamon:91): XApp-WARNING **: 03:27:20.581: Switcheroo-control doesn't appear to be running, checking for Ubuntu support..",
+    "(cinnamon:91): XApp-WARNING **: 03:27:20.581: Switcheroo-control doesn't appear to be running, checking for Ubuntu support... and more",
+    "(cinnamon:91): XApp-WARNING **: 03:27:20.581: switcheroo-control doesn't appear to be running, checking for Ubuntu support...",
+    // no timestamp where GLib always writes one
+    "(cinnamon:91): XApp-WARNING **: Switcheroo-control doesn't appear to be running, checking for Ubuntu support...",
+    // any other XApp warning
+    "(cinnamon:91): XApp-WARNING **: 03:27:20.581: Invalid environment returned from switcheroo:",
+]) {
+    test(`an XApp-adjacent line "${line.slice(0, 60)}..." still fails`, () => {
+        const run = runRunner({ log: `${LOADED_LOG}\n${line}` });
+
+        assert.strictEqual(run.status, 1, run.stdout);
+        assert.deepStrictEqual(run.failed, ["FAIL Cinnamon logged warnings or errors while starting"]);
+        assert.ok(run.stdout.includes(`  ${line}`), run.stdout);
+    });
+}
+
+// Informational lines are not problems; a check that failed on them would be
+// one nobody could pass.
+test("informational log lines do not fail the gate", () => {
+    const run = runRunner({
+        log: `${LOADED_LOG}\nGjs-Message: Profiler is disabled. Not setting up signals.\n** Message: Tried to become the session notification handler but failed.`,
+    });
+
+    assert.strictEqual(run.status, 0, run.stdout);
+    assert.deepStrictEqual(run.failed, []);
+});
+
+// A warning logged while the checks drive the applet fails the run as well.
+test("a warning logged during the run fails it", () => {
+    const run = runRunner({ lateLog: "(cinnamon:56): St-CRITICAL **: st_widget_get_theme_node called on an unmapped widget" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL Cinnamon logged warnings or errors during the run"]);
 });
 
 // Issue #184: a gauge Clutter never sized is never painted. Queueing a repaint
@@ -214,26 +396,17 @@ test("a gauge with no width that is never painted fails the run", () => {
 });
 
 // A handler that throws still lets later handlers run, so a paint counter alone
-// would pass a gauge whose drawing failed.
+// would pass a gauge whose drawing failed. GJS logs the exception as a
+// Gjs-CRITICAL, which the final log scan fails on.
 test("a repaint handler that throws fails the run even though a paint was counted", () => {
     const run = runRunner({
-        paintError: "Gjs-Message: JS ERROR: TypeError: ctx is null\n_onRepaint@/root/.local/share/cinnamon/applets/sysmon-go@sysmon/applet.js:540:9",
+        paintError: "(cinnamon:55): Gjs-CRITICAL **: 01:38:38.554: JS ERROR: TypeError: ctx is null\n_onRepaint@/root/.local/share/cinnamon/applets/sysmon-go@sysmon/applet.js:540:9",
     });
 
     assert.strictEqual(run.status, 1, run.stdout);
-    assert.deepStrictEqual(run.failed, ["FAIL no JavaScript error was logged while the gauge was painted"]);
+    assert.deepStrictEqual(run.failed, ["FAIL Cinnamon logged warnings or errors during the run"]);
     assert.ok(run.ok.includes("ok   Clutter painted the panel gauge"), run.stdout);
-    assert.match(run.stdout, /_onRepaint@/);
-});
-
-// The error check is scoped to the paint it is judging: an error logged
-// before the repaint was queued belongs to something else.
-test("a JavaScript error logged before the paint is not blamed on it", () => {
-    const run = runRunner({
-        log: `${LOADED_LOG}\nGjs-Message: JS ERROR: an earlier, unrelated failure`,
-    });
-
-    assert.ok(run.ok.includes("ok   no JavaScript error was logged while the gauge was painted"), run.stdout);
+    assert.match(run.stdout, /JS ERROR: TypeError: ctx is null/);
 });
 
 // An empty log is no evidence of a clean load; the line saying the applet
@@ -260,7 +433,16 @@ test("an applet error in the log fails the gate even when the applet registered"
 // followed by the assertions regardless.
 for (const [name, scenario, reason] of [
     ["a server that never answers", { server: "down" }, "the sysmon server never answered /api/snapshot"],
-    ["an Xvfb that exits before its display is ready", { xvfb: "dies" }, "Xvfb never reported that :99 was ready"],
+    ["an X server that exits before its display is ready", { xorg: "dies" }, "the X server never reported that :99 was ready"],
+    ["a display mode without timings", { refresh: "0.00Hz" }, "the display's current mode has no real refresh rate (RandR reports no timings)"],
+    ["a display mode with a NaN refresh rate", { refresh: "-nanHz" }, "the display's current mode has no real refresh rate (RandR reports no timings)"],
+    ["a system bus that does not start", { systemBus: "fails" }, "the system bus did not start: Failed to start message bus"],
+    ["a host GPU showing through", { hostGpus: ["card0"] }, "the host's GPUs are visible in DRM_DIR; run through `make test-extensions-desktop`, which masks them"],
+    ["a system bus that reports a configuration problem", { systemBus: "complains" }, 'the system bus reported a problem: dbus[1]: Unknown username "whoopsie" in message bus configuration file'],
+    ["a udisks2 daemon that never claims its name", { missingService: "org.freedesktop.UDisks2" }, "org.freedesktop.UDisks2 never appeared on the system bus"],
+    // The container must not run switcheroo-control (owner ruling 2026-09-23):
+    // XApp's exempt fallback line only describes a run without it.
+    ["a switcheroo-control that is on the bus after all", { switcheroo: "running" }, "net.hadess.SwitcherooControl is on the system bus, but this container must not run switcheroo-control"],
     ["an applet that cannot be enabled", { gsettings: "fails" }, "could not enable the applet in org.cinnamon enabled-applets"],
 ]) {
     test(`${name} aborts the run before any assertion`, () => {
@@ -268,6 +450,8 @@ for (const [name, scenario, reason] of [
 
         assert.strictEqual(run.status, 1, run.stdout);
         assert.deepStrictEqual(run.ok, []);
-        assert.deepStrictEqual(run.failed, [`FAIL ${reason}`]);
+        // The scratch DRM directory differs per run; the message names it.
+        const failed = run.failed.map((l) => l.replace(/ \/\S+\/drm;/, " DRM_DIR;"));
+        assert.deepStrictEqual(failed, [`FAIL ${reason}`]);
     });
 }

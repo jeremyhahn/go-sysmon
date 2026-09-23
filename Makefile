@@ -266,12 +266,16 @@ test-e2e: build-server build-frontend
 test-extensions:
 	node --test 'extensions/tests/*.test.js'
 
-# test-extensions-desktop is tier 3: a real Cinnamon session under Xvfb, driven
+# test-extensions-desktop is tier 3: a real Cinnamon session on headless Xorg, driven
 # through the org.Cinnamon D-Bus Eval method. It needs a Cinnamon install and
 # software GL, so it is slow and is not part of `make ci` -- run it nightly or
 # before touching applet.js.
+#
+# The tmpfs over /sys/class/drm hides the host's GPUs, so the container sees the
+# same (empty) set of DRM devices on every host (#163). What Cinnamon logs at
+# startup depends on that set, and the runner refuses any other view.
 test-extensions-desktop: desktop-docker-build
-	docker run --rm --shm-size=256m $(DESKTOP_IMAGE)
+	docker run --rm --shm-size=256m --mount type=tmpfs,destination=/sys/class/drm $(DESKTOP_IMAGE)
 
 desktop-docker-build:
 	docker build -t $(DESKTOP_IMAGE) -f test/desktop/Dockerfile .

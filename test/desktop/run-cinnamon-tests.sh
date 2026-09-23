@@ -2,7 +2,7 @@
 #
 # Tier 3 desktop tests for the go-sysmon Cinnamon applet.
 #
-# Starts a real Cinnamon session under Xvfb, loads the applet into the panel,
+# Starts a real Cinnamon session on a headless Xorg display, loads the applet into the panel,
 # and asserts on its live state through the org.Cinnamon D-Bus Eval method,
 # which runs JavaScript inside the Cinnamon process and returns the result.
 #
@@ -16,7 +16,7 @@ set -uo pipefail
 
 readonly UUID="sysmon-go@sysmon"
 readonly SERVER_ADDR="localhost:8080"
-readonly XVFB_DISPLAY=":99"
+readonly X_DISPLAY=":99"
 
 # Overridable so extensions/tests/desktop-runner.test.js can drive this script
 # against stand-in tools in a scratch directory. In the container they keep
@@ -24,6 +24,101 @@ readonly XVFB_DISPLAY=":99"
 readonly CINNAMON_LOG="${CINNAMON_LOG:-/tmp/cinnamon.log}"
 readonly STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-90}"
 readonly DATA_TIMEOUT="${DATA_TIMEOUT:-30}"
+readonly XORG_CONFIG="${XORG_CONFIG:-/etc/X11/xorg-dummy.conf}"
+
+# What mutter logs when it cannot use the display's mode. With a timing-less
+# mode it reads "Invalid mode 1280x1024 (-nan)"; any variant of it means the
+# display is not the one these tests were designed against.
+readonly INVALID_MODE_PATTERN="Invalid mode|\\(-?nan\\)"
+
+# Any line in cinnamon.log that is a warning or worse, in every form the stack
+# writes one: GLib's "Domain-WARNING **", "-CRITICAL **" and "-ERROR **"; GJS's
+# "JS WARNING"/"JS ERROR"; Cinnamon's LookingGlass error and warning channels;
+# muffin's own meta_warning/meta_fatal/meta_bug output ("Window manager
+# warning:", "Window manager error:", "Bug in window manager:"), which does not
+# go through GLib's logger; and Xlib's complaints about the display. Every
+# such line so far was an environment gap -- a timing-less display mode, a
+# missing system bus service, a keybinding conflict -- and each was fixed at
+# its source rather than tolerated.
+readonly LOG_PROBLEM_PATTERN="(WARNING|CRITICAL|ERROR) \\*\\*|JS (ERROR|WARNING)|\\[LookingGlass/(error|warning)\\]|^Window manager (warning|error):|^Bug in window manager:|^Xlib: "
+
+# The kernel's DRM class directory as the container sees it. The container's
+# GPU view must be the same on every host (#163), so `make
+# test-extensions-desktop` mounts an empty tmpfs over it, and the runner refuses
+# to start on any other view. Overridable for the runner tests.
+readonly DRM_CLASS_DIR="${DRM_CLASS_DIR:-/sys/class/drm}"
+
+# The one exemption, by owner ruling of 2026-09-22. It is matched as a whole
+# line, byte for byte, display included -- no pattern -- so any other Xlib
+# line, or this one on another display, still fails the run.
+#
+# It cannot be fixed at its source in a container:
+# - muffin probes for DPMS unconditionally: DPMSCapable() in
+#   meta_monitor_manager_xrandr_read_current_state (muffin 6.0.1,
+#   src/backends/x11/meta-monitor-manager-xrandr.c:150), and no Cinnamon or
+#   muffin setting skips it. libXext prints this line when the server lacks
+#   the extension.
+# - Xorg registers DPMS only when some screen's driver implements it
+#   (xorg-server 21.1.12 Xext/dpms.c: DPMSExtensionInit enables it only if
+#   DPMSSupported() finds a screen with a DPMS hook).
+# - No headless X server that runs in a container has one: xf86-video-dummy up
+#   to master never calls xf86DPMSInit, and Xvfb and TigerVNC's Xvnc have no
+#   DPMS either (`xset q`: "Server does not have the DPMS Extension").
+# - DPMS would need Xorg's modesetting driver on a kernel DRM device such as
+#   vkms, which means loading a module into the host kernel.
+readonly DPMS_PROBE_LINE='Xlib:  extension "DPMS" missing on display ":99".'
+
+# The second exemption, by owner ruling of 2026-09-23: XApp's designed
+# fallback when switcheroo-control is not running, which the container
+# deliberately does not run.
+#
+# Why switcheroo-control is not run: it lists only DRM cards whose driver is
+# nvidia or that udev tagged with ID_PATH_TAG (switcheroo-control 2.6,
+# get_card_env). A container has no udev database, so what it reports depends
+# on the host's GPUs (#163), and with the GPUs masked it reports none. XApp
+# 2.8.2 then takes its no-default-GPU path in helper_init_thread
+# (libxapp/xapp-gpu-offload-helper.c), which logs an XApp-CRITICAL and returns
+# the GTask twice (a GLib-GIO-CRITICAL). With no switcheroo on the bus, the
+# same function finds no name owner (line 308), logs this one warning (line
+# 330), and continues with a synthetic default GPU. The NVIDIA entry is added
+# only if xapp_util_gpu_offload_supported() finds Ubuntu's PRIME files, which
+# the image does not have. So the fallback is the same on every host.
+#
+# GLib stamps each such line with the process id and the time, so those two
+# fields are the only ones not compared. Everything else is compared byte for
+# byte: the program name, the domain and level, and the whole message.
+readonly XAPP_FALLBACK_MESSAGE="Switcheroo-control doesn't appear to be running, checking for Ubuntu support..."
+readonly XAPP_FALLBACK_PREFIX='^\(cinnamon:[0-9]+\): XApp-WARNING \*\*: [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}: (.*)$'
+
+# is_exempt reports whether a log line is one of the two exempt lines above.
+is_exempt() {
+    local line="$1"
+
+    if [[ "$line" == "$DPMS_PROBE_LINE" ]]; then
+        return 0
+    fi
+    [[ "$line" =~ $XAPP_FALLBACK_PREFIX ]] && [[ "${BASH_REMATCH[1]}" == "$XAPP_FALLBACK_MESSAGE" ]]
+}
+
+# log_problems prints every warning or error line in cinnamon.log except the
+# exempt ones, and succeeds only if it printed at least one.
+log_problems() {
+    local line found=1
+
+    while IFS= read -r line; do
+        if ! is_exempt "$line"; then
+            printf '%s\n' "$line"
+            found=0
+        fi
+    done < <(grep -E "$LOG_PROBLEM_PATTERN" "$CINNAMON_LOG")
+    return "$found"
+}
+
+# The system bus and udisks2, which Cinnamon reaches at startup through GVFS's
+# volume monitor. switcheroo-control is deliberately absent; see above.
+# Overridable for the runner tests, like the paths above.
+readonly SYSTEM_BUS_DIR="${SYSTEM_BUS_DIR:-/run/dbus}"
+readonly UDISKSD="${UDISKSD:-/usr/libexec/udisks2/udisksd}"
 
 # Where Cinnamon keeps loaded applet instances differs across the versions
 # metadata.json claims support for: older releases index them by id in
@@ -193,8 +288,10 @@ assert_eval() {
 cleanup() {
     [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null
     [[ -n "${CINNAMON_PID:-}" ]] && kill "$CINNAMON_PID" 2>/dev/null
-    [[ -n "${XVFB_PID:-}" ]] && kill "$XVFB_PID" 2>/dev/null
+    [[ -n "${XORG_PID:-}" ]] && kill "$XORG_PID" 2>/dev/null
     [[ -n "${DBUS_SESSION_BUS_PID:-}" ]] && kill "$DBUS_SESSION_BUS_PID" 2>/dev/null
+    [[ -n "${UDISKSD_PID:-}" ]] && kill "$UDISKSD_PID" 2>/dev/null
+    [[ -n "${SYSTEM_BUS_PID:-}" ]] && kill "$SYSTEM_BUS_PID" 2>/dev/null
     [[ -n "${SCRATCH:-}" ]] && rm -rf "$SCRATCH"
     return 0
 }
@@ -207,6 +304,14 @@ trap cleanup EXIT
 # it happened to leave behind.
 
 SCRATCH="$(mktemp -d)"
+
+# What the desktop stack logs depends on the DRM devices it can see, so a host
+# GPU showing through changes the log -- a CI runner with no usable GPU logged
+# two CRITICALs that a workstation never did. Check the view before anything
+# reads it.
+if [[ ! -d "$DRM_CLASS_DIR" ]] || [[ -n "$(ls -A "$DRM_CLASS_DIR")" ]]; then
+    abort "the host's GPUs are visible in ${DRM_CLASS_DIR}; run through \`make test-extensions-desktop\`, which masks them"
+fi
 
 echo "== starting sysmon server =="
 sysmon-server serve --addr "$SERVER_ADDR" --interval 500 &
@@ -222,24 +327,83 @@ done
 mkdir -p "${XDG_RUNTIME_DIR:-/run/user/0}"
 chmod 700 "${XDG_RUNTIME_DIR:-/run/user/0}"
 
-echo "== starting Xvfb =="
-# -displayfd makes Xvfb write the display number once it is accepting
-# connections, so this waits for the display to exist rather than sleeping and
-# assuming. An Xvfb that dies first closes the pipe and the read fails.
+echo "== starting the X server =="
+# Xorg with the dummy video driver, configured by xorg-dummy.conf with a VESA
+# Modeline, so the display's mode has real timings. Xvfb's has none, and mutter
+# logged "Invalid mode 1280x1024 (-nan)" on every run it hosted.
 #
-# Expect mutter to log "Invalid mode 1280x1024 (-nan)" on every run, passing
-# ones included. Xvfb's single RandR mode carries no timings -- dot clock,
-# htotal and vtotal are all 0 -- so the refresh rate mutter derives is 0/0.
-# mutter rejects its own linear and fallback layouts over it and keeps the X
-# server's current one, and the desktop comes up normally. It is not what failed
-# job 42277, which logged the same two lines as every healthy run.
+# -displayfd makes the server write the display number once it is accepting
+# connections, so this waits for the display to exist rather than sleeping and
+# assuming. A server that dies first closes the pipe and the read fails.
 mkfifo "${SCRATCH}/displayfd"
-Xvfb "$XVFB_DISPLAY" -screen 0 1280x1024x24 -nolisten tcp -displayfd 3 3>"${SCRATCH}/displayfd" &
-XVFB_PID=$!
+Xorg "$X_DISPLAY" -config "$XORG_CONFIG" -noreset -nolisten tcp \
+    -logfile "${SCRATCH}/xorg.log" -displayfd 3 3>"${SCRATCH}/displayfd" &
+XORG_PID=$!
 read -r -t 30 display_number <"${SCRATCH}/displayfd" ||
-    abort "Xvfb never reported that ${XVFB_DISPLAY} was ready"
-[[ ":${display_number}" == "$XVFB_DISPLAY" ]] ||
-    abort "Xvfb reported display :${display_number}, not ${XVFB_DISPLAY}"
+    abort "the X server never reported that ${X_DISPLAY} was ready"
+[[ ":${display_number}" == "$X_DISPLAY" ]] ||
+    abort "the X server reported display :${display_number}, not ${X_DISPLAY}"
+
+# display_refresh_hz prints the current mode's vertical refresh rate, as the X
+# server reports it through RandR, or nothing if that is not a positive number.
+# A mode without timings reports 0.00 Hz, and a rate mutter could not use must
+# not get as far as mutter.
+display_refresh_hz() {
+    xrandr --display "$X_DISPLAY" --verbose 2>/dev/null | awk '
+        /\*current/ { current = 1; next }
+        current && $1 == "v:" {
+            rate = $NF
+            if (rate ~ /^[0-9]+(\.[0-9]+)?Hz$/) {
+                sub(/Hz$/, "", rate)
+                if (rate + 0 > 0) print rate
+            }
+            exit
+        }'
+}
+
+refresh_hz="$(display_refresh_hz)"
+[[ -n "$refresh_hz" ]] ||
+    abort "the display's current mode has no real refresh rate (RandR reports no timings)"
+echo "display ${X_DISPLAY}: 1280x1024 at ${refresh_hz} Hz"
+
+echo "== starting the system bus and its services =="
+# A container has no init to start these, so the runner does, as a desktop
+# host's init would. Without them Cinnamon starts but logs a warning for each
+# service it could not reach, and the log check below fails the run on any
+# warning. polkitd, which udisksd asks for authorisation, is started by the bus
+# itself through D-Bus activation.
+mkdir -p "$SYSTEM_BUS_DIR"
+SYSTEM_BUS_PID="$(dbus-daemon --system --fork --print-pid 2>"${SCRATCH}/system-bus.log")" ||
+    abort "the system bus did not start: $(cat "${SCRATCH}/system-bus.log")"
+# The bus complains about its own configuration on stderr, for instance a
+# policy naming a user that does not exist. That is the same kind of gap as a
+# warning in cinnamon.log, so it fails the run the same way.
+[[ ! -s "${SCRATCH}/system-bus.log" ]] ||
+    abort "the system bus reported a problem: $(cat "${SCRATCH}/system-bus.log")"
+"$UDISKSD" >"${SCRATCH}/udisksd.log" 2>&1 &
+UDISKSD_PID=$!
+
+# system_bus_has_owner reports whether a name is owned on the system bus.
+system_bus_has_owner() {
+    gdbus call --system \
+        --dest org.freedesktop.DBus \
+        --object-path /org/freedesktop/DBus \
+        --method org.freedesktop.DBus.NameHasOwner \
+        "$1" 2>/dev/null | grep -q "^(true,)$"
+}
+
+udisks_deadline=$((SECONDS + STARTUP_TIMEOUT))
+until system_bus_has_owner org.freedesktop.UDisks2; do
+    (( SECONDS < udisks_deadline )) || abort "org.freedesktop.UDisks2 never appeared on the system bus"
+    sleep 1
+done
+
+# XApp's exempt fallback line is only the right line if switcheroo-control is
+# really absent. If something owns its name, XApp takes a different path,
+# and the exemption would be describing a run that did not happen.
+if system_bus_has_owner net.hadess.SwitcherooControl; then
+    abort "net.hadess.SwitcherooControl is on the system bus, but this container must not run switcheroo-control"
+fi
 
 echo "== starting a session bus =="
 # Cinnamon and this script must share one bus: dbus-run-session would give
@@ -253,6 +417,15 @@ echo "== enabling the applet =="
 # has to be enabled up front rather than added afterwards.
 gsettings set org.cinnamon enabled-applets "['panel1:right:0:${UUID}:0']" ||
     abort "could not enable the applet in org.cinnamon enabled-applets"
+# Cinnamon binds XF86AudioPlay and XF86AudioPause by default, and the standard
+# XKB keymaps put both on one key (inet: <I22>/<I172> = [XF86AudioPlay,
+# XF86AudioPause]). muffin can bind only one action to that keycode, so it
+# logs "Window manager warning: media-keys-9 - Overwriting existing binding"
+# on every start. Play already toggles playback, so the separate Pause
+# binding is cleared through Cinnamon's own setting, which removes the
+# conflict.
+gsettings set org.cinnamon.desktop.keybindings.media-keys pause "[]" ||
+    abort "could not clear the conflicting media-keys pause binding"
 # The server deliberately listens on the applet's default address, so the test
 # does not depend on Cinnamon's settings plumbing to make a connection. The
 # settings file is still written -- to both the historical and the current
@@ -297,6 +470,20 @@ else
     gate_open=0
 fi
 
+# mutter reads the display's modes before Cinnamon draws anything. A mode it
+# cannot use is logged, not fatal, which is exactly why it is checked: the
+# desktop would come up on a fallback layout and every later check would pass
+# on a display nobody configured.
+if (( gate_open == 0 )); then
+    inconclusive "mutter accepted the display mode (not run: an earlier session check failed)"
+elif grep -qE "$INVALID_MODE_PATTERN" "$CINNAMON_LOG"; then
+    fail "mutter rejected the display mode"
+    grep -E "$INVALID_MODE_PATTERN" "$CINNAMON_LOG" | tail -5 | while read -r line; do log "$line"; done
+    gate_open=0
+else
+    pass "mutter accepted the display mode"
+fi
+
 # PanelManager is built synchronously before the applets load, so once the run
 # state is RUNNING a missing panel is a desktop that did not come up, not one
 # that has not come up yet.
@@ -329,6 +516,19 @@ elif grep -q "\[${UUID}\]" "$CINNAMON_LOG"; then
     gate_open=0
 else
     pass "Cinnamon logged the applet loading without error"
+fi
+
+# Anything Cinnamon had to warn about while starting is a desktop that did not
+# start the way these tests assume. The lines are printed so the failure says
+# what the gap was.
+if (( gate_open == 0 )); then
+    inconclusive "Cinnamon started without a warning or error (not run: an earlier session check failed)"
+elif problems="$(log_problems)"; then
+    fail "Cinnamon logged warnings or errors while starting"
+    tail -10 <<<"$problems" | while IFS= read -r line; do log "$line"; done
+    gate_open=0
+else
+    pass "Cinnamon started without a warning or error"
 fi
 
 (( gate_open == 1 )) && session_proven=1
@@ -409,10 +609,7 @@ fi
 
 # Count the paints Clutter delivers from here on, queue one, and wait for it.
 # The counter's handler is connected after the applet's own, so when it has
-# run, the applet's drawing has too. The log's length is noted first, so the
-# error check below reads only what was logged from this paint on.
-# grep -c '' counts a final line that has no newline yet; wc -l would not.
-log_mark="$(grep -c '' "$CINNAMON_LOG")"
+# run, the applet's drawing has too.
 assert_eval "a repaint can be queued" \
     "(function () { var area = ${APPLET_JS}.drawingArea; area._sysmonTestPaints = 0; area.connect('repaint', function () { area._sysmonTestPaints++; }); area.queue_repaint(); return 'queued'; })()" \
     "queued"
@@ -427,22 +624,22 @@ else
     log "paints: $(eval_value "$(cinnamon_eval "String(${APPLET_JS}.drawingArea._sysmonTestPaints)")")"
 fi
 
-# A paint only counts if the applet's own handler finished it. GJS logs an
-# exception thrown from a signal handler and then runs the next handler, so
-# the counter above increments even when _onRepaint threw and left the gauge
-# blank. So any JavaScript error logged since the paint was queued fails the
-# run. It is deliberately not narrowed to the applet's stack: an error from
-# anything else in that window is still an error in a run that should have
-# none, and the check's name says what it measured rather than claiming the
-# gauge caused it.
-paint_log="$(tail -n "+$((log_mark + 1))" "$CINNAMON_LOG")"
+echo
+echo "== the log, after the run =="
+
+# The checks above drive the applet; anything it or Cinnamon warned about while
+# they ran fails the run just as a startup warning does. This is also what
+# makes the paint count above trustworthy: GJS logs an exception thrown by a
+# signal handler (as "Gjs-CRITICAL **: JS ERROR") and then runs the next
+# handler, so the counter goes up even if _onRepaint threw and left the gauge
+# blank. That line fails the run here.
 if (( session_proven == 0 )); then
-    inconclusive "no JavaScript error was logged while the gauge was painted (not run: the session was never proven)"
-elif grep -q "JS ERROR" <<<"$paint_log"; then
-    fail "no JavaScript error was logged while the gauge was painted"
-    grep -A3 "JS ERROR" <<<"$paint_log" | tail -12 | while IFS= read -r line; do log "$line"; done
+    inconclusive "Cinnamon logged no warning or error during the run (not run: the session was never proven)"
+elif problems="$(log_problems)"; then
+    fail "Cinnamon logged warnings or errors during the run"
+    tail -10 <<<"$problems" | while IFS= read -r line; do log "$line"; done
 else
-    pass "no JavaScript error was logged while the gauge was painted"
+    pass "Cinnamon logged no warning or error during the run"
 fi
 
 # ---- results ----------------------------------------------------------------
