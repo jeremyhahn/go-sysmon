@@ -21,9 +21,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The go.mod toolchain directive pins the exact compiler, including the
-  # patched standard library. Reading the version from go.mod keeps CI on
-  # whatever the project declares rather than a separately drifting constant.
+  # The go directive in go.mod pins the exact compiler, including the patched
+  # standard library (there is no separate toolchain directive). Reading the
+  # version from go.mod keeps CI on whatever the project declares rather than a
+  # separately drifting constant.
   GO_VERSION_FILE: go.mod
   NODE_VERSION: '24'
 
@@ -49,44 +50,15 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      # The analysis tools are BAKED INTO OUR RUNNER IMAGE, pinned, verified at
-      # image build time, and recorded in /etc/ci-runner-tools.txt. Installing
-      # them fetched them over the network on every run, failed this job twice
-      # in one day on a sum.golang.org checksum timeout with nothing wrong with
-      # the code (#39), and DOWNGRADED the linter the image provides (#21).
-      #
-      # `ubuntu-latest` names OUR image on Gitea and GITHUB'S HOSTED IMAGE on
-      # github.com -- one label, two different machines. So the manifest is a
-      # test, not an assumption: where it exists nothing is fetched, and where
-      # it does not the same pinned versions are installed. Both environments
-      # then run identical tools, which is what stops a workflow and an image
-      # disagreeing about which linter gates the repository.
+      # Tool versions are pinned once, in the Makefile, and `make lint` refuses
+      # any other build. The runner image bakes the tools: a baked copy at the
+      # pinned version is used as-is, with nothing fetched -- network installs
+      # on every run failed this job twice in one day on a sum.golang.org
+      # timeout (#39) and downgraded the image's linter (#21). A copy at any
+      # other version, or none (GitHub's hosted `ubuntu-latest`), gets the pin
+      # installed into GOBIN, so every runner runs the tools a developer runs.
       - name: Analysis tools
-        run: |
-          # Assert, do not assume. The manifest exists so a job can say what
-          # analysed it -- printing it proves only that the FILE is there, not
-          # that the binaries on PATH are the ones it names. A drifted image or
-          # a package shadowing a tool would otherwise pass silently.
-          verify() {
-            name="$1"; flag="$2"
-            want=$(awk -v n="$name" '$1 == n { print $2 }' /etc/ci-runner-tools.txt)
-            [ -n "$want" ] || { echo "::error::$name is not listed in /etc/ci-runner-tools.txt"; exit 1; }
-            command -v "$name" >/dev/null 2>&1 || { echo "::error::$name is not on PATH"; exit 1; }
-            got=$("$name" "$flag" 2>&1 || true)
-            case "$got" in
-              *"${want#v}"*) echo "ok   $name $want   $(command -v "$name")" ;;
-              *) echo "::error::$name on PATH is not $want (self-reports: $got)"; exit 1 ;;
-            esac
-          }
-
-          if [ -f /etc/ci-runner-tools.txt ]; then
-            verify golangci-lint --version
-            verify actionlint -version
-            exit 0
-          fi
-          echo "No /etc/ci-runner-tools.txt: not our runner image. Installing the same versions."
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+        run: make tool-golangci-lint tool-actionlint
 
       # gofmt and vet are separate targets so a formatting failure is
       # distinguishable from a lint finding in the job log.
@@ -129,45 +101,21 @@ jobs:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
-      # gosec and govulncheck come from the runner image too. They were
-      # installed with @latest, which is what made scan results
+      # gosec and govulncheck are pinned in the Makefile with the others. They
+      # were installed with @latest once, which is what made scan results
       # unreproducible: a scan that cannot say which version produced it
-      # cannot be compared with the one before it. The versions below are the
-      # image's, so a scan on either runner is the same scan.
+      # cannot be compared with the one before it. `make tool-*` prints the
+      # version it verified, so every scan names its scanner.
       #
-      # AFTER setup-go, not before: on the fallback path this runs `go install`,
+      # AFTER setup-go, not before: a missing or stale tool is `go install`-ed,
       # and before setup-go that is whatever Go the host happens to carry --
       # or none. A security gate must not depend on an unmanaged toolchain, and
       # the lint and release jobs already had this order.
       - name: Analysis tools
-        run: |
-          # Assert, do not assume. The manifest exists so a job can say what
-          # analysed it -- printing it proves only that the FILE is there, not
-          # that the binaries on PATH are the ones it names. A drifted image or
-          # a package shadowing a tool would otherwise pass silently.
-          verify() {
-            name="$1"; flag="$2"
-            want=$(awk -v n="$name" '$1 == n { print $2 }' /etc/ci-runner-tools.txt)
-            [ -n "$want" ] || { echo "::error::$name is not listed in /etc/ci-runner-tools.txt"; exit 1; }
-            command -v "$name" >/dev/null 2>&1 || { echo "::error::$name is not on PATH"; exit 1; }
-            got=$("$name" "$flag" 2>&1 || true)
-            case "$got" in
-              *"${want#v}"*) echo "ok   $name $want   $(command -v "$name")" ;;
-              *) echo "::error::$name on PATH is not $want (self-reports: $got)"; exit 1 ;;
-            esac
-          }
-
-          if [ -f /etc/ci-runner-tools.txt ]; then
-            verify govulncheck -version
-            verify gosec --version
-            exit 0
-          fi
-          echo "No /etc/ci-runner-tools.txt: not our runner image. Installing the same versions."
-          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+        run: make tool-govulncheck tool-gosec
 
       # Covers dependencies and the standard library the project links against.
-      # A regression in the go.mod toolchain pin fails here.
+      # A regression in the go directive (the toolchain pin) fails here.
       - name: Go vulnerability scan
         run: make vulncheck
 
@@ -330,7 +278,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
 

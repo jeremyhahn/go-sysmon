@@ -77,6 +77,7 @@ shipped undetected while it did not.
 
 | Target            | What it does                                     |
 |-------------------|--------------------------------------------------|
+| `make tools`      | Installs any analysis tool not at its Makefile pin |
 | `make lint`       | gofmt, `go vet`, then golangci-lint              |
 | `make fmt`        | Rewrites files with gofmt                        |
 | `make vulncheck`  | govulncheck across dependencies and the stdlib   |
@@ -85,7 +86,8 @@ shipped undetected while it did not.
 | `make ci-fast`    | The same, minus containers and browsers          |
 
 `make ci` calls the same targets the GitHub workflow calls, so the two cannot
-drift apart. Green locally means green in CI.
+drift apart. Green locally means green in CI. Analysis tools are pinned once, in the
+Makefile, and every lint and scan target refuses a binary at any other version.
 
 ### Releasing and deploying
 

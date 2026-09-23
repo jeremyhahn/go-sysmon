@@ -26,7 +26,7 @@ RUN npm run build
 # --- binary -----------------------------------------------------------------
 # The image Go version must satisfy the "go" directive in go.mod, or the
 # toolchain gets downloaded on every build.
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.27.1-bookworm AS builder
 
 WORKDIR /src
 

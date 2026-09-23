@@ -43,28 +43,42 @@ FRONTEND_DIR := cmd/sysmon/frontend
 FRONTEND_STAMP := $(FRONTEND_DIR)/node_modules/.install-stamp
 DOCKER_IMAGE := go-sysmon-test
 
-# Analysis tools are resolved from PATH FIRST, then from GOBIN.
+# Analysis tool versions. This is the ONLY place they are pinned: `make lint`,
+# `make vulncheck` and `make gosec` refuse a binary built at any other version,
+# and every workflow installs through `make tools`, so a local run and CI run
+# the same tools. Pins are exact module versions, which Go checksums on install;
+# staying on the latest release means bumping them here (#183 automates that).
+GOLANGCI_LINT_VERSION := v2.13.2
+ACTIONLINT_VERSION := v1.7.12
+GOSEC_VERSION := v2.29.0
+GOVULNCHECK_VERSION := v1.8.0
+
+GOLANGCI_LINT_PKG := github.com/golangci/golangci-lint/v2/cmd/golangci-lint
+ACTIONLINT_PKG := github.com/rhysd/actionlint/cmd/actionlint
+GOSEC_PKG := github.com/securego/gosec/v2/cmd/gosec
+GOVULNCHECK_PKG := golang.org/x/vuln/cmd/govulncheck
+
+# TOOL verifies a binary against its pin, and installs the pin when asked.
+TOOL := ./scripts/tool.sh
+
+# Analysis tools resolve to GOBIN when a copy is there, then to PATH, and
+# finally to the GOBIN path so a missing tool is reported by name.
 #
-# The order matters and it is the root of #39/#21. The CI runner image bakes
-# every one of these, pinned and verified, into /usr/local/bin -- but these
-# variables pointed only at GOBIN, so `make lint` ran a path that did not
-# exist there. The workflows worked around it by installing the tools over the
-# network on every run, which downgraded the linter the image provides and
-# failed the gate twice in one day on a checksum-server timeout.
-#
-# The existence checks below already consulted PATH, so the check passed and
-# the invocation then failed -- a check and its subject disagreeing.
-#
-# PATH first also does the right thing locally: `go install` puts the binary in
-# GOBIN, which is normally on PATH, so both resolve to the same file.
+# GOBIN comes first because that is where `make tools` installs a pinned version
+# when the one on PATH is wrong -- on the CI runner, a stale image copy in
+# /usr/local/bin. When GOBIN has no copy, the PATH lookup still finds the image's
+# baked tools; pointing only at GOBIN is what broke `make lint` in CI before
+# (#39/#21). Locally GOBIN is normally on PATH, so both resolve to one file.
 GOBIN_DIR := $(shell go env GOBIN)
 ifeq ($(GOBIN_DIR),)
   GOBIN_DIR := $(shell go env GOPATH)/bin
 endif
-tool = $(shell command -v $(1) 2>/dev/null || echo $(GOBIN_DIR)/$(1))
+tool = $(or $(wildcard $(GOBIN_DIR)/$(1)),$(shell command -v $(1) 2>/dev/null),$(GOBIN_DIR)/$(1))
 
 GOLANGCI_LINT ?= $(call tool,golangci-lint)
 ACTIONLINT ?= $(call tool,actionlint)
+GOSEC ?= $(call tool,gosec)
+GOVULNCHECK ?= $(call tool,govulncheck)
 
 # Cinnamon applet paths
 APPLET_UUID := sysmon-go@sysmon
@@ -84,7 +98,7 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both \
+        build-both tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
 
@@ -296,15 +310,28 @@ uninstall-extension-cinnamon:
 ## Lint
 
 # lint fails the build on any finding. gofmt and vet always run; golangci-lint
-# is resolved from GOBIN/GOPATH because "go install"-ed tools are not on the
-# default PATH that make uses.
+# must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
+# installs it.
 lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean
-	@if [ ! -x "$(GOLANGCI_LINT)" ] && ! command -v golangci-lint >/dev/null 2>&1; then \
-		echo "golangci-lint not found. Install it with:"; \
-		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
-		exit 1; \
-	fi
+	@$(TOOL) check "$(GOLANGCI_LINT)" $(GOLANGCI_LINT_PKG) $(GOLANGCI_LINT_VERSION)
 	$(GOLANGCI_LINT) run $(PKG_ALL)
+
+# tools installs every pinned analysis tool that is missing or at the wrong
+# version, and leaves a matching one alone. The per-tool targets let a CI job
+# fetch only what it runs.
+tools: tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck
+
+tool-golangci-lint:
+	@$(TOOL) ensure "$(GOLANGCI_LINT)" $(GOLANGCI_LINT_PKG) $(GOLANGCI_LINT_VERSION) "$(GOBIN_DIR)" "$(origin GOLANGCI_LINT)"
+
+tool-actionlint:
+	@$(TOOL) ensure "$(ACTIONLINT)" $(ACTIONLINT_PKG) $(ACTIONLINT_VERSION) "$(GOBIN_DIR)" "$(origin ACTIONLINT)"
+
+tool-gosec:
+	@$(TOOL) ensure "$(GOSEC)" $(GOSEC_PKG) $(GOSEC_VERSION) "$(GOBIN_DIR)" "$(origin GOSEC)"
+
+tool-govulncheck:
+	@$(TOOL) ensure "$(GOVULNCHECK)" $(GOVULNCHECK_PKG) $(GOVULNCHECK_VERSION) "$(GOBIN_DIR)" "$(origin GOVULNCHECK)"
 
 # check-signed fails when a commit on this branch carries no signature.
 #
@@ -388,11 +415,7 @@ lint-workflows:
 		echo "warning: shellcheck not installed; actionlint will skip run-block checks (CI runs them)"
 	@command -v pyflakes >/dev/null 2>&1 || command -v pyflakes3 >/dev/null 2>&1 || \
 		echo "warning: pyflakes not installed; actionlint will skip python checks (CI runs them)"
-	@if [ ! -x "$(ACTIONLINT)" ] && ! command -v actionlint >/dev/null 2>&1; then \
-		echo "actionlint not found. Install it with:"; \
-		echo "  go install github.com/rhysd/actionlint/cmd/actionlint@latest"; \
-		exit 1; \
-	fi
+	@$(TOOL) check "$(ACTIONLINT)" $(ACTIONLINT_PKG) $(ACTIONLINT_VERSION)
 	$(ACTIONLINT) .github/workflows/*.yml
 
 # fmt-check fails when any tracked Go file is not gofmt-clean, listing offenders.
@@ -506,14 +529,10 @@ deploy-binary: build-server
 
 ## CI/CD
 
-# GOVULNCHECK is resolved from GOBIN like golangci-lint; "go install"-ed tools
-# are not on the PATH make uses.
-GOVULNCHECK ?= $(call tool,govulncheck)
-GOSEC ?= $(call tool,gosec)
-
 # vulncheck reports known vulnerabilities in dependencies *and* in the Go
-# standard library the project is built against. The toolchain directive in
-# go.mod pins the patched compiler, so this fails if that pin regresses.
+# standard library the project is built against. The go directive in go.mod
+# pins the patched compiler (there is no separate toolchain directive), so this
+# fails if that pin regresses.
 # gosec rule policy.
 #
 # G304 (file inclusion via variable) and G115 (integer overflow on conversion)
@@ -530,19 +549,11 @@ GOSEC_EXCLUDE ?= G304,G115
 GOSEC_ARGS ?= -exclude-dir=cmd/sysmon/frontend -exclude=$(GOSEC_EXCLUDE) -severity medium
 
 gosec:
-	@if [ ! -x "$(GOSEC)" ] && ! command -v gosec >/dev/null 2>&1; then \
-		echo "gosec not found. Install it with:"; \
-		echo "  go install github.com/securego/gosec/v2/cmd/gosec@latest"; \
-		exit 1; \
-	fi
+	@$(TOOL) check "$(GOSEC)" $(GOSEC_PKG) $(GOSEC_VERSION)
 	$(GOSEC) -concurrency 4 $(GOSEC_ARGS) ./...
 
 vulncheck:
-	@if [ ! -x "$(GOVULNCHECK)" ] && ! command -v govulncheck >/dev/null 2>&1; then \
-		echo "govulncheck not found. Install it with:"; \
-		echo "  go install golang.org/x/vuln/cmd/govulncheck@latest"; \
-		exit 1; \
-	fi
+	@$(TOOL) check "$(GOVULNCHECK)" $(GOVULNCHECK_PKG) $(GOVULNCHECK_VERSION)
 	$(GOVULNCHECK) ./...
 
 # audit checks the frontend dependency tree, and distinguishes the two ways it

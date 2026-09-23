@@ -117,7 +117,7 @@ Deploy `sysmon-server` to servers; use `sysmon` on a workstation.
 
 ### Requirements
 
-- **Go** — the version pinned by the `toolchain` directive in `go.mod` (downloaded automatically)
+- **Go** — the version pinned by the `go` directive in `go.mod` (downloaded automatically)
 - **Node.js 22+** — builds the embedded web frontend
 - **CGO** — mandatory. `pkg/collector` imports NVIDIA `go-nvml`, which does not compile with `CGO_ENABLED=0`
 - **Docker** — only for `make integration-test`
@@ -257,6 +257,7 @@ make ci-fast         # same, minus the container and browser suites
 make test            # unit tests with the race detector
 make integration-test# end-to-end CLI tests in a container
 make test-e2e        # Playwright browser tests
+make tools           # install the pinned analysis tools (golangci-lint, actionlint, gosec, govulncheck)
 make lint            # gofmt, go vet and golangci-lint
 make vulncheck       # govulncheck: dependencies and the standard library
 make audit           # npm audit for the frontend
@@ -265,6 +266,12 @@ make coverage-collector   # per-package coverage (also -cli, -monitor, -server, 
 
 `make ci` runs exactly what the GitHub workflow runs, in the same order, so the
 two cannot drift.
+
+Analysis tool versions are pinned once, at the top of the `Makefile`
+(`GOLANGCI_LINT_VERSION` and friends). `make lint`, `make vulncheck` and
+`make gosec` refuse a binary built at any other version, and CI installs through
+the same `make tools` targets, so local and CI runs use identical tools. To move
+a tool to a new release, bump its pin.
 
 ### Project layout
 

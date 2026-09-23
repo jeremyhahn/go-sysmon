@@ -35,42 +35,16 @@ jobs:
           cache: npm
           cache-dependency-path: cmd/sysmon/frontend/package-lock.json
 
-      # Every tool `make ci-fast` reaches for comes from the RUNNER IMAGE,
-      # which bakes them pinned and verified. They used to be installed here
-      # over the network, which is a confusing way to lose a release: a
-      # checksum-server timeout fails the gate with nothing wrong with the
-      # code, and it failed CI twice in one day (#39). Recording the versions
-      # is what lets a release say which tools cleared it.
+      # Every analysis tool `make ci-fast` reaches for is pinned once, in the
+      # Makefile, and verified by version before it runs. The runner image
+      # bakes them; `make tools` uses a baked copy at the pinned version as-is
+      # and installs the pin into GOBIN otherwise. Installing over the network
+      # on every run is a confusing way to lose a release -- a checksum-server
+      # timeout failed CI twice in one day with nothing wrong with the code
+      # (#39) -- so a current image means nothing is fetched here. Either way
+      # the step prints the exact version of each tool that cleared the release.
       - name: Analysis tools
-        run: |
-          # Assert, do not assume. The manifest exists so a job can say what
-          # analysed it -- printing it proves only that the FILE is there, not
-          # that the binaries on PATH are the ones it names. A drifted image or
-          # a package shadowing a tool would otherwise pass silently.
-          verify() {
-            name="$1"; flag="$2"
-            want=$(awk -v n="$name" '$1 == n { print $2 }' /etc/ci-runner-tools.txt)
-            [ -n "$want" ] || { echo "::error::$name is not listed in /etc/ci-runner-tools.txt"; exit 1; }
-            command -v "$name" >/dev/null 2>&1 || { echo "::error::$name is not on PATH"; exit 1; }
-            got=$("$name" "$flag" 2>&1 || true)
-            case "$got" in
-              *"${want#v}"*) echo "ok   $name $want   $(command -v "$name")" ;;
-              *) echo "::error::$name on PATH is not $want (self-reports: $got)"; exit 1 ;;
-            esac
-          }
-
-          if [ -f /etc/ci-runner-tools.txt ]; then
-            verify golangci-lint --version
-            verify govulncheck -version
-            verify actionlint -version
-            verify gosec --version
-            exit 0
-          fi
-          echo "No /etc/ci-runner-tools.txt: not our runner image. Installing the same versions."
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
-          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+        run: make tools
 
       # Through make, so the install stamp exists and `make ci-fast` below does not
       # repeat it. See the note on the same step in ci.yml.
