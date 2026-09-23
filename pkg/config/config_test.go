@@ -424,16 +424,16 @@ fleet:
 // TestView_PeersAreKeyedByNameWithoutTheirURL covers the peer half of the
 // settings view. Every peer is keyed by its name and its URL is withheld.
 //
-// An unnamed peer used to take its whole URL as its name, and so leaked the
-// address through the entry's KEY while its value read "(configured)" (#16).
-// Since #37 it takes its URL's host instead: that host is its fleet identity,
-// shown and routed by on GET /api/fleet, so it appears here too -- but the
-// scheme and port, which nothing outside the poller needs, still must not.
+// An unnamed peer used to take its whole URL as its name (#16), and later its
+// URL's host (#37), and so leaked the address through the entry's KEY while
+// its value read "(configured)". Every peer is now named by the operator, so
+// no part of either address may appear.
 func TestView_PeersAreKeyedByNameWithoutTheirURL(t *testing.T) {
 	path := writeConfig(t, `
 fleet:
   peers:
-    - url: http://198.51.100.10:8081
+    - name: fs
+      url: http://198.51.100.10:8081
     - name: omega
       url: https://198.51.100.90:9443
 `)
@@ -447,7 +447,7 @@ fleet:
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"198.51.100.90", "8081", "9443", "http://", "https://"} {
+	for _, secret := range []string{"198.51.100.10", "198.51.100.90", "8081", "9443", "http://", "https://"} {
 		if strings.Contains(string(body), secret) {
 			t.Errorf("/api/config payload still contains %q: %s", secret, body)
 		}
@@ -462,8 +462,8 @@ fleet:
 			}
 		}
 	}
-	if !slices.Equal(keys, []string{"198.51.100.10", "omega"}) {
-		t.Errorf("peer keys = %v, want the unnamed peer keyed by its host and omega by its name", keys)
+	if !slices.Equal(keys, []string{"fs", "omega"}) {
+		t.Errorf("peer keys = %v, want each peer keyed by its name", keys)
 	}
 }
 
@@ -775,71 +775,71 @@ fleet:
 	}
 }
 
-// TestLoad_UnnamedPeersAreNamedBeforeTheUniquenessCheck covers the interaction
-// between the two rules: an omitted name defaults to the peer's URL host
-// (#37), so two unnamed peers on different hosts are distinct and must still
-// load, while two on the same host -- whether the same URL twice or two ports
-// -- claim the same fleet identity and must not.
-func TestLoad_UnnamedPeersAreNamedBeforeTheUniquenessCheck(t *testing.T) {
-	distinct := writeConfig(t, `
-fleet:
-  peers:
-    - url: http://10.0.0.1:8081
-    - url: http://10.0.0.2:8081
-`)
-	cfg, _, err := l(distinct).Load()
-	if err != nil {
-		t.Fatalf("Load() with two unnamed peers on different hosts: %v", err)
+// TestLoad_UnnamedPeerIsRejectedByPosition is the owner ruling of 2026-09-23
+// under #120: a peer with no name is a startup error. Defaulting it to its
+// URL's host made the host its routing key on the unauthenticated fleet view,
+// which is the exposure #120 removed.
+//
+// The error names the peer by its place in fleet.peers and tells the operator
+// what to add. It quotes nothing from the entry -- not the URL, the host, the
+// port, a path or a credential -- whatever else is wrong with it, because the
+// missing name is reported before anything else about the peer is read.
+func TestLoad_UnnamedPeerIsRejectedByPosition(t *testing.T) {
+	tests := []struct {
+		name     string
+		peers    string
+		position int
+	}{
+		{"the only peer", "    - url: http://198.51.100.10:8081\n", 1},
+		{"after a named one", "    - name: fs\n      url: http://10.0.0.1:8081\n    - url: https://db-01.example.com:9443/\n", 2},
+		{"an IPv6 literal", "    - name: fs\n      url: http://10.0.0.1:8081\n    - name: gpu\n      url: http://10.0.0.2:8081\n    - url: http://[fd00::10]:8081/secret-path\n", 3},
+		{"with credentials", "    - url: https://u:another-secret@10.0.0.2:8081\n", 1},
+		{"with no url either", "    - {}\n", 1},
 	}
-	if len(cfg.Fleet.Peers) != 2 {
-		t.Fatalf("peers = %+v, want both retained", cfg.Fleet.Peers)
-	}
-	if cfg.Fleet.Peers[0].Name != "10.0.0.1" || cfg.Fleet.Peers[1].Name != "10.0.0.2" {
-		t.Errorf("unnamed peer names = %q, %q, want each defaulted to its URL's host",
-			cfg.Fleet.Peers[0].Name, cfg.Fleet.Peers[1].Name)
-	}
-
-	same := writeConfig(t, `
-fleet:
-  peers:
-    - url: http://10.0.0.1:8081
-    - url: http://10.0.0.1:8081
-`)
-	var dup *config.ErrDuplicatePeer
-	if _, _, err := l(same).Load(); !errors.As(err, &dup) {
-		t.Fatalf("Load() with the same URL listed twice = %v, want a *config.ErrDuplicatePeer", err)
-	}
-
-	// Two ports on one host are two processes, but unnamed they would both be
-	// the node "10.0.0.1" -- one card, one history. That is for the operator to
-	// settle by naming them, not for the loader to guess.
-	ports := writeConfig(t, `
-fleet:
-  peers:
-    - url: http://10.0.0.1:8081
-    - url: http://10.0.0.1:9081
-`)
-	if _, _, err := l(ports).Load(); !errors.As(err, &dup) {
-		t.Fatalf("Load() with two unnamed peers on one host = %v, want a *config.ErrDuplicatePeer", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfig(t, "fleet:\n  peers:\n"+tt.peers)
+			_, _, err := l(path).Load()
+			var unnamed *config.PeerUnnamedError
+			if !errors.As(err, &unnamed) {
+				t.Fatalf("Load() = %v, want a *config.PeerUnnamedError", err)
+			}
+			if unnamed.Position != tt.position {
+				t.Errorf("Position = %d, want %d", unnamed.Position, tt.position)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "add name:") || !strings.Contains(msg, "fleet.peers") {
+				t.Errorf("error %q does not tell the operator what to add, or where", msg)
+			}
+			for _, leak := range []string{"http", "192.168", "10.0.0", "db-01", "fd00", "8081", "9443", "secret"} {
+				if strings.Contains(msg, leak) {
+					t.Errorf("error %q quotes %q from the peer entry", msg, leak)
+				}
+			}
+		})
 	}
 }
 
-// TestLoad_UnnamedPeerTakesItsURLHost pins the default itself: the host, not
-// the URL, and not the port. That is what the node's own fleet.local_name
-// defaults to on its side, and it is a usable Prometheus instance label, which
-// the whole URL never was.
-func TestLoad_UnnamedPeerTakesItsURLHost(t *testing.T) {
-	path := writeConfig(t, `
-fleet:
-  peers:
-    - url: https://db-01.example.com:9443/
-`)
-	cfg, _, err := l(path).Load()
+// TestLoad_ReloadKeepsRunningConfigOnUnnamedPeer checks the rule holds on a
+// reload: a file edited to add an unnamed peer is refused, and the fleet keeps
+// running on the peers it had.
+func TestLoad_ReloadKeepsRunningConfigOnUnnamedPeer(t *testing.T) {
+	path := writeConfig(t, "fleet:\n  peers:\n    - name: db-01\n      url: http://10.0.0.1:8081\n")
+	mgr, err := config.NewManager(l(path))
 	if err != nil {
-		t.Fatalf("Load(): %v", err)
+		t.Fatalf("NewManager(): %v", err)
 	}
-	if got := cfg.Fleet.Peers[0].Name; got != "db-01.example.com" {
-		t.Errorf("unnamed peer name = %q, want %q", got, "db-01.example.com")
+	edited := "fleet:\n  peers:\n    - name: db-01\n      url: http://10.0.0.1:8081\n    - url: http://10.0.0.2:8081\n"
+	if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var unnamed *config.PeerUnnamedError
+	if _, err := mgr.Reload(); !errors.As(err, &unnamed) {
+		t.Fatalf("Reload() = %v, want a *config.PeerUnnamedError", err)
+	}
+	peers := mgr.Current().Fleet.Peers
+	if len(peers) != 1 || peers[0].Name != "db-01" {
+		t.Errorf("running peers = %+v after a refused reload, want only db-01", peers)
 	}
 }
 
@@ -861,8 +861,8 @@ func TestLoad_RejectsPeerNameThatCannotBeAnInstance(t *testing.T) {
 			t.Errorf("Load() with peer name %q = %v, want a *config.ErrPeerName", name, err)
 			continue
 		}
-		if bad.Name != name || bad.Defaulted {
-			t.Errorf("ErrPeerName = %+v, want Name %q and not defaulted", bad, name)
+		if bad.Name != name {
+			t.Errorf("ErrPeerName = %+v, want Name %q", bad, name)
 		}
 		var invalid *nodename.ErrInvalid
 		if !errors.As(err, &invalid) {
@@ -871,29 +871,6 @@ func TestLoad_RejectsPeerNameThatCannotBeAnInstance(t *testing.T) {
 		if !strings.Contains(err.Error(), nodename.Rule) {
 			t.Errorf("error %q does not state the rule it broke", err)
 		}
-	}
-}
-
-// TestLoad_RejectsUnnamedPeerWhoseHostCannotBeAName covers the one host that
-// passes URL validation and still cannot be a name: an IPv6 literal, whose
-// colons lead. The operator has to name it, and the message has to say so
-// without quoting the URL.
-func TestLoad_RejectsUnnamedPeerWhoseHostCannotBeAName(t *testing.T) {
-	path := writeConfig(t, "fleet:\n  peers:\n    - url: http://[::1]:8081/secret-path\n")
-	_, _, err := l(path).Load()
-	var bad *config.ErrPeerName
-	if !errors.As(err, &bad) {
-		t.Fatalf("Load() = %v, want a *config.ErrPeerName", err)
-	}
-	if !bad.Defaulted || bad.Name != "::1" {
-		t.Errorf("ErrPeerName = %+v, want the defaulted host ::1", bad)
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "give it a name") || !strings.Contains(msg, "[::1]:8081") {
-		t.Errorf("error %q does not name the peer or say how to fix it", msg)
-	}
-	if strings.Contains(msg, "http://") || strings.Contains(msg, "secret-path") {
-		t.Errorf("error %q quotes the URL", msg)
 	}
 }
 
@@ -1291,26 +1268,6 @@ func TestLoad_PeerBareUsernameIsRejected(t *testing.T) {
 	var creds *config.ErrPeerCredentials
 	if _, _, err := l(path).Load(); !errors.As(err, &creds) {
 		t.Fatalf("Load() with a bare username = %v, want a *config.ErrPeerCredentials", err)
-	}
-}
-
-// TestLoad_UnnamedCredentialedPeerIsNamedByHost checks the leak path that opens
-// when the operator omits the name: the error is raised before the name is
-// defaulted, so it must label the peer by its host rather than by its URL,
-// which is the one string that must not be quoted.
-func TestLoad_UnnamedCredentialedPeerIsNamedByHost(t *testing.T) {
-	const token = "another-secret"
-	path := writeConfig(t, "fleet:\n  peers:\n    - url: https://u:"+token+"@10.0.0.2:8081\n")
-
-	var creds *config.ErrPeerCredentials
-	if _, _, err := l(path).Load(); !errors.As(err, &creds) {
-		t.Fatalf("Load() = %v, want a *config.ErrPeerCredentials", err)
-	}
-	if creds.Name != "10.0.0.2:8081" {
-		t.Errorf("unnamed peer labelled %q, want the host", creds.Name)
-	}
-	if strings.Contains(creds.Error(), token) {
-		t.Errorf("error message leaks the token: %q", creds.Error())
 	}
 }
 
@@ -1748,25 +1705,6 @@ func TestLoad_PeerWithNoURLIsRejected(t *testing.T) {
 		t.Fatalf("Load() with a peer missing its url = %v, want a *config.ErrPeerURL", err)
 	} else if bad.Name != "db-prod" {
 		t.Errorf("ErrPeerURL.Name = %q, want the peer named %q so the operator can find it", bad.Name, "db-prod")
-	}
-}
-
-// TestLoad_UnnamedPeerWithNoURLIsRejected covers the entry that carries nothing
-// at all -- a stray list dash. It must still be an error rather than a silent
-// no-op, and it has no name to quote, so the label has to degrade gracefully
-// instead of printing an empty string.
-func TestLoad_UnnamedPeerWithNoURLIsRejected(t *testing.T) {
-	path := writeConfig(t, "fleet:\n  peers:\n    - {}\n")
-
-	var bad *config.ErrPeerURL
-	if _, _, err := l(path).Load(); !errors.As(err, &bad) {
-		t.Fatalf("Load() with an empty peer entry = %v, want a *config.ErrPeerURL", err)
-	}
-	if bad.Name == "" {
-		t.Error("ErrPeerURL.Name is empty; want a fallback label so the message identifies the entry")
-	}
-	if msg := bad.Error(); !strings.Contains(msg, "http://host:8081") {
-		t.Errorf("error %q does not show the operator what a usable url looks like", msg)
 	}
 }
 

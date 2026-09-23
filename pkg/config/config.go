@@ -526,7 +526,18 @@ func (c *Config) normalize(sources map[string]string) error {
 	// unmonitored while the dashboard looked complete.
 	peers := c.Fleet.Peers[:0]
 	seen := make(map[string]string, len(c.Fleet.Peers))
-	for _, p := range c.Fleet.Peers {
+	for i, p := range c.Fleet.Peers {
+		// A peer must be named (owner ruling 2026-09-23, refining #37 under
+		// #120). An unnamed peer used to take its URL's host as its name, and
+		// the name is the one thing about a peer the fleet view, its routes and
+		// its history publish -- so the default put the peer's address back on
+		// the unauthenticated wire as its routing key, the exposure #120
+		// removed. It is checked first, and reported by position, because the
+		// entry has nothing else that may be quoted.
+		if p.Name == "" {
+			return &PeerUnnamedError{Position: i + 1}
+		}
+
 		// An entry with no URL is rejected, not skipped. Skipping it was the
 		// one unusable-peer case that failed open: `- name: db-prod` with the
 		// url line missing or misindented started the service cleanly, and the
@@ -536,19 +547,18 @@ func (c *Config) normalize(sources map[string]string) error {
 		// host unmonitored -- applies to this case most of all, because a
 		// missing url is the likeliest of these mistakes to be a typo.
 		if p.URL == "" {
-			return &ErrPeerURL{Name: peerLabel(p.Name, "(unnamed)"), Reason: "no url; " + peerURLGuidance}
+			return &ErrPeerURL{Name: p.Name, Reason: "no url; " + peerURLGuidance}
 		}
 
-		// The URL is validated before anything copies it. An unnamed peer takes
-		// its name from its URL's host and ErrDuplicatePeer quotes URLs, so checking
-		// credentials first is what keeps a secret out of a peer name, out of
-		// an error message and out of the settings view.
+		// The URL is validated before anything copies it. ErrDuplicatePeer
+		// quotes URLs, so checking credentials first is what keeps a secret out
+		// of an error message and out of the settings view.
 		u, err := url.Parse(p.URL)
 		if err != nil {
-			return &ErrPeerURL{Name: peerLabel(p.Name, "(unnamed)"), Reason: urlParseReason(err)}
+			return &ErrPeerURL{Name: p.Name, Reason: urlParseReason(err)}
 		}
 		if u.User != nil {
-			return &ErrPeerCredentials{Name: peerLabel(p.Name, u.Host), Host: u.Host}
+			return &ErrPeerCredentials{Name: p.Name, Host: u.Host}
 		}
 		// Parsing only proves the string is well-formed. "localhost:8081" parses
 		// happily as scheme "localhost", and the poller could never fetch it --
@@ -556,30 +566,18 @@ func (c *Config) normalize(sources map[string]string) error {
 		// clean start, which is the failure the operator is least likely to
 		// notice.
 		if reason := peerURLReason(u); reason != "" {
-			return &ErrPeerURL{Name: peerLabel(p.Name, u.Host), Reason: reason}
+			return &ErrPeerURL{Name: p.Name, Reason: reason}
 		}
 
 		// A peer's name is its fleet-wide identity: the name that node calls
 		// itself (its fleet.local_name) and therefore the Prometheus instance
-		// label its history is written and queried under (ruling on #37). An
-		// unnamed peer takes its URL's host, which is what a node's name
-		// defaults to on its own side -- the whole URL could never be an
-		// instance label, so the old default produced a name that could not
-		// work by construction.
+		// label its history is written and queried under (ruling on #37).
 		//
 		// A name that cannot be that label is a startup error, not a history
 		// request that 400s later or a chart that stays empty: the mistake is
 		// reported once, at the line that made it, naming the peer.
-		//
-		// Defaulting happens after URL validation, so a credential can never
-		// reach a name, and before the uniqueness check, so two unnamed peers
-		// on one host collide as the one node they claim to be.
-		defaulted := p.Name == ""
-		if defaulted {
-			p.Name = u.Hostname()
-		}
 		if err := nodename.Validate(p.Name); err != nil {
-			return &ErrPeerName{Name: p.Name, Host: u.Host, Defaulted: defaulted, Err: err}
+			return &ErrPeerName{Name: p.Name, Host: u.Host, Err: err}
 		}
 		if first, dup := seen[p.Name]; dup {
 			return &ErrDuplicatePeer{Name: p.Name, URLs: []string{first, p.URL}}
@@ -775,16 +773,6 @@ func peerURLReason(u *url.URL) string {
 // peerURLGuidance tells the operator what a usable peer URL looks like. It is
 // shared by every rejection reason so the advice cannot drift between them.
 const peerURLGuidance = "use an absolute url such as http://host:8081"
-
-// peerLabel names a peer in an error message. A peer with no name of its own is
-// identified by fallback rather than by its URL, which may be the very thing
-// that must not be quoted.
-func peerLabel(name, fallback string) string {
-	if name == "" {
-		return fallback
-	}
-	return name
-}
 
 // urlParseReason extracts the parser's explanation from a url.Parse failure.
 // The *url.Error wrapper formats the offending URL into its message, so only

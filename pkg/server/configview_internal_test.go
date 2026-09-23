@@ -184,7 +184,8 @@ fleet:
       url: http://198.51.100.10:8081
     - name: gpu-host
       url: https://198.51.100.91:9443
-    - url: http://198.51.100.90:8081
+    - name: omega
+      url: http://198.51.100.90:8081
 `)
 
 	rec := httptest.NewRecorder()
@@ -195,6 +196,7 @@ fleet:
 		path,                     // the config file's absolute path
 		"198.51.100.10", "8081", // a peer's host and port
 		"198.51.100.91", "9443",
+		"198.51.100.90",
 		"http://", "https://", // the transport choice
 		"/etc/ssl/private/node.pem", // the TLS material's location
 	} {
@@ -203,14 +205,13 @@ fleet:
 		}
 	}
 
-	// The third peer has no `name:`. It used to adopt its whole URL as its name,
-	// which is how the address survived the first pass at this fix, in the entry
-	// KEY rather than its value. Since #37 it is named after its URL's host --
-	// its fleet identity, the name GET /api/fleet already shows and routes by --
-	// so the host may appear while the port and scheme above still must not.
+	// An unnamed peer used to adopt its URL, then its URL's host (#37), as its
+	// name, which is how the address survived in the entry KEY rather than its
+	// value. A peer must now be named (#120), so no part of any address may
+	// appear.
 	//
-	// What survives is what the dialog is for: the peers, named where they have
-	// names, and the fact that a config file is in force.
+	// What survives is what the dialog is for: the peers, by name, and the fact
+	// that a config file is in force.
 	var view types.ConfigView
 	if err := json.Unmarshal(rec.Body.Bytes(), &view); err != nil {
 		t.Fatalf("decoding %q: %v", body, err)

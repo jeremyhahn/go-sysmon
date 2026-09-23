@@ -185,11 +185,10 @@ buys a client nothing and hands an anonymous one the internal topology. Together
 with the config file's path it let a single reachable listener enumerate
 hostnames, ports, transport choices and filesystem layout (#16).
 
-**A peer with no `name:` is keyed by its URL's host**, which is its name (see
-*A peer's name is its fleet-wide identity* below). Before #37 such a peer took
-its whole URL as its name and was listed as `fleet.peers.(unnamed 1)` so the
-address stayed off the wire; that is no longer needed. No name can carry a
-scheme, port or path, and the host is the node's identity — the string
+**Every peer is keyed by the name the operator gave it.** A peer with no
+`name:` is a startup error (see *A peer's name is its fleet-wide identity*
+below), so no key can be a URL or a host the loader filled in. No name can
+carry a scheme or path, and the name is the node's identity — the string
 `GET /api/fleet` titles its card with and routes `/api/fleet/{name}/...` by —
 so withholding it here would hide nothing.
 
@@ -484,18 +483,19 @@ them, and the disagreement shows up as an empty chart indistinguishable from a
 quiet period, so there is no separate alias: **name each peer exactly what it
 calls itself.**
 
-- **A peer with no `name:` is named after its URL's host.**
-  `url: http://db-01:8081` is the node `db-01` — the port is not part of the
-  name. Before #37 it took the whole URL, which no `instance` label can be, so
-  its history was a 400 on an otherwise valid peer.
+- **Every peer must have a `name:`; an unnamed peer is a startup error**
+  (owner ruling 2026-09-23, under #120). The name is published on the
+  unauthenticated fleet endpoints as the peer's card title, route and history
+  label. The earlier defaults — the whole URL before #37, then the URL's host —
+  put the peer's address on the wire as its routing key, which #120 removed.
+  The error names the peer by its position, `fleet peer 3 in fleet.peers has no
+  name`, and quotes nothing from the entry. On a reload the file is refused and
+  the running configuration kept.
 - **The name is checked at load, and a name that cannot be an `instance` label
   is a startup error** (owner ruling, 2026-09-22). It must start with a letter
   or digit and contain only letters, digits, `.`, `_`, `:` and `-`, at most 253
   characters (`pkg/nodename`). The error names the peer and the rule; on a
-  reload the file is refused and the running configuration kept. An unnamed
-  peer whose host cannot stand in for a name — an IPv6 literal such as
-  `http://[fe80::1]:8081` — fails the same way, and the fix is to give it a
-  `name:`.
+  reload the file is refused and the running configuration kept.
 - The history query escapes the label value as well, underneath the check
   rather than instead of it.
 
@@ -508,12 +508,14 @@ exporter uses for the `instance` label — and the aggregator compares it with t
 name it holds, reporting `name_match` in `GET /api/fleet` (below). The Fleet
 card shows a mismatch as a warning naming both names.
 
-**Upgrading:** a file that loaded before #37 can now fail at startup. Look for a
-peer named with a URL or with spaces or other punctuation, two unnamed peers on
-one host (they are now the same node, and fail the uniqueness check), unnamed
-IPv6 peers, a `fleet.local_name` outside the rule, and — with `fleet.local_name`
-unset — a hostname outside it. An unnamed peer's card, `/api/fleet/{name}/...` path and
-history identity change from its URL to its host.
+**Upgrading:** a file that loaded before #37 or #120 can now fail at startup.
+Look for **any peer without a `name:`** — give it the name that node calls
+itself (its `fleet.local_name`, else its hostname), which for a peer that
+loaded after #37 is its URL's host and keeps its card, routes and history
+unchanged — a peer named with a URL or with spaces or other punctuation, a
+`fleet.local_name` outside the rule, and — with `fleet.local_name` unset — a
+hostname outside it. A running service refuses a reload that adds an unnamed
+peer and keeps its current fleet, so fix the file before restarting.
 
 **An unrecognised key is an error, not a comment.** The file is decoded
 strictly: a key that maps to no setting fails the load and names itself. This
@@ -585,10 +587,8 @@ view, and selects the node for `GET /api/fleet/{name}/...`. Two peers sharing a
 name would render as one card showing whichever host answered last alongside
 the other's configuration, so a duplicate is rejected at load rather than
 silently de-duplicated: dropping one would leave a real host unmonitored while
-the dashboard looked complete. A peer with no `name` is identified by its
-URL's host, which is applied before the uniqueness check — so two unnamed peers
-on different hosts are fine, and two on the same host, whether the same URL
-twice or two ports, are not.
+the dashboard looked complete. Two ports on one host are two processes and
+need two names.
 
 - `GET /api/fleet` — one summary per node and the **fleet roll-up** over them.
 

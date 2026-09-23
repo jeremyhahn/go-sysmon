@@ -326,12 +326,11 @@ func (m *Manager) View() types.ConfigView {
 		// reaches a peer through /api/fleet/{name}/... on this node, never by
 		// dialling it.
 		//
-		// Every name can be shown. A name is held to nodename.Rule at load, which
-		// admits no scheme and no path, so no name can carry a URL back onto the
-		// wire. An unnamed peer is named after its URL's host (#37), and that
-		// host is then its fleet identity -- the same string GET /api/fleet
-		// titles its card with and routes it by -- so withholding it here would
-		// hide nothing.
+		// Every name can be shown. Every peer is named by the operator -- an
+		// unnamed one is refused at load (PeerUnnamedError) -- and a name is
+		// held to nodename.Rule, which admits no scheme and no path, so no name
+		// can carry a URL back onto the wire. It is the same string GET
+		// /api/fleet titles the card with and routes it by.
 		entries = append(entries, types.ConfigEntry{
 			Section: "fleet",
 			Key:     peerKeyPrefix + p.Name,

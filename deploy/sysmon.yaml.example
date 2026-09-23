@@ -87,8 +87,10 @@ fleet:
   # A peer's name is its fleet-wide identity: set it to exactly what that node
   # calls itself (its fleet.local_name, or its hostname), because it is also the
   # Prometheus instance label its history is stored under. Letters, digits,
-  # '.', '_', ':' and '-' only; anything else stops the service at startup. A
-  # peer with no name is named after its url's host (http://fs:8081 -> fs).
+  # '.', '_', ':' and '-' only; anything else stops the service at startup.
+  # name is required: a peer without one stops the service at startup, because
+  # the name is published on the dashboard's unauthenticated endpoints and a
+  # default would have to be taken from the peer's address.
   # peers:
   #   - name: fs
   #     url: http://198.51.100.10:8081

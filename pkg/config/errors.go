@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
@@ -98,27 +99,41 @@ func (e *ErrPeerURL) Error() string {
 // would otherwise surface as a history request that fails, or a chart that is
 // simply empty, long after the file was written.
 //
-// Defaulted marks a peer with no `name:` whose URL host was tried in its place
-// -- an IPv6 literal is the usual case -- so the message can say the fix is to
-// name it. Host is the URL's host and port, never the URL, for the reason
+// Host is the URL's host and port, never the URL, for the reason
 // ErrPeerCredentials gives.
 type ErrPeerName struct {
-	Name      string
-	Host      string
-	Defaulted bool
-	Err       error
+	Name string
+	Host string
+	Err  error
 }
 
 func (e *ErrPeerName) Error() string {
-	if e.Defaulted {
-		return fmt.Sprintf("config: fleet peer at %s has no name, and its url's host %s cannot stand in for one "+
-			"(%s); give it a name: equal to that node's fleet.local_name", e.Host, nodename.Quote(e.Name), nodename.Rule)
-	}
 	return fmt.Sprintf("config: fleet peer %s (%s) has an unusable name: %s; a peer's name is its fleet-wide "+
 		"identity and the Prometheus instance label its history is stored under", nodename.Quote(e.Name), e.Host, nodename.Rule)
 }
 
 func (e *ErrPeerName) Unwrap() error { return e.Err }
+
+// PeerUnnamedError reports a fleet peer with no `name:` (owner ruling
+// 2026-09-23, under #120). A peer's name is its fleet-wide identity -- its
+// card, its /api/fleet/{name}/... routes and its Prometheus instance label --
+// and it is published on unauthenticated endpoints. Defaulting it to the URL's
+// host published the peer's address as its routing key, so an unnamed peer is
+// refused at load and on reload, and a reload that introduces one keeps the
+// running configuration.
+//
+// The peer is identified by Position, its 1-based place in fleet.peers, and
+// never by its URL or host: this is the one peer error whose entry has nothing
+// else that may be quoted.
+type PeerUnnamedError struct {
+	Position int
+}
+
+func (e *PeerUnnamedError) Error() string {
+	return "config: fleet peer " + strconv.Itoa(e.Position) + " in fleet.peers has no name; " +
+		"add name: set to that node's fleet.local_name (its hostname unless set), " +
+		"which is also the instance label its history is stored under"
+}
 
 // ErrLocalName reports a name for this node that cannot be its fleet-wide
 // identity. It is held to nodename.Rule for the same reason a peer name is:
