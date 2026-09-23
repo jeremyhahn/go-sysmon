@@ -89,6 +89,12 @@ case "$js" in
     *"indexOf('undefined')"*) reply false ;;
     *"get_text()") reply "CPU: 12%" ;;
     *"queue_repaint"*) reply queued ;;
+    *"get_allocation_box"*"String("*) [ "$FAKE_GAUGE" = "zero-width" ] && reply false; reply true ;;
+    *"get_allocation_box"*) [ "$FAKE_GAUGE" = "zero-width" ] && reply 0x40; reply 60x40 ;;
+    *"_sysmonTestPaints > 0)")
+        [ -n "$FAKE_PAINT_ERROR" ] && printf '%s\\n' "$FAKE_PAINT_ERROR" >> "$CINNAMON_LOG"
+        [ "$FAKE_GAUGE" = "zero-width" ] && reply false; reply true ;;
+    *"_sysmonTestPaints)") [ "$FAKE_GAUGE" = "zero-width" ] && reply 0; reply 1 ;;
     *) reply true ;;
 esac
 `,
@@ -104,7 +110,8 @@ function runRunner(scenario = {}) {
         for (const [name, body] of Object.entries(FAKES)) {
             fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
         }
-        fs.writeFileSync(path.join(dir, "cinnamon.log.src"), scenario.log ?? LOADED_LOG);
+        // Cinnamon ends every log line with a newline, so the stand-in does too.
+        fs.writeFileSync(path.join(dir, "cinnamon.log.src"), `${scenario.log ?? LOADED_LOG}\n`);
 
         const result = spawnSync("bash", [RUNNER], {
             encoding: "utf8",
@@ -121,6 +128,8 @@ function runRunner(scenario = {}) {
                 FAKE_RUNNING_AFTER: scenario.runningAfter ?? "0",
                 FAKE_PANEL: scenario.panel ?? "up",
                 FAKE_APPLET: scenario.applet ?? "loaded",
+                FAKE_GAUGE: scenario.gauge ?? "painted",
+                FAKE_PAINT_ERROR: scenario.paintError ?? "",
                 FAKE_SERVER: scenario.server ?? "up",
                 FAKE_XVFB: scenario.xvfb ?? "ok",
                 FAKE_GSETTINGS: scenario.gsettings ?? "ok",
@@ -147,7 +156,7 @@ test("a healthy session passes every check and exits zero", () => {
     assert.strictEqual(run.status, 0, run.stdout);
     assert.deepStrictEqual(run.failed, []);
     assert.deepStrictEqual(run.notRun, []);
-    assert.strictEqual(run.ok.length, 13, run.stdout);
+    assert.strictEqual(run.ok.length, 16, run.stdout);
     assert.match(run.stdout, /inconclusive: 0/);
 });
 
@@ -174,7 +183,7 @@ test("a session that never finishes starting passes nothing", () => {
     assert.deepStrictEqual(run.failed, [
         "FAIL Cinnamon never finished starting (runState did not reach RUNNING)",
     ]);
-    assert.strictEqual(run.notRun.length, 12, run.stdout);
+    assert.strictEqual(run.notRun.length, 15, run.stdout);
 });
 
 test("an applet Cinnamon dropped fails the gate and nothing after it runs", () => {
@@ -188,6 +197,43 @@ test("an applet Cinnamon dropped fails the gate and nothing after it runs", () =
     // Only the steps that really were proven may pass.
     assert.deepStrictEqual(run.ok, ["ok   Cinnamon finished starting", "ok   the panel exists"]);
     assert.ok(run.notRun.some((l) => l.includes("applet received a snapshot")), run.stdout);
+});
+
+// Issue #184: a gauge Clutter never sized is never painted. Queueing a repaint
+// on it still succeeds, which is why that alone proved nothing.
+test("a gauge with no width that is never painted fails the run", () => {
+    const run = runRunner({ gauge: "zero-width" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, [
+        "FAIL the panel gauge has a non-zero allocation",
+        "FAIL Clutter painted the panel gauge",
+    ]);
+    assert.match(run.stdout, /allocation: 0x40/);
+    assert.match(run.stdout, /paints: 0/);
+});
+
+// A handler that throws still lets later handlers run, so a paint counter alone
+// would pass a gauge whose drawing failed.
+test("a repaint handler that throws fails the run even though a paint was counted", () => {
+    const run = runRunner({
+        paintError: "Gjs-Message: JS ERROR: TypeError: ctx is null\n_onRepaint@/root/.local/share/cinnamon/applets/sysmon-go@sysmon/applet.js:540:9",
+    });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL no JavaScript error was logged while the gauge was painted"]);
+    assert.ok(run.ok.includes("ok   Clutter painted the panel gauge"), run.stdout);
+    assert.match(run.stdout, /_onRepaint@/);
+});
+
+// The error check is scoped to the paint it is judging: an error logged
+// before the repaint was queued belongs to something else.
+test("a JavaScript error logged before the paint is not blamed on it", () => {
+    const run = runRunner({
+        log: `${LOADED_LOG}\nGjs-Message: JS ERROR: an earlier, unrelated failure`,
+    });
+
+    assert.ok(run.ok.includes("ok   no JavaScript error was logged while the gauge was painted"), run.stdout);
 });
 
 // An empty log is no evidence of a clean load; the line saying the applet

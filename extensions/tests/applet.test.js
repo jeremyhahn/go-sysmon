@@ -109,6 +109,52 @@ test("repainting with a snapshot draws gauges", () => {
     assert.ok(applet.drawingArea.width > 0, "the drawing area was not sized");
 });
 
+// Issue #184: Clutter never paints a zero-sized actor, so a gauge that sized
+// itself only from inside its repaint handler was never drawn at all. The
+// harness paints nothing at zero size, as Clutter does; these fail on that
+// code.
+test("the gauge has a size before its first paint, so it can be painted", () => {
+    const { applet } = loadApplet();
+
+    assert.ok(applet.drawingArea.width > 0, "the gauge starts with no width");
+    assert.ok(applet.drawingArea.height > 0, "the gauge starts with no height");
+    assert.notStrictEqual(applet.drawingArea.repaint(), null, "Clutter would never paint the gauge");
+    assert.strictEqual(applet.drawingArea.paints, 1);
+});
+
+test("a snapshot sizes the gauge to fit it before it is painted", () => {
+    const { applet } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+
+    // Bars, memory, network text and disk: wider than the empty placeholder,
+    // and settled without any paint having happened.
+    assert.strictEqual(applet.drawingArea.paints, 0);
+    assert.ok(applet.drawingArea.width > 20 + fixture.cpus.length * 4,
+        `width ${applet.drawingArea.width} does not fit ${fixture.cpus.length} cores`);
+});
+
+test("hiding a gauge narrows the area before the next paint", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    const before = applet.drawingArea.width;
+
+    applet.showCpu = false;
+    harness.settingsBindings["show-cpu"].callback();
+
+    assert.strictEqual(applet.drawingArea.width, before - fixture.cpus.length * 4 - 6);
+    assert.strictEqual(applet.drawingArea.paints, 0);
+});
+
+test("the drawing fits inside the width the gauge was given", () => {
+    const { applet } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+
+    const ctx = applet.drawingArea.repaint();
+    const rightEdges = ctx.ops
+        .filter((op) => op[0] === "rectangle")
+        .map((op) => op[1] + op[3]);
+
+    assert.ok(Math.max(...rightEdges) <= applet.drawingArea.width,
+        `a bar ends at ${Math.max(...rightEdges)}, past the width ${applet.drawingArea.width}`);
+});
+
 test("repainting before any snapshot draws a placeholder and does not throw", () => {
     const { applet } = loadApplet();
 

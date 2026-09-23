@@ -385,16 +385,65 @@ echo "== panel rendering =="
 # process down -- Eval never answers. Queue a repaint instead and let the
 # compositor drive it.
 #
-# The Cairo drawing itself is asserted operation by operation in tier 2; what
-# this tier adds is that the actor is real and that queueing work on it from
-# inside Cinnamon is safe.
+# The Cairo drawing itself is asserted operation by operation in tier 2. What
+# this tier adds is that the actor is real, that Clutter gave it a size, and
+# that Clutter really painted it. Issue #184: for months the gauge was a
+# zero-width actor that Clutter never painted, while "queueing a repaint is
+# safe" kept passing, because queueing is safe whether or not a frame follows.
 assert_eval "the panel gauge is a real drawing area" \
     "String(${APPLET_JS}.drawingArea instanceof imports.gi.St.DrawingArea)" \
     "true"
 
-assert_eval "queueing a repaint is safe" \
-    "(function () { ${APPLET_JS}.drawingArea.queue_repaint(); return 'queued'; })()" \
+# Allocation follows set_width on the next layout pass, so wait for it.
+readonly GAUGE_ALLOCATED="(function () { var box = ${APPLET_JS}.drawingArea.get_allocation_box(); return String(box.get_width() > 0 && box.get_height() > 0); })()"
+readonly GAUGE_ALLOCATION="(function () { var box = ${APPLET_JS}.drawingArea.get_allocation_box(); return box.get_width() + 'x' + box.get_height(); })()"
+if (( session_proven == 0 )); then
+    inconclusive "the panel gauge has a non-zero allocation (not run: the session was never proven)"
+elif wait_for_eval "$GAUGE_ALLOCATED" "true" "$DATA_TIMEOUT"; then
+    pass "the panel gauge has a non-zero allocation"
+    log "allocation: $(eval_value "$(cinnamon_eval "$GAUGE_ALLOCATION")")"
+else
+    fail "the panel gauge has a non-zero allocation"
+    log "allocation: $(eval_value "$(cinnamon_eval "$GAUGE_ALLOCATION")")"
+fi
+
+# Count the paints Clutter delivers from here on, queue one, and wait for it.
+# The counter's handler is connected after the applet's own, so when it has
+# run, the applet's drawing has too. The log's length is noted first, so the
+# error check below reads only what was logged from this paint on.
+# grep -c '' counts a final line that has no newline yet; wc -l would not.
+log_mark="$(grep -c '' "$CINNAMON_LOG")"
+assert_eval "a repaint can be queued" \
+    "(function () { var area = ${APPLET_JS}.drawingArea; area._sysmonTestPaints = 0; area.connect('repaint', function () { area._sysmonTestPaints++; }); area.queue_repaint(); return 'queued'; })()" \
     "queued"
+
+if (( session_proven == 0 )); then
+    inconclusive "Clutter painted the panel gauge (not run: the session was never proven)"
+elif wait_for_eval "String(${APPLET_JS}.drawingArea._sysmonTestPaints > 0)" "true" "$DATA_TIMEOUT"; then
+    pass "Clutter painted the panel gauge"
+    log "paints: $(eval_value "$(cinnamon_eval "String(${APPLET_JS}.drawingArea._sysmonTestPaints)")")"
+else
+    fail "Clutter painted the panel gauge"
+    log "paints: $(eval_value "$(cinnamon_eval "String(${APPLET_JS}.drawingArea._sysmonTestPaints)")")"
+fi
+
+# A paint only counts if the applet's own handler finished it. GJS logs an
+# exception thrown from a signal handler and then runs the next handler, so
+# the counter above increments even when _onRepaint threw and left the gauge
+# blank. So any JavaScript error logged since the paint was queued fails the
+# run. It is deliberately not narrowed to the applet's stack: an error from
+# anything else in that window is still an error in a run that should have
+# none, and the check's name says what it measured rather than claiming the
+# gauge caused it.
+paint_log="$(tail -n "+$((log_mark + 1))" "$CINNAMON_LOG")"
+if (( session_proven == 0 )); then
+    inconclusive "no JavaScript error was logged while the gauge was painted (not run: the session was never proven)"
+elif grep -q "JS ERROR" <<<"$paint_log"; then
+    fail "no JavaScript error was logged while the gauge was painted"
+    grep -A3 "JS ERROR" <<<"$paint_log" | tail -12 | while IFS= read -r line; do log "$line"; done
+else
+    pass "no JavaScript error was logged while the gauge was painted"
+fi
 
 # ---- results ----------------------------------------------------------------
 

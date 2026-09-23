@@ -48,24 +48,42 @@ class FakeCairoContext {
     setFontSize(size) { this.ops.push(["setFontSize", size]); }
 }
 
+// FakeDrawingArea models the parts of St.DrawingArea that decide whether the
+// applet's gauge is ever drawn. Like the real one it has no natural width, so
+// its width is whatever set_width last gave it; its height comes from the
+// panel box it is added to, which fills its cross axis. And, like Clutter,
+// it never paints while either dimension is zero: repaint() then skips the
+// handler and returns null. An applet that only sizes the area from inside its
+// repaint handler therefore never draws, here as on a real desktop.
 class FakeDrawingArea {
     constructor() {
         this.handlers = {};
         this.repaints = 0;
+        this.paints = 0;
         this.width = 0;
         this.height = 0;
-        this.context = new FakeCairoContext();
-        this.surfaceSize = [100, 22];
+        this.context = null;
     }
     connect(signal, handler) { this.handlers[signal] = handler; }
     queue_repaint() { this.repaints++; }
     get_context() { return this.context; }
-    get_surface_size() { return this.surfaceSize; }
+    get_surface_size() { return [this.width, this.height]; }
     set_width(w) { this.width = w; }
     set_height(h) { this.height = h; }
 
-    /** repaint drives the applet's repaint handler as Clutter would. */
+    /** allocate is how the parent box hands the area its height. */
+    allocate(height) { this.height = height; }
+
+    /**
+     * repaint drives the applet's repaint handler as Clutter's frame clock
+     * would, and returns the context it drew on -- or null when the area has
+     * no size, because then Clutter does not paint it at all.
+     */
     repaint() {
+        if (this.width <= 0 || this.height <= 0) {
+            return null;
+        }
+        this.paints++;
         this.context = new FakeCairoContext();
         this.handlers["repaint"](this);
         return this.context;
@@ -81,8 +99,17 @@ class FakeLabel {
 }
 
 class FakeActor {
-    constructor() { this.styleClasses = []; }
-    add_actor() {}
+    // crossSize, when given, is the height a horizontal panel box allocates to
+    // each child it holds.
+    constructor(crossSize) {
+        this.styleClasses = [];
+        this.crossSize = crossSize || 0;
+    }
+    add_actor(child) {
+        if (this.crossSize > 0 && typeof child.allocate === "function") {
+            child.allocate(this.crossSize);
+        }
+    }
     add_style_class_name(name) { this.styleClasses.push(name); }
 }
 
@@ -295,7 +322,7 @@ function makeSandbox(options) {
                 this._orientation = orientation;
                 this._panelHeight = panelHeight;
                 this._instanceId = instanceId;
-                this.actor = new FakeActor();
+                this.actor = new FakeActor(panelHeight);
                 this.tooltip = "";
             }
             set_applet_tooltip(text) { this.tooltip = text; }

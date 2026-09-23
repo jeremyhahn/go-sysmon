@@ -75,8 +75,8 @@ class SysmonApplet extends Applet.TextIconApplet {
         this.settings = new Settings.AppletSettings(this, metadata.uuid, instanceId);
 
         // Bind user-configurable settings to instance properties. The panel
-        // toggles only affect drawing, so they just queue a repaint; a changed
-        // server address or interval has to be pushed to the server.
+        // toggles only affect the gauge, so they just resize and repaint it; a
+        // changed server address or interval has to be pushed to the server.
         this.settings.bind("server-address", "serverAddress", Lang.bind(this, this._onServerChanged));
         this.settings.bind("update-interval", "updateInterval", Lang.bind(this, this._onIntervalChanged));
         this.settings.bind("show-cpu", "showCpu", Lang.bind(this, this._queueRepaint));
@@ -84,12 +84,8 @@ class SysmonApplet extends Applet.TextIconApplet {
         this.settings.bind("show-network", "showNetwork", Lang.bind(this, this._queueRepaint));
         this.settings.bind("show-disk", "showDisk", Lang.bind(this, this._queueRepaint));
 
-        // Cairo drawing area for gauge rendering.
-        this.drawingArea = new St.DrawingArea();
-        this.drawingArea.connect("repaint", Lang.bind(this, this._onRepaint));
-        this.actor.add_actor(this.drawingArea);
-
-        // Runtime state.
+        // Runtime state. The snapshot is set before the drawing area is sized,
+        // because its width is computed from it.
         this.snapshot = null;
         this.session = null;
         this.stream = null;
@@ -99,6 +95,15 @@ class SysmonApplet extends Applet.TextIconApplet {
         this.reconnectTimer = null;
         this.reconnectDelay = RECONNECT_DELAY_MS;
         this.stopped = false;
+
+        // Cairo drawing area for gauge rendering. An St.DrawingArea has no
+        // natural width of its own, and Clutter never paints an actor with a
+        // zero-sized allocation -- so the width has to be set here, not in
+        // the repaint handler, or the handler never runs to set it.
+        this.drawingArea = new St.DrawingArea();
+        this.drawingArea.connect("repaint", Lang.bind(this, this._onRepaint));
+        this.actor.add_actor(this.drawingArea);
+        this._resizeGauge();
 
         this._buildMenu();
 
@@ -418,10 +423,85 @@ class SysmonApplet extends Applet.TextIconApplet {
         this._pushInterval();
     }
 
+    /**
+     * _queueRepaint resizes the gauge to fit what it is about to draw and
+     * schedules a frame. Every change to the gauge's content comes through
+     * here, so the size is always settled before Clutter paints.
+     */
     _queueRepaint() {
         if (this.drawingArea) {
+            this._resizeGauge();
             this.drawingArea.queue_repaint();
         }
+    }
+
+    /**
+     * _resizeGauge sets the drawing area's width to the gauge's natural width.
+     */
+    _resizeGauge() {
+        this.drawingArea.set_width(this._gaugeWidth());
+    }
+
+    /**
+     * _gaugeWidth is the width in pixels the gauge needs for the current
+     * snapshot and settings, never less than MIN_WIDTH.
+     */
+    _gaugeWidth() {
+        let width = 0;
+        for (const segment of this._gaugeSegments()) {
+            width += segment.width;
+        }
+        return Math.max(width, MIN_WIDTH);
+    }
+
+    /**
+     * _gaugeSegments lists the gauge's visible parts, left to right, each with
+     * its width in pixels and a function that draws it at a given x. Sizing
+     * and drawing both walk this list, so they cannot disagree.
+     */
+    _gaugeSegments() {
+        const snap = this.snapshot;
+        if (!snap) {
+            return [];
+        }
+
+        const segments = [];
+
+        // CPU bars: one thin bar per core.
+        if (this.showCpu && snap.cpus) {
+            segments.push({
+                width: snap.cpus.length * (BAR_WIDTH + BAR_GAP) + SECTION_GAP,
+                draw: (ctx, x, h) => this._drawCpuBars(ctx, snap.cpus, x, h),
+            });
+        }
+
+        // Memory bar: single wider bar.
+        if (this.showMemory && snap.memory) {
+            segments.push({
+                width: MEM_BAR_WIDTH + SECTION_GAP,
+                draw: (ctx, x, h) => this._drawUsageBar(
+                    ctx, (snap.memory.used_percent || 0) / 100, x, h, MEM_BAR_WIDTH),
+            });
+        }
+
+        // Network text: upload/download rates.
+        if (this.showNetwork && snap.networks) {
+            segments.push({
+                width: NET_TEXT_WIDTH + SECTION_GAP,
+                draw: (ctx, x, h) => this._drawNetworkText(ctx, snap.networks, x, h),
+            });
+        }
+
+        // Disk bar: aggregate usage across all disks.
+        if (this.showDisk && snap.disks) {
+            segments.push({
+                width: DISK_BAR_WIDTH + PADDING,
+                draw: (ctx, x, h) => this._drawUsageBar(
+                    ctx, snapshotLib.diskUsage(snap.disks).percent / 100, x, h, DISK_BAR_WIDTH),
+            });
+        }
+
+        return segments;
     }
 
     /**
@@ -452,7 +532,8 @@ class SysmonApplet extends Applet.TextIconApplet {
 
     /**
      * _onRepaint renders the gauge bars and network text onto the Cairo
-     * context provided by the St.DrawingArea.
+     * context provided by the St.DrawingArea. It never changes the area's
+     * size: Clutter only calls it once the area already has one.
      */
     _onRepaint(area) {
         const ctx = area.get_context();
@@ -474,43 +555,14 @@ class SysmonApplet extends Applet.TextIconApplet {
         ctx.setOperator(0); // Cairo.Operator.OVER
 
         let x = 0;
-
-        // CPU bars: one thin bar per core.
-        if (this.showCpu && snap.cpus) {
-            x = this._drawCpuBars(ctx, snap.cpus, x, h);
-            x += SECTION_GAP;
+        for (const segment of this._gaugeSegments()) {
+            segment.draw(ctx, x, h);
+            x += segment.width;
         }
-
-        // Memory bar: single wider bar.
-        if (this.showMemory && snap.memory) {
-            x = this._drawUsageBar(
-                ctx, (snap.memory.used_percent || 0) / 100,
-                x, h, MEM_BAR_WIDTH
-            );
-            x += SECTION_GAP;
-        }
-
-        // Network text: upload/download rates.
-        if (this.showNetwork && snap.networks) {
-            x = this._drawNetworkText(ctx, snap.networks, x, h);
-            x += SECTION_GAP;
-        }
-
-        // Disk bar: aggregate usage across all disks.
-        if (this.showDisk && snap.disks) {
-            const usage = snapshotLib.diskUsage(snap.disks);
-            x = this._drawUsageBar(ctx, usage.percent / 100, x, h, DISK_BAR_WIDTH);
-            x += PADDING;
-        }
-
-        // Resize the drawing area to fit the rendered content.
-        area.set_width(Math.max(x, MIN_WIDTH));
-        area.set_height(h);
     }
 
     /**
-     * _drawCpuBars renders one thin vertical bar per CPU core.
-     * Returns the new x offset after drawing.
+     * _drawCpuBars renders one thin vertical bar per CPU core, starting at x.
      */
     _drawCpuBars(ctx, cpus, x, h) {
         for (let i = 0; i < cpus.length; i++) {
@@ -530,12 +582,11 @@ class SysmonApplet extends Applet.TextIconApplet {
 
             x += BAR_WIDTH + BAR_GAP;
         }
-        return x;
     }
 
     /**
-     * _drawUsageBar renders a single vertical usage bar.
-     * fraction is 0.0-1.0. Returns the new x offset.
+     * _drawUsageBar renders a single vertical usage bar at x.
+     * fraction is 0.0-1.0.
      */
     _drawUsageBar(ctx, fraction, x, h, barWidth) {
         const barH = Math.max(1, Math.floor(h * fraction));
@@ -548,13 +599,10 @@ class SysmonApplet extends Applet.TextIconApplet {
         ctx.setSourceRGBA(COLOR_BG[0], COLOR_BG[1], COLOR_BG[2], COLOR_BG[3]);
         ctx.rectangle(x, 0, barWidth, h - barH);
         ctx.fill();
-
-        return x + barWidth;
     }
 
     /**
-     * _drawNetworkText renders upload/download rate text.
-     * Returns the new x offset.
+     * _drawNetworkText renders upload/download rate text at x.
      */
     _drawNetworkText(ctx, networks, x, h) {
         const rates = snapshotLib.netRates(networks);
@@ -567,8 +615,6 @@ class SysmonApplet extends Applet.TextIconApplet {
         ctx.showText("↑" + fmt.formatCompactRate(rates.sent));
         ctx.moveTo(x, h * 0.85);
         ctx.showText("↓" + fmt.formatCompactRate(rates.recv));
-
-        return x + NET_TEXT_WIDTH;
     }
 
     // ---- lifecycle -------------------------------------------------------

@@ -59,6 +59,15 @@ That is enough to drive the things that matter:
 - backoff grows against a server that never delivers, and resets when data does
 - removal from the panel cancels timers and closes the stream
 
+The harness also models Clutter's paint rule. Its drawing area has no natural
+width, takes its height from the panel box, and `repaint()` does nothing while
+either dimension is zero. The applet used to set its width only inside its own
+repaint handler, and Clutter never paints a zero-width actor, so on a real
+desktop the gauge was never drawn (#184). The fake used to call the handler
+whatever the size, so no test saw it. The applet now sets the width from the
+gauge's segments whenever the snapshot or a gauge setting changes, before any
+paint.
+
 The harness emulates one thing carefully: Cinnamon's applet base classes come
 from GJS's legacy class system, where construction dispatches to `_init` rather
 than to a `constructor`. Subclasses rely on that, so the stand-in does the same.
@@ -98,6 +107,7 @@ What only this tier can prove:
 - Cinnamon's `require()` resolves the shared modules
 - the GObject Introspection calls are real, not just plausible
 - the popup builds against the actual `PopupMenu` implementation
+- the panel gauge gets a non-zero allocation and Clutter actually paints it
 - the applet reaches a real server over a real event stream
 
 ### The session gate
