@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -115,7 +116,7 @@ func TestFetch_HTTPSPeerVerifiedAgainstConfiguredCA(t *testing.T) {
 	p := testPoller(t)
 	p.SetClient(client)
 
-	snap, err := p.fetch(config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed())
+	snap, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed())
 	if err != nil {
 		t.Fatalf("fetch() error = %v, want the https poll to succeed", err)
 	}
@@ -135,7 +136,7 @@ func TestFetch_HTTPSPeerRefusedWhenUntrusted(t *testing.T) {
 	// which do not include httptest's throwaway authority.
 	p := testPoller(t)
 
-	snap, err := p.fetch(config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed())
+	snap, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed())
 	if err == nil {
 		t.Fatalf("fetch() = %+v, want an error for an unverifiable peer", snap)
 	}
@@ -162,7 +163,7 @@ func TestFetch_PlaintextPeer(t *testing.T) {
 		// the second is the case that a config.Fleet literal takes, and getting
 		// it wrong denies the whole fleet rather than one peer.
 		cfg := config.Fleet{TimeoutMs: 5000, TLS: config.Defaults().Fleet.TLS}
-		snap, err := p.fetch(config.Peer{Name: "peer", URL: srv.URL}, cfg)
+		snap, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: srv.URL}, cfg)
 		if err != nil {
 			t.Fatalf("fetch() error = %v; the shipped default must keep an http fleet working", err)
 		}
@@ -174,7 +175,7 @@ func TestFetch_PlaintextPeer(t *testing.T) {
 	t.Run("refused when plaintext is switched off", func(t *testing.T) {
 		p := testPoller(t)
 		cfg := config.Fleet{TimeoutMs: 5000, TLS: config.FleetTLS{RequireTLS: true}}
-		snap, err := p.fetch(config.Peer{Name: "peer", URL: srv.URL}, cfg)
+		snap, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: srv.URL}, cfg)
 		if err == nil {
 			t.Fatalf("fetch() = %+v, want an error", snap)
 		}
@@ -199,7 +200,7 @@ func TestFetch_RejectsUnusableURLs(t *testing.T) {
 	p := testPoller(t)
 
 	t.Run("scheme that is neither http nor https", func(t *testing.T) {
-		_, err := p.fetch(config.Peer{Name: "peer", URL: "ftp://example.invalid"}, plaintextAllowed())
+		_, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: "ftp://example.invalid"}, plaintextAllowed())
 		var scheme *ErrPeerScheme
 		if !errors.As(err, &scheme) {
 			t.Fatalf("fetch() error = %T (%v), want *ErrPeerScheme", err, err)
@@ -210,7 +211,7 @@ func TestFetch_RejectsUnusableURLs(t *testing.T) {
 	})
 
 	t.Run("no scheme at all", func(t *testing.T) {
-		_, err := p.fetch(config.Peer{Name: "bare", URL: "192.168.1.1:8081"}, plaintextAllowed())
+		_, err := fetchSnapshot(p, config.Peer{Name: "bare", URL: "192.168.1.1:8081"}, plaintextAllowed())
 		if err == nil {
 			t.Fatal("fetch() accepted a URL with no scheme")
 		}
@@ -222,7 +223,7 @@ func TestFetch_RejectsUnusableURLs(t *testing.T) {
 	})
 
 	t.Run("unparseable", func(t *testing.T) {
-		_, err := p.fetch(config.Peer{Name: "peer", URL: "http://[::1"}, plaintextAllowed())
+		_, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: "http://[::1"}, plaintextAllowed())
 		var bad *ErrPeerURL
 		if !errors.As(err, &bad) {
 			t.Fatalf("fetch() error = %T (%v), want *ErrPeerURL", err, err)
@@ -274,7 +275,7 @@ func TestFetch_MutualTLS(t *testing.T) {
 		p := testPoller(t)
 		p.SetClient(client)
 
-		if _, err := p.fetch(config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed()); err != nil {
+		if _, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed()); err != nil {
 			t.Fatalf("fetch() error = %v, want the mTLS poll to succeed", err)
 		}
 	})
@@ -287,7 +288,7 @@ func TestFetch_MutualTLS(t *testing.T) {
 		p := testPoller(t)
 		p.SetClient(client)
 
-		if snap, err := p.fetch(config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed()); err == nil {
+		if snap, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed()); err == nil {
 			t.Fatalf("fetch() = %+v, want the peer to refuse an unauthenticated aggregator", snap)
 		}
 	})
@@ -311,4 +312,14 @@ func TestSetClient(t *testing.T) {
 			t.Error("SetClient() did not install the client")
 		}
 	})
+}
+
+// fetchSnapshot fetches a peer's whole snapshot through the poller's transport,
+// which is what every test in this file exercises.
+func fetchSnapshot(p *Poller, peer config.Peer, cfg config.Fleet) (*types.Snapshot, error) {
+	var snap types.Snapshot
+	if err := p.get(context.Background(), peer, cfg, endpointSnapshot, maxSnapshotBytes, &snap); err != nil {
+		return nil, err
+	}
+	return &snap, nil
 }

@@ -202,9 +202,10 @@
 
   function selectFleetNode(name: string | null) {
     monitor.selectNode(name);
-    // Drilling into a peer should land on its dashboard, not leave the user
-    // looking at the list they just clicked.
-    if (name != null) selectTab("overview");
+    // Choosing a node should land on its dashboard, not leave the user
+    // looking at the list they just clicked -- this node included, which the
+    // roll-up's attention list names like any other (#46).
+    selectTab("overview");
   }
 
   /** Severity dot for a tab, or null when nothing is firing in its category. */

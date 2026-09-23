@@ -67,6 +67,15 @@ async function setup(page: Page) {
       body: JSON.stringify({
         enabled: true,
         nodes: [NODES[3], NODES[2], NODES[0], NODES[1]],
+        rollup: {
+          nodes: 4, healthy: 2, warning: 1, critical: 0, unreachable: 1,
+          longest_absence_seconds: 754, never_answered: 0, reporting: 3,
+          attention: [
+            { name: 'zulu', status: 'unreachable', age_seconds: 754, reasons: ['connection refused'] },
+            { name: 'yankee', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
+          ],
+          swap_unknown: 0, builds: [],
+        },
       }),
     });
   });
@@ -89,10 +98,12 @@ test('a degraded node is still counted even though it sorts last', async ({ page
   await page.goto('/');
   await openTab(page, 'Fleet');
 
-  // Ordering by name only costs nothing in discoverability because the summary
-  // counts faults independently of position. If this ever stops being true,
-  // sorting by name genuinely would bury a fault and the ruling needs revisiting.
-  await expect(page.getByText(/unreachable/i).first()).toBeVisible();
+  // Ordering by name only costs nothing in discoverability because the roll-up
+  // counts faults, and names the nodes, independently of position. If this
+  // ever stops being true, sorting by name genuinely would bury a fault and the
+  // ruling needs revisiting.
+  await expect(page.getByTestId('fleet-headline')).toContainText('1 warning, 0 critical, 1 unreachable');
+  await expect(page.getByRole('list', { name: 'Nodes needing attention' })).toContainText('zulu');
 });
 
 /**
@@ -120,6 +131,11 @@ test('an unreachable node says how long, and the summary reports the worst', asy
           // Gone since Tuesday: two days.
           { ...fleetNode('zulu', 'unreachable'), age_seconds: 172800 },
         ],
+        rollup: {
+          nodes: 2, healthy: 0, warning: 0, critical: 0, unreachable: 2,
+          longest_absence_seconds: 172800, never_answered: 0, reporting: 0,
+          attention: [], swap_unknown: 0, builds: [],
+        },
       }),
     });
   });
@@ -134,7 +150,7 @@ test('an unreachable node says how long, and the summary reports the worst', asy
 
   // The summary carries the worst of them, so a reader who never opens a card
   // can still tell a deploy from a dead machine.
-  await expect(page.getByText(/2 unreachable, longest 2d/)).toBeVisible();
+  await expect(page.getByTestId('fleet-headline')).toContainText('2 unreachable (no reading for 2d)');
 });
 
 /**
@@ -152,6 +168,11 @@ test('a node that never reported says so, rather than reporting a zero-second ga
       body: JSON.stringify({
         enabled: true,
         nodes: [{ ...fleetNode('never', 'unreachable'), age_seconds: 0, error: 'no data' }],
+        rollup: {
+          nodes: 1, healthy: 0, warning: 0, critical: 0, unreachable: 1,
+          longest_absence_seconds: 0, never_answered: 1, reporting: 0,
+          attention: [], swap_unknown: 0, builds: [],
+        },
       }),
     });
   });
@@ -162,5 +183,6 @@ test('a node that never reported says so, rather than reporting a zero-second ga
   await expect(page.getByText(/Unreachable, never reported/)).toBeVisible();
   await expect(page.getByText(/Unreachable for 0s/)).toHaveCount(0);
   // And the summary does not claim a duration it does not have.
-  await expect(page.getByText(/longest/)).toHaveCount(0);
+  await expect(page.getByText(/no reading for/)).toHaveCount(0);
+  await expect(page.getByTestId('fleet-headline')).toContainText('(never answered)');
 });

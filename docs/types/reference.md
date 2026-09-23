@@ -233,7 +233,10 @@ Identity: `name`, `hardware_addr`, `addresses`, `mtu`, `flags`, `speed_mbps`, `d
 
 Traffic: `bytes_sent`, `bytes_recv`, `packets_sent`, `packets_recv`, `errors_in`, `errors_out`, `drops_in`, `drops_out`.
 
-Rates: `bytes_sent_rate`, `bytes_recv_rate`.
+Rates: `bytes_sent_rate`, `bytes_recv_rate`. `rates_available` is false when
+they were not measured: on the first collection, for an interface that has just
+appeared, and when the counters could not be read. The rates are then zero only
+because they have to be something.
 
 ## SensorData
 

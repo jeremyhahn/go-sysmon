@@ -263,6 +263,49 @@ The Overview draws one gauge per GPU and per NPU. The NPU gauge is `util_percent
 fdinfo compute time. Residency is time the device was awake, not work it did,
 so it stays on the NPU tab under its own label.
 
+## Fleet view
+
+The Fleet tab opens on the **roll-up** (#46), and the node cards follow it.
+The server computes every roll-up figure. `FleetRollup.svelte` renders them and
+`src/lib/rollup.ts` holds the wording, so the rule is in one place: *show the
+worst and name the node, or show a sum with its denominator — never a mean.*
+
+- **Headline**: a count by state, every term always present, unreachable
+  among them, and how long the longest absence has lasted: `11 nodes:
+  7 healthy, 2 warning, 1 critical, 1 unreachable (no reading for 2h 14m)`.
+  A node that never answered reads `never answered`, not a zero-second gap.
+- **Needs attention**: the worst five non-healthy nodes, critical first, with
+  their alert messages, then `and N more`. Choosing a node opens it. If it is
+  unreachable, the list narrows to its card, which says why.
+- **Figures**: the highest CPU, memory, filesystem, load per core and
+  swap-out rate, each with its node, and the hottest component with its node
+  and kind (`83.0°C ci-node-1 (GPU)`). Every component that reports a
+  temperature counts: CPU cores, drives, GPUs and NPUs. Power is shown with
+  its node count (`579.0 W across 3 of 10 nodes`), network (measured at
+  each node's physical devices) with how many nodes measure it, and SMART and RAID in devices with the nodes they were
+  found on. Once any node is unreachable, a denominator says `reachable
+  nodes`. A figure no reachable node could report is left out, never shown
+  as 0.
+- **Builds**: which commit each node runs, the largest group first and the
+  others named (every group, when the largest is tied). It is never
+  coloured, because a rollout is not a fault.
+
+The cards keep the per-node figures an operator checks before deciding to
+drill in. Max temp names the component kind it came from. A node with no
+physical network device has no Network cell rather than a zero. The swap cell shows occupancy and, under it, the paging rate (#134):
+`no paging`, `out 4.0 MB/s, in 1.0 MB/s`, or `paging unknown` when the node
+could not measure it. The cell appears for an unknown rate even on a node with
+no swap in use, because an unknown is worth stating. Occupancy is no longer coloured as usage, because full
+swap that nothing touches is not pressure. A peer too old to serve
+`/api/summary` gets a neutral *polled by full snapshot* badge.
+
+A drilled-into peer's reading is added to the charts once. The aggregator
+answers a drill-in from its last fetch for the whole fleet interval, so a page
+refreshing faster receives each reading several times. `liveReading`
+(`src/lib/peer.ts`) keeps only current envelopes, and `isNewReading`
+(`src/lib/reading.ts`, the one-point-per-reading rule shared with #171) keeps
+one point per reading timestamp.
+
 ## Tables
 
 Every table that can grow without bound uses the shared `DataTable` component,

@@ -6,6 +6,8 @@
 import { connect } from "$lib/transport";
 import type { IntervalScope, Transport } from "$lib/transport";
 import { sortBySeverity } from "$lib/alerts";
+import { liveReading } from "$lib/peer";
+import { isNewReading } from "$lib/reading";
 import { readStoredJSON, writeStoredJSON } from "$lib/storage";
 import type {
   Alert,
@@ -301,6 +303,9 @@ class MonitorStore {
    */
   readonly fleetNodes = $derived(this.fleet?.nodes ?? []);
 
+  /** The server's whole-fleet roll-up, or null when it sent none. */
+  readonly fleetRollup = $derived(this.fleet?.rollup ?? null);
+
   /** The local node's own version, shown beside a peer's when they differ. */
   readonly localVersion = $derived(
     this.fleet?.nodes?.find((n) => n.self)?.version ?? ""
@@ -325,6 +330,8 @@ class MonitorStore {
   // Tracking maps for manual delta calculation between snapshots.
   #prevNetworkMap = new Map<string, { sent: number; recv: number }>();
   #prevDiskMap = new Map<string, { readBytes: number; writeBytes: number }>();
+  /** The timestamp of the last reading folded into the histories; see isNewReading. */
+  #lastReadingAt: string | null = null;
   #transport: Transport | null = null;
   #fleetTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   #peerTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
@@ -420,7 +427,11 @@ class MonitorStore {
       const res = await fetch(FLEET_URL);
       if (res.ok) {
         const fleet = (await res.json()) as Fleet;
-        this.fleet = { enabled: fleet.enabled === true, nodes: fleet.nodes ?? [] };
+        this.fleet = {
+          enabled: fleet.enabled === true,
+          nodes: fleet.nodes ?? [],
+          rollup: fleet.rollup ?? null,
+        };
 
         // A node that leaves the fleet must not strand the UI on a dead
         // selection with no way back.
@@ -478,8 +489,13 @@ class MonitorStore {
           // reading whose age this side knows.
           this.#peerReadingAt = Date.now();
           this.#peerBaseAge = peer.age_seconds;
-          if (peer.reachable && peer.snapshot != null) {
-            this.applySnapshot(peer.snapshot, name);
+          // A drill-in is answered from the aggregator's last fetch for the
+          // length of the fleet interval, so a page refreshing faster than
+          // that receives the same reading more than once. applySnapshot
+          // folds each reading into the histories once (isNewReading).
+          const reading = liveReading(peer);
+          if (reading != null) {
+            this.applySnapshot(reading, name);
           }
         }
       }
@@ -559,6 +575,7 @@ class MonitorStore {
     this.psiIOHistory = makeHistory(0);
     this.#prevNetworkMap.clear();
     this.#prevDiskMap.clear();
+    this.#lastReadingAt = null;
   }
 
   /**
@@ -574,7 +591,12 @@ class MonitorStore {
   applySnapshot(snap: Snapshot, fromNode: string | null = null): void {
     if (fromNode !== this.selectedNode) return;
 
+    // Always shown: a republished reading can carry a new name or alerts.
     this.snapshot = snap;
+
+    // But folded into the histories once per reading.
+    if (!isNewReading(this.#lastReadingAt, snap.timestamp)) return;
+    this.#lastReadingAt = snap.timestamp || null;
 
     // CPU history
     const cores = snap.cpus.length;

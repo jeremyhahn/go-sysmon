@@ -125,6 +125,10 @@ func buildNetworkInfo(
 				recvDelta := safeSub(ctr.BytesRecv, prevCtr.BytesRecv)
 				info.BytesSentRate = float64(sentDelta) / elapsed
 				info.BytesRecvRate = float64(recvDelta) / elapsed
+				// A counter that went backwards was reset -- the interface
+				// was re-created or its driver reloaded -- and safeSub's
+				// zero is then no measurement of this interval.
+				info.RatesAvailable = ctr.BytesSent >= prevCtr.BytesSent && ctr.BytesRecv >= prevCtr.BytesRecv
 			}
 		}
 	}

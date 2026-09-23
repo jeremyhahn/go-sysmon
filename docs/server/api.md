@@ -65,6 +65,111 @@ text of the 503 body is new, and it was never a value to branch on.
 
 Field-by-field detail is in the [types reference](../types/reference.md).
 
+## GET /api/summary
+
+This node's `NodeSummary`: its own figures for a fleet view, about a kilobyte.
+Every node serves it, because any node can be a peer. An aggregator polls it
+instead of `/api/snapshot` (#76).
+
+`200 OK`, `Content-Type: application/json`:
+
+```json
+{
+    "hostname": "ci-node-1",
+    "version": "0.1.0-alpha",
+    "uptime_seconds": 864000,
+    "collection_interval_ms": 1000,
+    "git_commit": "a46f6cf",
+    "build_date": "2026-09-22T12:00:00Z",
+    "critical_count": 0,
+    "warning_count": 2,
+    "alerts": [ ... ],
+    "cpu_percent": 43.7,
+    "memory_percent": 73.7,
+    "load_per_core": 0.36,
+    "swap_percent": 51.1,
+    "swap_counters_available": true,
+    "swap_rate_available": true,
+    "swap_in_rate": 0,
+    "swap_out_rate": 0,
+    "worst_disk_percent": 88.2,
+    "raid_arrays": 2,
+    "raid_unhealthy": 0,
+    "raid_degraded": false,
+    "smart_capable": 10,
+    "smart_unhealthy": 0,
+    "max_temp_c": 80,
+    "max_temp_source": "cpu",
+    "power_w": 315,
+    "power_reported": true,
+    "net_rx_rate": 31457280,
+    "net_tx_rate": 15728640
+}
+```
+
+- `collection_interval_ms` is the interval the node's monitor actually collects
+  at, the cadence its snapshot timestamps advance by. `0` means unknown: an
+  older peer that does not report it, or a peer the aggregator reads by its
+  whole snapshot. It is never assumed.
+- `alerts` holds only the warning and critical alerts, the ones that set the
+  node's state.
+- `swap_in_rate` and `swap_out_rate` are bytes per second paged over the
+  node's last collection interval, from its two latest readings (#134).
+  `swap_rate_available` is false when the rate could not be measured:
+  unreadable counters, no previous reading yet, or counters that went
+  backwards. The rates are then unknown, not zero.
+- `smart_capable` includes the drives behind a hardware RAID controller, each
+  counted once by serial even when several virtual disks list it.
+- `max_temp_c` is the hottest of every component that reports a temperature
+  (CPU cores, drives, GPUs, NPUs), and `max_temp_source` names which kind.
+- `net_rx_rate` and `net_tx_rate` are summed over the node's physical network
+  devices, so a bond, a bridge, a VLAN, a tunnel or a guest's vnet port, which
+  carry traffic the devices also carry, add nothing twice. `net_reported` is
+  false for a node with no physical device (a container in its own network
+  namespace), and while any of its devices has no measured rate yet
+  (`rates_available`). Its rates are then not measured, rather than zero.
+- `power_reported` is false when the node has no power sensor, or when its
+  sensors have not produced a reading yet (a CPU package needs two energy
+  samples). Its `power_w`
+  of 0 then means nothing.
+
+`503 Service Unavailable` before the first collection, with the same bodies as
+`/api/snapshot`.
+
+## GET /api/snapshot/history
+
+The latest snapshot without its process list and per-CPU `flags`. Both are
+sent as `[]`. An aggregator that records the fleet's history fetches this from
+each peer at its sample interval, from a worker separate from the summary
+poll, and only while it records. Nothing history
+records is removed: the process counts stay, and a test checks that every
+field `metrics.Write` reads survives the slimming. On a busy host this is about
+a fifth of the whole snapshot.
+
+`503 Service Unavailable` before the first collection.
+
+## GET /api/fleet
+
+The fleet view: `{enabled, nodes, rollup}`. `enabled` is false on a node with
+no peers, and then there is no roll-up. Each node is a `NodeSummary` with the
+poll's own fields beside it: `name`, `url`, `self`, `reachable`, `error`,
+`age_seconds`, `status`, `build_match`, and `source` (`local`, `summary`, or
+`snapshot` for a peer too old to serve a summary). `rollup` is the fleet-level
+statement: state counts, how long the longest absence has lasted, the nodes
+needing attention with their reasons, worst values with the node named, and
+sums with their denominators. Every field is described in
+[the fleet section](alerting-fleet-config.md#fleet).
+
+## GET /api/fleet/{name}/snapshot
+
+One node's full snapshot, fetched from it on demand, in an envelope:
+`{snapshot, reachable, error, age_seconds}`. If the fetch fails and the node
+has been read before, the last snapshot is served with `reachable: false`. The
+client must show it as stale. `404` means an unknown node, or this node before
+its first collection. `502` means a peer that cannot be read and never has
+been, or that did not answer within the response's write budget. `503` means
+a reload moved the node while its snapshot was being fetched; ask again.
+
 ## GET /
 
 Serves the dashboard when frontend assets are embedded. Without them you get

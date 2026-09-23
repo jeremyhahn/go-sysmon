@@ -42,7 +42,7 @@ func cadencePoller(t *testing.T, cfg config.Fleet) *Poller {
 	t.Helper()
 	return New(
 		func() config.Fleet { return cfg },
-		func() *types.Snapshot { return nil },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 },
 		func() string { return "local" },
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
@@ -106,7 +106,7 @@ func TestPollInterval_TracksTheLatestCycle(t *testing.T) {
 	current := slowCfg
 	p := New(
 		func() config.Fleet { return current },
-		func() *types.Snapshot { return nil },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 },
 		func() string { return "local" },
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)

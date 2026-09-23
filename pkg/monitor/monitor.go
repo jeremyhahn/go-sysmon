@@ -98,12 +98,37 @@ type Monitor struct {
 	// nextID generates monotonically increasing subscriber IDs.
 	nextID atomic.Uint64
 
-	// latest holds the most recent *types.Snapshot (atomic pointer).
-	latest atomic.Pointer[types.Snapshot]
+	// latest holds the most recent reading: the snapshot last published and
+	// the one this run published before it. One atomic pointer to the pair,
+	// rather than one per snapshot, so a reader can never see a current
+	// snapshot matched with a previous one from a different tick.
+	latest atomic.Pointer[reading]
 
 	// intervalCh delivers a new interval to the running poll loop.
 	// Buffered with capacity 1 so SetInterval never blocks the caller.
 	intervalCh chan time.Duration
+}
+
+// reading is one published snapshot and the baseline of the one the same run
+// published immediately before it; prev is nil for a run's first collection.
+type reading struct {
+	prev *types.Snapshot
+	cur  *types.Snapshot
+}
+
+// baseline is what the monitor keeps of a snapshot once a newer one replaces
+// it: its timestamp, its boot time, and its memory section, which hold the
+// cumulative counters a caller differences across one interval (the swap
+// paging counters) and what says whether they share an origin. The rest
+// -- the process list and per-CPU flags above all -- is what makes a busy
+// host's snapshot large, and keeping all of it for every node, standalone
+// ones included, would double the memory the monitor holds for two numbers.
+func baseline(s *types.Snapshot) *types.Snapshot {
+	return &types.Snapshot{
+		Timestamp: s.Timestamp,
+		Host:      types.HostInfo{BootTime: s.Host.BootTime},
+		Memory:    s.Memory,
+	}
 }
 
 // New creates a Monitor with the given Snapshotter and polling interval.
@@ -304,14 +329,31 @@ func (m *Monitor) Unsubscribe(id uint64) {
 // Running is consulted only when there is no snapshot to return, so the path
 // that has one stays lock-free.
 func (m *Monitor) Snapshot() (*types.Snapshot, error) {
-	snap := m.latest.Load()
-	if snap == nil {
+	_, cur, err := m.Consecutive()
+	return cur, err
+}
+
+// Consecutive returns the latest snapshot together with a baseline of the one
+// collected immediately before it in the same run, so a caller can difference
+// cumulative counters over exactly one collection interval -- which is how a
+// node reports its swap paging rate in its fleet summary (#134).
+//
+// prev is not a whole snapshot. It carries the earlier reading's Timestamp,
+// Host.BootTime and Memory only; every other field is zero. See baseline.
+//
+// prev is nil when the run has published only one snapshot so far: after a
+// start, and after an interval change restarts the loop. A rate then cannot be
+// measured, and the caller must say so rather than report zero. The errors are
+// Snapshot's.
+func (m *Monitor) Consecutive() (prev, cur *types.Snapshot, err error) {
+	r := m.latest.Load()
+	if r == nil {
 		if m.Running() {
-			return nil, &types.NoSnapshotYetError{}
+			return nil, nil, &types.NoSnapshotYetError{}
 		}
-		return nil, &types.MonitorNotRunningError{}
+		return nil, nil, &types.MonitorNotRunningError{}
 	}
-	return snap, nil
+	return r.prev, r.cur, nil
 }
 
 // SetInterval changes the polling interval. The change takes effect on the
@@ -343,6 +385,12 @@ func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 	ticker := time.NewTicker(m.Interval())
 	defer ticker.Stop()
 
+	// prev is this run's previous reading, as a baseline. Held here rather
+	// than read back from latest so it can only ever come from this run:
+	// Start clears latest, but a local cannot outlive the goroutine that owns
+	// it.
+	var prev *types.Snapshot
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -361,7 +409,8 @@ func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 			// way (the alerts are). Once stored it is shared, and every later
 			// pass over it only reads (#151).
 			types.ReplaceNilSlices(snap)
-			m.latest.Store(snap)
+			m.latest.Store(&reading{prev: prev, cur: snap})
+			prev = baseline(snap)
 			m.broadcast(snap)
 		}
 	}

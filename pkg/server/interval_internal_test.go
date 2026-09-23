@@ -22,7 +22,7 @@ func scopedIntervalServer(t *testing.T, peers []config.Peer) *Server {
 	t.Helper()
 	poller := fleet.New(
 		func() config.Fleet { return config.Fleet{Peers: peers, PollIntervalMs: 10000, TimeoutMs: 1000} },
-		func() *types.Snapshot { return nil },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 },
 		func() string { return "local" },
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)

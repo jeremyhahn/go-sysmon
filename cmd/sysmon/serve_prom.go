@@ -6,6 +6,7 @@ package main
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
@@ -137,9 +138,31 @@ func newHistoryQuerier(mgr *config.Manager) server.HistoryQuerier {
 
 // observePeers wires the fleet poller's readings into the exporter, so the
 // aggregator persists its peers' history (topology A, #96).
-func observePeers(poller *fleet.Poller, exporter server.MetricsExporter) {
+//
+// History is fetched by the poller's own per-peer workers at historyCadence,
+// apart from the summary poll: with remote write off the fleet view needs
+// nothing beyond the peers' summaries, and with it on a slow history endpoint
+// must never hold back a card.
+func observePeers(mgr *config.Manager, poller *fleet.Poller, exporter server.MetricsExporter) {
 	if poller == nil || exporter == nil {
 		return
 	}
-	poller.Observe(peerSamples(exporter.Submit))
+	poller.Observe(peerSamples(exporter.Submit), historyCadence(mgr))
+}
+
+// historyCadence is how often the fleet poller fetches each peer's history
+// payload: the exporter's sample interval while this node writes history, and
+// zero -- record nothing, fetch nothing -- while it does not. It is read from
+// the current configuration, so turning remote write on or off, or retiming
+// it, is a reload. Fetching at the sample interval cannot double-write: the
+// exporter writes a peer's reading only when the peer has collected since the
+// last one it wrote (#173).
+func historyCadence(mgr *config.Manager) func() time.Duration {
+	return func() time.Duration {
+		p := mgr.Current().Prometheus
+		if p.RemoteWriteURL == "" {
+			return 0
+		}
+		return p.SampleInterval()
+	}
 }

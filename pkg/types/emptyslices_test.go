@@ -20,6 +20,7 @@ func wirePayloads() []any {
 	return []any{
 		types.Snapshot{},
 		types.PeerSnapshot{},
+		types.NodeSummary{},
 		types.Fleet{},
 		types.ConfigView{},
 		types.HistoryCatalog{},
@@ -435,6 +436,11 @@ func sliceFieldPaths(t reflect.Type) []string {
 		case reflect.Struct:
 			for i := 0; i < t.NumField(); i++ {
 				f := t.Field(i)
+				if f.Anonymous && f.IsExported() && f.Tag.Get("json") == "" && f.Type.Kind() == reflect.Struct {
+					// Flattened into the parent by encoding/json.
+					visit(f.Type, path, depth)
+					continue
+				}
 				name, ok := jsonFieldName(f)
 				if !ok {
 					continue

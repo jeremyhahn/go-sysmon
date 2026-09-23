@@ -2,6 +2,7 @@ package fleet_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
@@ -67,7 +68,7 @@ func TestView_CarriesPeerBuildIdentity(t *testing.T) {
 	}
 	local := builtSnapshot("local", "a46f6cf", "2026-09-05T03:26:50Z")
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return local }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	view := pollUntilReachable(t, p, "omega")
 
@@ -106,7 +107,7 @@ func TestView_MatchingCommitIsNotDivergent(t *testing.T) {
 	}
 	local := builtSnapshot("local", "a46f6cf", "2026-09-05T03:26:50Z")
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return local }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	peer := node(t, pollUntilReachable(t, p, "omega"), "omega")
 	if peer.BuildMatch != fleet.BuildSame {
@@ -129,7 +130,7 @@ func TestView_DivergenceIsNotAFault(t *testing.T) {
 	}
 	local := builtSnapshot("local", "a46f6cf", "2026-09-05T03:26:50Z")
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return local }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	peer := node(t, pollUntilReachable(t, p, "omega"), "omega")
 	if peer.BuildMatch != fleet.BuildDifferent {
@@ -165,7 +166,7 @@ func TestView_UnstatedBuildIsUnknownNotAgreement(t *testing.T) {
 	}
 	local := builtSnapshot("local", "a46f6cf", "2026-09-05T03:26:50Z")
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return local }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	view := pollUntilReachable(t, p, "silent", "placeholder")
 	for _, name := range []string{"silent", "placeholder"} {
@@ -189,7 +190,7 @@ func TestView_AnUnstatedAggregatorKnowsNothing(t *testing.T) {
 	}
 	local := builtSnapshot("local", "unknown", "unknown")
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return local }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	view := pollUntilReachable(t, p, "omega")
 	if got := node(t, view, "omega").BuildMatch; got != fleet.BuildUnknown {
@@ -215,7 +216,7 @@ func TestView_ASilentNodeHasNoBuildAgreement(t *testing.T) {
 	}
 	local := builtSnapshot("local", "a46f6cf", "2026-09-05T03:26:50Z")
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return local }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	// Before any poll has run at all.
 	if got := node(t, p.View(), "dead").BuildMatch; got != fleet.BuildUnknown {

@@ -161,3 +161,32 @@ func TestPeerSamples_IgnoresNothingToRecord(t *testing.T) {
 		t.Fatalf("offered %d readings, want none", calls)
 	}
 }
+
+// TestHistoryCadence_FollowsRemoteWrite: the fleet poller fetches each peer's
+// history payload at this cadence, and not at all at zero. The question must
+// be answered from remote_write_url -- the same setting the exporter keeps or
+// discards a submission by -- and the cadence is the exporter's sample
+// interval, which its per-source de-duplication makes safe to fetch at (#173).
+func TestHistoryCadence_FollowsRemoteWrite(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want time.Duration
+	}{
+		"remote write configured":        {"prometheus:\n  remote_write_url: \"http://prom.example:9090/api/v1/write\"\n  sample_interval_ms: 5000\n", 5 * time.Second},
+		"remote write, default interval": {"prometheus:\n  remote_write_url: \"http://prom.example:9090/api/v1/write\"\n", 15 * time.Second},
+		"no prometheus section":          {"server:\n  addr: \":8081\"\n", 0},
+		"query only":                     {"prometheus:\n  query_url: \"http://prom.example:9090\"\n", 0},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			withServeConfig(t, tc.body)
+			mgr, err := loadServeConfig(nil)
+			if err != nil {
+				t.Fatalf("loadServeConfig(): %v", err)
+			}
+			if got := historyCadence(mgr)(); got != tc.want {
+				t.Errorf("historyCadence() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

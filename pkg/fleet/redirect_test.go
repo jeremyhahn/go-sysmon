@@ -36,7 +36,7 @@ func TestPollerFetch_RefusesRedirectOffTheConfiguredHost(t *testing.T) {
 	}
 
 	cfg := config.Fleet{TimeoutMs: 2000}
-	snap, err := p.fetch(config.Peer{Name: "peer", URL: peer.URL}, cfg)
+	snap, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: peer.URL}, cfg)
 	if err == nil {
 		t.Fatalf("fetch() followed the redirect and returned %+v, want it refused", snap)
 	}

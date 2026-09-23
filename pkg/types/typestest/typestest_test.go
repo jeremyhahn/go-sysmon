@@ -103,3 +103,31 @@ func TestNullSlices_RejectsInvalidJSON(t *testing.T) {
 		t.Error("the decode error lost its cause")
 	}
 }
+
+// Inner is exported so it can be embedded the way types.FleetNode embeds
+// types.NodeSummary.
+type Inner struct {
+	Tags []string `json:"tags"`
+}
+
+type flattened struct {
+	Inner
+	Named Inner `json:"named"`
+}
+
+// TestNullSlices_FollowsEmbeddedStructsIntoTheParent: encoding/json writes an
+// untagged embedded struct's fields into the enclosing object, so its lists
+// are found there -- at the parent's path, not under the type's name.
+func TestNullSlices_FollowsEmbeddedStructsIntoTheParent(t *testing.T) {
+	got, err := typestest.NullSlices([]byte(`{"tags": null, "named": {"tags": null}}`), flattened{})
+	if err != nil {
+		t.Fatalf("NullSlices: %v", err)
+	}
+	want := []string{"named.tags", "tags"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("NullSlices = %v, want %v", got, want)
+	}
+	if got, err := typestest.NullSlices([]byte(`{"tags": [], "named": {"tags": []}}`), flattened{}); err != nil || len(got) != 0 {
+		t.Errorf("NullSlices on a payload with no nulls = %v, %v; want none", got, err)
+	}
+}

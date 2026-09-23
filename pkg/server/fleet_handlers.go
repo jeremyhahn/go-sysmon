@@ -1,11 +1,13 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -20,18 +22,27 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, view)
 }
 
-// handleFleetSnapshot serves one node's full snapshot from the aggregator's
-// cache, which is what lets the dashboard render any peer's detail without the
-// browser making a cross-origin request.
+// handleFleetSnapshot serves one node's full snapshot through the aggregator,
+// which is what lets the dashboard render any peer's detail without the browser
+// making a cross-origin request. The aggregator fetches it from the peer on
+// demand; the poll cycle carries only summaries.
+//
+// A node that is not in the fleet, or has nothing to serve, is 404. A peer
+// that cannot be read and has never been read is 502: the aggregator is
+// answering, the node behind it is not, and that is a gateway failure rather
+// than a missing resource.
 func (s *Server) handleFleetSnapshot(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if s.fleet == nil {
 		http.Error(w, "fleet is not configured", http.StatusNotFound)
 		return
 	}
-	peer, ok := s.fleet.PeerSnapshot(name)
-	if !ok {
-		http.Error(w, "no snapshot for node "+name, http.StatusNotFound)
+	// Bounded by the response's write budget, so a peer slower than that is
+	// answered with its error rather than with a response the server can no
+	// longer write.
+	peer, err := s.fleet.PeerSnapshot(r.Context(), name, drillInBudget())
+	if err != nil {
+		http.Error(w, err.Error(), fleetSnapshotStatus(err))
 		return
 	}
 	// The envelope is served even when the peer is unreachable. Answering 5xx
@@ -40,6 +51,29 @@ func (s *Server) handleFleetSnapshot(w http.ResponseWriter, r *http.Request) {
 	// snapshot would present it as current. The client gets both the data and
 	// the fact that it is stale, and decides how to show it.
 	writeJSON(w, peer)
+}
+
+// drillInBudget is how long a drill-in may wait on its peer: the response
+// write deadline less a margin to write the answer in. fleet.timeout_ms can be
+// set longer than the write deadline; without this a slow peer would be waited
+// on past the point where any answer could still be sent.
+func drillInBudget() time.Duration {
+	return responseWriteTimeout - responseWriteTimeout/10
+}
+
+// fleetSnapshotStatus maps a PeerSnapshot error to its HTTP status.
+func fleetSnapshotStatus(err error) int {
+	var unknown *fleet.ErrUnknownPeer
+	var noReading *fleet.ErrNoReading
+	var moved *fleet.ErrPeerMoved
+	switch {
+	case errors.As(err, &unknown), errors.As(err, &noReading):
+		return http.StatusNotFound
+	case errors.As(err, &moved):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusBadGateway
+	}
 }
 
 // handleConfig serves the effective configuration and each value's origin. It

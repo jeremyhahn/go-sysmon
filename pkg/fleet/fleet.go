@@ -12,6 +12,7 @@ package fleet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -23,7 +24,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/outbound"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -79,33 +79,58 @@ func compareBuild(local, node string) string {
 
 // peerState is the last result of polling one peer.
 type peerState struct {
-	snapshot  *types.Snapshot
+	// url is the address this state was read from. A reload that repoints
+	// the peer's name at another URL makes everything below some other
+	// machine's, and it is discarded rather than carried over.
+	url string
+	// polledAt is when this poll was made, successful or not. fetchedAt
+	// dates the data and survives a failed poll; this dates the attempt.
+	polledAt  time.Time
+	summary   *types.NodeSummary
+	source    string
 	err       string
 	fetchedAt time.Time
+	// swapBase is the timestamp and memory of the last whole snapshot, kept
+	// only for a peer too old to serve a summary: the aggregator then
+	// computes that peer's paging rate itself, by differencing its counters
+	// across two polls.
+	swapBase *types.Snapshot
 }
 
-// LocalFunc supplies this node's own snapshot.
-type LocalFunc func() *types.Snapshot
+// LocalFunc supplies this node's own latest snapshot, cur, the baseline of
+// the one it collected immediately before, prev -- see
+// monitor.Monitor.Consecutive -- and the interval its monitor collects at.
+// prev may be nil; cur is nil when there is no reading at all; a zero interval
+// is unknown.
+type LocalFunc func() (prev, cur *types.Snapshot, interval time.Duration)
 
-// Reading is called once for every peer snapshot that actually arrives, with
-// the node's name and the reading itself.
+// Reading is called once for every peer history reading that actually
+// arrives, with the node's name and the reading itself.
 //
-// It exists so the aggregator can persist the fleet's history: it holds every
-// peer's data already, and writing it from here is what lets the peers keep no
-// storage of their own.
+// It exists so the aggregator can persist the fleet's history (topology A):
+// writing it from here is what lets the peers keep no storage of their own.
+// The reading is the peer's history payload -- its snapshot less the process
+// list and per-CPU flags, see HistorySnapshot -- or, from a peer too old to
+// serve one, its whole snapshot.
 //
-// It is NOT called when a poll fails. The poller keeps the previous snapshot so
-// a card shows stale data rather than emptying, but re-writing that reading
-// under a new timestamp would record an observation nobody made and would hide
-// the outage in the history -- and a gap that needs explaining is better than a
+// It is NOT called when a poll fails. The poller keeps the previous summary so
+// a card shows stale data rather than emptying, but re-writing a reading under
+// a new timestamp would record an observation nobody made and would hide the
+// outage in the history -- and a gap that needs explaining is better than a
 // number that needs distrusting.
 type Reading func(node string, snap *types.Snapshot)
+
+// observer is a registered Reading and how often history wants a reading.
+type observer struct {
+	fn      Reading
+	cadence func() time.Duration
+}
 
 // ConfigFunc supplies the current fleet settings. It is called every cycle so a
 // config reload adds or removes peers without restarting the process.
 type ConfigFunc func() config.Fleet
 
-// Poller keeps a cached snapshot per peer, refreshed on an interval.
+// Poller keeps a cached summary per peer, refreshed on an interval.
 type Poller struct {
 	cfgFn       ConfigFunc
 	localFn     LocalFunc
@@ -113,10 +138,10 @@ type Poller struct {
 	logger      *slog.Logger
 	client      *http.Client
 
-	// reading is read on every poll and written at most once, at wiring time.
-	// An atomic pointer rather than a mutex: the poll goroutines only ever
-	// load it.
-	reading atomic.Pointer[Reading]
+	// observer is read on every poll and written at most once, at wiring
+	// time. An atomic pointer rather than a mutex: the poll goroutines only
+	// ever load it.
+	observer atomic.Pointer[observer]
 
 	// pollOverrideNs is the dashboard's live choice of cadence, in
 	// nanoseconds; zero means follow the configuration. Atomic because it is
@@ -132,8 +157,16 @@ type Poller struct {
 	// has been observed yet.
 	lastRefreshNs atomic.Int64
 
-	// bodies holds each peer's read buffer between cycles; see bodyBuffers.
+	// bodies holds each peer endpoint's read buffer between cycles; see
+	// bodyBuffers.
 	bodies bodyBuffers
+
+	// details holds each peer's last drill-in snapshot: peer name ->
+	// *detailState. See PeerSnapshot.
+	details sync.Map
+
+	// history runs the per-peer history workers; see recorder.
+	history *recorder
 
 	mu    sync.RWMutex
 	peers map[string]*peerState
@@ -158,21 +191,29 @@ func (p *Poller) SetClient(c *http.Client) {
 	p.client = c
 }
 
-// Observe registers fn to be called for each peer snapshot that arrives. Call
-// it before Run. Passing nil clears it.
-func (p *Poller) Observe(fn Reading) {
-	if fn == nil {
-		p.reading.Store(nil)
+// Observe registers fn to be called for each peer history reading that
+// arrives, and cadence to say how often history wants one. Call it before Run.
+// A nil fn clears it.
+//
+// cadence is read on every cycle and by every history worker. Zero means
+// history is not being recorded, and then no history payload is fetched at
+// all: the summary is all the fleet view needs, so an aggregator not writing
+// history -- remote write off, or turned off by a reload -- never pays for the
+// rest. A positive cadence is the interval each peer's history worker fetches
+// at, floored at MinPollInterval; see recorder.
+func (p *Poller) Observe(fn Reading, cadence func() time.Duration) {
+	if fn == nil || cadence == nil {
+		p.observer.Store(nil)
 		return
 	}
-	p.reading.Store(&fn)
+	p.observer.Store(&observer{fn: fn, cadence: cadence})
 }
 
 // New returns a Poller. localNameFn supplies how this node names itself in the
 // fleet; it is a function rather than a value so a configuration reload can
 // change the name without restarting.
 func New(cfgFn ConfigFunc, localFn LocalFunc, localNameFn func() string, logger *slog.Logger) *Poller {
-	return &Poller{
+	p := &Poller{
 		cfgFn:       cfgFn,
 		localFn:     localFn,
 		localNameFn: localNameFn,
@@ -180,6 +221,8 @@ func New(cfgFn ConfigFunc, localFn LocalFunc, localNameFn func() string, logger 
 		client:      outbound.NewClient(0),
 		peers:       make(map[string]*peerState),
 	}
+	p.history = newRecorder(p)
+	return p
 }
 
 // Enabled reports whether any peers are configured.
@@ -198,15 +241,27 @@ func (p *Poller) Enabled() bool {
 // Leaving the loop this way is a DELIBERATE deferral, not an oversight. A true
 // ticker would poll every 3.00s instead of every 3.20s -- 6.7% MORE aggregation
 // on mon0, which is the node this is trying to relieve, and where aggregation
-// was measured as 94% of the process's CPU (#76). Spending that before the
-// larger question is settled -- whether the poll path should carry peer process
-// lists at all, which would remove most of the load -- is paying for a
-// correctness fix with the resource under pressure. Once that is decided the
-// ticker costs nothing worth counting and should be done then.
+// was measured as 94% of the process's CPU (#76). That larger question is now
+// settled: the poll carries summaries and never a process list (see
+// poll). With the cycle that much cheaper the ticker costs nothing worth
+// counting, and converting to one is a separate change rather than part of
+// this one.
+//
+// The history workers are reconciled after each cycle and stopped, and waited
+// for, when Run returns: no worker outlives the loop that started it.
 func (p *Poller) Run(done <-chan struct{}) {
+	defer p.history.stop()
 	for {
 		cfg := p.cfgFn()
+		// Reconciled before the poll as well as after it: a peer removed or
+		// repointed by a reload has its worker cancelled before the poll --
+		// which can take up to the fleet timeout -- rather than after, and a
+		// peer the poll has just classified gets its worker at once.
+		p.history.sync(cfg)
 		p.cycle(cfg)
+		// Re-read: a reload that landed during the poll is acted on now,
+		// not after the sleep.
+		p.history.sync(p.cfgFn())
 		select {
 		case <-done:
 			return
@@ -216,11 +271,19 @@ func (p *Poller) Run(done <-chan struct{}) {
 }
 
 // cycle is one pass of Run: refresh the configured peers, or, when a reload
-// has removed the last of them, release their read buffers -- refresh is what
-// prunes them, and it does not run with no peers to poll.
+// has removed the last of them, release their read buffers and drill-in
+// snapshots -- refresh is what prunes them, and it does not run with no peers
+// to poll.
 func (p *Poller) cycle(cfg config.Fleet) {
 	if len(cfg.Peers) == 0 {
 		p.bodies.forget(nil)
+		p.details.Clear()
+		// And the poll state, swap baselines with it: a peer added back
+		// later starts afresh rather than differencing against a reading
+		// from before it was removed.
+		p.mu.Lock()
+		clear(p.peers)
+		p.mu.Unlock()
 		return
 	}
 	p.refresh(cfg)
@@ -308,43 +371,47 @@ func (p *Poller) effectiveInterval(cfg config.Fleet) time.Duration {
 	return MinPollInterval
 }
 
+// Peer endpoints the poller reads.
+const (
+	endpointSummary  = "/api/summary"
+	endpointSnapshot = "/api/snapshot"
+	endpointHistory  = "/api/snapshot/history"
+)
+
+// maxSummaryBytes bounds a peer's summary. A summary is a few kilobytes; the
+// bound is generous for a node with many alerts and still far below what a
+// snapshot is allowed, so a peer answering the summary path with something
+// else entirely is refused rather than decoded.
+const maxSummaryBytes = 1 << 20 // 1 MiB
+
+// maxDrainBytes bounds how much of an error response is read to keep its
+// connection reusable. An error body larger than this is not worth reading;
+// that connection is simply closed.
+const maxDrainBytes = 64 << 10
+
 // refresh polls all peers concurrently. One slow peer must not delay the rest,
 // so each has its own timeout and they run in parallel.
 func (p *Poller) refresh(cfg config.Fleet) {
 	started := time.Now()
 	defer func() { p.lastRefreshNs.Store(int64(time.Since(started))) }()
 
+	recording := p.historyCadence() > 0
+
 	var wg sync.WaitGroup
 	for _, peer := range cfg.Peers {
 		wg.Add(1)
 		go func(peer config.Peer) {
 			defer wg.Done()
-			snap, err := p.fetch(peer, cfg)
-			st := &peerState{fetchedAt: time.Now()}
-			if err != nil {
-				st.err = err.Error()
-				p.logger.Debug("fleet: peer unreachable", "peer", peer.Name, "error", err)
-			} else {
-				st.snapshot = snap
-				if fn := p.reading.Load(); fn != nil {
-					(*fn)(peer.Name, snap)
-				}
+			p.mu.RLock()
+			prev := p.peers[peer.Name]
+			p.mu.RUnlock()
+			if prev != nil && prev.url != peer.URL {
+				prev = nil
 			}
+
+			st := p.poll(peer, cfg, prev, recording)
+
 			p.mu.Lock()
-			// Keep the last good snapshot alongside the error so a brief blip
-			// shows as stale data rather than an empty card -- and keep the time
-			// that snapshot was actually fetched with it. fetchedAt dates the
-			// DATA, not the attempt: carrying the retry's timestamp instead
-			// would reset the age on every failed poll, so a node unreachable
-			// for hours would report having been updated moments ago. Stale
-			// data presented as fresh is worse than an obvious gap, because it
-			// is the reading an operator would act on.
-			if st.snapshot == nil {
-				if prev, ok := p.peers[peer.Name]; ok && prev.snapshot != nil {
-					st.snapshot = prev.snapshot
-					st.fetchedAt = prev.fetchedAt
-				}
-			}
 			p.peers[peer.Name] = st
 			p.mu.Unlock()
 		}(peer)
@@ -353,8 +420,12 @@ func (p *Poller) refresh(cfg config.Fleet) {
 
 	// Forget peers that have been removed from the configuration.
 	keep := make(map[string]bool, len(cfg.Peers))
+	buffers := make(map[string]bool, 3*len(cfg.Peers))
 	for _, peer := range cfg.Peers {
 		keep[peer.Name] = true
+		for _, endpoint := range []string{endpointSummary, endpointSnapshot, endpointHistory} {
+			buffers[bufferKey(peer.Name, endpoint)] = true
+		}
 	}
 	p.mu.Lock()
 	for name := range p.peers {
@@ -363,21 +434,197 @@ func (p *Poller) refresh(cfg config.Fleet) {
 		}
 	}
 	p.mu.Unlock()
-	p.bodies.forget(keep)
+	// A drill-in snapshot goes with its peer, and with its peer's address: one
+	// fetched from a URL a reload has replaced is another machine's, and is
+	// dropped now rather than whenever that node is next opened. A detail
+	// whose lock is held is mid-fetch; that request checks the mapping itself,
+	// and the next refresh catches whatever it leaves.
+	//
+	// Reconciled against the configuration as it is now, not the one this
+	// cycle polled: a drill-in made after a reload that landed mid-poll holds
+	// the new address, and the old mapping would throw it away.
+	current := p.cfgFn()
+	urls := make(map[string]string, len(current.Peers))
+	for _, peer := range current.Peers {
+		urls[peer.Name] = peer.URL
+	}
+	p.details.Range(func(k, v any) bool {
+		name := k.(string)
+		url, configured := urls[name]
+		if !configured {
+			p.details.Delete(name)
+			return true
+		}
+		d := v.(*detailState)
+		if d.tryAcquire() {
+			d.repoint(url)
+			d.release()
+		}
+		return true
+	})
+	p.bodies.forget(buffers)
 }
 
-// fetch retrieves one peer's snapshot.
+// historyCadence is how often history wants a reading from each peer, or zero
+// when history is not being recorded.
+func (p *Poller) historyCadence() time.Duration {
+	obs := p.observer.Load()
+	if obs == nil {
+		return 0
+	}
+	return obs.cadence()
+}
+
+// peerSource reports how the latest poll of peer at its configured URL read
+// it, or "" when no poll has read it at that URL -- a state left from an
+// address a reload has replaced says nothing about the new one.
+func (p *Poller) peerSource(peer config.Peer) string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if st := p.peers[peer.Name]; st != nil && st.url == peer.URL {
+		return st.source
+	}
+	return ""
+}
+
+// pollFailedSince reports whether the latest summary poll of peer, at its
+// current URL, failed after t. A drill-in answered from before that failure
+// would present the node as live while the fleet view calls it unreachable. A
+// failure at an address a reload has replaced says nothing about the new one.
+func (p *Poller) pollFailedSince(peer config.Peer, t time.Time) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	st := p.peers[peer.Name]
+	return st != nil && st.url == peer.URL && st.err != "" && st.polledAt.After(t)
+}
+
+// poll is one peer's summary for this cycle. A peer served by its whole
+// snapshot also has that snapshot recorded here when history is being
+// recorded; a peer that served a summary has its history payload fetched by
+// its history worker, on its own schedule (see recorder).
+//
+// A peer too old to serve a summary answers 404 on it, and is then polled the
+// way every peer used to be: its whole snapshot, summarised here. That keeps a
+// fleet working through a rollout, and it is marked on the node (Source
+// "snapshot") rather than hidden -- it costs the aggregator what #76 set out
+// to remove, and an operator should be able to see which peers still do.
+func (p *Poller) poll(peer config.Peer, cfg config.Fleet, prev *peerState, recording bool) *peerState {
+	now := time.Now()
+	st := &peerState{url: peer.URL, polledAt: now, fetchedAt: now}
+
+	var summary types.NodeSummary
+	err := p.get(context.Background(), peer, cfg, endpointSummary, maxSummaryBytes, &summary)
+	switch {
+	case err == nil:
+		st.summary = &summary
+		st.source = types.SummarySourceSummary
+	case endpointNotServed(err):
+		err = p.pollSnapshot(peer, cfg, prev, st, recording)
+	}
+
+	if err != nil {
+		st.summary = nil
+		st.err = err.Error()
+		p.logger.Debug("fleet: peer unreachable", "peer", peer.Name, "error", err)
+		// Keep the last good summary alongside the error so a brief blip shows
+		// as stale data rather than an empty card -- and keep the time that
+		// summary was actually fetched with it. fetchedAt dates the DATA, not
+		// the attempt: carrying the retry's timestamp instead would reset the
+		// age on every failed poll, so a node unreachable for hours would
+		// report having been updated moments ago. Stale data presented as
+		// fresh is worse than an obvious gap, because it is the reading an
+		// operator would act on.
+		if prev != nil && prev.summary != nil {
+			st.summary = prev.summary
+			st.source = prev.source
+			st.fetchedAt = prev.fetchedAt
+			st.swapBase = prev.swapBase
+		}
+	}
+	// Dated when the poll finished, not when it began: a failure that lands
+	// after a drill-in succeeded must end that drill-in's reuse.
+	st.polledAt = time.Now()
+	return st
+}
+
+// pollSnapshot is the path for a peer that does not serve a summary: its whole
+// snapshot is fetched and summarised here, against the swap counters kept
+// from its previous snapshot, and the same snapshot is the reading recorded.
+func (p *Poller) pollSnapshot(peer config.Peer, cfg config.Fleet, prev, st *peerState, recording bool) error {
+	var snap types.Snapshot
+	if err := p.get(context.Background(), peer, cfg, endpointSnapshot, maxSnapshotBytes, &snap); err != nil {
+		return err
+	}
+	var base *types.Snapshot
+	if prev != nil {
+		base = prev.swapBase
+	}
+	summary := Summarize(base, &snap)
+	st.swapBase = swapBaseline(&snap)
+	// A fleet polling faster than the peer collects fetches the same snapshot
+	// twice. There is no new interval to measure then, and the rate measured
+	// over the last one still stands; recomputing it against itself would
+	// flicker the card to "paging unknown" until the peer published again.
+	if base != nil && snap.Timestamp.Equal(base.Timestamp) && prev.summary != nil {
+		summary.SwapRateAvailable = prev.summary.SwapRateAvailable
+		summary.SwapInRate = prev.summary.SwapInRate
+		summary.SwapOutRate = prev.summary.SwapOutRate
+		st.swapBase = base
+	}
+	st.summary = &summary
+	st.source = types.SummarySourceSnapshot
+	if recording {
+		p.observe(peer.Name, &snap)
+	}
+	return nil
+}
+
+// observe hands one arrived reading to the observer, if there is one.
+func (p *Poller) observe(node string, snap *types.Snapshot) {
+	if obs := p.observer.Load(); obs != nil {
+		obs.fn(node, snap)
+	}
+}
+
+// endpointNotServed reports whether a failed fetch of an endpoint this build
+// added means the peer (or a proxy in front of it) does not serve it, rather
+// than that the peer is down.
+//
+// A 404 is the ordinary answer. The other is a 200 whose body is not JSON: an
+// older build embedded as a library without dashboard assets answers every
+// unknown path from its catch-all status page, "go-sysmon is running". A peer
+// that is genuinely broken fails the snapshot fetch that follows too, so
+// trying it costs nothing in honesty.
+func endpointNotServed(err error) bool {
+	var syntax *json.SyntaxError
+	return isNotFound(err) || errors.As(err, &syntax)
+}
+
+// isNotFound reports whether err is a peer answering 404.
+func isNotFound(err error) bool {
+	var status *ErrPeerStatus
+	return errors.As(err, &status) && status.Status == http.StatusNotFound
+}
+
+// bufferKey names the read buffer kept for one peer endpoint. Each endpoint
+// has its own, because a summary is a few kilobytes and a snapshot hundreds,
+// and a buffer shared between them would be resized on every cycle.
+func bufferKey(peer, endpoint string) string {
+	return peer + " " + endpoint
+}
+
+// get fetches one peer endpoint and decodes it into v, bounded by limit.
 //
 // It takes the whole fleet config rather than just the timeout because the
 // transport a peer is reached over is a property of the fleet, and deciding it
-// here -- once, per peer, per cycle -- is what lets a reload move a peer from
+// here -- once, per peer, per request -- is what lets a reload move a peer from
 // http to https without restarting.
-func (p *Poller) fetch(peer config.Peer, cfg config.Fleet) (*types.Snapshot, error) {
-	target := strings.TrimRight(peer.URL, "/") + "/api/snapshot"
+func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet, endpoint string, limit int64, v any) error {
+	target := strings.TrimRight(peer.URL, "/") + endpoint
 
 	parsed, err := url.Parse(target)
 	if err != nil {
-		return nil, &ErrPeerURL{Peer: peer.Name, URL: peer.URL, Cause: err}
+		return &ErrPeerURL{Peer: peer.Name, URL: peer.URL, Cause: err}
 	}
 	// The scheme is checked before the request is built, so a peer that should
 	// not be spoken to in the clear is refused here rather than after the
@@ -386,22 +633,22 @@ func (p *Poller) fetch(peer config.Peer, cfg config.Fleet) (*types.Snapshot, err
 	case "https":
 	case "http":
 		if cfg.TLS.RequireTLS {
-			return nil, &ErrPlaintextPeer{Peer: peer.Name}
+			return &ErrPlaintextPeer{Peer: peer.Name}
 		}
 	default:
-		return nil, &ErrPeerScheme{Peer: peer.Name, Scheme: parsed.Scheme}
+		return &ErrPeerScheme{Peer: peer.Name, Scheme: parsed.Scheme}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout())
+	ctx, cancel := context.WithTimeout(parent, cfg.Timeout())
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -410,53 +657,197 @@ func (p *Poller) fetch(peer config.Peer, cfg config.Fleet) (*types.Snapshot, err
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &ErrPeerStatus{Peer: peer.Name, Endpoint: "/api/snapshot", Status: resp.StatusCode}
+		// Read what is left of a short error body before it is closed, so the
+		// connection goes back to the pool. A peer too old to serve a summary
+		// answers 404 on every cycle, and without this each of those would
+		// cost the fallback fetch that follows a new connection -- and a new
+		// TLS handshake on an https fleet.
+		if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes)); err != nil {
+			p.logger.Debug("fleet: draining peer error body", "peer", peer.Name, "error", err)
+		}
+		return &ErrPeerStatus{Peer: peer.Name, Endpoint: endpoint, Status: resp.StatusCode}
+	}
+	if err := p.bodies.decode(bufferKey(peer.Name, endpoint), resp.Body, limit, v); err != nil {
+		return err
+	}
+	// A peer on an older build sends null for a list it has none of, and this
+	// node serves what it decoded on as its own. Normalised here, before it is
+	// cached and shared, so this node's wire never carries null (#151).
+	types.ReplaceNilSlices(v)
+	return nil
+}
+
+// detailReuse is how long a peer's drill-in snapshot, or failed attempt, is
+// served again rather than fetched anew: the fleet's effective poll interval.
+//
+// That interval is the cadence the dashboard reports for a selected peer and
+// the one its rate control sets while a peer is shown (#97), and it is what
+// governed a peer's detail when the poll fetched whole snapshots. Every open
+// drill-in polls the aggregator, and several browsers -- or one whose own
+// refresh is faster than the fleet's -- would otherwise each cost that peer a
+// whole snapshot per tick.
+//
+// It is the interval as reported (PollInterval): the resolved cadence plus the
+// time the last refresh took, which is the rate the dashboard is told a
+// selected peer is refreshed at.
+func (p *Poller) detailReuse(cfg config.Fleet) time.Duration {
+	return p.effectiveInterval(cfg) + time.Duration(p.lastRefreshNs.Load())
+}
+
+// detailState is the last drill-in snapshot fetched from one peer. Its mutex is
+// held across the fetch, so concurrent drill-ins of the same peer wait for one
+// request rather than each making their own.
+type detailState struct {
+	// lock is held across the fetch, so concurrent drill-ins of one peer wait
+	// for a single request. A channel rather than a mutex so waiting for it
+	// honours the drill-in's deadline: a request queued behind a slow fetch
+	// gives up when its budget does.
+	lock chan struct{}
+	// url is the peer URL the snapshot came from. A reload that repoints the
+	// name at another URL makes the snapshot some other machine's.
+	url       string
+	snap      *types.Snapshot
+	fetchedAt time.Time
+	// triedAt and err are the latest attempt, successful or not. A failed
+	// attempt is reused as long as a snapshot is (detailReuse), or every
+	// drill-in queued behind it would wait out the peer's timeout again.
+	triedAt time.Time
+	err     error
+}
+
+func newDetailState() *detailState {
+	return &detailState{lock: make(chan struct{}, 1)}
+}
+
+// acquire takes d's lock, or gives up when ctx is done.
+func (d *detailState) acquire(ctx context.Context) error {
+	select {
+	case d.lock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// tryAcquire takes d's lock if it is free.
+func (d *detailState) tryAcquire() bool {
+	select {
+	case d.lock <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// release gives d's lock back.
+func (d *detailState) release() { <-d.lock }
+
+// answer is what d says now: its snapshot, marked stale when the latest
+// attempt failed, or that attempt's error when there is no snapshot at all.
+func (d *detailState) answer() (types.PeerSnapshot, error) {
+	if d.snap == nil {
+		return types.PeerSnapshot{}, d.err
+	}
+	env := types.PeerSnapshot{
+		Snapshot:   d.snap,
+		Reachable:  d.err == nil,
+		AgeSeconds: time.Since(d.fetchedAt).Seconds(),
+	}
+	if d.err != nil {
+		env.Error = d.err.Error()
+	}
+	return env, nil
+}
+
+// repoint forgets everything d holds when the peer's URL has changed, so a
+// snapshot fetched from the old address is never served under the new one.
+func (d *detailState) repoint(url string) {
+	if d.url == url {
+		return
+	}
+	d.url, d.snap, d.fetchedAt, d.triedAt, d.err = url, nil, time.Time{}, time.Time{}, nil
+}
+
+// PeerSnapshot returns a node's full snapshot together with the freshness of
+// the fetch behind it, so the dashboard can render any node from the
+// aggregator without contacting it directly.
+//
+// A peer's snapshot is fetched on demand: the poll cycle carries only
+// summaries (#76), and the whole snapshot is needed only by someone looking at
+// that node. A fetch that fails still answers with the last snapshot fetched,
+// when there is one -- a brief blip should not blank the view -- but never as a
+// plain success. Reachable and AgeSeconds describe the LATEST attempt, and they
+// are what stop stale readings from being displayed as current ones.
+//
+// The error is ErrUnknownPeer for a node that is not configured, ErrNoReading
+// when there is nothing to serve, and otherwise the reason the peer could not
+// be read.
+func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Duration) (types.PeerSnapshot, error) {
+	if name == p.localNameFn() {
+		if _, snap, _ := p.localFn(); snap != nil {
+			// The local node is collected on demand, so it is current by
+			// construction.
+			return types.PeerSnapshot{Snapshot: snap, Reachable: true}, nil
+		}
+		return types.PeerSnapshot{}, &ErrNoReading{Node: name}
+	}
+
+	if _, _, ok := p.resolvePeer(name); !ok {
+		return types.PeerSnapshot{}, &ErrUnknownPeer{Peer: name}
+	}
+
+	// budget bounds the whole drill-in on the peer's behalf -- waiting for
+	// another request's fetch included -- so it cannot outlive the response it
+	// is for. ctx is the asker's own.
+	opCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	v, _ := p.details.LoadOrStore(name, newDetailState())
+	d := v.(*detailState)
+	if err := d.acquire(opCtx); err != nil {
+		// Not recorded: the fetch this waited for belongs to another request,
+		// which records its own outcome.
+		return types.PeerSnapshot{}, err
+	}
+	defer d.release()
+
+	// Resolved again under the lock: a reload may have removed or repointed
+	// the peer while this request waited for it.
+	peer, cfg, ok := p.resolvePeer(name)
+	if !ok {
+		return types.PeerSnapshot{}, &ErrUnknownPeer{Peer: name}
+	}
+	d.repoint(peer.URL)
+	if !d.triedAt.IsZero() && time.Since(d.triedAt) < p.detailReuse(cfg) &&
+		!p.pollFailedSince(peer, d.triedAt) {
+		return d.answer()
 	}
 
 	var snap types.Snapshot
-	if err := p.bodies.decode(peer.Name, resp.Body, maxSnapshotBytes, &snap); err != nil {
-		return nil, err
+	err := p.get(opCtx, peer, cfg, endpointSnapshot, maxSnapshotBytes, &snap)
+	if ctx.Err() != nil {
+		// The asker went away, or its own deadline passed. That says nothing
+		// about the peer, so it is not recorded as an attempt that others
+		// would be answered from. The budget running out with the asker still
+		// there is different: a peer that did not answer in time, which is
+		// its failure and is recorded as one below.
+		return types.PeerSnapshot{}, ctx.Err()
 	}
-	// A peer on an older build sends null for a list it has none of, and this
-	// node serves the snapshot on as its own. Normalised here, before it is
-	// cached and shared, so this node's wire never carries null (#151).
-	types.ReplaceNilSlices(&snap)
-	return &snap, nil
+	// And again after the fetch: if the name has moved to another address
+	// meanwhile, this answer is another machine's and is neither kept nor
+	// served under the name.
+	if now, _, ok := p.resolvePeer(name); !ok || now.URL != peer.URL {
+		return types.PeerSnapshot{}, &ErrPeerMoved{Peer: name}
+	}
+	d.err, d.triedAt = err, time.Now()
+	if d.err == nil {
+		d.snap, d.fetchedAt = &snap, d.triedAt
+	}
+	return d.answer()
 }
 
-// PeerSnapshot returns a peer's cached snapshot together with the freshness of
-// the poll behind it, so the dashboard can render any node from the aggregator
-// without contacting it directly.
-//
-// The snapshot is returned even when the latest poll failed -- a brief blip
-// should not blank the view -- but never as a plain success. Reachable and
-// AgeSeconds describe the LATEST attempt, and they are what stop stale readings
-// from being displayed, and re-recorded, as current ones.
-func (p *Poller) PeerSnapshot(name string) (types.PeerSnapshot, bool) {
-	if name == p.localNameFn() {
-		if snap := p.localFn(); snap != nil {
-			// The local node is collected on demand, so it is current by
-			// construction.
-			return types.PeerSnapshot{Snapshot: snap, Reachable: true}, true
-		}
-		return types.PeerSnapshot{}, false
-	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	st, ok := p.peers[name]
-	if !ok || st.snapshot == nil {
-		return types.PeerSnapshot{}, false
-	}
-	return types.PeerSnapshot{
-		Snapshot:   st.snapshot,
-		Reachable:  st.err == "",
-		Error:      st.err,
-		AgeSeconds: time.Since(st.fetchedAt).Seconds(),
-	}, true
-}
-
-// View builds the fleet summary: this node first, then its peers, ordered worst
-// first so whatever needs attention is at the top.
+// View builds the fleet view: every node's summary, in name order, and the
+// fleet-level roll-up over them.
 func (p *Poller) View() types.Fleet {
 	cfg := p.cfgFn()
 	if len(cfg.Peers) == 0 {
@@ -465,34 +856,64 @@ func (p *Poller) View() types.Fleet {
 
 	nodes := make([]types.FleetNode, 0, len(cfg.Peers)+1)
 
-	local := p.localFn()
-	self := summarize(p.localNameFn(), "", true, local, time.Now(), "")
+	self := types.FleetNode{Name: p.localNameFn(), Self: true}
+	if prev, cur, interval := p.localFn(); cur != nil {
+		self.Reachable = true
+		self.Source = types.SummarySourceLocal
+		self.NodeSummary = LocalSummary(prev, cur, interval)
+	} else {
+		self.Error = "no data"
+	}
 	nodes = append(nodes, self)
 
+	now := time.Now()
 	p.mu.RLock()
 	for _, peer := range cfg.Peers {
+		n := types.FleetNode{Name: peer.Name, URL: peer.URL}
 		st := p.peers[peer.Name]
-		if st == nil {
-			nodes = append(nodes, types.FleetNode{
-				Name: peer.Name, URL: peer.URL,
-				Reachable: false, Status: StatusUnreachable, Error: "not polled yet",
-			})
-			continue
+		if st != nil && st.url != peer.URL {
+			// Polled at an address a reload has since replaced: that reading
+			// is another machine's, and this one has not been polled yet.
+			st = nil
 		}
-		nodes = append(nodes, summarize(peer.Name, peer.URL, false, st.snapshot, st.fetchedAt, st.err))
+		switch {
+		case st == nil:
+			n.Error = "not polled yet"
+		case st.summary == nil:
+			// No summary means no reading to be old, so the age stays zero
+			// rather than describing the last ATTEMPT. For a peer that has
+			// NEVER answered there is no date to report, and the moment of the
+			// last try -- about two seconds ago, always -- would render as
+			// "unreachable for 2s" for a total absence, which is #69's defect
+			// in the field meant to distinguish them.
+			n.Error = st.err
+			if n.Error == "" {
+				n.Error = "no data"
+			}
+		default:
+			n.Reachable = st.err == ""
+			n.Error = st.err
+			n.Source = st.source
+			n.AgeSeconds = now.Sub(st.fetchedAt).Seconds()
+			n.NodeSummary = *st.summary
+		}
+		nodes = append(nodes, n)
 	}
 	p.mu.RUnlock()
 
-	// Build agreement is stamped here rather than inside summarize because it
-	// is the one field that is not a property of a node on its own: it is that
-	// node's commit held against THIS node's. Doing it in one pass over every
-	// node also covers the two paths summarize never reaches -- the peer that
+	// Build agreement and status are stamped in one pass over every node,
+	// which also covers the two paths that carry no summary -- the peer that
 	// has not been polled yet and the peer that answered nothing -- so no node
-	// leaves the view with the field unset, which would decode as "" and read
-	// as neither agreement nor its absence.
+	// leaves the view with either field unset. Build agreement is the one
+	// field that is not a property of a node on its own: it is that node's
+	// commit held against THIS node's.
 	selfCommit := self.GitCommit
 	for i := range nodes {
 		nodes[i].BuildMatch = compareBuild(selfCommit, nodes[i].GitCommit)
+		nodes[i].Status = nodeStatus(nodes[i].Reachable, &nodes[i].NodeSummary)
+		if nodes[i].Alerts == nil {
+			nodes[i].Alerts = []types.Alert{}
+		}
 	}
 
 	// Alphabetical by name (owner ruling 2026-09-01). Names are unique within a
@@ -501,12 +922,10 @@ func (p *Poller) View() types.Fleet {
 	// and config order left equal nodes moving around.
 	//
 	// This used to put the worst status first so a fault led the list. That
-	// reads as "unsorted" to someone looking for a host: a warning node sorts
-	// ahead of a healthy one whose name comes first, so on this fleet `fs` and
-	// `vm-host-1` appeared above `ci-node-1`. A fleet list is used far more
-	// often to find a named host than to discover an unknown fault, and the
-	// fault is not hidden by name order -- every node carries its Status, and
-	// the UI counts unreachable and degraded nodes separately from the list.
+	// reads as "unsorted" to someone looking for a host. A fleet list is used
+	// far more often to find a named host than to discover an unknown fault,
+	// and the fault is not hidden by name order: the roll-up above the list
+	// counts the nodes by state and names every one that needs attention.
 	//
 	// The UI sorts the same way. It owns its own filter/sort/page pipeline, so
 	// the two must be changed together or the API and the screen disagree about
@@ -514,155 +933,7 @@ func (p *Poller) View() types.Fleet {
 	sort.SliceStable(nodes, func(i, j int) bool {
 		return CompareNodeNames(nodes[i].Name, nodes[j].Name) < 0
 	})
-	return types.Fleet{Enabled: true, Nodes: nodes}
-}
-
-// summarize reduces a full snapshot to the handful of figures the fleet view
-// shows. It is total: a nil snapshot yields an unreachable node rather than a
-// zeroed one, because those must not look the same.
-func summarize(name, url string, self bool, snap *types.Snapshot, fetchedAt time.Time, errMsg string) types.FleetNode {
-	n := types.FleetNode{
-		Name: name, URL: url, Self: self, Error: errMsg,
-		AgeSeconds: time.Since(fetchedAt).Seconds(),
-	}
-	if snap == nil {
-		n.Reachable = false
-		n.Status = StatusUnreachable
-		// No snapshot means no reading to be old, so the age is cleared rather
-		// than left describing the last ATTEMPT.
-		//
-		// It was set from fetchedAt above, which for a peer that has answered
-		// dates its data -- deliberately, so a failing poll does not make stale
-		// data look fresh. For a peer that has NEVER answered there is no such
-		// date, and fetchedAt is the moment of the last try: about two seconds
-		// ago, always. A consumer rendering "unreachable for 2s" for a node
-		// that has never once responded is being told a five-second blip when
-		// it is a total absence, which is #69's defect in the field meant to
-		// distinguish them.
-		//
-		// Zero is the sentinel and it is the same value the never-polled path
-		// above produces, so both states agree: no age means no reading, not a
-		// reading taken now.
-		n.AgeSeconds = 0
-		if n.Error == "" {
-			n.Error = "no data"
-		}
-		return n
-	}
-	n.Reachable = errMsg == ""
-	n.Hostname = snap.Host.Hostname
-	n.Version = snap.Version
-	n.GitCommit = snap.GitCommit
-	n.BuildDate = snap.BuildDate
-	n.UptimeSeconds = snap.Host.Uptime
-	n.MemoryPercent = snap.Memory.UsedPercent
-	n.SwapPercent = snap.Memory.SwapPercent
-
-	for _, c := range snap.CPUs {
-		n.CPUPercent += c.UsagePercent
-	}
-	if len(snap.CPUs) > 0 {
-		n.CPUPercent /= float64(len(snap.CPUs))
-	}
-	if snap.CPUSummary.TotalThreads > 0 {
-		n.LoadPerCore = snap.LoadAvg.Load1 / float64(snap.CPUSummary.TotalThreads)
-	}
-
-	for i := range snap.Disks {
-		d := &snap.Disks[i]
-		if d.TotalBytes > 0 && d.UsedPercent > n.WorstDiskPercent {
-			n.WorstDiskPercent = d.UsedPercent
-		}
-		// Counted whether or not it is degraded: a numerator with no
-		// denominator cannot say whether zero means "all well" or "nothing to
-		// look at", and those are different answers for an operator.
-		if d.RAID != nil {
-			n.RAIDArrays++
-			// Degraded is not the whole of "unhealthy". An inactive, suspended,
-			// broken or unreadable array is not serving I/O at all, raises a
-			// CRITICAL raid_not_active alert, and had Degraded false -- so the
-			// roll-up called it ok while the alert called it critical, and the
-			// node page showed it red. The predicate is alert's, so there
-			// cannot be a second list of states to drift from the first.
-			if d.RAID.Degraded || alert.RAIDNotOperational(d.RAID.State) {
-				n.RAIDUnhealthy++
-			}
-			if d.RAID.Degraded {
-				n.RAIDDegraded = true
-			}
-		}
-		if d.SMARTEnabled {
-			n.SMARTCapable++
-			if !d.SMARTHealthy {
-				n.SMARTUnhealthy++
-			}
-		}
-		// The drives behind a hardware RAID controller count too. They are not
-		// block devices and never appear in the disk list, so a denominator
-		// summed over that list alone would report ci-node-1 as having three
-		// SMART-capable devices while six readable drives sat behind its PERC.
-		// That is #44's defect surviving its own fix: a denominator that does
-		// not know what it left out.
-		for _, m := range d.Members {
-			if !m.SMARTEnabled {
-				continue
-			}
-			n.SMARTCapable++
-			if !m.SMARTHealthy {
-				n.SMARTUnhealthy++
-			}
-		}
-		if d.Temperature > n.MaxTempC {
-			n.MaxTempC = d.Temperature
-		}
-		// A member's temperature is the drive's own, and on a host whose only
-		// spinning disks are behind a controller it is the only disk
-		// temperature there is.
-		for _, m := range d.Members {
-			if m.Temperature > n.MaxTempC {
-				n.MaxTempC = m.Temperature
-			}
-		}
-	}
-	for _, c := range snap.Sensors.CoreTemps {
-		if c.TempCelsius > n.MaxTempC {
-			n.MaxTempC = c.TempCelsius
-		}
-	}
-	for _, pp := range snap.Sensors.PackagePower {
-		n.PowerW += pp.PowerW
-	}
-	for _, g := range snap.GPUs {
-		n.PowerW += g.PowerDrawW
-	}
-	for i := range snap.Networks {
-		if snap.Networks[i].IsLoopback {
-			continue
-		}
-		n.NetRxRate += snap.Networks[i].BytesRecvRate
-		n.NetTxRate += snap.Networks[i].BytesSentRate
-	}
-
-	for _, a := range snap.Alerts {
-		switch a.Severity {
-		case types.SeverityCritical:
-			n.CriticalCount++
-		case types.SeverityWarning:
-			n.WarningCount++
-		}
-	}
-
-	switch {
-	case !n.Reachable:
-		n.Status = StatusUnreachable
-	case n.CriticalCount > 0:
-		n.Status = StatusCritical
-	case n.WarningCount > 0:
-		n.Status = StatusWarning
-	default:
-		n.Status = StatusHealthy
-	}
-	return n
+	return types.Fleet{Enabled: true, Nodes: nodes, Rollup: rollup(nodes)}
 }
 
 // ErrPlaintextPeer reports a peer configured with an http URL on a fleet that
@@ -737,7 +1008,9 @@ type ErrPeerStatus struct {
 // Add a path here when it is introduced, not when someone reports the
 // confusing message.
 var endpointsAddedLater = map[string]bool{
-	"/api/config": true,
+	"/api/config":   true,
+	endpointSummary: true,
+	endpointHistory: true,
 }
 
 func (e *ErrPeerStatus) Error() string {
@@ -817,6 +1090,33 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 	types.ReplaceNilSlices(&view)
 	return &view, nil
 }
+
+// resolvePeer finds name in the current configuration, and returns that
+// configuration with it.
+func (p *Poller) resolvePeer(name string) (config.Peer, config.Fleet, bool) {
+	cfg := p.cfgFn()
+	for _, peer := range cfg.Peers {
+		if peer.Name == name {
+			return peer, cfg, true
+		}
+	}
+	return config.Peer{}, cfg, false
+}
+
+// ErrPeerMoved reports a drill-in whose peer a reload removed or repointed
+// while it was being fetched. The answer belonged to the old address and is
+// discarded; asking again reaches the new one.
+type ErrPeerMoved struct{ Peer string }
+
+func (e *ErrPeerMoved) Error() string {
+	return "fleet node " + e.Peer + " was reconfigured while its snapshot was being fetched; ask again"
+}
+
+// ErrNoReading reports a node that is configured but has no reading to serve:
+// this node before its first collection.
+type ErrNoReading struct{ Node string }
+
+func (e *ErrNoReading) Error() string { return "no reading yet from fleet node " + e.Node }
 
 // ErrUnknownPeer reports a request for a node that is not configured.
 type ErrUnknownPeer struct{ Peer string }

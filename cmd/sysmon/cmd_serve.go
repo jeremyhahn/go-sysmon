@@ -187,12 +187,12 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	// connected browser.
 	fleetPoller := fleet.New(
 		func() config.Fleet { return cfgMgr.Current().Fleet },
-		func() *types.Snapshot {
-			s, err := mon.Snapshot()
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) {
+			prev, cur, err := mon.Consecutive()
 			if err != nil {
-				return nil
+				return nil, nil, 0
 			}
-			return s
+			return prev, cur, mon.Interval()
 		},
 		func() string { return localNodeName(cfgMgr) },
 		slog.Default(),
@@ -238,7 +238,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	// the exporter reading the current config, so turning remote write on stays
 	// a reload rather than a restart. In a build without prometheus support
 	// this observes nothing, because there is nothing to write to.
-	observePeers(fleetPoller, exporter)
+	observePeers(cfgMgr, fleetPoller, exporter)
 	go fleetPoller.Run(done)
 
 	if err := mon.Start(); err != nil {

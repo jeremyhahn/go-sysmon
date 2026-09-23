@@ -9,6 +9,8 @@ response comes from the monitor.
 |--------|-----------------|-----------------------------------------------------|
 | GET    | `/`             | The dashboard, or a plain status line when no assets are embedded |
 | GET    | `/api/snapshot` | The latest snapshot as JSON                         |
+| GET    | `/api/summary`  | This node's fleet summary, from its two latest snapshots |
+| GET    | `/api/snapshot/history` | The latest snapshot without process list or CPU flags, for fleet history |
 | GET    | `/api/events`   | A server-sent events stream of snapshots            |
 | GET    | `/api/interval` | The monitor's current polling interval              |
 | POST   | `/api/interval` | Changes the polling interval                        |
@@ -22,8 +24,12 @@ may query fresh host state per request."*
 That is how the package is built. `Monitor.Snapshot()` is `m.latest.Load()` — an
 atomic pointer read of the last completed collection — and every handler goes
 through it: `/api/snapshot`, the event stream, the delta hub's first frame, and
-the Prometheus exporter at `/metrics`. `/api/fleet` serves the fleet poller's
-cached peer snapshots; `/api/history` queries storage, which is not host state.
+the Prometheus exporter at `/metrics`. `/api/summary` and `/api/snapshot/history`
+read the same state through `Monitor.Consecutive()`, which pairs it with the
+collection before it. `/api/fleet` serves the fleet poller's cached peer
+summaries, and `/api/fleet/{name}/snapshot` fetches a peer's published snapshot
+from that peer when someone drills in (#76), which is the peer's own last poll
+and not fresh host state; `/api/history` queries storage, which is not host state.
 **`pkg/server` does not import a collector at all.**
 
 The cost of getting this wrong is not abstract: two clients would measure the

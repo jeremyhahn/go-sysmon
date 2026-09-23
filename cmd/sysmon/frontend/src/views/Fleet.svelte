@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Fleet overview: one card per peer, worst status first, with search and
-  // paging so the view stays usable as the fleet grows.
+  // Fleet overview: the whole-fleet roll-up (#46), then one card per node in
+  // name order, with search and paging so the view stays usable as the fleet
+  // grows.
   //
   // The pipeline is filter -> sort -> page, and it lives here rather than in
   // the store: the view must not depend on the order the server happened to
@@ -10,7 +11,9 @@
     nodeStatusBadgeClass,
     nodeStatusBorderClass,
   } from "$lib/alerts";
+  import FleetRollup from "$components/FleetRollup.svelte";
   import { compareNodeNames } from "$lib/nodeorder";
+  import { tempSourceLabel } from "$lib/rollup";
   import {
     formatAge,
     formatBytesRate,
@@ -44,6 +47,7 @@
   }
 
   const allNodes = $derived(monitor.fleetNodes);
+  const rollup = $derived(monitor.fleetRollup);
   const localVersion = $derived(monitor.localVersion);
   const localCommit = $derived(monitor.localCommit);
   const selectedNode = $derived(monitor.selectedNode);
@@ -112,67 +116,6 @@
     page = 0;
   }
 
-  // --- whole-fleet rollups --------------------------------------------------
-
-  /**
-   * Totals are computed over every node, never over the visible page: a
-   * summary that silently described one page would be worse than no summary.
-   */
-  const totals = $derived.by(() => {
-    let unreachable = 0;
-    // How stale the worst unreachable node's data is.
-    //
-    // A five-second restart and a two-day outage both produce status
-    // "unreachable", so the count alone cannot tell a deploy from a dead
-    // machine (#69). age_seconds already dates the DATA rather than the last
-    // attempt, which makes it exactly the right number: "the newest reading we
-    // have is nine seconds old" and "it is two days old" are different facts,
-    // and the summary said neither.
-    //
-    // Reported alongside the count rather than used to suppress it: whether a
-    // brief absence should stop counting as a fault is a policy decision, and
-    // inventing a threshold here would be taking it silently.
-    let longestAbsence = 0;
-    let critical = 0;
-    let warning = 0;
-    let healthy = 0;
-    let criticalAlerts = 0;
-    let warningAlerts = 0;
-    let drifted = 0;
-
-    for (const node of allNodes) {
-      switch (node.status) {
-        case "unreachable":
-          unreachable++;
-          longestAbsence = Math.max(longestAbsence, node.age_seconds);
-          break;
-        case "critical":
-          critical++;
-          break;
-        case "warning":
-          warning++;
-          break;
-        default:
-          healthy++;
-      }
-      criticalAlerts += node.critical_count;
-      warningAlerts += node.warning_count;
-      if (hasBuildDrift(node)) drifted++;
-    }
-
-    return {
-      nodes: allNodes.length,
-      unreachable,
-      longestAbsence,
-      critical,
-      warning,
-      healthy,
-      criticalAlerts,
-      warningAlerts,
-      drifted,
-    };
-  });
-
   // --- per-node helpers -----------------------------------------------------
 
   // Load average per core is the comparable figure across nodes of different
@@ -218,6 +161,32 @@
     return true;
   }
 
+  /**
+   * Swap paging for a node's card (#134). Occupancy alone cannot say whether a
+   * node is paging -- full swap that nothing touches is not pressure -- so the
+   * rate goes beside it, and a rate that could not be measured says so rather
+   * than reading as "no paging".
+   */
+  function pagingLabel(node: FleetNode): string {
+    if (node.swap_rate_available !== true) return "paging unknown";
+    const out = node.swap_out_rate ?? 0;
+    const into = node.swap_in_rate ?? 0;
+    if (out === 0 && into === 0) return "no paging";
+    return `out ${formatBytesRate(out)}, in ${formatBytesRate(into)}`;
+  }
+
+  /** A node picked from the roll-up's attention list: open it if it can be
+   * opened, otherwise narrow the list to its card, which says why not. */
+  function pick(name: string): void {
+    const node = allNodes.find((n) => n.name === name);
+    if (node?.reachable) {
+      select(node);
+      return;
+    }
+    query = name;
+    page = 0;
+  }
+
   // Selection is reported upward rather than applied here: the parent both
   // switches the store and moves the user off this tab, and one owner for
   // that pair keeps the two from drifting apart.
@@ -227,7 +196,7 @@
 </script>
 
 <div class="space-y-4">
-  {#if totals.nodes === 0}
+  {#if allNodes.length === 0}
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-4">
         <p class="text-sm text-base-content/70">No fleet members reported.</p>
@@ -241,53 +210,17 @@
     <!-- Rollup + controls -->
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-3 gap-3">
-        <!-- Whole-fleet rollup, explicitly labelled so it is never mistaken
-             for a description of the current page. -->
-        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          <span class="font-semibold text-base-content/70">
-            Across all {totals.nodes} node{totals.nodes === 1 ? "" : "s"}:
-          </span>
-          {#if totals.unreachable > 0}
-            <!-- The duration is the whole point: "1 unreachable" reads the same
-                 whether a node is mid-restart or has been dead since Tuesday. -->
-            <span
-              class="badge badge-neutral badge-sm"
-              title="Longest gap since any unreachable node last reported"
-            >
-              {totals.unreachable} unreachable{totals.longestAbsence > 0
-                ? `, longest ${formatAge(totals.longestAbsence)}`
-                : ""}
-            </span>
-          {/if}
-          {#if totals.critical > 0}
-            <span class="badge badge-error badge-sm">
-              {totals.critical} critical
-            </span>
-          {/if}
-          {#if totals.warning > 0}
-            <span class="badge badge-warning badge-sm">
-              {totals.warning} warning
-            </span>
-          {/if}
-          <span class="badge badge-success badge-sm">
-            {totals.healthy} healthy
-          </span>
-          <span class="text-base-content/60">
-            {totals.criticalAlerts} critical / {totals.warningAlerts} warning alerts
-          </span>
-          {#if totals.drifted > 0}
-            <!-- Neutral, alongside the health badges rather than among them. A
-                 rollout puts every node here until it restarts, so this must
-                 read as "worth knowing", not as "something is wrong". -->
-            <span
-              class="badge badge-neutral badge-sm"
-              title="Nodes running a go-sysmon build other than {localCommit ||
-                localVersion}"
-            >
-              {totals.drifted} on another build
-            </span>
-          {/if}
-        </div>
+        <!-- The whole fleet, computed by the server over every node --
+             never over the visible page, which a summary silently describing
+             one page would be worse than no summary at all. -->
+        {#if rollup}
+          <FleetRollup {rollup} onPick={pick} />
+        {:else}
+          <p class="text-xs text-base-content/60">
+            This server did not send a fleet roll-up; it predates the fleet
+            summary.
+          </p>
+        {/if}
 
         <!-- Search + page size -->
         <div class="flex flex-wrap items-center gap-2">
@@ -316,9 +249,9 @@
           {/if}
           <span class="text-xs text-base-content/60 ml-auto">
             Showing {rangeLabel}
-            {#if sorted.length !== totals.nodes}
+            {#if sorted.length !== allNodes.length}
               <span class="text-base-content/60">
-                (filtered from {totals.nodes})
+                (filtered from {allNodes.length})
               </span>
             {/if}
           </span>
@@ -410,6 +343,18 @@
                   <div class="text-base-content/60">
                     updated {formatAge(node.age_seconds)} ago
                   </div>
+                  {#if node.source === "snapshot"}
+                    <!-- Marked, not hidden: a peer too old to serve a summary
+                         is polled for its whole snapshot, which costs the
+                         aggregator what the summary exists to save. -->
+                    <span
+                      class="badge badge-neutral badge-xs"
+                      title="This node's build predates /api/summary, so the aggregator polls its whole snapshot. Upgrade it to reduce the aggregator's load."
+                      data-testid="snapshot-source"
+                    >
+                      polled by full snapshot
+                    </span>
+                  {/if}
                 </div>
               </div>
 
@@ -556,33 +501,55 @@
                       {/if}
                     </div>
                   {/if}
-                  {#if node.swap_percent > 0}
-                    <div>
+                  <!-- Shown whenever there is swap to speak of, and whenever
+                       paging could not be measured: an unknown is a thing to
+                       say, not a reason to leave the cell out. -->
+                  {#if node.swap_percent > 0 || (node.swap_out_rate ?? 0) > 0 || (node.swap_in_rate ?? 0) > 0 || node.swap_rate_available !== true}
+                    <div data-testid="swap-cell">
                       <p class="text-xs text-base-content/60">Swap</p>
-                      <p class="font-mono {usageColor(node.swap_percent)}">
-                        {formatPercent(node.swap_percent)}
+                      <!-- Occupancy is not coloured as usage: full swap that
+                           nothing touches is not pressure (#134). The paging
+                           line beneath is what says whether it is. -->
+                      <p class="font-mono">{formatPercent(node.swap_percent)}</p>
+                      <p
+                        class="text-xs {(node.swap_out_rate ?? 0) > 0
+                          ? 'text-warning'
+                          : 'text-base-content/60'}"
+                      >
+                        {pagingLabel(node)}
                       </p>
                     </div>
                   {/if}
                   {#if node.max_temp_c > 0}
                     <div>
                       <p class="text-xs text-base-content/60">Max temp</p>
-                      <p class="font-mono">{formatTemp(node.max_temp_c)}</p>
+                      <p class="font-mono" data-testid="max-temp">
+                        {formatTemp(node.max_temp_c)}
+                        {#if tempSourceLabel(node.max_temp_source)}
+                          <span class="text-xs text-base-content/60">{tempSourceLabel(node.max_temp_source)}</span>
+                        {/if}
+                      </p>
                     </div>
                   {/if}
-                  {#if node.power_w > 0}
+                  {#if node.power_reported || node.power_w > 0}
                     <div>
                       <p class="text-xs text-base-content/60">Power</p>
                       <p class="font-mono">{formatWatts(node.power_w)}</p>
                     </div>
                   {/if}
-                  <div>
-                    <p class="text-xs text-base-content/60">Network</p>
-                    <p class="font-mono text-xs">
-                      <span class="text-info">↓ {formatBytesRate(node.net_rx_rate)}</span>
-                      <span class="text-success ml-1">↑ {formatBytesRate(node.net_tx_rate)}</span>
-                    </p>
-                  </div>
+                  <!-- Measured at the node's physical devices; a node with none
+                       (a container in its own namespace) has no figure, not a
+                       zero. `!== false` so an older server, which sends no
+                       net_reported, still shows its figure. -->
+                  {#if node.net_reported !== false}
+                    <div data-testid="net-cell">
+                      <p class="text-xs text-base-content/60">Network</p>
+                      <p class="font-mono text-xs">
+                        <span class="text-info">↓ {formatBytesRate(node.net_rx_rate)}</span>
+                        <span class="text-success ml-1">↑ {formatBytesRate(node.net_tx_rate)}</span>
+                      </p>
+                    </div>
+                  {/if}
                 </div>
               {/if}
             </div>

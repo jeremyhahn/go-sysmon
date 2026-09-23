@@ -82,8 +82,137 @@ type PeerSnapshot struct {
 	AgeSeconds float64   `json:"age_seconds"`
 }
 
+// NodeSummary is one node's account of itself, reduced to what the fleet
+// roll-up and its cards show. Every node serves its own at GET /api/summary,
+// and the aggregator polls that instead of the full snapshot (#76): a summary
+// is a few kilobytes where a snapshot is hundreds, and decoding snapshots was
+// most of the aggregator's CPU.
+//
+// It carries exactly what the fleet view needs and nothing it does not. Drilling
+// into a node still fetches that node's full snapshot, on demand.
+//
+// Every field is the node's own reading. Nothing here depends on who is asking,
+// which is what lets the node compute it once for any aggregator.
+type NodeSummary struct {
+	Hostname      string `json:"hostname"`
+	Version       string `json:"version"`
+	UptimeSeconds uint64 `json:"uptime_seconds"`
+
+	// CollectionIntervalMs is the interval the node's monitor actually
+	// collects at -- the cadence its snapshot timestamps advance by, whatever
+	// the configuration or the dashboard last asked for. An aggregator uses it
+	// to judge whether a peer collects often enough to chart.
+	//
+	// ZERO MEANS UNKNOWN: a peer too old to report it, or one read by its
+	// whole snapshot, which does not carry it. It is never assumed.
+	CollectionIntervalMs int64 `json:"collection_interval_ms"`
+
+	// GitCommit and BuildDate are the node's build identity, carried up from
+	// its snapshot. Version is the release string and has never varied, so
+	// these are the only fields in this summary that can tell one build from
+	// another. Empty means the node did not state its build.
+	GitCommit string `json:"git_commit,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
+
+	CriticalCount int `json:"critical_count"`
+	WarningCount  int `json:"warning_count"`
+	// Alerts are the node's firing alerts, which are what the roll-up names as
+	// the reason a node is not healthy. A count says that something is wrong;
+	// only the alert says what.
+	Alerts []Alert `json:"alerts"`
+
+	CPUPercent    float64 `json:"cpu_percent"`
+	MemoryPercent float64 `json:"memory_percent"`
+	LoadPerCore   float64 `json:"load_per_core"`
+
+	// SwapPercent is swap OCCUPANCY: how much of swap holds pages. It cannot
+	// say whether the node is paging -- a machine that swapped out idle pages
+	// last week and has not touched swap since reads the same as one thrashing
+	// now (#134) -- so it is never shown without the rates below.
+	SwapPercent float64 `json:"swap_percent"`
+	// SwapCountersAvailable is the node's MemoryInfo.SwapCountersAvailable:
+	// false when it could not read /proc/vmstat. It survives into the summary
+	// so an absent counter renders as unknown, never as zero paging.
+	SwapCountersAvailable bool `json:"swap_counters_available"`
+	// SwapRateAvailable says the two rates below were measured. It is false
+	// whenever they could not be: no counters, no previous reading to
+	// difference against yet, or counters that went backwards between the two
+	// readings (a reset, as after a reboot). A false here with zero rates is
+	// "unknown", and must be rendered as such.
+	SwapRateAvailable bool `json:"swap_rate_available"`
+	// SwapInRate and SwapOutRate are bytes per second paged in from and out to
+	// swap across the node's own last collection interval -- the PAGING signal
+	// SwapPercent cannot give. Swap-out is the one that says memory pressure
+	// is happening now.
+	SwapInRate  float64 `json:"swap_in_rate"`
+	SwapOutRate float64 `json:"swap_out_rate"`
+
+	WorstDiskPercent float64 `json:"worst_disk_percent"`
+
+	// RAIDArrays and SMARTCapable are the DENOMINATORS, and without them the
+	// two fields below cannot be read.
+	//
+	// RAIDDegraded false is produced both by "this host has no arrays" and by
+	// "its arrays are fine". SMARTUnhealthy zero is produced both by "no disk
+	// reported SMART at all" and by "every disk is healthy". The fleet view
+	// rendered both pairs as a green ok, so a node with no RAID advertised a
+	// healthy RAID subsystem it does not have, and ci-node-1 -- whose PERC and
+	// SAS devices report nothing -- advertised healthy SMART while its own node
+	// page said N/A for every one of them.
+	//
+	// SMARTCapable counts block devices AND the drives behind a hardware RAID
+	// controller (Disk.Members), which are not block devices and never appear
+	// in the disk list.
+	RAIDArrays int `json:"raid_arrays"`
+	// RAIDUnhealthy counts arrays that are degraded OR not serving I/O at all.
+	// RAIDDegraded is kept as it was -- degraded only -- so an older consumer
+	// reading it still gets what it expects.
+	RAIDUnhealthy  int  `json:"raid_unhealthy"`
+	RAIDDegraded   bool `json:"raid_degraded"`
+	SMARTCapable   int  `json:"smart_capable"`
+	SMARTUnhealthy int  `json:"smart_unhealthy"`
+
+	// MaxTempC is the hottest reading on the node -- CPU cores, drives
+	// (controller members included), GPUs and NPUs -- and MaxTempSource says
+	// which kind of component it came from. Zero means the node has no
+	// thermometer to read, not that it is at freezing point; a sensor that
+	// reports nothing contributes nothing.
+	MaxTempC      float64 `json:"max_temp_c"`
+	MaxTempSource string  `json:"max_temp_source,omitempty"`
+	// PowerW is the node's measured draw: CPU packages, GPUs and NPUs. It means
+	// nothing without PowerReported, because a node with no power sensor
+	// reports zero -- which a fleet sum would count as a machine drawing
+	// nothing.
+	PowerW        float64 `json:"power_w"`
+	PowerReported bool    `json:"power_reported"`
+	// NetRxRate and NetTxRate are bytes per second summed over the node's
+	// physical network devices, where its traffic meets the wire; summing
+	// every interface would count bonded, bridged, tunnelled and guest
+	// traffic more than once. NetReported is false for a node with no
+	// physical device -- a container in its own network namespace -- whose
+	// zero rates are then "not measured", not "idle".
+	NetRxRate   float64 `json:"net_rx_rate"`
+	NetTxRate   float64 `json:"net_tx_rate"`
+	NetReported bool    `json:"net_reported"`
+}
+
+// Summary sources, reported per node as FleetNode.Source.
+const (
+	// SummarySourceLocal is the aggregator itself, summarised in process.
+	SummarySourceLocal = "local"
+	// SummarySourceSummary is a peer that served GET /api/summary.
+	SummarySourceSummary = "summary"
+	// SummarySourceSnapshot is a peer whose build predates GET /api/summary,
+	// so the aggregator fetched its whole snapshot and summarised it itself.
+	// The figures are the same; the cost is not, and a fleet mid-rollout should
+	// be able to see which peers are still costing it.
+	SummarySourceSnapshot = "snapshot"
+)
+
 // FleetNode is one node's summary in the fleet view: enough to judge health at
-// a glance without opening the node.
+// a glance without opening the node. The node's own figures come from its
+// NodeSummary, embedded so they encode at the top level as they always have;
+// the fields declared here are what the aggregator knows about the poll.
 type FleetNode struct {
 	Name      string `json:"name"`
 	URL       string `json:"url"`
@@ -99,18 +228,14 @@ type FleetNode struct {
 	// distinction matters because the only other thing a consumer knows about
 	// an unreachable node is how long it has been that way, and a node that
 	// never answered would otherwise report a two-second gap forever.
-	AgeSeconds    float64 `json:"age_seconds"`
-	Status        string  `json:"status"`
-	Hostname      string  `json:"hostname"`
-	Version       string  `json:"version"`
-	UptimeSeconds uint64  `json:"uptime_seconds"`
+	AgeSeconds float64 `json:"age_seconds"`
+	Status     string  `json:"status"`
 
-	// GitCommit and BuildDate are the node's build identity, carried up from
-	// its snapshot. Version is the release string and has never varied, so
-	// these are the only fields in this summary that can tell one build from
-	// another. Empty means the node did not state its build.
-	GitCommit string `json:"git_commit,omitempty"`
-	BuildDate string `json:"build_date,omitempty"`
+	// Source says how the aggregator got this node's figures: "local",
+	// "summary", or "snapshot" for a peer too old to serve a summary. Empty
+	// when there are no figures at all. It is not a health signal.
+	Source string `json:"source,omitempty"`
+
 	// BuildMatch says whether this node runs the same build as the aggregator
 	// serving the view: "same", "different" or "unknown". The aggregator knows
 	// its own commit, so this is a comparison it can make once rather than
@@ -128,44 +253,7 @@ type FleetNode struct {
 	// silence as agreement is the exact failure this field was added to end.
 	BuildMatch string `json:"build_match"`
 
-	CriticalCount int `json:"critical_count"`
-	WarningCount  int `json:"warning_count"`
-
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryPercent float64 `json:"memory_percent"`
-	SwapPercent   float64 `json:"swap_percent"`
-	LoadPerCore   float64 `json:"load_per_core"`
-
-	WorstDiskPercent float64 `json:"worst_disk_percent"`
-
-	// RAIDArrays and SMARTCapable are the DENOMINATORS, and without them the
-	// two fields below cannot be read.
-	//
-	// RAIDDegraded false is produced both by "this host has no arrays" and by
-	// "its arrays are fine". SMARTUnhealthy zero is produced both by "no disk
-	// reported SMART at all" and by "every disk is healthy". The fleet view
-	// rendered both pairs as a green ok, so a node with no RAID advertised a
-	// healthy RAID subsystem it does not have, and ci-node-1 -- whose PERC and
-	// SAS devices report nothing -- advertised healthy SMART while its own node
-	// page said N/A for every one of them.
-	//
-	// The per-disk model already distinguishes all of this: DiskPanel shows
-	// "SMART N/A" for a disk with SMARTEnabled false and omits the RAID badge
-	// when Disk.RAID is nil. It was the roll-up that discarded it, so these
-	// carry it through rather than inventing anything new.
-	RAIDArrays int `json:"raid_arrays"`
-	// RAIDUnhealthy counts arrays that are degraded OR not serving I/O at all.
-	// RAIDDegraded is kept as it was -- degraded only -- so an older consumer
-	// reading it still gets what it expects.
-	RAIDUnhealthy  int  `json:"raid_unhealthy"`
-	RAIDDegraded   bool `json:"raid_degraded"`
-	SMARTCapable   int  `json:"smart_capable"`
-	SMARTUnhealthy int  `json:"smart_unhealthy"`
-
-	MaxTempC  float64 `json:"max_temp_c"`
-	PowerW    float64 `json:"power_w"`
-	NetRxRate float64 `json:"net_rx_rate"`
-	NetTxRate float64 `json:"net_tx_rate"`
+	NodeSummary
 }
 
 // Fleet is the aggregated view served at /api/fleet. Enabled is false when no
@@ -174,6 +262,130 @@ type FleetNode struct {
 type Fleet struct {
 	Enabled bool        `json:"enabled"`
 	Nodes   []FleetNode `json:"nodes"`
+	// Rollup is the whole fleet in one place. Absent when Enabled is false.
+	Rollup *FleetRollup `json:"rollup,omitempty"`
+}
+
+// FleetRollup is the fleet-level statement: what the fleet is, rather than
+// what each node is. It follows one rule (#46, ratified 2026-09-03):
+//
+//	Show the worst and name the node, or show a sum with its denominator --
+//	never a mean.
+//
+// A mean CPU across a 112-thread hypervisor and a four-core appliance is always
+// true and never useful. A sum without its denominator -- 579 W, when seven of
+// ten nodes have no power sensor -- is confidently wrong. So every figure here
+// is either an extreme with the node that holds it, or a total with how many
+// nodes and devices it was taken over.
+//
+// Only REACHABLE nodes contribute to any figure. An unreachable node is counted
+// once, in Unreachable, as unknown; rolling its last known values into a fleet
+// figure would re-report an observation nobody made. A figure no node could
+// report is omitted rather than shown as zero.
+type FleetRollup struct {
+	// Nodes is every configured node, this one included. The four counts
+	// below partition it: a node is in exactly one of them.
+	Nodes       int `json:"nodes"`
+	Healthy     int `json:"healthy"`
+	Warning     int `json:"warning"`
+	Critical    int `json:"critical"`
+	Unreachable int `json:"unreachable"`
+	// LongestAbsenceSeconds is the age of the oldest reading among the
+	// unreachable nodes that have ever answered. "1 unreachable" reads the
+	// same for a node mid-restart and one dead since Tuesday; this is what
+	// tells them apart. Zero when no unreachable node has a reading.
+	LongestAbsenceSeconds float64 `json:"longest_absence_seconds"`
+	// NeverAnswered counts unreachable nodes with no reading at all, which
+	// have no absence to measure.
+	NeverAnswered int `json:"never_answered"`
+
+	// Attention lists every node that is not healthy, worst first --
+	// critical, then unreachable, then warning -- with the reasons named.
+	// It is the whole list; a consumer showing a few says how many it left
+	// out.
+	Attention []NodeAttention `json:"attention"`
+
+	// Reporting is how many nodes contributed to the figures below: the
+	// reachable ones. It is the denominator for coverage, as in "power across
+	// 3 of 10 nodes".
+	Reporting int `json:"reporting"`
+
+	CPU         *FleetExtreme `json:"cpu,omitempty"`
+	Memory      *FleetExtreme `json:"memory,omitempty"`
+	Disk        *FleetExtreme `json:"disk,omitempty"`
+	LoadPerCore *FleetExtreme `json:"load_per_core,omitempty"`
+	Temperature *FleetExtreme `json:"temperature,omitempty"`
+	// SwapOut is the highest swap-out rate, in bytes per second, among the
+	// nodes whose paging could be measured. SwapUnknown counts the reporting
+	// nodes whose paging could not be, so a quiet fleet figure is never read
+	// as covering them.
+	SwapOut     *FleetExtreme `json:"swap_out,omitempty"`
+	SwapUnknown int           `json:"swap_unknown"`
+
+	Power   *FleetSum    `json:"power,omitempty"`
+	Network *FleetNet    `json:"network,omitempty"`
+	SMART   *FleetHealth `json:"smart,omitempty"`
+	RAID    *FleetHealth `json:"raid,omitempty"`
+
+	// Builds groups the nodes by the commit they run. It is identity, not
+	// health: mid-rollout every node differs for as long as the rollout takes.
+	Builds []FleetBuild `json:"builds"`
+}
+
+// NodeAttention is one node that is not healthy, and why.
+type NodeAttention struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	// AgeSeconds is how old the node's last reading is, for an unreachable
+	// node; zero when it never answered, and for any other status.
+	AgeSeconds float64 `json:"age_seconds"`
+	// Reasons are the node's alert messages, critical first, or the poll error
+	// for an unreachable node.
+	Reasons []string `json:"reasons"`
+}
+
+// FleetExtreme is the worst value of one metric across the fleet and the node
+// that holds it. Ties go to the first node by name, so it does not flicker.
+type FleetExtreme struct {
+	Node  string  `json:"node"`
+	Value float64 `json:"value"`
+	// Kind names the component the value came from, where the metric spans
+	// several: for Temperature, "cpu", "drive", "gpu" or "npu".
+	Kind string `json:"kind,omitempty"`
+}
+
+// FleetSum is a total and the nodes it was summed over. Nodes is how many
+// contributed a reading; Of is how many could have (FleetRollup.Reporting).
+type FleetSum struct {
+	Value float64 `json:"value"`
+	Nodes int     `json:"nodes"`
+	Of    int     `json:"of"`
+}
+
+// FleetNet is the fleet's summed network throughput, bytes per second, over
+// the Nodes that measure it, of the Of reachable nodes.
+type FleetNet struct {
+	RxRate float64 `json:"rx_rate"`
+	TxRate float64 `json:"tx_rate"`
+	Nodes  int     `json:"nodes"`
+	Of     int     `json:"of"`
+}
+
+// FleetHealth is a device count with its denominator: Unhealthy of Devices,
+// found on Nodes of Of reporting nodes. The denominator counts devices, not
+// nodes, and includes the drives behind a hardware RAID controller.
+type FleetHealth struct {
+	Unhealthy int `json:"unhealthy"`
+	Devices   int `json:"devices"`
+	Nodes     int `json:"nodes"`
+	Of        int `json:"of"`
+}
+
+// FleetBuild is one commit and the nodes running it. An empty Commit collects
+// the nodes that did not state their build, which is unknown, not agreement.
+type FleetBuild struct {
+	Commit string   `json:"commit"`
+	Nodes  []string `json:"nodes"`
 }
 
 // ConfigEntry is one effective setting and where its value came from, for the
@@ -1133,6 +1345,12 @@ type NetworkInfo struct {
 	// Rates (calculated between snapshots)
 	BytesSentRate float64 `json:"bytes_sent_rate"`
 	BytesRecvRate float64 `json:"bytes_recv_rate"`
+	// RatesAvailable says the two rates above were measured: the interface's
+	// counters were read on this collection and the one before it. False on
+	// the first collection, for an interface that has just appeared, and when
+	// the counters could not be read -- the rates are then zero because they
+	// must be something, not because the interface was idle.
+	RatesAvailable bool `json:"rates_available"`
 }
 
 // LoadAverage contains system load averages.

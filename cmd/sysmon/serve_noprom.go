@@ -30,4 +30,4 @@ func newHistoryQuerier(_ *config.Manager) server.HistoryQuerier {
 // observePeers does nothing here: with no exporter there is nowhere for a
 // peer's reading to be written, and observing them would cost a callback per
 // peer per poll to discard the result.
-func observePeers(_ *fleet.Poller, _ server.MetricsExporter) {}
+func observePeers(_ *config.Manager, _ *fleet.Poller, _ server.MetricsExporter) {}

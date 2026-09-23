@@ -80,6 +80,12 @@ func walk(node any, t reflect.Type, path string, found *[]string) {
 		}
 		for i := 0; i < t.NumField(); i++ {
 			field := t.Field(i)
+			if promoted(field) {
+				// encoding/json writes an untagged embedded struct's fields
+				// into the enclosing object, so they are walked there.
+				walk(node, field.Type, path, found)
+				continue
+			}
 			name, ok := jsonName(field)
 			if !ok {
 				continue
@@ -91,6 +97,19 @@ func walk(node any, t reflect.Type, path string, found *[]string) {
 			walk(value, field.Type, joinPath(path, name), found)
 		}
 	}
+}
+
+// promoted reports whether encoding/json flattens field into its parent: an
+// exported, untagged, embedded struct (or pointer to one).
+func promoted(field reflect.StructField) bool {
+	if !field.Anonymous || !field.IsExported() || field.Tag.Get("json") != "" {
+		return false
+	}
+	t := field.Type
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.Struct
 }
 
 // jsonName is the key encoding/json writes for field, and false for a field it

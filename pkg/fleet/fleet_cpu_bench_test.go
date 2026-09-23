@@ -52,28 +52,34 @@ func processCPU(tb testing.TB) time.Duration {
 // The second is the number to compare against a node's measured CPU. Comparing
 // ns/op against it is the error this benchmark exists to prevent.
 func BenchmarkPoller_RefreshCPU(b *testing.B) {
-	p, cfg := benchFleet(b, benchPeerCount)
+	for _, shape := range pollShapes {
+		b.Run(shape.name, func(b *testing.B) {
+			p, cfg, written := benchFleet(b, benchPeerCount, shape)
 
-	// Warm the peers so connection setup and the first decode's allocations are
-	// not charged to the measured cycles.
-	p.refresh(cfg)
+			// Warm the peers so connection setup and the first decode's
+			// allocations are not charged to the measured cycles.
+			benchCycle(p, cfg, shape)
+			written.Store(0)
 
-	cycles := 0
-	start := processCPU(b)
-	b.ResetTimer()
-	for b.Loop() {
-		p.refresh(cfg)
-		cycles++
+			cycles := 0
+			start := processCPU(b)
+			b.ResetTimer()
+			for b.Loop() {
+				benchCycle(p, cfg, shape)
+				cycles++
+			}
+			b.StopTimer()
+			used := processCPU(b) - start
+
+			if cycles == 0 {
+				b.Fatal("no cycles ran; the benchmark measured nothing")
+			}
+			perCycle := float64(used) / float64(cycles)
+			b.ReportMetric(perCycle/float64(time.Millisecond), "ms_cpu/op")
+			b.ReportMetric(perCycle/float64(time.Millisecond)/3.0, "ms_cpu/s@3s")
+			b.ReportMetric(float64(written.Load())/float64(cycles)/1024, "KB/cycle")
+		})
 	}
-	b.StopTimer()
-	used := processCPU(b) - start
-
-	if cycles == 0 {
-		b.Fatal("no cycles ran; the benchmark measured nothing")
-	}
-	perCycle := float64(used) / float64(cycles)
-	b.ReportMetric(perCycle/float64(time.Millisecond), "ms_cpu/op")
-	b.ReportMetric(perCycle/float64(time.Millisecond)/3.0, "ms_cpu/s@3s")
 }
 
 // TestProcessCPU_Advances is the guard on the benchmark's headline figure: a

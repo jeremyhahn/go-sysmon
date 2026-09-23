@@ -1,13 +1,17 @@
 package fleet
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -15,10 +19,18 @@ import (
 
 // What an aggregation cycle costs, measured because it could not be inferred.
 //
-// The collector work merged in #73 halved a process walk and did nothing at all
-// for mon0, whose CPU went 220 ms/s to 228 across the deploy. mon0 has 115
-// processes against ci-node-1's 1410, so there is barely a process table for
-// that saving to apply to -- and mon0 is the only node running this path.
+// #76 found aggregation was most of mon0's CPU, and that most of THAT was
+// decoding peers' whole snapshots to fill cards that use a dozen fields. The
+// owner's ruling was that peers serve a summary, and that an aggregator
+// recording history also fetches a slimmed history payload. These benchmarks
+// measure all three shapes against the same busy-host peers:
+//
+//	snapshot          every peer polled for its whole snapshot: the shape
+//	                  before #76, and still the shape for a peer too old to
+//	                  serve a summary
+//	summary           the fleet view alone: each peer's summary
+//	summary+history   an aggregator recording history: summary plus the
+//	                  history payload
 //
 // These are internal so they can call refresh directly: one aggregation cycle
 // is the unit of work, and driving it through Run would measure the ticker.
@@ -31,65 +43,57 @@ import (
 // below.
 const benchPeerCount = 10
 
-// benchProcesses gives each peer's snapshot a realistic body. The fleet's
-// snapshots run 223 KB to 488 KB, almost all of it the process list, so a
-// fixture with a handful of processes would measure the HTTP round trip and
-// miss the decode entirely -- which is the part suspected of costing.
-const benchProcesses = 1000
-
-// benchSnapshot builds a peer snapshot of production size.
+// benchSnapshot builds a peer snapshot of production size; see busyHost.
 func benchSnapshot(host string) *types.Snapshot {
-	list := make([]types.ProcessDetail, benchProcesses)
-	for i := range list {
-		list[i] = types.ProcessDetail{
-			PID:            int32(i + 1),
-			Name:           fmt.Sprintf("process-%05d", i),
-			Username:       "sysmon",
-			CPUPercent:     1.5,
-			MemoryBytes:    1 << 20,
-			ReadBytesRate:  4096,
-			WriteBytesRate: 4096,
-			Priority:       20,
-			Status:         "sleeping",
-		}
-	}
-	return &types.Snapshot{
-		Version:    "0.1.0-alpha",
-		Host:       types.HostInfo{Hostname: host, Uptime: 3600},
-		CPUs:       make([]types.CPUInfo, 24),
-		CPUSummary: types.CPUSummary{TotalThreads: 24},
-		Memory:     types.MemoryInfo{UsedPercent: 40},
-		Disks:      []types.DiskInfo{{Name: "sda", TotalBytes: 1 << 40, UsedPercent: 55}},
-		Networks:   []types.NetworkInfo{{Name: "eth0"}},
-		Processes:  types.ProcessSummary{Total: benchProcesses, Processes: list},
-	}
+	return busyHost(host)
 }
 
-// benchFleet starts n peers serving a pre-encoded snapshot and returns a poller
-// configured against them.
+// pollShape is what the benchmark's peers serve and the poller asks for.
+type pollShape struct {
+	name      string
+	legacy    bool // peers serve only /api/snapshot
+	recording bool // the poller records history
+}
+
+var pollShapes = []pollShape{
+	{name: "snapshot", legacy: true},
+	{name: "summary"},
+	{name: "summary+history", recording: true},
+}
+
+// benchFleet starts n peers of the given shape and returns a poller configured
+// against them, and a counter of the bytes the peers have written.
 //
-// The body is encoded once and written verbatim: the peers exist to feed the
+// Each body is encoded once and written verbatim: the peers exist to feed the
 // aggregator, and encoding per request would put the peer's CPU inside the
 // aggregator's measurement.
-func benchFleet(b testing.TB, n int) (*Poller, config.Fleet) {
+func benchFleet(b testing.TB, n int, shape pollShape) (*Poller, config.Fleet, *atomic.Int64) {
 	b.Helper()
 
-	body, err := json.Marshal(benchSnapshot("peer"))
-	if err != nil {
-		b.Fatalf("encode peer snapshot: %v", err)
+	snap := benchSnapshot("peer")
+	prev := *snap
+	prev.Timestamp = snap.Timestamp.Add(-3e9)
+	bodies := map[string][]byte{endpointSnapshot: encode(b, snap)}
+	if !shape.legacy {
+		bodies[endpointSummary] = encode(b, Summarize(&prev, snap))
+		bodies[endpointHistory] = encode(b, HistorySnapshot(snap))
 	}
-	b.Logf("peer snapshot is %d bytes", len(body))
+	for endpoint, body := range bodies {
+		b.Logf("%s: %s is %d bytes", shape.name, endpoint, len(body))
+	}
 
+	var written atomic.Int64
 	cfg := config.Fleet{PollIntervalMs: 3000, TimeoutMs: 3000}
 	for i := range n {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/api/snapshot" {
+			body, ok := bodies[r.URL.Path]
+			if !ok {
 				http.NotFound(w, r)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
-			if _, err := w.Write(body); err != nil {
-				return
+			if n, err := w.Write(body); err == nil {
+				written.Add(int64(n))
 			}
 		}))
 		b.Cleanup(srv.Close)
@@ -99,41 +103,82 @@ func benchFleet(b testing.TB, n int) (*Poller, config.Fleet) {
 	local := benchSnapshot("local")
 	p := New(
 		func() config.Fleet { return cfg },
-		func() *types.Snapshot { return local },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return &prev, local, 0 },
 		func() string { return "local" },
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
-	return p, cfg
+	if shape.recording {
+		p.Observe(func(string, *types.Snapshot) {}, func() time.Duration { return 15 * time.Second })
+	}
+	return p, cfg, &written
+}
+
+// benchCycle is the unit each shape is measured in: one summary refresh, and
+// for a recording aggregator one history reading from every peer -- which is
+// what a sample interval costs when it coincides with a poll.
+func benchCycle(p *Poller, cfg config.Fleet, shape pollShape) {
+	p.refresh(cfg)
+	if !shape.recording {
+		return
+	}
+	var wg sync.WaitGroup
+	for _, peer := range cfg.Peers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.history.record(context.Background(), peer)
+		}()
+	}
+	wg.Wait()
+}
+
+func encode(b testing.TB, v any) []byte {
+	b.Helper()
+	body, err := json.Marshal(v)
+	if err != nil {
+		b.Fatalf("encode: %v", err)
+	}
+	return body
 }
 
 // BenchmarkPoller_Refresh is one aggregation cycle: every peer fetched
-// concurrently and decoded.
+// concurrently and decoded, in each poll shape.
 //
 // Its ns/op is WALL time, and the peers are fetched in parallel, so it is
 // roughly the slowest round trip and not what the cycle costs a CPU. Do not
 // divide it by the poll interval to get a per-second load: doing exactly that
 // is how #76 concluded aggregation was too small to explain mon0, which it
 // outweighed by more than two orders of magnitude. BenchmarkPoller_RefreshCPU
-// reports the CPU figure directly.
+// reports the CPU figure directly. KB/cycle is what the peers sent.
 func BenchmarkPoller_Refresh(b *testing.B) {
-	p, cfg := benchFleet(b, benchPeerCount)
+	for _, shape := range pollShapes {
+		b.Run(shape.name, func(b *testing.B) {
+			p, cfg, written := benchFleet(b, benchPeerCount, shape)
+			benchCycle(p, cfg, shape)
+			written.Store(0)
 
-	b.ResetTimer()
-	for b.Loop() {
-		p.refresh(cfg)
+			cycles := 0
+			b.ResetTimer()
+			for b.Loop() {
+				benchCycle(p, cfg, shape)
+				cycles++
+			}
+			b.ReportMetric(float64(written.Load())/float64(cycles)/1024, "KB/cycle")
+		})
 	}
 }
 
-// BenchmarkPoller_View is what a dashboard request costs: summarising every
-// cached peer snapshot into the fleet payload. It runs per request rather than
-// per poll, so a browser left open on the fleet page pays it repeatedly.
+// BenchmarkPoller_View is what a dashboard request costs: every cached summary
+// into the fleet payload, and the roll-up over them. It runs per request
+// rather than per poll, so a browser left open on the fleet page pays it
+// repeatedly.
 func BenchmarkPoller_View(b *testing.B) {
-	p, cfg := benchFleet(b, benchPeerCount)
+	p, cfg, _ := benchFleet(b, benchPeerCount, pollShapes[1])
 	p.refresh(cfg)
 
 	b.ResetTimer()
 	for b.Loop() {
-		if v := p.View(); len(v.Nodes) == 0 {
+		if v := p.View(); len(v.Nodes) == 0 || v.Rollup == nil {
 			b.Fatal("View returned no nodes; the benchmark is measuring nothing")
 		}
 	}

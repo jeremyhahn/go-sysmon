@@ -45,7 +45,7 @@ func TestGetInterval_ReportsTheCadenceIncludingTheRefresh(t *testing.T) {
 	}
 	poller := fleet.New(
 		func() config.Fleet { return cfg },
-		func() *types.Snapshot { return nil },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 },
 		func() string { return "local" },
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)

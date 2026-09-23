@@ -101,6 +101,8 @@ export interface FleetNode {
    * predates the field, which reads as "unknown" and shows nothing. */
   build_match?: BuildMatch;
   uptime_seconds: number;
+  /** The interval the node's monitor collects at; 0 (or absent) is unknown. */
+  collection_interval_ms?: number;
   critical_count: number;
   warning_count: number;
   cpu_percent: number;
@@ -119,14 +121,114 @@ export interface FleetNode {
   smart_capable: number;
   smart_unhealthy: number;
   max_temp_c: number;
+  /** Which kind of component `max_temp_c` came from: "cpu", "drive", "gpu"
+   * or "npu". Absent when the node reports no temperature. */
+  max_temp_source?: TempSource;
   power_w: number;
+  /** False when the node has no power sensor: its `power_w` of 0 is absence,
+   * not a machine drawing nothing. */
+  power_reported?: boolean;
   net_rx_rate: number;
   net_tx_rate: number;
+  /** False for a node with no physical network device, whose rates are then
+   * not measured rather than zero. */
+  net_reported?: boolean;
+  /** The warning and critical alerts that set the node's status. */
+  alerts?: Alert[];
+  /** Swap PAGING (#134). `swap_percent` is occupancy and cannot say whether a
+   * node is paging now; these can. When `swap_rate_available` is false the
+   * rates are unknown, never zero. */
+  swap_counters_available?: boolean;
+  swap_rate_available?: boolean;
+  /** Bytes per second paged in from / out to swap over the node's last
+   * collection interval. */
+  swap_in_rate?: number;
+  swap_out_rate?: number;
+  /** How the aggregator read this node: "local", "summary", or "snapshot" for
+   * a peer too old to serve a summary. */
+  source?: "local" | "summary" | "snapshot";
+}
+
+/** The worst value of one metric across the fleet, and who holds it. */
+export interface FleetExtreme {
+  node: string;
+  value: number;
+  /** The component kind, where the metric spans several (temperature). */
+  kind?: TempSource;
+}
+
+/** The kinds of component a node's hottest reading can come from. */
+export type TempSource = "cpu" | "drive" | "gpu" | "npu";
+
+/** A total and how many nodes it was summed over, of how many reachable. */
+export interface FleetSum {
+  value: number;
+  nodes: number;
+  of: number;
+}
+
+export interface FleetNet {
+  rx_rate: number;
+  tx_rate: number;
+  nodes: number;
+  of: number;
+}
+
+/** Devices (not nodes) unhealthy of total, found on `nodes` of `of`. */
+export interface FleetHealth {
+  unhealthy: number;
+  devices: number;
+  nodes: number;
+  of: number;
+}
+
+export interface NodeAttention {
+  name: string;
+  status: NodeStatus;
+  age_seconds: number;
+  reasons: string[];
+}
+
+export interface FleetBuild {
+  /** Empty: the nodes did not state their build. */
+  commit: string;
+  nodes: string[];
+}
+
+/**
+ * FleetRollup is the fleet-level statement (#46): the worst value with the
+ * node named, or a sum with its denominator -- never a mean. A figure no
+ * reachable node could report is absent, not zero.
+ */
+export interface FleetRollup {
+  nodes: number;
+  healthy: number;
+  warning: number;
+  critical: number;
+  unreachable: number;
+  longest_absence_seconds: number;
+  never_answered: number;
+  attention: NodeAttention[];
+  reporting: number;
+  cpu?: FleetExtreme;
+  memory?: FleetExtreme;
+  disk?: FleetExtreme;
+  load_per_core?: FleetExtreme;
+  temperature?: FleetExtreme;
+  swap_out?: FleetExtreme;
+  swap_unknown: number;
+  power?: FleetSum;
+  network?: FleetNet;
+  smart?: FleetHealth;
+  raid?: FleetHealth;
+  builds: FleetBuild[];
 }
 
 export interface Fleet {
   enabled: boolean;
   nodes: FleetNode[];
+  /** Absent from a server that predates the roll-up. */
+  rollup?: FleetRollup | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +677,9 @@ export interface NetworkInfo {
   drops_out: number;
   bytes_sent_rate: number;
   bytes_recv_rate: number;
+  /** False when the rates were not measured (first collection, a new
+   * interface, unreadable counters); they are then zero, not idle. */
+  rates_available?: boolean;
 }
 
 export interface LoadAverage {

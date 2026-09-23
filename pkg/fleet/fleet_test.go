@@ -1,6 +1,7 @@
 package fleet_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -57,7 +58,7 @@ func peerServer(t *testing.T, snap *types.Snapshot) *httptest.Server {
 func TestView_DisabledWithoutPeers(t *testing.T) {
 	p := fleet.New(
 		func() config.Fleet { return config.Fleet{} },
-		func() *types.Snapshot { return healthySnapshot("local") },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 },
 		func() string { return "local" }, quiet(),
 	)
 	view := p.View()
@@ -84,7 +85,7 @@ func TestView_SummarizesLocalAndPeer(t *testing.T) {
 		PollIntervalMs: 10000, TimeoutMs: 2000,
 	}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
 
 	done := make(chan struct{})
 	go p.Run(done)
@@ -138,7 +139,7 @@ func TestView_UnreachablePeerIsNotHealthy(t *testing.T) {
 		PollIntervalMs: 10000, TimeoutMs: 500,
 	}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
 
 	done := make(chan struct{})
 	go p.Run(done)
@@ -173,7 +174,7 @@ func TestView_AlertsDriveStatus(t *testing.T) {
 		{Rule: "disk_full", Severity: types.SeverityWarning},
 	}
 	cfg := config.Fleet{Peers: []config.Peer{{Name: "x", URL: "http://127.0.0.1:1"}}, PollIntervalMs: 10000, TimeoutMs: 200}
-	p := fleet.New(func() config.Fleet { return cfg }, func() *types.Snapshot { return local }, func() string { return "local" }, quiet())
+	p := fleet.New(func() config.Fleet { return cfg }, func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	for _, n := range p.View().Nodes {
 		if !n.Self {
@@ -188,29 +189,23 @@ func TestView_AlertsDriveStatus(t *testing.T) {
 	}
 }
 
-// TestPeerSnapshot_ServesLocalAndPeer covers the drill-in path that lets the
-// dashboard render any node without a cross-origin request.
+// TestPeerSnapshot_ServesLocalAndPeer: the drill-in fetches a peer's whole
+// snapshot on demand, since the poll cycle carries only summaries (#76). It
+// needs no poll to have run.
 func TestPeerSnapshot_ServesLocalAndPeer(t *testing.T) {
 	srv := peerServer(t, healthySnapshot("omega"))
 	cfg := config.Fleet{Peers: []config.Peer{{Name: "omega", URL: srv.URL}}, PollIntervalMs: 10000, TimeoutMs: 2000}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
 
-	if _, ok := p.PeerSnapshot("local"); !ok {
-		t.Error("PeerSnapshot(local) should return this node's own snapshot")
-	}
-	if _, ok := p.PeerSnapshot("nope"); ok {
-		t.Error("PeerSnapshot for an unknown node should report not found")
+	local, err := p.PeerSnapshot(context.Background(), "local", time.Minute)
+	if err != nil || local.Snapshot == nil || !local.Reachable {
+		t.Errorf("PeerSnapshot(local) = %+v, %v; want this node's own snapshot", local, err)
 	}
 
-	done := make(chan struct{})
-	go p.Run(done)
-	waitFor(t, func() bool { _, ok := p.PeerSnapshot("omega"); return ok })
-	close(done)
-
-	peer, ok := p.PeerSnapshot("omega")
-	if !ok || peer.Snapshot == nil || peer.Snapshot.Host.Hostname != "omega" {
-		t.Errorf("PeerSnapshot(omega) = %+v, %v", peer, ok)
+	peer, err := p.PeerSnapshot(context.Background(), "omega", time.Minute)
+	if err != nil || peer.Snapshot == nil || peer.Snapshot.Host.Hostname != "omega" {
+		t.Fatalf("PeerSnapshot(omega) = %+v, %v", peer, err)
 	}
 	if !peer.Reachable || peer.Error != "" {
 		t.Errorf("a peer that answered should be Reachable with no error, got reachable=%v err=%q",
@@ -218,13 +213,38 @@ func TestPeerSnapshot_ServesLocalAndPeer(t *testing.T) {
 	}
 }
 
+// TestPeerSnapshot_Errors: an unknown node, a local node with nothing
+// collected, and a peer that has never answered are three different answers,
+// and the server maps them to three different statuses.
+func TestPeerSnapshot_Errors(t *testing.T) {
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusInternalServerError)
+	}))
+	defer down.Close()
+	cfg := config.Fleet{Peers: []config.Peer{{Name: "omega", URL: down.URL}}, TimeoutMs: 2000}
+	p := fleet.New(func() config.Fleet { return cfg },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
+
+	var unknown *fleet.ErrUnknownPeer
+	if _, err := p.PeerSnapshot(context.Background(), "nope", time.Minute); !errors.As(err, &unknown) {
+		t.Errorf("PeerSnapshot(nope) = %v; want ErrUnknownPeer", err)
+	}
+	var noReading *fleet.ErrNoReading
+	if _, err := p.PeerSnapshot(context.Background(), "local", time.Minute); !errors.As(err, &noReading) {
+		t.Errorf("PeerSnapshot(local) before any collection = %v; want ErrNoReading", err)
+	}
+	var status *fleet.ErrPeerStatus
+	if _, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); !errors.As(err, &status) || status.Status != http.StatusInternalServerError {
+		t.Errorf("PeerSnapshot(omega) from a failing peer never read = %v; want its HTTP 500", err)
+	}
+}
+
 // TestPeerSnapshot_MarksAnUnreachablePeerStale is the fail-open guard for the
-// drill-in path. The poller keeps the last good snapshot when a peer stops
-// answering, which is deliberate -- a blip should not blank the page. What must
-// NOT happen is serving that reading as an ordinary success: the fleet card
-// would report the node unreachable while the detail view beside it showed
-// frozen numbers as live ones, and a client polling every second would re-record
-// the same values into its history as though it kept measuring them.
+// drill-in path. The last snapshot fetched survives a failed fetch, which is
+// deliberate -- a blip should not blank the page. What must NOT happen is
+// serving that reading as an ordinary success: the detail view would show
+// frozen numbers as live ones, and a client polling every second would
+// re-record the same values into its history as though it kept measuring them.
 func TestPeerSnapshot_MarksAnUnreachablePeerStale(t *testing.T) {
 	var down atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -242,38 +262,63 @@ func TestPeerSnapshot_MarksAnUnreachablePeerStale(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := config.Fleet{Peers: []config.Peer{{Name: "omega", URL: srv.URL}}, PollIntervalMs: 10, TimeoutMs: 2000}
+	cfg := config.Fleet{Peers: []config.Peer{{Name: "omega", URL: srv.URL}}, TimeoutMs: 2000}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
 
-	done := make(chan struct{})
-	go p.Run(done)
-	defer close(done)
+	if peer, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); err != nil || !peer.Reachable {
+		t.Fatalf("first PeerSnapshot(omega) = %+v, %v; want a live reading", peer, err)
+	}
 
-	waitFor(t, func() bool {
-		peer, ok := p.PeerSnapshot("omega")
-		return ok && peer.Reachable
-	})
-
-	// The peer goes away. The cached reading survives; its honesty must not.
+	// The peer goes away. The last reading survives; its honesty must not.
+	// Waited out past the reuse window, so this is a real second fetch.
 	down.Store(true)
+	var peer types.PeerSnapshot
 	waitFor(t, func() bool {
-		peer, ok := p.PeerSnapshot("omega")
-		return ok && !peer.Reachable
+		got, err := p.PeerSnapshot(context.Background(), "omega", time.Minute)
+		peer = got
+		return err == nil && !got.Reachable
 	})
 
-	peer, ok := p.PeerSnapshot("omega")
-	if !ok {
-		t.Fatal("PeerSnapshot(omega) stopped returning the cached snapshot; the last good reading should survive a blip")
-	}
 	if peer.Snapshot == nil || peer.Snapshot.Host.Hostname != "omega" {
-		t.Errorf("cached snapshot was discarded: %+v", peer)
-	}
-	if peer.Reachable {
-		t.Error("Reachable is true for a peer whose latest poll failed; the detail view would show stale data as live")
+		t.Errorf("the last snapshot was discarded: %+v", peer)
 	}
 	if peer.Error == "" {
 		t.Error("Error is empty for an unreachable peer; the client has nothing to explain the staleness with")
+	}
+	if peer.AgeSeconds <= 0 {
+		t.Errorf("AgeSeconds = %v; a stale reading must say how old it is", peer.AgeSeconds)
+	}
+}
+
+// TestPeerSnapshot_ConcurrentDrillInsShareOneFetch: several browsers open on
+// one peer must not each cost that peer a whole snapshot per tick.
+func TestPeerSnapshot_ConcurrentDrillInsShareOneFetch(t *testing.T) {
+	var fetches atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		if err := json.NewEncoder(w).Encode(healthySnapshot("omega")); err != nil {
+			t.Errorf("encoding peer snapshot: %v", err)
+		}
+	}))
+	defer srv.Close()
+	cfg := config.Fleet{Peers: []config.Peer{{Name: "omega", URL: srv.URL}}, TimeoutMs: 2000}
+	p := fleet.New(func() config.Fleet { return cfg },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); err != nil {
+				t.Errorf("PeerSnapshot(omega): %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := fetches.Load(); n != 1 {
+		t.Errorf("8 concurrent drill-ins made %d fetches of the peer; want 1", n)
 	}
 }
 
@@ -314,7 +359,7 @@ func TestPeerConfig_FetchesFromThePeer(t *testing.T) {
 
 	cfg := config.Fleet{Peers: []config.Peer{{Name: "fs", URL: srv.URL}}, PollIntervalMs: 10000, TimeoutMs: 2000}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
 
 	view, err := p.PeerConfig("fs")
 	if err != nil {
@@ -329,7 +374,7 @@ func TestPeerConfig_FetchesFromThePeer(t *testing.T) {
 // configured.
 func TestPeerConfig_UnknownPeer(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return config.Fleet{TimeoutMs: 500} },
-		func() *types.Snapshot { return nil }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
 	if _, err := p.PeerConfig("ghost"); err == nil {
 		t.Fatal("PeerConfig for an unconfigured node = nil error, want an error")
 	}
@@ -346,6 +391,10 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 	serving.Store(true)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/snapshot" {
+			http.NotFound(w, r)
+			return
+		}
 		if !serving.Load() {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
@@ -361,7 +410,7 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 		PollIntervalMs: 20, TimeoutMs: 500,
 	}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 },
 		func() string { return "local" }, quiet())
 
 	done := make(chan struct{})
@@ -443,7 +492,7 @@ func TestView_OrdersByNameNotSeverity(t *testing.T) {
 
 	p := fleet.New(
 		func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("bravo") },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("bravo"), 0 },
 		func() string { return "bravo" }, quiet(),
 	)
 
@@ -508,7 +557,7 @@ func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 	}
 	p := fleet.New(
 		func() config.Fleet { return cfg },
-		func() *types.Snapshot { return nil },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 },
 		func() string { return "mon0" }, quiet(),
 	)
 
@@ -697,7 +746,7 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 				func() config.Fleet {
 					return config.Fleet{Peers: []config.Peer{{Name: "peer", URL: "http://127.0.0.1:1"}}}
 				},
-				func() *types.Snapshot { return snap },
+				func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, snap, 0 },
 				func() string { return "local" }, quiet(),
 			)
 
@@ -756,7 +805,7 @@ func TestView_APeerThatNeverAnsweredHasNoAge(t *testing.T) {
 	}
 	p := fleet.New(
 		func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 },
 		func() string { return "local" }, quiet(),
 	)
 
@@ -806,7 +855,7 @@ func TestObserve_ReportsEveryReadingThatArrives(t *testing.T) {
 		PollIntervalMs: 10, TimeoutMs: 2000,
 	}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
 
 	var mu sync.Mutex
 	var names []string
@@ -818,7 +867,7 @@ func TestObserve_ReportsEveryReadingThatArrives(t *testing.T) {
 		if snap != nil {
 			hosts = append(hosts, snap.Host.Hostname)
 		}
-	})
+	}, func() time.Duration { return time.Hour })
 
 	done := make(chan struct{})
 	go p.Run(done)
@@ -857,6 +906,10 @@ func TestObserve_SilentWhileAPeerIsUnreachable(t *testing.T) {
 	remote := healthySnapshot("omega")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/snapshot" {
+			http.NotFound(w, r)
+			return
+		}
 		if !serving.Load() {
 			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
@@ -872,10 +925,10 @@ func TestObserve_SilentWhileAPeerIsUnreachable(t *testing.T) {
 		PollIntervalMs: 10, TimeoutMs: 2000,
 	}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
 
 	var readings atomic.Int64
-	p.Observe(func(string, *types.Snapshot) { readings.Add(1) })
+	p.Observe(func(string, *types.Snapshot) { readings.Add(1) }, func() time.Duration { return time.Hour })
 
 	done := make(chan struct{})
 	go p.Run(done)
@@ -945,18 +998,19 @@ func TestPeerPayloads_AnOlderPeersNullListsAreNotPassedOn(t *testing.T) {
 
 	cfg := config.Fleet{Peers: []config.Peer{{Name: "old", URL: srv.URL}}, PollIntervalMs: 10000, TimeoutMs: 2000}
 	p := fleet.New(func() config.Fleet { return cfg },
-		func() *types.Snapshot { return healthySnapshot("local") }, func() string { return "local" }, quiet())
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
+
+	peer, err := p.PeerSnapshot(context.Background(), "old", time.Minute)
+	if err != nil {
+		t.Fatalf("PeerSnapshot(old): %v", err)
+	}
+	assertNoNullLists(t, "peer snapshot", peer)
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool { _, ok := p.PeerSnapshot("old"); return ok })
+	waitFor(t, func() bool { return node(t, p.View(), "old").Reachable })
 	close(done)
-
-	peer, ok := p.PeerSnapshot("old")
-	if !ok {
-		t.Fatal("PeerSnapshot(old) returned nothing")
-	}
-	assertNoNullLists(t, "peer snapshot", peer)
+	assertNoNullLists(t, "fleet view", p.View())
 
 	view, err := p.PeerConfig("old")
 	if err != nil {

@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,7 +10,9 @@ import (
 	"sync"
 	"testing"
 	"testing/iotest"
+	"time"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -47,9 +50,9 @@ func TestBodyBuffers_DecodeReusesThePeersBuffer(t *testing.T) {
 	if err := b.decode("omega", chunked(body), maxSnapshotBytes, &first); err != nil {
 		t.Fatalf("first decode: %v", err)
 	}
-	if first.Host.Hostname != "omega" || len(first.Processes.Processes) != benchProcesses {
+	if first.Host.Hostname != "omega" || len(first.Processes.Processes) != busyProcesses {
 		t.Fatalf("first decode = host %q with %d processes; want omega with %d",
-			first.Host.Hostname, len(first.Processes.Processes), benchProcesses)
+			first.Host.Hostname, len(first.Processes.Processes), busyProcesses)
 	}
 	buf := b.kept("omega")
 	if buf == nil {
@@ -234,22 +237,32 @@ func TestBodyBuffers_Forget(t *testing.T) {
 // configuration reload must not leave its buffer behind for the life of the
 // process.
 func TestRefresh_ForgetsBuffersOfRemovedPeers(t *testing.T) {
-	p, cfg := benchFleet(t, 2)
+	p, cfg, _ := benchFleet(t, 2, pollShapes[0])
 	p.refresh(cfg)
 	for _, peer := range cfg.Peers {
-		if p.bodies.kept(peer.Name) == nil {
+		if p.bodies.kept(bufferKey(peer.Name, endpointSnapshot)) == nil {
 			t.Fatalf("no buffer kept for %s after a refresh", peer.Name)
 		}
 	}
 
 	removed := cfg.Peers[1].Name
+	if _, err := p.PeerSnapshot(context.Background(), removed, time.Minute); err != nil {
+		t.Fatalf("PeerSnapshot: %v", err)
+	}
+	// The reload: refresh reconciles drill-ins against the configuration as
+	// it is now, so the poller must see it too.
 	cfg.Peers = cfg.Peers[:1]
+	p.cfgFn = func() config.Fleet { return cfg }
 	p.refresh(cfg)
 
-	if p.bodies.kept(removed) != nil {
+	if _, kept := p.details.Load(removed); kept {
+		t.Errorf("drill-in snapshot for %s kept after it was removed from the configuration", removed)
+	}
+
+	if p.bodies.kept(bufferKey(removed, endpointSnapshot)) != nil {
 		t.Errorf("buffer for %s kept after it was removed from the configuration", removed)
 	}
-	if p.bodies.kept(cfg.Peers[0].Name) == nil {
+	if p.bodies.kept(bufferKey(cfg.Peers[0].Name, endpointSnapshot)) == nil {
 		t.Errorf("buffer for %s dropped though it is still configured", cfg.Peers[0].Name)
 	}
 }
@@ -258,16 +271,31 @@ func TestRefresh_ForgetsBuffersOfRemovedPeers(t *testing.T) {
 // cannot: with no peers left, Run never calls refresh, so without this the
 // buffers of every former peer would stay pinned for the life of the process.
 func TestCycle_ForgetsBuffersWhenTheLastPeerIsRemoved(t *testing.T) {
-	p, cfg := benchFleet(t, 2)
+	p, cfg, _ := benchFleet(t, 2, pollShapes[0])
 	p.cycle(cfg)
 	for _, peer := range cfg.Peers {
-		if p.bodies.kept(peer.Name) == nil {
+		if p.bodies.kept(bufferKey(peer.Name, endpointSnapshot)) == nil {
 			t.Fatalf("no buffer kept for %s after a cycle", peer.Name)
 		}
 	}
 
+	// A drill-in holds a whole snapshot; it must go with the peer too.
+	if _, err := p.PeerSnapshot(context.Background(), cfg.Peers[0].Name, time.Minute); err != nil {
+		t.Fatalf("PeerSnapshot: %v", err)
+	}
+
 	cfg.Peers = nil
 	p.cycle(cfg)
+
+	p.details.Range(func(k, _ any) bool {
+		t.Errorf("drill-in snapshot for %v kept after every peer was removed", k)
+		return true
+	})
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if n := len(p.peers); n != 0 {
+		t.Errorf("poll state for %d former peers kept after every peer was removed", n)
+	}
 
 	p.bodies.m.Range(func(k, _ any) bool {
 		t.Errorf("buffer for %v kept after every peer was removed", k)

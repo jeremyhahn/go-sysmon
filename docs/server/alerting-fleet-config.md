@@ -364,30 +364,91 @@ no fleet tab appears.
 Aggregation is server-side. A browser fanning out to each node would need CORS
 on every peer and would break the single-origin model that lets the whole
 dashboard sit behind one authenticating proxy. Here the browser talks only to
-the node it loaded from; that node polls the peers and caches their snapshots.
+the node it loaded from; that node polls the peers and caches their summaries.
 
 Put the aggregator on a host that does nothing else. A fleet dashboard is what
 you open when something is wrong, so it must not be served by a machine that
 could itself be the thing that is wrong: an overloaded or swapping workload host
 would take the view of the whole fleet down with it, exactly when it is needed.
 
-**What a poll costs is JSON decoding, almost entirely.** Each cycle fetches every
-peer's full `/api/snapshot` (about 2.9 MB across the fleet in September 2026,
-from 66 KB for gitea to 715 KB for ci-node-2) and decodes it into a
-`types.Snapshot`. Profiled on those real bodies, `encoding/json` is over 80% of
-the cycle. Remote-write sampling of the readings adds about 4%, and serving the
-fleet view about 4 µs per request. Process lists are about 60% of the bytes and
-the per-CPU `flags` arrays about 25%.
+**The aggregator polls summaries, not snapshots** (owner ruling on #76,
+2026-09-22). Every node serves `GET /api/summary`: its own figures for the fleet
+view, about a kilobyte, computed from its two latest collections. The
+aggregator fetches that from each peer every cycle. It used to fetch each peer's
+whole `/api/snapshot`, about 2.9 MB a cycle across the fleet in September 2026,
+and decoding those snapshots was over 80% of the cycle's CPU. Most of the bytes
+were process lists (about 60%) and per-CPU `flags` arrays (about 25%), and the
+fleet view reads neither.
 
-Each peer keeps its read buffer between cycles (`pkg/fleet/body.go`). Peers
-answer chunked with no Content-Length, so a fresh reader grows by doubling on
-every poll. Reusing the buffer cut per-cycle allocation by 58% on the fleet's
-real bodies. It took only 7–13% off the CPU, because the decode itself is the
-cost. What remains can only be removed by changing the payload or the decoder,
-and both are open decisions. On the same bodies, dropping process lists would
-cut decode CPU by 56%. Dropping per-CPU flags as well would cut it by 79%.
-Building with `GOEXPERIMENT=jsonv2` would cut it by 43% with no payload change.
-`make bench-fleet` measures the cycle.
+**History still gets full readings, from workers of its own.** While the
+aggregator records history (`prometheus.remote_write_url` is set), each peer
+has a history worker that fetches `GET /api/snapshot/history` once per
+`prometheus.sample_interval_ms` (floored at a second). That is the snapshot
+without its process list and per-CPU flags, which `metrics.Write` never reads.
+The workers run apart from the summary poll. A history endpoint that stalls or
+fails costs that peer's reading and never delays a summary or a card: the
+poll does not wait for them, and the test for it (`pkg/fleet/recorder_test.go`)
+stalls a history handler indefinitely under a minute-long timeout while the
+poll keeps going. At most four history payloads are fetched at once, over the
+poller's one HTTP client. A worker is cancelled, and its in-flight request with
+it, when its peer is removed or repointed, when recording is turned off by
+reload, and when the poller stops. The workers are restarted when the sample
+interval changes, so none waits out a timer set for the old one. They are
+reconciled with the configuration before and after every poll, and a worker
+re-checks its peer's URL before fetching and before recording. A reading that
+arrives after a reload has moved the name to another address is dropped.
+A history path answered with 404, or with a non-JSON page from a proxy, falls
+back to the whole snapshot, so the history stays complete. Fetching at the sample
+interval cannot double-write, because the exporter writes a peer's reading
+only when the peer has collected since the last one it wrote (#173). A peer
+too old to serve a summary gets no history fetch: its poll already fetches the
+whole snapshot, and that snapshot is what gets recorded. A test fills every snapshot field by reflection and runs
+`metrics.Write` on the whole snapshot and on the history payload. Both runs must
+emit the same samples. So if `metrics.Write` starts reading a removed field, the
+test fails and names the samples that would be lost (`pkg/fleet/history_test.go`).
+
+**Drilling into a node fetches its whole snapshot on demand**, through
+`GET /api/fleet/{name}/snapshot`. Only someone looking at that node pays for it.
+Concurrent drill-ins of one peer share a fetch. An attempt made within the
+fleet's poll interval is answered again, whether it succeeded or failed, so a dead peer does
+not build a queue of requests that each wait out its timeout. A peer whose URL
+changes on reload loses its cached snapshot.
+
+**Older peers keep working, and they are marked.** A peer that answers 404 on
+`/api/summary` predates it. So does one that answers it with a body that is
+not JSON: an older build embedded as a library without dashboard assets
+answers unknown paths from its plain-text status page. The aggregator fetches its whole snapshot, as it
+always did, summarises it itself and records it as history, all in one fetch.
+The node's `source` is then `snapshot` instead of `summary`, and its card shows
+a neutral *polled by full snapshot* badge. A fleet in the middle of a rollout
+works throughout, and you can see which peers still cost the aggregator a whole
+snapshot. For those peers the aggregator computes the swap paging rate across
+two of its own polls. If a poll returns the same snapshot as the last one, the
+last measured rate is kept. A counter that goes backwards, as it does when the peer
+reboots, makes that interval unknown.
+
+Measured with `make bench-fleet`: ten peers, each serving a busy-host snapshot
+shaped like ci-node-1 (112 threads with their flags, 1410 processes, 567 KB).
+The CPU figure is an upper bound because the peers run in the benchmark's own
+process.
+
+| Poll shape                                 | Peers send per cycle | CPU per cycle | Allocated per cycle |
+| ------------------------------------------ | -------------------: | ------------: | ------------------: |
+| whole snapshots (the shape before #76)     |              5670 KB |        ~42 ms |             14.2 MB |
+| summaries only                             |                10 KB |       ~1.5 ms |              0.1 MB |
+| summaries + one history reading per peer   |              1011 KB |        ~11 ms |              2.2 MB |
+
+Measured with Go 1.27. Before that toolchain the whole-snapshot row was about
+68 ms, and the other rows fell in about the same proportion.
+
+An aggregator that does not record history does about 1/30 of the work. The
+last row is a poll and a history reading landing together, which happens once
+per sample interval (15 s by default) rather than every poll. Every series
+written before is still written.
+
+Each peer endpoint keeps its read buffer between cycles (`pkg/fleet/body.go`).
+Peers answer chunked with no Content-Length, so a fresh reader grows by
+doubling on every poll.
 
 `fleet.local_name` sets how a node names itself in the view; it defaults to the
 hostname. It is held to the same name rule as a peer name (below), for the same
@@ -511,9 +572,85 @@ URL's host, which is applied before the uniqueness check — so two unnamed peer
 on different hosts are fine, and two on the same host, whether the same URL
 twice or two ports, are not.
 
-- `GET /api/fleet` — one summary per node: status, alert counts, CPU, memory,
-  load per core, worst filesystem, RAID, SMART, temperature, power, throughput,
-  uptime and **the build each node is running**.
+- `GET /api/fleet` — one summary per node and the **fleet roll-up** over them.
+
+  Each node's figures are its `NodeSummary`: status, alert counts and the
+  firing warning and critical alerts, CPU, memory, load per core, swap
+  occupancy **and paging rate**, worst filesystem, RAID, SMART, temperature,
+  power, throughput, uptime and **the build each node is running**. `source`
+  says how the aggregator read the node: `local`, `summary`, or `snapshot`
+  for a peer too old to serve a summary.
+
+  **Swap is reported as paging, not only occupancy** (#134). `swap_percent`
+  cannot tell a node thrashing now from one that swapped out idle pages last
+  week. `swap_in_rate` and `swap_out_rate` are bytes per second over the node's
+  own last collection interval, taken from two consecutive readings.
+  `swap_rate_available` is false whenever that could not be measured: the
+  counters were unreadable (`swap_counters_available` false), there is no
+  previous reading yet, the counters went backwards, or the host's boot
+  time changed between the two readings (a reboot). A false there means
+  unknown, never zero paging.
+
+  `collection_interval_ms` is the interval the node's monitor actually
+  collects at, reported by the node itself. It lets an aggregator judge
+  whether a peer collects often enough to chart. `0` is unknown: a peer too
+  old to report it, or one read by its whole snapshot. It is never assumed.
+
+  `power_reported` says the node has a power sensor. Without a sensor,
+  `power_w` is 0 and means nothing. `power_w` is CPU packages plus GPUs and
+  NPUs. A sensor reading zero, like a CPU package before its second energy
+  sample, is not yet a reading.
+
+  `net_rx_rate` and `net_tx_rate` are summed over the node's physical
+  network devices, where its traffic meets the wire. Summing every interface
+  would count bonded, bridged, tunnelled and guest traffic more than once.
+  `net_reported` is false for a node with no physical device (a container in
+  its own network namespace): sysfs identifies no non-overlapping set there,
+  so it reports no throughput rather than an inflated one. It is also false
+  while any device's rate is unmeasured (`rates_available`: first
+  collection, new interface, reset counters), and for a peer too old to send
+  that field. For the older peer the field's absence is unknown, not
+  agreement, and the network total's denominator shows the gap for as long
+  as the rollout lasts.
+
+  `max_temp_c` is the hottest reading from every component that reports one:
+  CPU cores, drives (controller members included), GPUs (core and memory)
+  and NPUs. `max_temp_source` names the kind: `cpu`, `drive`, `gpu` or `npu`.
+  A sensor that reports nothing contributes nothing.
+
+  **The roll-up** (`rollup`, #46) follows the rule ratified on that issue:
+  *show the worst and name the node, or show a sum with its denominator —
+  never a mean.*
+
+  - `nodes`, `healthy`, `warning`, `critical`, `unreachable` count every node,
+    each in exactly one state. Unreachable is its own term. It is never added
+    to the healthy count or hidden in a fraction.
+  - `longest_absence_seconds` is the age of the oldest reading among the
+    unreachable nodes. It tells a node restarting from one that has been gone
+    since Tuesday. `never_answered` counts unreachable nodes that have never
+    sent a reading.
+  - `attention` lists every node that is not healthy: critical first, then
+    unreachable, then warning. Each entry gives the node's alert messages, or
+    the poll error for an unreachable node. The dashboard shows five and
+    says how many more there are.
+  - `cpu`, `memory`, `disk`, `load_per_core`, `temperature` and `swap_out`
+    are `{node, value}`: the worst value and the node that holds it.
+    `temperature` also carries `kind`, the component it came from. A zero
+    that means "nothing to read" (no filesystem, no thermometer) is never the
+    worst. `swap_unknown` counts nodes whose paging could not be measured.
+  - `power` is `{value, nodes, of}`: watts summed over the `nodes` that have
+    a sensor, of the `of` reachable nodes. It is omitted when no node has a
+    sensor. `network` is `{rx_rate, tx_rate, nodes, of}`: throughput summed
+    over the nodes that measure it (`net_reported`), of the reachable ones.
+  - `smart` and `raid` are `{unhealthy, devices, nodes, of}`. They count
+    **devices**, not nodes, and the drives behind a hardware RAID controller
+    count too (#45/#51). Each is omitted when no node has any, because
+    "0 of 0 unhealthy" would read as a clean bill of health for hardware that
+    does not exist.
+  - `builds` groups the reachable nodes by commit. It is identity, not health.
+  - **Only reachable nodes contribute a figure.** `reporting` says how many
+    there are. An unreachable node's last known values would record an
+    observation nobody made.
 
   The build is three fields: `version`, `git_commit` and `build_date`, carried
   up from that node's snapshot. `version` alone never answered the question it
@@ -583,23 +720,31 @@ twice or two ports, are not.
   degraded array behind a missing field. A missing denominator is a reason to
   say less about a healthy host, never a reason to stay quiet about a broken
   one.
-- `GET /api/fleet/{name}/snapshot` — that node's full snapshot from the cache,
-  wrapped with the freshness of the poll behind it:
+- `GET /api/fleet/{name}/snapshot` — that node's full snapshot, fetched from
+  the node on demand, wrapped with the freshness of that fetch:
   `{snapshot, reachable, error, age_seconds}`.
 
-  The wrapper is the point. The poller deliberately keeps a peer's last good
-  reading when it stops answering, so a bare snapshot looks the same whether it
-  was collected a second ago or before the host disappeared. `reachable`
-  describes the **latest** poll and can be false while `snapshot` is still
-  present — that is the stale case. A client must mark it rather than fold it
-  into a live series: re-applying the same cached reading on every cycle draws a
-  flat line that reads as "measured and steady" when nothing was measured. The
-  dashboard shows a `stale · Nm old` badge beside the node name and stops
-  recording history until the peer answers again.
+  The wrapper is the point. When a fetch fails, the last snapshot fetched is
+  still served, so a blip does not blank the page. A bare snapshot would look
+  the same whether it was collected a second ago or before the host
+  disappeared. `reachable` describes the **latest** fetch and can be false
+  while `snapshot` is still present. That is the stale case. A client must
+  mark it rather than fold it into a live series: re-applying the same
+  reading every cycle draws a flat line that reads as "measured and steady"
+  when nothing was measured. The dashboard shows a `stale · Nm old` badge
+  beside the node name and stops recording history until the peer answers
+  again.
+
+  `404` means the name is not in the fleet, or this node has not collected
+  yet. `502` means the peer could not be read and has never been read, or did
+  not answer within the response's write budget. `503` means a reload moved
+  the name to another address while its snapshot was in flight; that answer
+  belonged to the old address and is discarded, and asking again reaches the
+  new one.
 
 Peers are polled concurrently, each with its own timeout, so one dead node
 cannot delay the refresh. A peer that stops answering keeps its last good
-snapshot alongside the error, so a brief blip reads as stale data rather than an
+summary alongside the error, so a brief blip reads as stale data rather than an
 empty card, and an unreachable node is never rendered as a healthy one.
 
 ### Peer transport: HTTPS and mTLS
@@ -921,7 +1066,10 @@ logic (`pkg/prom/testdata/`).
 Owner ruling, 2026-09-04: **the fleet's history is written by the aggregator,
 not by the nodes.** A node with `fleet.peers` and a `prometheus.remote_write_url`
 writes each peer's reading as it arrives, under that peer's own `instance`
-label — so the peers keep no `prometheus` section, no storage, and no dependency
+label. The reading is the peer's history payload (`GET /api/snapshot/history`,
+its snapshot without the process list and per-CPU flags, which no series is
+built from), fetched by a per-peer history worker at the sample interval
+while remote write is on. The peers keep no `prometheus` section, no storage, and no dependency
 on a time-series database, and one machine holds the fleet's past.
 
 Two properties of that write path are deliberate and neither is a detail:

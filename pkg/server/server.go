@@ -263,6 +263,8 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
+	mux.HandleFunc("GET /api/snapshot/history", s.handleHistorySnapshot)
+	mux.HandleFunc("GET /api/summary", s.handleSummary)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/interval", s.handleGetInterval)
 	mux.HandleFunc("POST /api/interval", s.handleSetInterval)
@@ -459,6 +461,34 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(snap); err != nil {
 		slog.Error("snapshot encode", "err", err)
 	}
+}
+
+// handleSummary serves this node's NodeSummary: what an aggregator polls to
+// build the fleet view, in place of the whole snapshot (#76).
+//
+// It is computed from the monitor's two most recent collections, so the swap
+// paging rate in it covers exactly one collection interval of this node's own
+// (#134). Every node serves it, aggregator or not: any node can be a peer.
+func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
+	prev, cur, err := s.mon.Consecutive()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, fleet.LocalSummary(prev, cur, s.mon.Interval()))
+}
+
+// handleHistorySnapshot serves the snapshot an aggregator records into the
+// fleet's history: this node's latest snapshot without the process list and
+// per-CPU flags, which history does not record and which are most of the
+// bytes. See fleet.HistorySnapshot.
+func (s *Server) handleHistorySnapshot(w http.ResponseWriter, r *http.Request) {
+	snap, err := s.mon.Snapshot()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, fleet.HistorySnapshot(snap))
 }
 
 // intervalPayload is the JSON body accepted by POST /api/interval and returned
