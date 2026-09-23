@@ -134,6 +134,8 @@ const SNAPSHOT_OBJECTS = [
   "virtualization",
   "virtualization.runtime",
   "virtualization.capability",
+  "virtualization.container_runtime",
+  "virtualization.hypervisor",
 ] as const;
 
 /**
@@ -162,6 +164,8 @@ const SNAPSHOT_ARRAYS = [
   "virtualization.runtimes",
   "virtualization.runtime.images",
   "virtualization.capability.notes",
+  "virtualization.container_runtime.evidence",
+  "virtualization.hypervisor.evidence",
 ] as const;
 
 /**
@@ -173,7 +177,13 @@ const SNAPSHOT_ARRAYS = [
  * present without `cpu` is not, which is why it is named here rather than
  * simply dropped from the required list.
  */
-const OPTIONAL_SECTIONS = ["sensors.psi"] as const;
+const OPTIONAL_SECTIONS = [
+  "sensors.psi",
+  // Tab detection (#187). A server predating it does not send these, and the
+  // page reads a missing one as "unknown", which shows the tab.
+  "virtualization.container_runtime",
+  "virtualization.hypervisor",
+] as const;
 
 /** at walks a dotted path, returning undefined at the first step that is not
  * an object rather than throwing. */

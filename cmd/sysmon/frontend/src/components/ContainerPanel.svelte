@@ -1,6 +1,7 @@
 <script lang="ts">
   import StatCard from "./StatCard.svelte";
   import DataTable from "./DataTable.svelte";
+  import DetectedStacks from "./DetectedStacks.svelte";
   import type { Column } from "$lib/table";
   import type { ContainerInfo, ImageInfo } from "$lib/types";
   import {
@@ -173,6 +174,12 @@
         {/if}
       {/if}
     </div>
+
+    <DetectedStacks
+      detection={virt.container_runtime}
+      title="Container runtimes"
+      subject="a container runtime"
+    />
 
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-4">

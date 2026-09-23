@@ -65,7 +65,12 @@ func runImagesCmd(cmd *cobra.Command, _ []string) error {
 	snap.Virt.Runtime.Images = filtered
 
 	if jsonOutput {
-		return json.NewEncoder(cmd.OutOrStdout()).Encode(snap.Virt.Runtime)
+		// RuntimeInfo's fields stay at the top level, as they always were;
+		// the detection is added beside them.
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
+			types.RuntimeInfo
+			ContainerRuntime types.StackDetection `json:"container_runtime"`
+		}{snap.Virt.Runtime, snap.Virt.ContainerRuntime})
 	}
 	if err := cli.RenderImages(cmd.OutOrStdout(), snap); err != nil {
 		return fmt.Errorf("render images: %w", err)

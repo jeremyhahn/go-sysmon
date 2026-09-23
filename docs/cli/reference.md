@@ -122,6 +122,17 @@ uptime. Below it, an **Attention** block lists any container that is throttled,
 has been OOM-killed, peaked at its memory limit, is under stall pressure, or is
 swapping — the conditions that explain degraded behaviour.
 
+The first line says whether the node has a container runtime at all, the same
+answer that decides whether the dashboard shows its Containers tab (see
+[runtime and hypervisor detection](#runtime-and-hypervisor-detection)):
+
+```
+Runtime:    present (containerd, docker)
+```
+
+`--json` adds it as `container_runtime`, beside `cgroup_version`, `runtimes`
+and `containers`.
+
 ```bash
 sysmon containers
 sysmon containers --json
@@ -142,6 +153,13 @@ Memory is reported twice: the guest's configured RAM and the hypervisor's
 resident set on the host, which is normally lower because guest memory is
 faulted in lazily. Guest-internal metrics are not reported.
 
+The first line says whether the node has a VM stack at all, and `--json` adds
+it as `hypervisor` beside `vms`:
+
+```
+Hypervisor: unknown — /proc is mounted hidepid=2, which hides other users' processes from sysmon
+```
+
 ```bash
 sysmon vms
 sysmon vms --json
@@ -161,6 +179,9 @@ This is the only command that contacts the container runtime's API socket:
 image inventory exists only in the runtime's database and its storage directory
 is root-owned, so there is no unprivileged filesystem route. Running the command
 is the opt-in; no other command talks to the daemon.
+
+It prints the same `Runtime:` line as `containers`. `--json` is the runtime's
+fields at the top level, as before, with `container_runtime` added beside them.
 
 ```bash
 sysmon images
@@ -186,6 +207,24 @@ sysmon images --unused --sort size --limit 10   # the 10 biggest reclaimable ima
 sysmon images --filter grafana                  # one repository
 sysmon images --sort created                    # newest first
 ```
+
+### Runtime and hypervisor detection
+
+`containers`, `images` and `vms` report the detection the API serves as
+`virtualization.container_runtime` and `virtualization.hypervisor`. In `--json`
+the field is that wire type, unchanged: `state`, `evidence` and `reason`. In
+text it is one line:
+
+| State | Line |
+|---|---|
+| `present` | `present (stack, stack)`, each stack found once, in evidence order |
+| `absent` | `absent`: every place the software could be was checked |
+| `unknown` | `unknown — reason` |
+
+A snapshot from a build without detection prints
+`unknown — not reported by this build`; it is not a claim of absence. What
+counts as evidence, and when absence is proved, is described in
+[docs/collector/virtualization.md](../collector/virtualization.md#is-there-a-runtime-or-a-hypervisor-at-all).
 
 ### doctor
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import StatCard from "./StatCard.svelte";
+  import DetectedStacks from "./DetectedStacks.svelte";
   import {
     formatBytes,
     formatBytesRate,
@@ -67,6 +68,12 @@
       />
     </div>
 
+    <DetectedStacks
+      detection={virt.hypervisor}
+      title="Hypervisor stacks"
+      subject="a hypervisor stack"
+    />
+
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-4">
         <div class="flex items-center gap-2">
@@ -90,13 +97,23 @@
             </p>
             {#if canObserve}
               <p class="text-xs text-base-content/60">
-                Detection is working; no qemu, cloud-hypervisor, VirtualBox or
-                VMware process is running.
+                Detection is working; no qemu, cloud-hypervisor, Firecracker,
+                VirtualBox or VMware process is running.
               </p>
             {:else}
+              <!-- The cause varies -- an unreadable list, hidepid, a process
+                   that could not be identified -- and the collector names it
+                   in the notes, so say that rather than guess one. -->
               <p class="text-xs text-base-content/60">
-                The process list could not be read, so their absence is not confirmed.
+                Their absence is not confirmed.
               </p>
+              {#if capability?.notes && capability.notes.length > 0}
+                <ul class="text-xs text-base-content/60 list-disc list-inside">
+                  {#each capability.notes as note (note)}
+                    <li>{note}</li>
+                  {/each}
+                </ul>
+              {/if}
             {/if}
           </div>
         {:else}

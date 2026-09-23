@@ -250,6 +250,39 @@ because they have to be something.
 | `fans`            | `[]FanInfo`        | Fan speed readings             |
 | `psi`             | `PSIData`          | Pressure stall information     |
 
+## VirtInfo
+
+Containers and VMs; the fields are described with their collector in
+[docs/collector/virtualization.md](../collector/virtualization.md). Two of them
+decide whether the dashboard has a Containers and a Virtualization tab at all:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `container_runtime` | `StackDetection` | whether a container runtime is installed or containers are running |
+| `hypervisor` | `StackDetection` | whether a VM stack is installed or VMs are running |
+
+`StackDetection` is `state`, `evidence` and `reason`.
+
+`state` is a `Presence`: `present`, `absent` or `unknown`. `absent` is a proof
+-- every place the software could be was checked -- and is the only state that
+hides a tab. `unknown` says the node could not settle it, and `reason` says
+why. A peer on a build without these fields sends neither, which consumers must
+read as `unknown`.
+
+`evidence` lists what was found, sorted by stack, kind and path. Each
+`StackEvidence` is `stack` (`docker`, `libvirt`, ...), `kind` and `path`:
+
+| `kind` | Found as | `path` |
+|--------|----------|--------|
+| `binary` | an executable in a system binary directory | the executable |
+| `socket` | a daemon API socket | the socket |
+| `module` | a loaded kernel module | `/sys/module/<name>` |
+| `control_domain` | a Xen dom0 | `/proc/xen/capabilities` |
+| `running` | a container or VM observed running | empty |
+
+The frontend's hand-written `src/lib/types.ts` mirrors these until #38
+generates it from the Go types.
+
 ## PSIData
 
 | Field       | Type          | Description                                  |

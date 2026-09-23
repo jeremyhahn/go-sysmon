@@ -1091,6 +1091,7 @@ func RenderContainers(w io.Writer, snap *types.Snapshot) error {
 	fmt.Fprintln(w, separator)
 
 	v := snap.Virt
+	renderStackDetection(w, "Runtime:", v.ContainerRuntime)
 	if len(v.Containers) == 0 {
 		if v.CgroupVersion == "" {
 			fmt.Fprintln(w, "No cgroup filesystem found; container metrics are unavailable.")
@@ -1210,6 +1211,7 @@ func RenderVMs(w io.Writer, snap *types.Snapshot) error {
 	fmt.Fprintln(w, "Virtual Machines")
 	fmt.Fprintln(w, separator)
 
+	renderStackDetection(w, "Hypervisor:", snap.Virt.Hypervisor)
 	vms := snap.Virt.VMs
 	if len(vms) == 0 {
 		fmt.Fprintln(w, "No virtual machines detected.")
@@ -1224,6 +1226,13 @@ func RenderVMs(w io.Writer, snap *types.Snapshot) error {
 	}
 
 	return ew.Err()
+}
+
+// renderStackDetection writes the line saying whether the node has a container
+// runtime or a VM stack -- the same answer that decides whether the dashboard
+// shows the Containers or Virtualization tab.
+func renderStackDetection(w io.Writer, label string, d types.StackDetection) {
+	fmt.Fprintf(w, "%-12s%s\n", label, formatStackDetection(d))
 }
 
 // renderVM writes a single virtual machine's detail block.
@@ -1307,6 +1316,7 @@ func RenderImages(w io.Writer, snap *types.Snapshot) error {
 	fmt.Fprintln(w, "Container Images")
 	fmt.Fprintln(w, separator)
 
+	renderStackDetection(w, "Runtime:", snap.Virt.ContainerRuntime)
 	r := snap.Virt.Runtime
 	if !r.Available {
 		fmt.Fprintln(w, "No container runtime API reachable.")

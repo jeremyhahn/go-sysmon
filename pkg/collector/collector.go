@@ -133,6 +133,9 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 		{"memory", s.memory.Collect, tierFast},
 		{"network", s.network.Collect, tierFast},
 		{"load", s.load.Collect, tierFast},
+		// Whether the node has a container runtime or VM stack: cheap, and
+		// must not wait five ticks for the virt collector below (#187).
+		{"virt-detection", s.virt.RefreshDetection, tierFast},
 
 		// Medium tier: heavier collection that doesn't need per-second updates.
 		{"gpu", gpuCollect, tierMedium},

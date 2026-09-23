@@ -141,9 +141,15 @@
   // most hosts have neither, and a tab that always opens onto "none detected"
   // is noise. Keyed on the snapshot, so drilling into a peer shows the peer's
   // hardware rather than this host's. Nil Go slices arrive as null (#151).
+  //
+  // Containers and Virtualization follow the same rule for software (#187),
+  // with one difference: they hide only when the node PROVED the runtime or
+  // hypervisor absent. "unknown", and a peer too old to say, keep the tab.
   const hardwarePresent = $derived<Partial<Record<Tab, boolean>>>({
     gpu: (snapshot?.gpus?.length ?? 0) > 0,
     npu: (snapshot?.npus?.length ?? 0) > 0,
+    containers: snapshot?.virtualization?.container_runtime?.state !== "absent",
+    virt: snapshot?.virtualization?.hypervisor?.state !== "absent",
   });
 
   const tabs = $derived<{ id: Tab; label: string }[]>([
@@ -168,7 +174,7 @@
 
   // Never leave the user stranded on a tab the node does not have: fleet mode
   // can be turned off while the page is open, and a peer drilled into may lack
-  // the GPU or NPU the previous node had.
+  // the GPU, NPU, container runtime or hypervisor the previous node had.
   const effectiveTab = $derived<Tab>(
     tabs.some((t) => t.id === activeTab) ? activeTab : "overview"
   );

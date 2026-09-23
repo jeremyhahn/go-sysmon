@@ -516,6 +516,74 @@ type VirtInfo struct {
 	// running and a host we cannot observe look identical: both render as
 	// zeroes, and the reader cannot tell which they are looking at.
 	Capability VirtCapability `json:"capability"`
+
+	// ContainerRuntime says whether the node has a container runtime at all:
+	// one installed, or containers seen running. The dashboard shows the
+	// Containers tab unless this is PresenceAbsent.
+	ContainerRuntime StackDetection `json:"container_runtime"`
+	// Hypervisor says whether the node has a VM stack at all: one installed,
+	// or virtual machines seen running. The dashboard shows the
+	// Virtualization tab unless this is PresenceAbsent.
+	Hypervisor StackDetection `json:"hypervisor"`
+}
+
+// Presence is whether a node has a class of software. It is a tri-state
+// because absence has to be proved: a node that could not look is not a node
+// that looked and found nothing, and only the second may hide a tab.
+type Presence string
+
+const (
+	// PresenceUnknown means the node could not settle the question: a source
+	// it needed was unreadable, or it cannot see the host's filesystem. An
+	// empty value -- a peer on a build that predates the field -- means the
+	// same, and a consumer must read both as "show".
+	PresenceUnknown Presence = "unknown"
+	// PresencePresent means at least one piece of evidence was found.
+	PresencePresent Presence = "present"
+	// PresenceAbsent means every place the software could be was checked and
+	// none of it was there.
+	PresenceAbsent Presence = "absent"
+)
+
+// Evidence kinds: how a piece of StackEvidence was found.
+const (
+	// EvidenceBinary is an executable in one of the system binary directories.
+	EvidenceBinary = "binary"
+	// EvidenceSocket is a daemon's API socket.
+	EvidenceSocket = "socket"
+	// EvidenceModule is a loaded kernel module, from /sys/module.
+	EvidenceModule = "module"
+	// EvidenceControlDomain is a Xen control domain (dom0), from
+	// /proc/xen/capabilities.
+	EvidenceControlDomain = "control_domain"
+	// EvidenceRunning is a workload observed running: a container in the
+	// cgroup tree, or a hypervisor process. Its Path is empty.
+	EvidenceRunning = "running"
+)
+
+// StackDetection reports whether a class of virtualization software is on the
+// node, and what proved it.
+type StackDetection struct {
+	State Presence `json:"state"`
+	// Evidence is everything that was found, sorted by stack, kind and path.
+	// It is empty unless State is PresencePresent.
+	Evidence []StackEvidence `json:"evidence"`
+	// Reason says why State is PresenceUnknown, and is empty otherwise.
+	Reason string `json:"reason"`
+}
+
+// StackEvidence is one thing found on the node that proves a stack present.
+type StackEvidence struct {
+	// Stack names the software: "docker", "podman", "libvirt", "qemu", and so
+	// on. For a running workload it is the runtime the container reports, or
+	// the VM's hypervisor under the name its install evidence uses ("qemu"
+	// rather than the VM's "qemu/kvm").
+	Stack string `json:"stack"`
+	// Kind is one of the Evidence* constants.
+	Kind string `json:"kind"`
+	// Path is the file that was found, as a host path. Empty for
+	// EvidenceRunning.
+	Path string `json:"path"`
 }
 
 // VirtCapability records whether each source of virtualization data could be

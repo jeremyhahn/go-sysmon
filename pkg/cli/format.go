@@ -4,7 +4,10 @@ package cli
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 const (
@@ -149,4 +152,27 @@ func formatTable(w io.Writer, headers []string, rows [][]string) {
 		}
 		fmt.Fprintln(w)
 	}
+}
+
+// formatStackDetection renders whether a node has a container runtime or a VM
+// stack: "present (containerd, docker)", "absent", or "unknown — why".
+//
+// An empty state is a snapshot from a build that predates detection, which
+// means the same as unknown and says so.
+func formatStackDetection(d types.StackDetection) string {
+	switch d.State {
+	case types.PresencePresent:
+		var stacks []string
+		for _, e := range d.Evidence {
+			if !slices.Contains(stacks, e.Stack) {
+				stacks = append(stacks, e.Stack)
+			}
+		}
+		return string(d.State) + " (" + strings.Join(stacks, ", ") + ")"
+	case types.PresenceAbsent:
+		return string(d.State)
+	case types.PresenceUnknown:
+		return string(d.State) + " — " + d.Reason
+	}
+	return string(types.PresenceUnknown) + " — not reported by this build"
 }

@@ -23,8 +23,13 @@ boundary and is deliberately out of scope.
 
 ### Discovery
 
-The cgroup tree is walked to a depth of four, looking for directories whose
-name encodes a container ID. Every mainstream runtime uses this convention:
+The whole cgroup tree is walked, looking for directories whose name encodes a
+container ID; the walk does not descend into a container's own scope. It is
+not depth-bounded: rootless runtimes nest under `user@UID.service/app.slice`,
+and a desktop's own scopes are already six levels deep, so any bound either
+misses containers or leaves the scan unable to vouch for having seen them all.
+The tree is small (118 directories on the development host). Every mainstream
+runtime uses this convention:
 
 | cgroup directory prefix | Runtime |
 |---|---|
@@ -33,13 +38,16 @@ name encodes a container ID. Every mainstream runtime uses this convention:
 | `crio-<id>.scope` | crio |
 | `cri-containerd-<id>.scope` | containerd |
 | `lxc-<id>`, `lxc.payload.<id>` | lxc |
+| `<id>` directly under `docker/` (the cgroupfs driver) | docker |
 
 A name only counts as a container when the remainder is at least 12 hex
 characters, so ordinary units such as `docker.service` are not misread as
 containers.
 
-A scope whose `cgroup.procs` is empty has already exited and is skipped rather
-than reported as a container with zeroed metrics.
+A container's processes are read from its scope **and every cgroup beneath
+it**: a container running systemd delegates its scope and keeps no process in
+it directly. A scope with no process anywhere in its subtree has exited and is
+skipped rather than reported with zeroed metrics.
 
 ### Metrics
 
@@ -100,14 +108,20 @@ VMs are found by scanning for hypervisor processes:
 |---|---|
 | `qemu-system`, `qemu-kvm` | qemu/kvm |
 | `cloud-hyper` | cloud-hypervisor |
-| `VBoxHeadless` | virtualbox |
+| `firecracker` (exact) | firecracker |
+| `VBoxHeadless`, `VirtualBoxVM` | virtualbox |
 | `vmware-vmx` | vmware |
+
+`VBoxHeadless` runs a guest without a window and `VirtualBoxVM` runs one with
+it. The `VirtualBox` manager window runs no guest and is not matched. Firecracker
+is matched by its whole name, because `firecracker-containerd` manages microVMs
+without being one.
 
 Guest configuration is parsed from the command line:
 
 | Field | Source |
 |---|---|
-| `name` | `-name guest=NAME`, falling back to the process name |
+| `name` | `-name guest=NAME`, or Firecracker's `--id NAME`, falling back to the process name |
 | `uuid` | `-uuid` |
 | `vcpus` | `-smp N` or `-smp cpus=N` |
 | `memory_bytes` | `-m`, accepting `4096`, `4G` and `size=65536000k` |
@@ -142,6 +156,161 @@ octet's locally-administered bit, so the last five octets are compared. This is
 what lets you connect a `vnet0` traffic spike in the Network tab to the guest
 producing it.
 
+## Is there a runtime or a hypervisor at all?
+
+Most hosts run no containers and no VMs, and a tab that always opens onto
+"nothing running" is noise. So the snapshot says whether the node has a
+container runtime (`container_runtime`) and a VM stack (`hypervisor`), and the
+dashboard hides a tab only when the answer is `absent` (#187).
+
+Each is a tri-state with the evidence behind it:
+
+```json
+"container_runtime": {
+  "state": "present",
+  "evidence": [
+    { "stack": "docker", "kind": "binary", "path": "/usr/bin/docker" },
+    { "stack": "docker", "kind": "socket", "path": "/run/docker.sock" },
+    { "stack": "docker", "kind": "running", "path": "" }
+  ],
+  "reason": ""
+}
+```
+
+| State | Meaning |
+|---|---|
+| `present` | at least one piece of evidence was found |
+| `absent` | every place the software could be was checked and none of it was there, **and** running workloads could be observed |
+| `unknown` | the question could not be settled; `reason` says why |
+
+`absent` is a proof, not a default. A node that could not look is not a node
+that looked and found nothing, and only the second may hide a tab. A peer on an
+older build sends neither field, which the dashboard reads as `unknown`.
+
+### Evidence
+
+Nothing is executed and no socket is opened: existence is the whole question.
+
+**Running workloads** (`kind: running`) are the containers and VMs described
+above. They are evidence whenever the workloads are scanned, so a container
+that starts shows the Containers tab in the same snapshot that lists it. A
+hypervisor process counts even when its command
+line could not be read and it produced no VM entry: it was seen, and seeing it
+is the proof. A running qemu guest is reported under `qemu`, the same stack
+name its binaries are, so the panel shows one qemu row.
+
+**Binaries** (`kind: binary`) are looked for in `/usr/local/sbin`,
+`/usr/local/bin`, `/usr/sbin`, `/usr/bin`, `/usr/libexec`, `/sbin`, `/bin`,
+`/snap/bin` and NixOS's `/run/current-system/sw/bin`. Each directory is listed once; a directory that is a symlink to
+one already listed (`/bin` on merged-/usr) is skipped, so each executable is
+reported once, under its `/usr` path. A symlink counts only if it resolves to
+a file: a dangling snap alias, or a directory of that name, is not a runtime.
+
+| Stack | Binaries | Other evidence |
+|---|---|---|
+| docker | `docker`, `dockerd` | socket `/run/docker.sock` |
+| containerd | `containerd` | socket `/run/containerd/containerd.sock` |
+| nerdctl | `nerdctl` | |
+| podman | `podman` | socket `/run/podman/podman.sock` |
+| crio | `crio` | socket `/run/crio/crio.sock` |
+| lxc, lxd, incus | `lxc-start`, `lxd`, `incus` | |
+| qemu | `qemu-system-*`, `qemu-kvm` | |
+| libvirt | `libvirtd`, `virtqemud` | sockets `/run/libvirt/libvirt-sock`, `/run/libvirt/virtqemud-sock` |
+| virtualbox | `VBoxManage` | module `vboxdrv` (`/sys/module/vboxdrv`) |
+| xen | `xl` | `control_d` in `/proc/xen/capabilities` |
+| cloud-hypervisor | `cloud-hypervisor` | |
+| firecracker | `firecracker` | |
+| vmware | `vmware` | module `vmmon` |
+
+Daemonless podman usually has no socket, which is why binaries count at all.
+Only `/run` is probed for sockets: `/var/run` is a symlink to it on every
+current distribution, and probing both would report one socket twice.
+
+**What does not count.** `/dev/kvm`, and the `kvm` modules behind it, are
+present on nearly every x86 machine whether or not anyone runs VMs there. A Xen
+**guest** has `/proc/xen` too; only a control domain (dom0), whose capabilities
+say `control_d`, hosts VMs.
+
+### When the answer is unknown
+
+- **A probe failed** for any reason other than the file not existing -- a
+  permission error, a symlink loop. It proves nothing either way. Evidence
+  found elsewhere still makes the state `present`.
+- **sysmon is running in a container.** A container's filesystem is not the
+  host's: finding no binaries proves nothing, and finding one proves only that
+  the image ships it, so binaries are not looked for at all. This is
+  recognised two ways. First, from the files container engines place inside a
+  container: `/.dockerenv`, `/run/.containerenv`, `/run/systemd/container`,
+  `/run/host/container-manager`, and the Kubernetes service account mount
+  `/var/run/secrets/kubernetes.io`. Second, because a containerd or CRI-O pod
+  with no service account token leaves none of those, from `/proc/self/cgroup`:
+  on a host every process sits in a named cgroup, while in a container it is at
+  the root of a private cgroup namespace (`0::/`, or on pure cgroup v1 every
+  hierarchy at `/`, which a systemd host never shows because its
+  `name=systemd` membership is named) or under a container scope, a
+  cgroupfs-driver `/docker/<id>`, or a `kubepods` slice. A host without systemd that keeps processes in the root
+  cgroup is read as a container too, and the cost is a tab left showing.
+  Evidence the container *can* see still counts: a mounted docker socket is
+  the host's, `/sys/module` and `/proc/xen` describe the host's kernel, and with
+  `pid: host` the host's VMs are visible.
+- **sysmon is in a private PID namespace** (`unshare --pid`, systemd's
+  `PrivatePIDs=`, a container without `pid: host`). The process list then
+  holds only the namespace's own processes, so VMs are not observable. This is
+  read from `/proc/self/ns/pid`, whose inode is `4026531836` only in the
+  initial namespace (the kernel's fixed `PROC_PID_INIT_INO`). `NSpid` in
+  `/proc/self/status` cannot answer it: it is relative to the namespace that
+  mounted `/proc`, and inside a container that mounted its own it reads as one
+  PID. A link that cannot be read counts the same as a nested namespace.
+- **`/proc` hides other users' processes.** Mounted with `hidepid` (any value
+  but `0`/`off`), `/proc` still lists, but a guest running as `libvirt-qemu`
+  is simply not in it. Unless sysmon holds `CAP_SYS_PTRACE` in the initial
+  user namespace (one held inside `unshare -U` or a rootless sandbox does not
+  reach the host's processes; the namespace is identified by the inode of
+  `/proc/self/ns/user`, `PROC_USER_INIT_INO`, not by its UID map, which a child
+  namespace can make look like the identity) or is in the mount's `gid=` group, VMs are then
+  not observable, and the capability notes say why.
+  If the `/proc` mount options (including a missing `/proc/self/mountinfo`, or
+  one that lists no procfs on `/proc`),
+  the capability mask or the namespace links cannot be read, whether processes are hidden cannot be ruled out, which has
+  the same consequence.
+- **A listed process could not be identified**, for any reason other than it
+  having exited: it may have been a hypervisor, so VMs are not observable. The
+  same holds for a hypervisor process whose command line cannot be read: its
+  stack counts as running, but the VM list is missing a guest.
+- **A container check failed.** If a marker file or `/proc/self/cgroup` cannot
+  be read -- and a missing `/proc/self/cgroup`, or one with no parseable
+  membership line, counts, since every procfs has one -- whether the filesystem is the host's is unsettled, and binaries are
+  not looked for, exactly as inside a container.
+- **The workloads cannot be observed**: no cgroup v2 tree, or one the scan could
+  not fully read -- a directory it could not list, or a container scope whose
+  `cgroup.procs` it could not read -- for containers (`containers_observable` is then false and a
+  note names the failure); an unreadable process list for VMs.
+
+### Cost
+
+A scan lists the eight binary directories and stats about a dozen other paths:
+roughly a millisecond, most of it listing `/usr/bin`. Collection can run every
+500 ms, so the scan is reused for **30 seconds**. That bounds how long a newly
+installed but idle runtime goes unnoticed, which is shorter than it takes to
+install one and then look at the dashboard.
+
+The decision is refreshed on every snapshot, not only when the virtualization
+collector runs. That collector is in the medium tier, every fifth snapshot,
+which at a 60-second interval would stretch the 30-second recheck to five
+minutes. Refreshing costs a clock read unless the scan is due. Whether `/proc` shows
+every process (private PID namespace, hidepid) is not part of that cached
+scan: it describes a process list, so it is read with each VM scan and stays
+paired with the list it vouches for.
+
+Running workloads are as fresh as the container and VM lists themselves: both
+come from the same medium-tier scan, and the refresh re-judges that scan
+rather than repeating it. So a container appears in the tab's data and makes
+the tab present in the same snapshot; there is no moment when the dashboard
+holds a running workload behind a hidden tab. Rescanning workloads on every
+snapshot would make the whole collector fast-tier -- about 30 ms of process
+walking per tick on a host with a thousand processes -- to learn earlier about
+a workload the panel could not show yet anyway.
+
 ## Interfaces
 
 ### CLI
@@ -167,12 +336,16 @@ The snapshot carries a `virtualization` object:
     "cgroup_version": "v2",
     "runtimes": ["docker"],
     "containers": [ ... ],
-    "vms": [ ... ]
+    "vms": [ ... ],
+    "container_runtime": { "state": "present", "evidence": [ ... ], "reason": "" },
+    "hypervisor": { "state": "absent", "evidence": [], "reason": "" }
   }
 }
 ```
 
-There are two tabs, mirroring the two CLI subcommands:
+There are two tabs, mirroring the two CLI subcommands. Each exists unless the
+node proved it has no runtime or VM stack (see above), and each lists the
+evidence it was shown for:
 
 - **Containers** — rollup (count, total CPU and memory, PIDs, throttled count,
   OOM kills), a table with limit/throttling/peak/uptime columns, and a detail

@@ -15,7 +15,7 @@ import snapshot from "./snapshot.json" with { type: "json" };
  * undefined.
  */
 import templates from "./entry-templates.json" with { type: "json" };
-import type { Alert } from "../../src/lib/types";
+import type { Alert, StackDetection } from "../../src/lib/types";
 import { TAB_IDS, type TabLabel } from "./tabs";
 
 /**
@@ -85,6 +85,19 @@ export interface MockOptions {
    * host without one, which is what decides whether the NPU tab exists.
    */
   npus?: number;
+  /**
+   * The node's container runtime detection, which decides whether the
+   * Containers tab exists (#187). Default: not sent at all, the shape of a
+   * peer on a build that predates detection.
+   */
+  containerRuntime?: StackDetection;
+  /** The node's hypervisor detection, for the Virtualization tab. Same default. */
+  hypervisor?: StackDetection;
+  /**
+   * Overrides fields of the virtualization capability block, for the panels'
+   * "could not look" states. Default: the fixture's, which can see everything.
+   */
+  capability?: Partial<Snapshot["virtualization"]["capability"]>;
   /**
    * Alerts the snapshot reports as firing. Default: none, so no spec depends
    * on the alert state of the host it runs on. `alertEveryTab()` builds one
@@ -263,6 +276,9 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
     ...snapshot.virtualization,
     containers: opts.containers == null ? snapshot.virtualization.containers : makeContainers(opts.containers),
     vms: opts.vms == null ? snapshot.virtualization.vms : makeVMs(opts.vms),
+    ...(opts.containerRuntime == null ? {} : { container_runtime: opts.containerRuntime }),
+    ...(opts.hypervisor == null ? {} : { hypervisor: opts.hypervisor }),
+    capability: { ...snapshot.virtualization.capability, ...opts.capability },
     runtime: {
       ...snapshot.virtualization.runtime,
       // The image table renders only when a runtime socket answered, so

@@ -403,3 +403,16 @@ type SelfRequestError struct {
 func (e *SelfRequestError) Error() string {
 	return "self request to " + e.Addr + " returned status " + strconv.Itoa(e.Status)
 }
+
+// ProcStatusFieldError indicates a procfs file had no value for a field the
+// caller needed, or not in the expected form. Kernels add fields over time, so
+// a missing one means "this kernel cannot say", which is not the same as the
+// field's zero value.
+type ProcStatusFieldError struct {
+	Path  string
+	Field string
+}
+
+func (e *ProcStatusFieldError) Error() string {
+	return e.Path + ": no " + e.Field + " field"
+}

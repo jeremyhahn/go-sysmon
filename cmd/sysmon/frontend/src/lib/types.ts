@@ -949,6 +949,29 @@ export interface VirtCapability {
   notes: string[] | null;
 }
 
+/**
+ * Presence mirrors types.Presence in pkg/types. Only "absent" is a proof; a
+ * peer on a build without the field sends nothing, which means the same as
+ * "unknown".
+ */
+export type Presence = "present" | "absent" | "unknown";
+
+/** StackEvidence mirrors types.StackEvidence: one thing that proved a stack present. */
+export interface StackEvidence {
+  stack: string;
+  kind: "binary" | "socket" | "module" | "control_domain" | "running";
+  /** Empty for a running workload. */
+  path: string;
+}
+
+/** StackDetection mirrors types.StackDetection. */
+export interface StackDetection {
+  state: Presence;
+  evidence: StackEvidence[] | null;
+  /** Why the state is "unknown"; empty otherwise. */
+  reason: string;
+}
+
 export interface VirtInfo {
   containers: ContainerInfo[] | null;
   vms: VMInfo[] | null;
@@ -956,6 +979,10 @@ export interface VirtInfo {
   runtimes: string[] | null;
   runtime: RuntimeInfo;
   capability: VirtCapability;
+  /** Optional: a peer on an older build does not send it (#187). */
+  container_runtime?: StackDetection;
+  /** Optional for the same reason as container_runtime. */
+  hypervisor?: StackDetection;
 }
 
 // ---------------------------------------------------------------------------

@@ -257,8 +257,18 @@ when it has a non-empty `npus`. Most hosts have neither accelerator, so they
 get no tab that would open onto "none detected". The check follows the node
 being viewed, so drilling into a peer shows that peer's hardware.
 
+Containers and Virtualization follow the same rule for software, with a
+stricter test: they hide only when `virtualization.container_runtime.state` or
+`virtualization.hypervisor.state` is `absent` -- the node checked everywhere a
+runtime or VM stack could be and found none. `unknown`, and a peer on a build
+too old to send the field, keep the tab. Each panel lists the runtimes or
+stacks it found, with the binaries, sockets and modules that proved them, or
+the reason the node could not tell. The detection itself is described in
+[docs/collector/virtualization.md](../collector/virtualization.md).
+
 When the active tab disappears, the dashboard shows the Overview. That happens
-when fleet mode is switched off or a peer lacks the previous node's GPU or NPU.
+when fleet mode is switched off or a peer lacks the previous node's GPU, NPU,
+container runtime or hypervisor.
 The Overview draws one gauge per GPU and per NPU. The NPU gauge is `util_percent`,
 fdinfo compute time. Residency is time the device was awake, not work it did,
 so it stays on the NPU tab under its own label.

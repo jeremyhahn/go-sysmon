@@ -658,3 +658,18 @@ func TestInvalidSortKeyError_ListsValidKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestProcStatusFieldError_Error(t *testing.T) {
+	err := &types.ProcStatusFieldError{Path: "/proc/self/status", Field: "NSpid"}
+	if got, want := err.Error(), "/proc/self/status: no NSpid field"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestProcStatusFieldError_As(t *testing.T) {
+	var wrapped error = &types.CollectorError{Collector: "virt", Cause: &types.ProcStatusFieldError{Path: "p", Field: "CapEff"}}
+	var target *types.ProcStatusFieldError
+	if !errors.As(wrapped, &target) || target.Field != "CapEff" {
+		t.Errorf("errors.As did not find the field error in %v", wrapped)
+	}
+}

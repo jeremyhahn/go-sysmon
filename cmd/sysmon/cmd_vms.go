@@ -39,8 +39,9 @@ func runVMsCmd(cmd *cobra.Command, _ []string) error {
 		}
 		if jsonOutput {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
-				VMs []types.VMInfo `json:"vms"`
-			}{VMs: snap.Virt.VMs})
+				VMs        []types.VMInfo       `json:"vms"`
+				Hypervisor types.StackDetection `json:"hypervisor"`
+			}{VMs: snap.Virt.VMs, Hypervisor: snap.Virt.Hypervisor})
 		}
 		if err := cli.RenderVMs(cmd.OutOrStdout(), snap); err != nil {
 			return fmt.Errorf("render vms: %w", err)

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 func TestFormatBytes(t *testing.T) {
@@ -248,6 +250,46 @@ func TestFormatNumber(t *testing.T) {
 			got := formatNumber(tc.input)
 			if got != tc.want {
 				t.Errorf("formatNumber(%d) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFormatStackDetection(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		d    types.StackDetection
+		want string
+	}{
+		{
+			name: "present names each stack once, in evidence order",
+			d: types.StackDetection{State: types.PresencePresent, Evidence: []types.StackEvidence{
+				{Stack: "libvirt", Kind: types.EvidenceBinary, Path: "/usr/sbin/libvirtd"},
+				{Stack: "libvirt", Kind: types.EvidenceSocket, Path: "/run/libvirt/libvirt-sock"},
+				{Stack: "qemu", Kind: types.EvidenceRunning},
+			}},
+			want: "present (libvirt, qemu)",
+		},
+		{name: "absent", d: types.StackDetection{State: types.PresenceAbsent}, want: "absent"},
+		{
+			name: "unknown carries its reason",
+			d:    types.StackDetection{State: types.PresenceUnknown, Reason: "the process list cannot be read"},
+			want: "unknown — the process list cannot be read",
+		},
+		{
+			// A snapshot from a build without detection is not a claim of
+			// absence.
+			name: "not reported",
+			d:    types.StackDetection{},
+			want: "unknown — not reported by this build",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := formatStackDetection(tt.d); got != tt.want {
+				t.Errorf("formatStackDetection() = %q, want %q", got, tt.want)
 			}
 		})
 	}

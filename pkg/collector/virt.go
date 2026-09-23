@@ -1,14 +1,17 @@
 package collector
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	psprocess "github.com/shirou/gopsutil/v4/process"
@@ -28,6 +31,14 @@ const (
 // shortIDLen matches the ID length container tooling displays.
 const shortIDLen = 12
 
+// containerParentDirs maps a cgroup directory to the runtime whose containers
+// it holds, one bare-ID directory each. This is the cgroupfs driver's layout
+// -- /docker/<id> -- used where systemd does not manage cgroups; it cannot be
+// a name prefix, because the ID and its parent are separate directories.
+var containerParentDirs = map[string]string{
+	"docker": runtimeDocker,
+}
+
 // containerScopePrefixes maps a cgroup directory prefix to the runtime that
 // creates it. Every mainstream runtime encodes its container ID in the cgroup
 // name, which is why container accounting needs no daemon socket.
@@ -39,7 +50,6 @@ var containerScopePrefixes = map[string]string{
 	"containerd-":      runtimeContainerd,
 	"lxc-":             runtimeLXC,
 	"lxc.payload.":     runtimeLXC,
-	"docker/":          runtimeDocker,
 	"kubepods-besteff": runtimeContainerd,
 }
 
@@ -52,12 +62,20 @@ var cgroupRoot = "/sys/fs/cgroup"
 // build host happens to be running.
 var procRoot = "/proc"
 
+// hypervisorExactProcesses maps a process name to the hypervisor it denotes,
+// for VMMs whose name is a prefix of unrelated daemons: firecracker-containerd
+// manages microVMs and is not one.
+var hypervisorExactProcesses = map[string]string{
+	"firecracker": "firecracker",
+}
+
 // hypervisorProcesses maps a process name prefix to the hypervisor it denotes.
 var hypervisorProcesses = map[string]string{
 	"qemu-system":  "qemu/kvm",
 	"qemu-kvm":     "qemu/kvm",
 	"cloud-hyper":  "cloud-hypervisor",
 	"VBoxHeadless": "virtualbox",
+	"VirtualBoxVM": "virtualbox",
 	"vmware-vmx":   "vmware",
 }
 
@@ -93,6 +111,34 @@ type VirtCollector struct {
 	// processesReadable records whether the last VM scan could read the
 	// process list, which distinguishes "no guests" from "cannot tell".
 	processesReadable bool
+
+	// cgroupScanErr is the first failure the last container scan met, listing
+	// the cgroup tree or reading a container's process list, or nil when it
+	// read everything it found.
+	cgroupScanErr error
+
+	// procRestricted is why the last VM scan's process list did not show
+	// every process, read alongside it, or "" when it did.
+	procRestricted string
+
+	// processScanErr is the first failure the last VM scan met reading a
+	// listed process's name, other than the process having exited. The list
+	// was readable, but not every entry in it was.
+	processScanErr error
+
+	// hypervisorsSeen lists the hypervisor of every hypervisor process the
+	// last VM scan matched, including those it could not describe: a guest
+	// whose command line was unreadable is still a guest.
+	hypervisorsSeen []string
+
+	// install caches which container runtimes and VM stacks are installed.
+	install installDetector
+
+	// workloads is the last Collect's result before the parts that depend on
+	// the install scan -- VM observability and stack detection -- are added.
+	// RefreshDetection finishes it again without rescanning the workloads.
+	// Like prev, it is only touched from the snapshot goroutine.
+	workloads *types.VirtInfo
 }
 
 // NewVirtCollector returns a VirtCollector with default paths.
@@ -143,9 +189,12 @@ func (c *VirtCollector) Collect() error {
 	}
 	sort.Strings(info.Runtimes)
 
-	info.Capability.ContainersObservable = info.CgroupVersion == "v2"
+	info.Capability.ContainersObservable = info.CgroupVersion == "v2" && c.cgroupScanErr == nil
 	if !info.Capability.ContainersObservable {
-		if info.CgroupVersion == "v1" {
+		if c.cgroupScanErr != nil {
+			info.Capability.Notes = append(info.Capability.Notes,
+				"cgroup tree partly unreadable ("+c.cgroupScanErr.Error()+"); containers may be missing")
+		} else if info.CgroupVersion == "v1" {
 			info.Capability.Notes = append(info.Capability.Notes,
 				"cgroup v1 detected; per-container metrics require cgroup v2")
 		} else {
@@ -154,6 +203,7 @@ func (c *VirtCollector) Collect() error {
 		}
 	}
 
+	c.procRestricted = procVisibility()
 	vms := c.collectVMs(now)
 	sort.Slice(vms, func(i, j int) bool { return vms[i].Name < vms[j].Name })
 	for i := range vms {
@@ -161,16 +211,47 @@ func (c *VirtCollector) Collect() error {
 	}
 	info.VMs = vms
 
-	// The process list is what VM detection scans; if it could not be read the
-	// absence of guests is unknown rather than confirmed.
-	info.Capability.VMsObservable = c.processesReadable
-	if !info.Capability.VMsObservable {
-		info.Capability.Notes = append(info.Capability.Notes,
-			"process list unreadable; virtual machines cannot be detected")
+	c.workloads = &info
+	c.publish(now)
+	return nil
+}
+
+// RefreshDetection re-decides whether the node has a container runtime and a
+// VM stack, against the workloads the last Collect found.
+//
+// Collect is in the medium tier and runs every fifth snapshot, so at a 60 s
+// interval it runs every five minutes. The install scan's 30 s recheck would
+// mean nothing at that cadence, so this runs on every snapshot instead; it
+// costs a clock read unless the scan is due.
+func (c *VirtCollector) RefreshDetection() error {
+	if c.workloads == nil {
+		return nil
+	}
+	c.publish(time.Now())
+	return nil
+}
+
+// publish finishes the last workload scan with the install scan and stores it.
+func (c *VirtCollector) publish(now time.Time) {
+	info := *c.workloads
+	// The workload notes are shared with every earlier publish; appending
+	// must not write into their backing array.
+	info.Capability.Notes = slices.Clone(info.Capability.Notes)
+
+	scan := c.install.current(now)
+
+	// The process list is what VM detection scans; if it could not be read, or
+	// /proc hides other users' processes, the absence of guests is unknown
+	// rather than confirmed.
+	observable, note := vmObservability(c.processesReadable, c.processScanErr, c.procRestricted)
+	info.Capability.VMsObservable = observable
+	if note != "" {
+		info.Capability.Notes = append(info.Capability.Notes, note)
 	}
 
+	applyStackDetection(&info, scan, c.hypervisorsSeen, c.cgroupScanErr, note)
+
 	c.info.Store(&info)
-	return nil
 }
 
 // detectCgroupVersion reports which cgroup hierarchy is mounted. cgroup v2 is
@@ -193,7 +274,10 @@ func (c *VirtCollector) collectContainers(now time.Time) []types.ContainerInfo {
 		c.prev = make(map[string]virtIOSnapshot)
 	}
 
-	scopes := findContainerCgroups(cgroupRoot)
+	// Every scan starts from this scan's walk result, nil when the walk was
+	// clean, so a failure never outlives the scan that met it.
+	scopes, walkErr := findContainerCgroups(cgroupRoot)
+	c.cgroupScanErr = walkErr
 	if len(scopes) == 0 {
 		return nil
 	}
@@ -221,18 +305,32 @@ type containerScope struct {
 }
 
 // findContainerCgroups walks root looking for directories whose names encode a
-// container ID. The walk is bounded to a few levels because runtimes nest
-// containers no deeper than slice/scope or the kubepods QoS tiers.
-func findContainerCgroups(root string) []containerScope {
+// container ID. It does not descend into a container's own scope, which
+// belongs to that container.
+//
+// The walk is not depth-bounded. It once stopped at five levels, on the view
+// that runtimes nest no deeper than slice/scope or the kubepods QoS tiers, but
+// rootless runtimes sit under user@UID.service/app.slice and a desktop's
+// terminal scopes are already six deep, so a bound either misses containers
+// or, counted as incomplete, leaves every desktop unable to prove anything.
+// The whole tree is small -- 118 directories on the development host -- and
+// listing it is cheaper than being wrong about it.
+//
+// A directory that cannot be listed is skipped, and the first such failure is
+// returned alongside whatever was found: a partial walk still yields real
+// containers, but it cannot vouch that there are no others. A directory that
+// vanished mid-walk is not a failure; its cgroup simply exited.
+func findContainerCgroups(root string) ([]containerScope, error) {
 	var found []containerScope
+	var walkErr error
 
-	var walk func(dir string, depth int)
-	walk = func(dir string, depth int) {
-		if depth > 4 {
-			return
-		}
+	var walk func(dir string)
+	walk = func(dir string) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
+			if walkErr == nil && !isNotFound(err) {
+				walkErr = err
+			}
 			return
 		}
 		for _, e := range entries {
@@ -242,16 +340,30 @@ func findContainerCgroups(root string) []containerScope {
 			name := e.Name()
 			path := filepath.Join(dir, name)
 
-			if id, rt, ok := parseContainerCgroupName(name); ok {
+			if id, rt, ok := parseContainerCgroup(filepath.Base(dir), name); ok {
 				found = append(found, containerScope{path: path, id: id, runtime: rt})
 				continue
 			}
-			walk(path, depth+1)
+			walk(path)
 		}
 	}
-	walk(root, 0)
+	walk(root)
 
-	return found
+	return found, walkErr
+}
+
+// parseContainerCgroup extracts the container ID and runtime from a cgroup
+// directory and the name of the directory holding it: a systemd-driver scope
+// names both runtime and ID itself, a cgroupfs-driver one is a bare ID under
+// its runtime's directory.
+func parseContainerCgroup(parent, name string) (string, string, bool) {
+	if id, rt, ok := parseContainerCgroupName(name); ok {
+		return id, rt, true
+	}
+	if rt, ok := containerParentDirs[parent]; ok && isHexID(name) {
+		return name, rt, true
+	}
+	return "", "", false
 }
 
 // parseContainerCgroupName extracts the container ID and runtime from a cgroup
@@ -295,7 +407,12 @@ func (c *VirtCollector) buildContainer(
 	now time.Time,
 	next map[string]virtIOSnapshot,
 ) *types.ContainerInfo {
-	pids := readCgroupPIDs(filepath.Join(s.path, "cgroup.procs"))
+	pids, err := readSubtreePIDs(s.path)
+	if err != nil && c.cgroupScanErr == nil {
+		// A container that was found but could not be inspected leaves the
+		// scan unable to vouch for what is running.
+		c.cgroupScanErr = err
+	}
 	if len(pids) == 0 {
 		return nil
 	}
@@ -368,11 +485,51 @@ func (c *VirtCollector) buildContainer(
 	return &ct
 }
 
-// readCgroupPIDs reads a cgroup.procs file into a PID slice.
-func readCgroupPIDs(path string) []int32 {
+// readSubtreePIDs returns the processes in a container's cgroup and every
+// cgroup beneath it, the container's own first.
+//
+// A container that delegates its cgroup -- one running systemd, typically --
+// keeps no process in the scope itself; they all live in child cgroups, and
+// reading the scope alone mistook a running container for an exited one. The
+// scope's accounting files already cover its descendants in cgroup v2, so only
+// the process list needs the walk. A cgroup that vanished mid-walk has exited
+// and is not an error; anything else is returned, first one only.
+func readSubtreePIDs(dir string) ([]int32, error) {
+	pids, err := readCgroupPIDs(filepath.Join(dir, "cgroup.procs"))
+	if err != nil {
+		if isNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if isNotFound(err) {
+			return pids, nil
+		}
+		return pids, err
+	}
+	var firstErr error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		child, childErr := readSubtreePIDs(filepath.Join(dir, e.Name()))
+		pids = append(pids, child...)
+		if childErr != nil && firstErr == nil {
+			firstErr = childErr
+		}
+	}
+	return pids, firstErr
+}
+
+// readCgroupPIDs reads a cgroup.procs file into a PID slice. A missing file
+// is a cgroup that has exited, which the caller tells apart from a failure.
+func readCgroupPIDs(path string) ([]int32, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var pids []int32
 	for _, line := range strings.Fields(string(raw)) {
@@ -382,7 +539,7 @@ func readCgroupPIDs(path string) []int32 {
 		}
 		pids = append(pids, int32(v))
 	}
-	return pids
+	return pids, nil
 }
 
 // readCgroupKeyed reads a "key value" cgroup file and returns one key's value.
@@ -456,6 +613,11 @@ func (c *VirtCollector) collectVMs(now time.Time) []types.VMInfo {
 	}
 	next := make(map[string]virtIOSnapshot)
 
+	// A fresh slice: the previous one may still be read by a publish of the
+	// last scan.
+	c.hypervisorsSeen = nil
+	c.processScanErr = nil
+
 	procs, err := psprocess.Processes()
 	if err != nil {
 		c.logger.Debug("virt: cannot list processes", "error", err)
@@ -468,6 +630,11 @@ func (c *VirtCollector) collectVMs(now time.Time) []types.VMInfo {
 	for _, p := range procs {
 		name, nameErr := p.Name()
 		if nameErr != nil {
+			// A process that exited since the list was taken is simply gone;
+			// one that could not be read might have been a hypervisor.
+			if !processVanished(nameErr) && c.processScanErr == nil {
+				c.processScanErr = nameErr
+			}
 			continue
 		}
 
@@ -475,9 +642,15 @@ func (c *VirtCollector) collectVMs(now time.Time) []types.VMInfo {
 		if hypervisor == "" {
 			continue
 		}
+		c.hypervisorsSeen = append(c.hypervisorsSeen, hypervisor)
 
 		cmdline, cmdErr := p.Cmdline()
 		if cmdErr != nil {
+			// The stack is proved running, but this guest cannot be listed,
+			// so the VM list is not the whole picture.
+			if !processVanished(cmdErr) && c.processScanErr == nil {
+				c.processScanErr = cmdErr
+			}
 			continue
 		}
 
@@ -516,9 +689,34 @@ func (c *VirtCollector) collectVMs(now time.Time) []types.VMInfo {
 	return result
 }
 
+// vmObservability decides whether the VM scan saw every process that could
+// be a guest, and if not, the note that says why. readable is whether the
+// process list could be taken, scanErr the first process in it that could not
+// be identified, and procRestricted a hidepid restriction.
+func vmObservability(readable bool, scanErr error, procRestricted string) (bool, string) {
+	switch {
+	case !readable:
+		return false, "process list unreadable; virtual machines cannot be detected"
+	case scanErr != nil:
+		return false, "some processes could not be identified (" + scanErr.Error() + "); virtual machines may be missing"
+	case procRestricted != "":
+		return false, procRestricted + "; virtual machines outside sysmon's view cannot be detected"
+	}
+	return true, ""
+}
+
+// processVanished reports whether err means the process exited between being
+// listed and being read.
+func processVanished(err error) bool {
+	return isNotFound(err) || errors.Is(err, syscall.ESRCH) || errors.Is(err, psprocess.ErrorProcessNotRunning)
+}
+
 // matchHypervisor maps a process name to a hypervisor, or "" when the process
 // is not one.
 func matchHypervisor(procName string) string {
+	if hv, ok := hypervisorExactProcesses[procName]; ok {
+		return hv
+	}
 	for prefix, hv := range hypervisorProcesses {
 		if strings.HasPrefix(procName, prefix) {
 			return hv
@@ -544,6 +742,11 @@ func parseHypervisorCmdline(cmdline string) types.VMInfo {
 			if m := qemuGuestName.FindStringSubmatch(next); len(m) > 1 {
 				vm.Name = m[1]
 			} else if next != "" && !strings.HasPrefix(next, "-") {
+				vm.Name = next
+			}
+		case "--id":
+			// Firecracker and its jailer name the microVM with --id.
+			if next != "" && !strings.HasPrefix(next, "-") {
 				vm.Name = next
 			}
 		case "-uuid":

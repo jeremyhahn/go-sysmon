@@ -96,6 +96,14 @@ namespaced, so you get 24 cores and a process list of 1, and everything
 Run `docker compose exec sysmon sysmon-server doctor` at any time and it will
 tell you exactly what the current settings allow.
 
+The Containers and Virtualization tabs never disappear here for want of a
+runtime or hypervisor. The dashboard hides them only on proof that none is
+installed, and the host's binaries and sockets are not in the container's
+filesystem, so finding none of them proves nothing. What the container can
+see still counts: the mounted docker socket, sysmon's own container in the
+cgroup tree, and, with `pid: host`, the host's VMs. See
+[virtualization](../collector/virtualization.md#is-there-a-runtime-or-a-hypervisor-at-all).
+
 ## SMART needs privileged, and capabilities are not enough
 
 This was measured on a 6-NVMe host, not inferred:

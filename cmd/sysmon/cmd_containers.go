@@ -38,13 +38,15 @@ func runContainersCmd(cmd *cobra.Command, _ []string) error {
 		}
 		if jsonOutput {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
-				CgroupVersion string                `json:"cgroup_version"`
-				Runtimes      []string              `json:"runtimes"`
-				Containers    []types.ContainerInfo `json:"containers"`
+				CgroupVersion    string                `json:"cgroup_version"`
+				Runtimes         []string              `json:"runtimes"`
+				Containers       []types.ContainerInfo `json:"containers"`
+				ContainerRuntime types.StackDetection  `json:"container_runtime"`
 			}{
-				CgroupVersion: snap.Virt.CgroupVersion,
-				Runtimes:      snap.Virt.Runtimes,
-				Containers:    snap.Virt.Containers,
+				CgroupVersion:    snap.Virt.CgroupVersion,
+				Runtimes:         snap.Virt.Runtimes,
+				Containers:       snap.Virt.Containers,
+				ContainerRuntime: snap.Virt.ContainerRuntime,
 			})
 		}
 		if err := cli.RenderContainers(cmd.OutOrStdout(), snap); err != nil {

@@ -380,6 +380,20 @@ func TestParseHypervisorCmdline_Minimal(t *testing.T) {
 	}
 }
 
+func TestParseHypervisorCmdline_FirecrackerID(t *testing.T) {
+	t.Parallel()
+	vm := parseHypervisorCmdline("firecracker --id build-runner-7 --api-sock /run/fc.sock --config-file vm.json")
+	if vm.Name != "build-runner-7" {
+		t.Errorf("name = %q, want build-runner-7 from --id", vm.Name)
+	}
+
+	// An --id with no value leaves the name for the caller's fallback rather
+	// than taking the next flag as the guest's name.
+	if vm := parseHypervisorCmdline("firecracker --id --api-sock /run/fc.sock"); vm.Name != "" {
+		t.Errorf("name = %q, want empty", vm.Name)
+	}
+}
+
 func TestParseHypervisorCmdline_Empty(t *testing.T) {
 	t.Parallel()
 	vm := parseHypervisorCmdline("")
@@ -430,10 +444,19 @@ func TestParseSMP(t *testing.T) {
 
 func TestMatchHypervisor(t *testing.T) {
 	t.Parallel()
-	if got := matchHypervisor("qemu-system-x86_64"); got != "qemu/kvm" {
-		t.Errorf("qemu-system-x86_64 = %q, want qemu/kvm", got)
+	for proc, want := range map[string]string{
+		"qemu-system-x86_64": "qemu/kvm",
+		// The GUI-launched VirtualBox guest, as opposed to VBoxHeadless.
+		"VirtualBoxVM": "virtualbox",
+		"firecracker":  "firecracker",
+	} {
+		if got := matchHypervisor(proc); got != want {
+			t.Errorf("matchHypervisor(%q) = %q, want %q", proc, got, want)
+		}
 	}
-	for _, notHV := range []string{"bash", "nginx", "systemd", ""} {
+	// "VirtualBox" is the manager window, which runs no guest, and
+	// firecracker-containerd manages microVMs without being one.
+	for _, notHV := range []string{"bash", "nginx", "systemd", "VirtualBox", "firecracker-containerd", ""} {
 		if got := matchHypervisor(notHV); got != "" {
 			t.Errorf("matchHypervisor(%q) = %q, want empty", notHV, got)
 		}
@@ -812,6 +835,10 @@ func TestCollect_CapabilityDistinguishesEmptyFromBlind(t *testing.T) {
 	root := t.TempDir()
 	withCgroupRoot(t, root)
 	writeSysfsFile(t, filepath.Join(root, "cgroup.controllers"), "cpu memory\n")
+	// The process view is judged from a host that shows every process: the
+	// runner may itself be in a container or private PID namespace, where
+	// VMsObservable is rightly false.
+	withHostRoot(t, procMount(t, "rw", "0000000000000000"))
 
 	c := NewVirtCollector(slog.Default())
 	if err := c.Collect(); err != nil {
