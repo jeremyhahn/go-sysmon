@@ -106,3 +106,42 @@
  * and marks itself with a rule (#147). tests/contrast.spec.ts walks the
  * rendered tabs and fails if any semantic colour lands on base-300.
  */
+
+/* Forced colours (Windows High Contrast and similar).
+ *
+ * The browser replaces author colours with a small system palette and drops
+ * fills and shadows, so any state shown only by colour disappears. These keep
+ * the tab bar's states visible with the system colours meant for them. The
+ * DataTable rows do the same in their own component styles (#165).
+ */
+@media (forced-colors: active) {
+  /* The active tab was primary text over a primary underline; both become
+     CanvasText, the same as every other tab. Highlight is the system's own
+     "selected item" pair. */
+  .tab.tab-active {
+    forced-color-adjust: none;
+    background-color: Highlight;
+    color: HighlightText;
+    border-color: HighlightText;
+  }
+
+  /* forced-color-adjust: none also stops the browser adapting the active
+     tab's focus ring, which could then vanish into Highlight. Draw it
+     explicitly, outside the button, on the Canvas the tab bar sits on. */
+  .tab.tab-active:focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+  }
+
+  /* A severity dot is nothing but a fill. Keep it in the text colour of the
+     surface it sits on, so "this tab has alerts" survives even though the
+     severity's hue cannot. */
+  .severity-dot {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
+
+  .tab.tab-active .severity-dot {
+    background-color: HighlightText;
+  }
+}

@@ -53,8 +53,16 @@ export function alertBorderClass(alerts: Alert[]): string {
   }
 }
 
-/** severityDotClass is the background colour for a severity indicator dot. */
+/**
+ * severityDotClass is the class list for a severity indicator dot: its
+ * background colour, plus `severity-dot`, which keeps the dot visible under
+ * forced colours (app.css), where a background fill is otherwise removed.
+ */
 export function severityDotClass(severity: Severity | null): string {
+  return `severity-dot ${severityDotFill(severity)}`;
+}
+
+function severityDotFill(severity: Severity | null): string {
   switch (severity) {
     case "critical":
       return "bg-error";

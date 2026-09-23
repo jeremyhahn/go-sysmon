@@ -74,6 +74,31 @@ hairline along the top and bottom of every cell, so the row stays visibly
 selected even when a wide table is scrolled sideways. The selection marker is
 held to the 3:1 non-text floor.
 
+Keyboard focus on a row is a third shape: a 2px `base-content` outline around
+the whole row, drawn only under `:focus-visible`, so a click does not add it on
+top of the selection. It measures 16.7:1 on a light card and 15.6:1 on a dark
+one, and the contrast suite holds it to 3:1. A focused, selected row shows both
+the outline and the primary edges (#165).
+
+**Forced colours (Windows High Contrast) restate every state in system
+colours.** The browser drops box-shadows, fills and author colours there. That
+took the hover and selection rules and the active tab's colour with it, and
+turned the alert dots into nothing. Under `@media (forced-colors: active)`:
+
+| state | how it shows |
+|---|---|
+| row hover | 1px dashed `CanvasText` outline |
+| row selected | `Highlight` fill, `HighlightText` for every cell's text |
+| row keyboard focus | 3px solid outline over either of the above: `CanvasText`, or `HighlightText` on a selected row |
+| sort header focus | the browser's own focus ring; direction is the ▲/▼ glyph |
+| active tab | `Highlight` fill, `HighlightText` label; focus is a `CanvasText` ring outside it |
+| alert dot | `CanvasText` fill, `HighlightText` on the active tab |
+
+`forced-color-adjust: none` is set only where a system pair is painted on
+purpose (a selected row's cells, the active tab, the dot), so the browser does
+not force it back to `Canvas`. `tests/forced-colors.spec.ts` emulates the mode
+and asserts that each state renders differently from its neighbours.
+
 **`base-300` carries no semantic text.** The four status colours measure
 4.20-4.26:1 on it in the light theme. A tile nested inside a card — the GPU,
 NPU and SMART detail tiles, the Overview pressure tiles — sits on `base-100`

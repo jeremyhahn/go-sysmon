@@ -280,10 +280,50 @@ Behaviour worth knowing:
   size, that is the end you are looking for.
 - Searching or changing the page size resets to page one, and a page that would
   land past the end of a filtered list is clamped.
-- The active sort column carries `aria-sort`, so the ordering reaches assistive
-  technology and not just the eye.
+- Sortable headers are buttons inside the header cell, and the active sort
+  column carries `aria-sort`, so ordering is reachable from the keyboard and
+  reaches assistive technology, not just the eye.
+- A paged table sets `aria-rowcount` to the full filtered count and
+  `aria-rowindex` on each row, so "row 27 of 31" is announced on page two.
 - Rows the collector dropped upstream are disclosed in the footer, so a
   truncated list is never mistaken for the whole set.
+
+### Selectable rows and the keyboard
+
+A caller that passes `onRowClick` (and `isSelected`) makes the table an ARIA
+grid; today that is the container listing. A grid needs a name, so pass `label`
+when the table has no `title`. The grid is one tab stop, using a roving
+tabindex: Tab enters on the last focused row, or the first, and the next Tab
+leaves for the pager.
+
+| key | effect |
+|---|---|
+| Up / Down | previous / next row on the page |
+| Home / End | first / last row on the page |
+| PageUp / PageDown | previous / next page, same position; on the first or last page, the first or last row |
+| Enter / Space | the same as a click, so selects or deselects the row |
+
+The selected row carries `aria-selected`. Tables without `onRowClick`, such as
+processes, stay plain tables whose rows take no tab stop.
+
+Focus survives a live refresh. Rows are keyed by `rowKey`, but a refresh that
+reorders them moves the elements, and moving a focused element blurs it. The
+table notes the focused row before each update and, if focus was lost, puts it
+back by these rules, in order:
+
+1. The row is still on the page: focus returns to that row, wherever it moved.
+   This holds for a user's sort too. Focus stays with the item, not the
+   position, so Enter never lands on a different container.
+2. The row is off the page because a refresh moved it (sorted onto another
+   page, or past a page the table clamped away after rows disappeared): the
+   pager follows the row.
+3. The row has gone, or the user changed the view (page, sort, search or page
+   size) and it is now on another page: focus goes to the row now in its
+   position, and the user's page stands.
+
+A user change is read from that state, not from which control has focus, so
+it holds in Safari, where clicking a sort header leaves focus on the row. The
+table never takes focus the user moved elsewhere.
 
 Tables bounded by physical hardware — DIMMs, GPUs, disks, CPU cores, network
 interfaces — deliberately do not use it. A search box over four rows costs more

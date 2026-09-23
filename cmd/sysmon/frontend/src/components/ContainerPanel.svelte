@@ -247,6 +247,7 @@
             cells={containerCells}
             searchText={(c: ContainerInfo) => `${c.name} ${c.short_id} ${c.runtime}`}
             rowKey={(c: ContainerInfo) => c.id}
+            label="Containers"
             initialSort="cpu"
             initialDirection="desc"
             searchPlaceholder="Search name, ID or runtime…"

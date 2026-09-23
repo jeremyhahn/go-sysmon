@@ -607,3 +607,76 @@ test.describe('a selected or hovered table row keeps a readable surface', () => 
     });
   }
 });
+
+/** What a row's focus indicator paints: an outline, and its contrast on the row. */
+interface FocusPaint {
+  style: string;
+  width: number;
+  color: string;
+  ratio: number;
+}
+
+async function focusOf(page: Page, index: number): Promise<FocusPaint> {
+  return containerRows(page)
+    .nth(index)
+    .evaluate((row) => {
+      const c = window.__contrast;
+      const s = getComputedStyle(row);
+      const surface = c.surfaceOf(row.querySelector('td')!);
+      return {
+        style: s.outlineStyle,
+        width: parseFloat(s.outlineWidth),
+        color: s.outlineColor,
+        ratio: c.ratio(s.outlineColor, surface),
+      };
+    });
+}
+
+/**
+ * A row focused from the keyboard shows where focus is (#165).
+ *
+ * Focus is information, so its indicator is held to the non-text contrast floor
+ * (WCAG 1.4.11) on the surface the row actually has. It is an outline around
+ * the whole row: a different shape from hover's left rule and selection's
+ * primary edges, and it must not replace either -- a focused row that is also
+ * selected still shows both.
+ */
+test.describe('a keyboard-focused table row shows a visible focus indicator', () => {
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`${scheme} theme`, async ({ page }) => {
+      await mockSnapshotFeed(page, { containers: 6 });
+      await openIn(page, scheme);
+      await openTab(page, 'Containers');
+      await expect(containerRows(page)).toHaveCount(6);
+      await page.mouse.move(0, 0);
+
+      // Focus reaches the row from the keyboard, which is when the ring shows.
+      await containerRows(page).nth(0).focus();
+      await page.keyboard.press('ArrowDown');
+      await expect(containerRows(page).nth(1)).toBeFocused();
+
+      const resting = await focusOf(page, 3);
+      const focused = await focusOf(page, 1);
+      expect(resting.style, `${scheme}: an unfocused row draws an outline`).toBe('none');
+
+      expect(focused.style, `${scheme}: a focused row draws no outline`).not.toBe('none');
+      expect(focused.width, `${scheme}: the focus outline is hairline`).toBeGreaterThanOrEqual(2);
+      expect(
+        focused.ratio,
+        `${scheme}: the focus outline is ${focused.ratio.toFixed(2)}:1 on its row`
+      ).toBeGreaterThanOrEqual(GRAPHIC_AA);
+
+      // Selecting from the keyboard keeps both marks, and they stay distinct.
+      await page.keyboard.press('Enter');
+      const selectedFocused = await focusOf(page, 1);
+      const selected = await paintOf(page, 1);
+      expect(selectedFocused.style, `${scheme}: selection hid the focus outline`).not.toBe('none');
+      expect(selectedFocused.ratio).toBeGreaterThanOrEqual(GRAPHIC_AA);
+      expect(selected.rule, `${scheme}: focus hid the selection rule`).not.toBe('');
+      expect(
+        selectedFocused.color,
+        `${scheme}: focus and selection are drawn in the same colour`
+      ).not.toBe(selected.rule);
+    });
+  }
+});
