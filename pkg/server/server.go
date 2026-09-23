@@ -226,11 +226,20 @@ type Server struct {
 //
 // New serves plain HTTP. Use NewWithConfig to enable TLS.
 func New(mon *monitor.Monitor, addr string, assets fs.FS) *Server {
-	return newServer(Config{Monitor: mon, Addr: addr, Assets: assets}, nil)
+	s := newServer(Config{Monitor: mon, Addr: addr, Assets: assets}, nil)
+	// This server describes nothing of its own -- no build, configuration or
+	// fleet -- so it installs the default decoration on an undecorated
+	// monitor and otherwise serves the one already there.
+	s.installDecorator()
+	return s
 }
 
 // NewWithConfig creates a Server from cfg. It returns a TLSConfigError when
-// cfg.TLS is present but cannot be resolved into a usable configuration.
+// cfg.TLS is present but cannot be resolved into a usable configuration, and a
+// DecoratorInstalledError when cfg.Monitor is already decorated by a server
+// describing it differently: one monitor's snapshots describe one node. A
+// second server with the same build, configuration and fleet shares the
+// first's decoration.
 func NewWithConfig(cfg Config) (*Server, error) {
 	var tlsConfig *tls.Config
 	if cfg.TLS != nil {
@@ -240,7 +249,11 @@ func NewWithConfig(cfg Config) (*Server, error) {
 			return nil, err
 		}
 	}
-	return newServer(cfg, tlsConfig), nil
+	s := newServer(cfg, tlsConfig)
+	if err := s.decorate(); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // newServer wires the routes and http.Server. It cannot fail: every input has
@@ -461,6 +474,26 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(snap); err != nil {
 		slog.Error("snapshot encode", "err", err)
 	}
+}
+
+// localName is the name this node publishes to the fleet, which is also the
+// instance label its samples are written under. Without a fleet it falls back
+// to the configured local name, and finally to the hostname, so the two can
+// never disagree about which series belong to this machine.
+func (s *Server) localName() string {
+	if s.fleet != nil {
+		return s.fleet.LocalName()
+	}
+	if s.cfg != nil {
+		return s.cfg.Current().LocalName()
+	}
+	// Neither is required. server.Config makes History independent of the
+	// fleet and of the configuration manager, so an embedded caller can wire
+	// up history alone -- and an empty name is not a node, so every history
+	// request for the local node was refused as unknown. The same resolution
+	// the configuration makes, from a zero Config, gives the hostname and
+	// never an empty string.
+	return (&config.Config{}).LocalName()
 }
 
 // handleSummary serves this node's NodeSummary: what an aggregator polls to

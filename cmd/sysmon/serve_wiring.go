@@ -7,65 +7,11 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
-	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
-	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
-
-// enrichedSnapshotter decorates each snapshot with the data that belongs to the
-// service rather than the hardware: the build serving it, and the alerts that
-// its thresholds produce.
-//
-// Alerts are attached here, before the monitor broadcasts, so that the SSE
-// stream, GET /api/snapshot and GET /metrics all describe the same evaluation.
-// Thresholds are read from the config manager on every snapshot, which is what
-// makes a reload take effect without restarting.
-type enrichedSnapshotter struct {
-	inner monitor.Snapshotter
-	cfg   *config.Manager
-	eval  *alert.Evaluator
-	// version is the release string and gitCommit/buildDate are the build it
-	// was cut from. All three are stamped, because the release string alone
-	// has never distinguished two builds -- it has read the same for every
-	// build of this project -- and the fleet view needs to.
-	version   string
-	gitCommit string
-	buildDate string
-}
-
-// Snapshot collects, stamps and evaluates.
-func (e *enrichedSnapshotter) Snapshot() (*types.Snapshot, error) {
-	snap, err := e.inner.Snapshot()
-	if err != nil {
-		return nil, err
-	}
-	snap.Version = e.version
-	snap.GitCommit = e.gitCommit
-	snap.BuildDate = e.buildDate
-	snap.Alerts = e.eval.Evaluate(e.cfg.Current().Alerts, snap, time.Now())
-	return snap, nil
-}
-
-// newEnrichedSnapshotter wraps inner so its snapshots carry the build serving
-// them and the alerts its thresholds produce.
-func newEnrichedSnapshotter(
-	inner monitor.Snapshotter, mgr *config.Manager,
-	version, gitCommit, buildDate string,
-) monitor.Snapshotter {
-	return &enrichedSnapshotter{
-		inner:     inner,
-		cfg:       mgr,
-		eval:      alert.New(),
-		version:   version,
-		gitCommit: gitCommit,
-		buildDate: buildDate,
-	}
-}
 
 // loadServeConfig builds the configuration manager for the serve command.
 //

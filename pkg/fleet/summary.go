@@ -21,6 +21,7 @@ import (
 func Summarize(prev, cur *types.Snapshot) types.NodeSummary {
 	n := types.NodeSummary{
 		Hostname:              cur.Host.Hostname,
+		NodeName:              cur.NodeName,
 		Version:               cur.Version,
 		GitCommit:             cur.GitCommit,
 		BuildDate:             cur.BuildDate,

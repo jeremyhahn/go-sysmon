@@ -35,6 +35,7 @@ The most recent snapshot, as JSON.
     "version": "0.1.0-alpha",
     "git_commit": "a46f6cf",
     "build_date": "2026-09-05T03:26:50Z",
+    "node_name": "db-01",
     "alerts": [ ... ]
 }
 ```
@@ -47,6 +48,18 @@ apart. They were added in an additive change — a client that does not read the
 is unaffected — and they are omitted entirely by a node that does not state its
 build, which is what a binary built without the release `-ldflags` does. An
 absent commit means the node said nothing, never that it agrees with yours.
+
+`node_name` is the name this node writes its history under — the Prometheus
+`instance` label, which is its `fleet.local_name` or, unset, its hostname. An
+aggregator compares it with the name it holds for the node and reports the
+result as `name_match` in `GET /api/fleet` (#162). A reload of
+`fleet.local_name` restamps the published snapshot, so every path reports the
+new name at once, as the exporter's label does. It is additive and omitted by a
+node that predates it.
+
+These fields, and `alerts`, are the same on every path that serves a snapshot,
+whether the server is `sysmon serve` or embedded as a library; see
+[architecture.md](architecture.md#every-path-serves-the-same-decorated-snapshot).
 
 `503 Service Unavailable` means there is no snapshot to serve. The status is
 the same for both reasons a client can see it — a client can act on neither
@@ -78,6 +91,7 @@ instead of `/api/snapshot` (#76).
     "hostname": "ci-node-1",
     "version": "0.1.0-alpha",
     "uptime_seconds": 864000,
+    "node_name": "ci-node-1",
     "collection_interval_ms": 1000,
     "git_commit": "a46f6cf",
     "build_date": "2026-09-22T12:00:00Z",
@@ -111,6 +125,10 @@ instead of `/api/snapshot` (#76).
   at, the cadence its snapshot timestamps advance by. `0` means unknown: an
   older peer that does not report it, or a peer the aggregator reads by its
   whole snapshot. It is never assumed.
+- `node_name` is the name the node writes its history under, the same value
+  as in its snapshot. An aggregator compares it with the name it holds for the
+  node and reports `name_match` in `/api/fleet` (#162). Omitted by a node that
+  predates it.
 - `alerts` holds only the warning and critical alerts, the ones that set the
   node's state.
 - `swap_in_rate` and `swap_out_rate` are bytes per second paged over the
@@ -209,7 +227,10 @@ curl -N -H 'Accept: text/event-stream' http://localhost:8080/api/events
 
 The first `snapshot` is the server's cached one, delivered immediately rather
 than at the next poll tick, so a reconnecting client is never blank. After that
-there is one per polling interval.
+there is one per polling interval, plus one whenever a reload renames the node:
+that frame repeats the current reading — same `timestamp`, same values — with
+the new `node_name`. A client that keeps history should add one point per
+`timestamp`, not one per frame.
 
 ### Compression
 

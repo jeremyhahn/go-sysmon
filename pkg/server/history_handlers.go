@@ -4,7 +4,6 @@ package server
 
 import (
 	"errors"
-	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -164,26 +163,6 @@ func (s *Server) knownNode(name string) bool {
 // every connected browser to gain a setting.
 func (s *Server) historyEnabled() bool {
 	return s.history != nil && s.history.Enabled()
-}
-
-// localName is the name this node publishes to the fleet, which is also the
-// instance label its samples are written under. Without a fleet it falls back
-// to the configured local name, and finally to the hostname, so the two can
-// never disagree about which series belong to this machine.
-func (s *Server) localName() string {
-	if s.fleet != nil {
-		return s.fleet.LocalName()
-	}
-	if s.cfg != nil {
-		return s.cfg.Current().LocalName()
-	}
-	// Neither is required. server.Config makes History independent of the
-	// fleet and of the configuration manager, so an embedded caller can wire
-	// up history alone -- and an empty name is not a node, so every history
-	// request for the local node was refused as unknown. The same resolution
-	// the configuration makes, from a zero Config, gives the hostname and
-	// never an empty string.
-	return (&config.Config{}).LocalName()
 }
 
 // historyWindow reads start, end and step from the query string.

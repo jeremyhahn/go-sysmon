@@ -861,6 +861,11 @@ func (p *Poller) View() types.Fleet {
 		self.Reachable = true
 		self.Source = types.SummarySourceLocal
 		self.NodeSummary = LocalSummary(prev, cur, interval)
+		// This node's name and the name it writes under are one function,
+		// resolved now. Its snapshot's copy is restamped on a reload of
+		// fleet.local_name, but after the new configuration is live, and a
+		// view built in between would flag the node against itself.
+		self.NodeName = self.Name
 	} else {
 		self.Error = "no data"
 	}
@@ -910,6 +915,7 @@ func (p *Poller) View() types.Fleet {
 	selfCommit := self.GitCommit
 	for i := range nodes {
 		nodes[i].BuildMatch = compareBuild(selfCommit, nodes[i].GitCommit)
+		nodes[i].NameMatch = compareName(nodes[i].Name, nodes[i].NodeName, nodes[i].Reachable)
 		nodes[i].Status = nodeStatus(nodes[i].Reachable, &nodes[i].NodeSummary)
 		if nodes[i].Alerts == nil {
 			nodes[i].Alerts = []types.Alert{}

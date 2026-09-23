@@ -50,6 +50,16 @@ func (e *MonitorAlreadyRunningError) Error() string {
 	return "monitor is already running"
 }
 
+// DecoratorInstalledError indicates a monitor already has a different
+// decorator. A monitor's snapshots describe one node, so they carry one
+// decoration: a second one would silently replace the first's build, name,
+// thresholds and alert history for every reader of that monitor.
+type DecoratorInstalledError struct{}
+
+func (e *DecoratorInstalledError) Error() string {
+	return "monitor already has a different decorator; remove it first"
+}
+
 // StreamUnsupportedError indicates that the http.ResponseWriter handling an
 // event-stream request cannot flush, so server-sent events cannot be delivered.
 // Every ResponseWriter in net/http supports flushing; this signals a wrapping

@@ -4,6 +4,8 @@ package monitor
 
 import (
 	"context"
+	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +25,31 @@ const (
 // Snapshotter is implemented by any type that can produce a system snapshot.
 type Snapshotter interface {
 	Snapshot() (*types.Snapshot, error)
+}
+
+// Decorator attaches to each snapshot what the service knows rather than the
+// hardware: which node and build is serving it, and the alerts its thresholds
+// produce.
+//
+// It is applied inside the monitor because the monitor is the one door every
+// served snapshot passes through -- the event stream in both protocols, GET
+// /api/snapshot, the fleet's view of this node, /metrics and the exporter all
+// read what it publishes. Decorating anywhere downstream of it meant each
+// path had to remember to, and an embedded server's stream carried none of
+// these fields while the CLI's did.
+//
+// A Decorator must be a comparable type, as a pointer is: the monitor compares
+// it with the one installed.
+type Decorator interface {
+	// Identify sets the fields naming the serving node and its build. It must
+	// depend only on the current configuration and never on the snapshot's
+	// history, because the monitor re-applies it to the published snapshot
+	// when that configuration changes (see Restamp).
+	Identify(snap *types.Snapshot)
+	// Evaluate sets the snapshot's alerts. It is called exactly once for each
+	// snapshot, in collection order, and may keep state across calls: how
+	// long a condition has lasted, and rates between two readings.
+	Evaluate(snap *types.Snapshot)
 }
 
 // Subscriber holds the channel and lifecycle state for a single consumer.
@@ -107,6 +134,40 @@ type Monitor struct {
 	// intervalCh delivers a new interval to the running poll loop.
 	// Buffered with capacity 1 so SetInterval never blocks the caller.
 	intervalCh chan time.Duration
+
+	// pubMu serialises publishing: the poll loop's publication of a new
+	// collection and a caller's re-decoration of the published one. Without
+	// it a re-decoration could overwrite a newer collection, or a collection
+	// identified under the previous configuration could overwrite the
+	// re-decoration. Collection itself happens outside it, so a hung collector
+	// never blocks a re-decoration. A mutex rather than a channel into the
+	// loop for that reason: the loop may be inside a collection that does not
+	// return, and a rename must still land.
+	pubMu sync.Mutex
+	// decorator is applied to every snapshot before it is published; nil
+	// publishes snapshots as collected. Guarded by pubMu, so installing or
+	// removing one is ordered against every publication.
+	decorator Decorator
+	// live is whether a run is publishing, as seen by whoever holds pubMu.
+	// Running answers the same question under mu, but a re-decoration holds
+	// pubMu and must not take mu: Start takes pubMu while holding mu, to make
+	// its reset of the published snapshot one step for anyone publishing.
+	// Start sets it and Stop clears it, both under pubMu.
+	live bool
+	// evaluations records, for the published reading, every decorator whose
+	// Evaluate has run on it and the alerts it produced. Decorators are
+	// compared by identity, so one removed and installed again is recognised
+	// however many others were installed in between: a re-decoration reuses
+	// its recorded alerts rather than evaluating the reading a second time,
+	// which would feed a stateful evaluator a zero-length interval. A fresh
+	// collection resets it. Guarded by pubMu; in practice it holds one entry.
+	evaluations []evaluation
+}
+
+// evaluation is one decorator's Evaluate of the published reading.
+type evaluation struct {
+	by     Decorator
+	alerts []types.Alert
 }
 
 // reading is one published snapshot and the baseline of the one the same run
@@ -166,7 +227,16 @@ func (m *Monitor) Start() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
-	m.running = true
+	// The new generation, the cleared snapshot and the live flag change
+	// together under pubMu, so a re-decoration sees either the previous run's
+	// state or this one's -- never this run's number beside the last run's
+	// reading, which it would then broadcast to this run's subscribers.
+	//
+	// All of it before running is set: pubMu can be held by a re-decoration,
+	// and a subscription taken while this waits must not see the monitor
+	// running under the previous generation, or no Stop would ever close it.
+	m.pubMu.Lock()
+	m.live = true
 	m.generation.Add(1)
 	// A new run has not collected anything yet, so it has no latest snapshot.
 	//
@@ -178,6 +248,8 @@ func (m *Monitor) Start() error {
 	// reading as the first frame of the new stream, stamped with the new
 	// generation, and marked current.
 	m.latest.Store(nil)
+	m.pubMu.Unlock()
+	m.running = true
 	m.cancel = cancel
 	m.stopped = stopped
 	m.mu.Unlock()
@@ -244,6 +316,11 @@ func (m *Monitor) Stop() error {
 	// A subscriber taken after this Stop began still carries the outgoing
 	// generation and is still closed here, which is right: it belongs to the
 	// run that is ending.
+	// Under pubMu, so a restamp that saw the run still going has finished
+	// broadcasting before any subscriber is closed; see redecorateLocked.
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
+	m.live = false
 	ending := m.generation.Load()
 	m.subscribers.Range(func(_, value any) bool {
 		if sub := value.(*Subscriber); sub.generation == ending {
@@ -378,6 +455,128 @@ func (m *Monitor) SetInterval(d time.Duration) error {
 	return nil
 }
 
+// SetDecorator installs d, applied to every snapshot from now on, and applies
+// it to the snapshot already published before returning, so that no reader is
+// served an undecorated one afterwards. Safe to call at any time.
+//
+// A monitor carries one decorator. Installing one while a different one is
+// installed returns DecoratorInstalledError rather than replacing it; installing
+// the one already there changes nothing. Passing nil removes the decorator, and
+// nothing published after the call returns is decorated.
+func (m *Monitor) SetDecorator(d Decorator) error {
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
+	if d == nil {
+		m.decorator = nil
+		return nil
+	}
+	if m.decorator != nil {
+		if m.decorator == d {
+			return nil
+		}
+		return &types.DecoratorInstalledError{}
+	}
+	m.decorator = d
+	m.redecorateLocked()
+	return nil
+}
+
+// Decorator returns the installed decorator, or nil.
+func (m *Monitor) Decorator() Decorator {
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
+	return m.decorator
+}
+
+// Restamp re-applies the decorator's Identify to the published snapshot before
+// returning and, while running, broadcasts the result. Call it when the
+// configuration Identify reads has changed -- a renamed node -- so every reader
+// sees the new identity now rather than at the next collection, which may be a
+// minute away or, while collection is hung, never. Alerts are left as
+// evaluated, and the reading itself, timestamp included, is unchanged: a
+// consumer keeping history keys it by timestamp and adds no point.
+func (m *Monitor) Restamp() {
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
+	m.redecorateLocked()
+}
+
+// redecorateLocked republishes a decorated copy of the published snapshot. The
+// published one is shared with every reader and is never written to. The
+// caller holds pubMu.
+//
+// The copy replaces the published snapshot only if that is still the one it
+// was made from. Start clears the published snapshot without taking pubMu,
+// and a copy of the previous run's last reading must not be put back after it.
+//
+// Whether a run is live is read under pubMu, which Stop holds while it closes
+// subscribers and Start holds while it resets for a new run: a broadcast here
+// either lands before that sweep or sees the run over, and never carries one
+// run's reading to the next run's subscribers.
+func (m *Monitor) redecorateLocked() {
+	old := m.latest.Load()
+	if old == nil || m.decorator == nil {
+		// Nothing to re-apply. The published snapshot, and the record of
+		// which decorator evaluated it, stay as they are.
+		return
+	}
+	snap := *old.cur
+	evaluated := m.decorate(&snap, false)
+	if !evaluated && reflect.DeepEqual(*old.cur, snap) {
+		// Nothing Identify reads has changed -- most reloads touch something
+		// else -- so there is no new state to publish, and a stream is not
+		// sent a frame that says nothing.
+		return
+	}
+	// The same reading, re-identified: its baseline is unchanged.
+	if !m.latest.CompareAndSwap(old, &reading{prev: old.prev, cur: &snap}) {
+		return
+	}
+	if m.live {
+		m.broadcast(&snap)
+	}
+}
+
+// decorate applies the installed decorator to snap and normalises it. fresh
+// says snap is a new collection rather than the published reading again. The
+// decorator evaluates a reading once: republished, it gets back the alerts it
+// produced, and it evaluates only if it never has -- which it reports. The
+// caller holds pubMu.
+func (m *Monitor) decorate(snap *types.Snapshot, fresh bool) (evaluated bool) {
+	if fresh {
+		m.evaluations = m.evaluations[:0]
+	}
+	d := m.decorator
+	if d != nil {
+		d.Identify(snap)
+		i := slices.IndexFunc(m.evaluations, func(e evaluation) bool { return e.by == d })
+		if i >= 0 {
+			snap.Alerts = m.evaluations[i].alerts
+		} else {
+			d.Evaluate(snap)
+			m.evaluations = append(m.evaluations, evaluation{by: d, alerts: snap.Alerts})
+			evaluated = true
+		}
+	}
+	// Normalised here, before it is published, because this is the one door
+	// every served snapshot passes through: whatever the Snapshotter is, and
+	// whatever the decorator attached (the alerts are). Once stored it is
+	// shared, and every later pass over it only reads (#151).
+	types.ReplaceNilSlices(snap)
+	return evaluated
+}
+
+// publish decorates a fresh collection, makes it the published snapshot --
+// paired with prev, the baseline of the run's previous one -- and broadcasts
+// it.
+func (m *Monitor) publish(prev, snap *types.Snapshot) {
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
+	m.decorate(snap, true)
+	m.latest.Store(&reading{prev: prev, cur: snap})
+	m.broadcast(snap)
+}
+
 // run is the internal poll loop executed in a dedicated goroutine.
 func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 	defer close(stopped)
@@ -403,15 +602,17 @@ func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 				// A collection error is non-fatal; the loop continues on the next tick.
 				continue
 			}
-			// Normalised here, before it is published, because this is the
-			// one door every served snapshot passes through: whatever the
-			// Snapshotter is, and whatever was attached to its result on the
-			// way (the alerts are). Once stored it is shared, and every later
-			// pass over it only reads (#151).
-			types.ReplaceNilSlices(snap)
-			m.latest.Store(&reading{prev: prev, cur: snap})
-			prev = baseline(snap)
-			m.broadcast(snap)
+			// Decorated as a copy: the Snapshotter's result is its own, and
+			// one that hands back a value it keeps must not find it written.
+			published := *snap
+			// A reading is identified by when it was taken -- clients key
+			// their history on it, and a republished reading keeps it -- so
+			// one a Snapshotter left undated is dated here, as collected.
+			if published.Timestamp.IsZero() {
+				published.Timestamp = time.Now()
+			}
+			m.publish(prev, &published)
+			prev = baseline(&published)
 		}
 	}
 }

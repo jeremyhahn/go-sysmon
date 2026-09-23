@@ -143,6 +143,25 @@
     return node.build_match === "different";
   }
 
+  /**
+   * The name this aggregator holds for a node is not the one the node writes
+   * its history under, so one node has two history identities (#162). The
+   * server decides this and sends `name_match`; this only reads it.
+   */
+  function hasNameMismatch(node: FleetNode): boolean {
+    return node.name_match === "different" && !!node.node_name;
+  }
+
+  /**
+   * A reachable node that did not state its name -- an older build. Shown
+   * quietly: it is not a fault, only a check that could not be made. An
+   * unreachable node already says why nothing about it is known, and a server
+   * predating the field sends nothing, which shows nothing.
+   */
+  function nameUnverified(node: FleetNode): boolean {
+    return node.reachable && node.name_match === "unknown";
+  }
+
   /** What to show for a node's build: the commit if it stated one. */
   function buildLabel(node: FleetNode): string {
     return node.git_commit && node.git_commit !== "unknown"
@@ -316,6 +335,14 @@
                     {#if node.uptime_seconds > 0}
                       &bull; up {formatDuration(node.uptime_seconds)}
                     {/if}
+                    {#if nameUnverified(node)}
+                      <span
+                        data-testid="name-unverified"
+                        title="This node did not report the name it writes its history under, so the name “{node.name}” could not be checked against it"
+                      >
+                        &bull; name unverified
+                      </span>
+                    {/if}
                   </p>
                 </div>
                 <div class="text-right text-xs shrink-0">
@@ -378,6 +405,31 @@
                   </span>
                 </div>
               {:else}
+                {#if hasNameMismatch(node)}
+                  <!-- A wrong alias loads cleanly and the node runs perfectly
+                       well; what it breaks is identity, silently. Where the
+                       history ends up depends on the topology -- this
+                       aggregator writes the peer under the alias, the node
+                       writes itself under its own name -- so the warning
+                       states the disagreement, not a symptom. It does not
+                       prescribe which side to change: renaming the peer to
+                       the reported name can collide with this node's own name
+                       or another peer's, which the loader rejects. -->
+                  <div
+                    class="alert alert-warning alert-soft py-2 text-sm"
+                    data-testid="name-mismatch"
+                  >
+                    <span>
+                      Named <span class="font-mono font-semibold">{node.name}</span>
+                      here, but this node calls itself
+                      <span class="font-mono font-semibold">{node.node_name}</span>,
+                      and history recorded under one name is not found under the
+                      other. Make this peer's name and that node's
+                      <span class="font-mono">fleet.local_name</span> the same,
+                      keeping every name in the fleet unique.
+                    </span>
+                  </div>
+                {/if}
                 <!-- Core utilisation -->
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                   <div>

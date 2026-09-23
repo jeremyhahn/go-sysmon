@@ -486,9 +486,13 @@ calls itself.**
   rather than instead of it.
 
 What the load cannot check is **correspondence**: that the name configured here
-is the one the peer actually writes under. That value lives on the peer. A peer
-aliased `database` pointing at a node that calls itself `db-01` still loads; it
-is the operator's rule above that prevents it, not a check.
+is the one the peer actually writes under. That value lives on the peer, so a
+peer aliased `database` pointing at a node that calls itself `db-01` still
+loads. It is checked at **poll** time instead (#162): every node states the name
+it writes its history under as `node_name` in its snapshot — the same value its
+exporter uses for the `instance` label — and the aggregator compares it with the
+name it holds, reporting `name_match` in `GET /api/fleet` (below). The Fleet
+card shows a mismatch as a warning naming both names.
 
 **Upgrading:** a file that loaded before #37 can now fail at startup. Look for a
 peer named with a URL or with spaces or other punctuation, two unnamed peers on
@@ -684,6 +688,36 @@ twice or two ports, are not.
 
   Adding these three is an **additive schema change**: nothing was removed or
   reinterpreted, and a client reading only the existing fields is unaffected.
+
+  `name_match` does the same for **names** (#162): `same`, `different` or
+  `unknown`, comparing `name` — the name this aggregator holds for the node
+  and queries its history by — with `node_name`, the name the node says it
+  writes its history under (its `fleet.local_name`, or its hostname). A peer
+  states it in its `GET /api/summary`; one too old to serve a summary is
+  summarised from its whole snapshot, which carries the same `node_name`, so
+  the comparison is made either way. `different` means the peer is configured
+  under a name it does not answer to, so one node has two history identities:
+  in topology A the aggregator writes the peer under the alias while the node,
+  and any dashboard reading by the node's own name, uses the other, and a
+  chart queried by either misses what was written under the other. The
+  dashboard shows it as a warning on the card naming both. It is
+  a configuration fact, not a health signal, and does not touch `status` or the
+  counts.
+
+  `unknown` again never collapses into `same`: it is reported for a node whose
+  build predates `node_name` and sends none, and for a node that did not answer
+  its latest poll — whether the alias matches is a question about the node as
+  it is now, so a stale reading does not answer it. The dashboard shows a
+  reachable `unknown` quietly, as "name unverified". `node_name` is omitted
+  when the node did not state a name, and may still carry the last one heard
+  from a node that has since stopped answering; `name_match` is always present.
+  The aggregator's own card is compared with the name it resolves at the time
+  of the request, not the one in its latest snapshot: the two are the same
+  function, and the snapshot is restamped just after a reload of
+  `fleet.local_name` goes live, so a view built in that instant would
+  otherwise flag this node against itself.
+  Like the build fields, this is an additive change, and it reports `unknown`
+  for every peer until the peers themselves run a build that sends the field.
 
   The two health figures carry a **denominator** — `raid_arrays` beside
   `raid_unhealthy`, `smart_capable` beside `smart_unhealthy` — and without them

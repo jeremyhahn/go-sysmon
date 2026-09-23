@@ -35,6 +35,17 @@ type Snapshot struct {
 	// same reason and with the same meaning.
 	GitCommit string `json:"git_commit,omitempty"`
 	BuildDate string `json:"build_date,omitempty"`
+	// NodeName is the name this node writes its history under: its
+	// Prometheus instance label, which is its fleet.local_name or, unset, its
+	// hostname. It is carried so an aggregator can check that the name it
+	// holds for this node is the one the node answers to (#162). The server's
+	// decorator sets it, and a reload of fleet.local_name restamps the
+	// published snapshot, so it follows a rename as promptly as the
+	// exporter's label does.
+	//
+	// EMPTY MEANS THE NODE DID NOT STATE ITS NAME -- a binary predating the
+	// field. That is not agreement with any alias.
+	NodeName string `json:"node_name,omitempty"`
 	// Alerts are the threshold evaluations for this snapshot. Evaluated
 	// server-side so the dashboard, the API and the Prometheus endpoint all
 	// report the same conditions from the same rules.
@@ -97,6 +108,12 @@ type NodeSummary struct {
 	Hostname      string `json:"hostname"`
 	Version       string `json:"version"`
 	UptimeSeconds uint64 `json:"uptime_seconds"`
+
+	// NodeName is the name the node writes its history under, carried from
+	// its snapshot's NodeName: its fleet.local_name, or its hostname. An
+	// aggregator compares it with the name it holds for the node (#162).
+	// Empty means the node did not say -- a build predating the field.
+	NodeName string `json:"node_name,omitempty"`
 
 	// CollectionIntervalMs is the interval the node's monitor actually
 	// collects at -- the cadence its snapshot timestamps advance by, whatever
@@ -252,6 +269,22 @@ type FleetNode struct {
 	// did not state its build has not agreed with anything, and reporting the
 	// silence as agreement is the exact failure this field was added to end.
 	BuildMatch string `json:"build_match"`
+
+	// NameMatch says whether Name -- the name this aggregator holds for the
+	// node, and queries its history by -- is the name the node reports as its
+	// NodeName: "same", "different" or "unknown".
+	//
+	// "different" is the case #162 exists for: an alias that passes every
+	// load-time check yet is not the name the node answers to, so one node
+	// has two history identities -- the aggregator writes it under the alias,
+	// the node and anything reading by its own name use the other -- and a
+	// chart queried by either comes up empty with nothing to say why.
+	//
+	// "unknown" is its own answer and never collapses into "same", on the
+	// rule build_match set in #68: a node that did not state its name (an
+	// older build) or did not answer the latest poll has not agreed with
+	// anything. Like BuildMatch, it is not a health signal.
+	NameMatch string `json:"name_match"`
 
 	NodeSummary
 }

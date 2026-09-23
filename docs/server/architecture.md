@@ -55,6 +55,58 @@ not complete until `dist/` is rebuilt and committed with it" — and `main` stil
 spent a day carrying a bundle that did not match its sources (#55, #89).
 **Prose does not enforce; a failing check does.**
 
+### Every path serves the same decorated snapshot
+
+The fields that belong to the service rather than the hardware — `version`,
+`git_commit`, `build_date`, `node_name` and `alerts` — are attached in one
+place: the server's `snapshotDecorator` (`pkg/server/decorate.go`), which the
+server installs on its monitor with `Monitor.SetDecorator` when it is
+constructed. The monitor applies it to each collection before publishing, so
+`/api/snapshot`, both event stream protocols, the fleet's view of this node,
+`/metrics` and the exporter all read one decorated value. This holds for a
+server built by `sysmon serve` and for one embedded with `server.New` or
+`NewWithConfig` alike; the build fields come from `server.Config` (empty for
+`server.New`), and alert thresholds from `Config.Config`, or the built-in
+defaults without one.
+
+A monitor carries **one** decorator, because its snapshots describe one node.
+A second server built over the same monitor with the same build, configuration
+and fleet shares the first's decorator — and its alert evaluator, so a
+condition's duration is not restarted. One that describes the node differently
+is refused by `NewWithConfig` with `DecoratorInstalledError` rather than
+silently overwriting the first's build, name and alert history. `server.New`,
+which describes nothing of its own, serves whatever decoration the monitor
+already has, or installs the default one. `sysmon serve` starts its monitor
+only after the server is built, so no collection is ever published
+undecorated; a server built over an already-running monitor decorates the
+published snapshot before its constructor returns.
+
+The monitor also dates a reading whose Snapshotter left `timestamp` unset,
+since a reading is identified by its timestamp (below).
+
+These were attached by the CLI's own snapshotter until #162, so an embedded
+server streamed none of them and its `/api/events` and `/api/snapshot`
+disagreed. `pkg/server/served_snapshots_test.go` builds both shapes and fails
+if any path's snapshot differs from another's in any field.
+
+A reload calls `Monitor.Restamp`, which re-applies the decorator's `Identify`
+to the published snapshot **before returning**, so a rename of the node
+(`fleet.local_name`) is reported on every path at once rather than at the next
+collection — which may be a minute away, or never while a collector is hung.
+Publishing is serialised by a lock the collection itself is outside of, so a
+restamp can neither overwrite a newer collection nor be overwritten by one
+identified under the old configuration, and a hung collector cannot delay it.
+A reload that changes nothing `Identify` reads publishes nothing.
+
+A restamp is broadcast, so streams carry the new name too, but it is the
+**same reading**: same `timestamp`, same counters, alerts as evaluated (the
+evaluator keeps state between readings and sees each exactly once). A stream
+client keeping history must therefore key it by `timestamp` and add one point
+per reading; the dashboard does (`src/lib/reading.ts`). Installing a decorator
+on a monitor that has already published decorates that snapshot the same way,
+evaluating too, so a server built after its monitor started serves nothing
+undecorated.
+
 ## Why server-sent events rather than WebSocket
 
 The data flow is one-way. The server pushes snapshots; the only thing a client

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
-	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // withServeConfig points the serve command at a temporary config file and
@@ -163,66 +162,5 @@ func TestLoadServeConfig_AcceptsAnOrdinaryFleet(t *testing.T) {
 	}
 	if n := len(mgr.Current().Fleet.Peers); n != 2 {
 		t.Errorf("peers = %d, want 2", n)
-	}
-}
-
-// ---- build stamping --------------------------------------------------------
-
-// buildStub is a Snapshotter that reports nothing about itself, so whatever a
-// stamped snapshot carries came from the stamper.
-type buildStub struct{ err error }
-
-func (b buildStub) Snapshot() (*types.Snapshot, error) {
-	if b.err != nil {
-		return nil, b.err
-	}
-	return &types.Snapshot{Host: types.HostInfo{Hostname: "wiring-test"}}, nil
-}
-
-// TestEnrichedSnapshotter_StampsTheBuildServingIt is the origin of the fleet
-// payload's build identity. The release string has read the same for every
-// build this project has produced, so unless the commit and build date are
-// stamped here the fleet view has nothing that can tell two builds apart --
-// which is #68.
-func TestEnrichedSnapshotter_StampsTheBuildServingIt(t *testing.T) {
-	withServeConfig(t, "fleet:\n  local_name: aggregator\n")
-	mgr, err := loadServeConfig(nil)
-	if err != nil {
-		t.Fatalf("loadServeConfig() = %v", err)
-	}
-
-	snapper := newEnrichedSnapshotter(buildStub{}, mgr, "0.1.0-alpha", "a46f6cf", "2026-09-05T03:26:50Z")
-	snap, err := snapper.Snapshot()
-	if err != nil {
-		t.Fatalf("Snapshot() = %v", err)
-	}
-	if snap.Version != "0.1.0-alpha" {
-		t.Errorf("Version = %q, want the release string still stamped", snap.Version)
-	}
-	if snap.GitCommit != "a46f6cf" || snap.BuildDate != "2026-09-05T03:26:50Z" {
-		t.Errorf("build = %q/%q, want a46f6cf/2026-09-05T03:26:50Z",
-			snap.GitCommit, snap.BuildDate)
-	}
-}
-
-// TestEnrichedSnapshotter_CollectionFailureStampsNothing covers the error path:
-// a failed collection must surface as an error, not as an empty snapshot
-// wearing this node's build. A reader that saw one would believe a reading was
-// taken on a build that produced no reading at all.
-func TestEnrichedSnapshotter_CollectionFailureStampsNothing(t *testing.T) {
-	withServeConfig(t, "fleet:\n  local_name: aggregator\n")
-	mgr, err := loadServeConfig(nil)
-	if err != nil {
-		t.Fatalf("loadServeConfig() = %v", err)
-	}
-
-	want := errors.New("collector unavailable")
-	snapper := newEnrichedSnapshotter(buildStub{err: want}, mgr, "0.1.0-alpha", "a46f6cf", "2026-09-05T03:26:50Z")
-	snap, err := snapper.Snapshot()
-	if !errors.Is(err, want) {
-		t.Errorf("Snapshot() error = %v, want the collector's own error", err)
-	}
-	if snap != nil {
-		t.Errorf("Snapshot() = %+v, want nil alongside the error", snap)
 	}
 }

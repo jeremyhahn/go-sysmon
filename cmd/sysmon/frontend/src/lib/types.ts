@@ -63,6 +63,14 @@ export type NodeStatus = "healthy" | "warning" | "critical" | "unreachable";
  */
 export type BuildMatch = "same" | "different" | "unknown";
 
+/**
+ * NameMatch says whether the name the aggregator holds for a node -- the name
+ * its history is queried by -- is the name the node writes its history under
+ * (#162). "different" is a misconfigured alias; "unknown" (an older node, or
+ * one that did not answer) never means "same".
+ */
+export type NameMatch = "same" | "different" | "unknown";
+
 /** FleetNode is one peer's rolled-up health, as the local node last saw it. */
 /**
  * PeerSnapshot is what GET /api/fleet/{name}/snapshot returns: a peer's
@@ -100,6 +108,13 @@ export interface FleetNode {
   /** Agreement with the aggregator's own build. Absent from a server that
    * predates the field, which reads as "unknown" and shows nothing. */
   build_match?: BuildMatch;
+  /** The name the node itself writes its history under, from its summary (or
+   * its snapshot, for a peer too old to serve one). Absent when it did not
+   * say, which an older build does not. */
+  node_name?: string;
+  /** Agreement between `name` and `node_name`. Absent from a server that
+   * predates the field, which reads as "unknown" and shows nothing. */
+  name_match?: NameMatch;
   uptime_seconds: number;
   /** The interval the node's monitor collects at; 0 (or absent) is unknown. */
   collection_interval_ms?: number;

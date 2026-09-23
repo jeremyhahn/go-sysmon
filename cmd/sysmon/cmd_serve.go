@@ -146,9 +146,10 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	applyMemoryLimit()
 
 	sc := collector.NewSystemCollector(slog.Default())
-	snap := newEnrichedSnapshotter(newMonitorSnapshotter(sc), cfgMgr, version, gitCommit, buildDate)
-
-	mon, err := monitor.New(snap, interval)
+	// The build, the node's name and the alerts are attached by the server's
+	// decorator on this monitor, the same for every path that serves a
+	// snapshot; see server.NewWithConfig.
+	mon, err := monitor.New(newMonitorSnapshotter(sc), interval)
 	if err != nil {
 		return err
 	}
@@ -241,13 +242,8 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	observePeers(cfgMgr, fleetPoller, exporter)
 	go fleetPoller.Run(done)
 
-	if err := mon.Start(); err != nil {
-		return err
-	}
-
 	webAssets, err := fs.Sub(frontendAssets, "frontend/dist")
 	if err != nil {
-		stopMonitor(mon)
 		return err
 	}
 
@@ -265,7 +261,13 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		BuildDate: buildDate,
 	})
 	if err != nil {
-		stopMonitor(mon)
+		return err
+	}
+
+	// Started only once the server has installed its decorator on it, so no
+	// collection -- which the exporter and the fleet poller, already running,
+	// read at once -- is published without the build, the name or the alerts.
+	if err := mon.Start(); err != nil {
 		return err
 	}
 
