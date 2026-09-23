@@ -91,7 +91,6 @@ export interface PeerSnapshot {
 
 export interface FleetNode {
   name: string;
-  url: string;
   self: boolean;
   reachable: boolean;
   error?: string;

@@ -26,7 +26,6 @@ const peerSnapshot = {
 function fleetNode(name: string, hostname: string, reachable: boolean) {
   return {
     name,
-    url: `http://${name}:9099`,
     self: false,
     reachable,
     error: reachable ? '' : 'dial tcp: connect: connection refused',

@@ -15,7 +15,6 @@ import { mockSnapshotFeed } from './fixtures/mock-sse';
 function node(name: string, extra: Record<string, unknown>) {
   return {
     name,
-    url: `http://${name}:9099`,
     self: false,
     reachable: true,
     error: '',

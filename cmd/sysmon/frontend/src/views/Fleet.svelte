@@ -330,8 +330,11 @@
                       </span>
                     {/if}
                   </div>
-                  <p class="text-xs text-base-content/60 truncate">
-                    {node.hostname || node.url}
+                  <!-- The host name the node reports, or for a peer that has
+                       never answered, its name: the fleet view carries no
+                       peer URL to fall back on (#120). -->
+                  <p class="text-xs text-base-content/60 truncate" data-testid="node-subtitle">
+                    {node.hostname || node.name}
                     {#if node.uptime_seconds > 0}
                       &bull; up {formatDuration(node.uptime_seconds)}
                     {/if}

@@ -32,7 +32,6 @@ const bravoSnapshot = {
 function fleetNode(name: string, hostname: string) {
   return {
     name,
-    url: `http://${name}:9099`,
     self: false,
     reachable: true,
     age_seconds: 1,

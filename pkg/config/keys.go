@@ -3,7 +3,9 @@ package config
 import (
 	"sort"
 	"strconv"
+	"strings"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -102,17 +104,51 @@ func defaultMap(c Config) map[string]any {
 	}
 }
 
-// value renders a key's effective value for display.
+// withheld are the settings reported as configured-or-not rather than
+// verbatim, by redactPath. It is the one list of them: this node's own view and
+// the view it relays for a peer (RedactPeerView) both read it, so a setting
+// cannot be withheld on one path and served on the other.
+//
+// The paths are the certificate and key locations, the node's and the fleet's:
+// where a node keeps its private key is not something an unauthenticated
+// dashboard should hand out. The URLs are the Prometheus endpoints: the address
+// of the fleet's time-series database is reconnaissance anyone able to reach
+// the dashboard should not be handed, and whether history is switched on is
+// the part an operator needs. fleet.tls's two booleans are NOT here -- their
+// whole purpose is to be auditable at a glance, and a fleet running with
+// verification off should say so.
+var withheld = map[string]bool{
+	"server.tls_cert":             true,
+	"server.tls_key":              true,
+	"fleet.tls.ca_file":           true,
+	"fleet.tls.cert_file":         true,
+	"fleet.tls.key_file":          true,
+	"prometheus.remote_write_url": true,
+	"prometheus.query_url":        true,
+}
+
+// value renders a key's effective value for display, withholding the settings
+// in withheld.
 func (c *Config) value(key string) string {
+	v := c.raw(key)
+	if withheld[key] {
+		return redactPath(v)
+	}
+	return v
+}
+
+// raw renders a key's effective value verbatim. Only value may call it: raw is
+// the configuration as held, not as it may be served.
+func (c *Config) raw(key string) string {
 	switch key {
 	case "server.addr":
 		return c.Server.Addr
 	case "server.interval_ms":
 		return strconv.Itoa(c.Server.IntervalMs)
 	case "server.tls_cert":
-		return redactPath(c.Server.TLSCert)
+		return c.Server.TLSCert
 	case "server.tls_key":
-		return redactPath(c.Server.TLSKey)
+		return c.Server.TLSKey
 	case "server.watch":
 		return strconv.FormatBool(c.Server.Watch)
 	case "alerts.disk_full_pct":
@@ -163,30 +199,20 @@ func (c *Config) value(key string) string {
 		return strconv.Itoa(c.Fleet.PollIntervalMs)
 	case "fleet.timeout_ms":
 		return strconv.Itoa(c.Fleet.TimeoutMs)
-	// The three paths are reported as configured-or-not, like the server's own
-	// TLS paths: where a node keeps its private key is not something an
-	// unauthenticated dashboard should hand out. The two booleans are shown
-	// verbatim, because their whole purpose is to be auditable at a glance --
-	// a fleet running with verification off should say so here.
 	case "fleet.tls.ca_file":
-		return redactPath(c.Fleet.TLS.CAFile)
+		return c.Fleet.TLS.CAFile
 	case "fleet.tls.cert_file":
-		return redactPath(c.Fleet.TLS.CertFile)
+		return c.Fleet.TLS.CertFile
 	case "fleet.tls.key_file":
-		return redactPath(c.Fleet.TLS.KeyFile)
+		return c.Fleet.TLS.KeyFile
 	case "fleet.tls.insecure_skip_verify":
 		return strconv.FormatBool(c.Fleet.TLS.InsecureSkipVerify)
 	case "fleet.tls.require_tls":
 		return strconv.FormatBool(c.Fleet.TLS.RequireTLS)
-	// The two URLs are reported as configured-or-not rather than verbatim, the
-	// same way TLS paths are. This endpoint has no authentication of its own,
-	// and the address of the fleet's time-series database is reconnaissance
-	// that anyone able to reach the dashboard should not be handed. Whether
-	// history is switched on is the part an operator actually needs here.
 	case "prometheus.remote_write_url":
-		return redactPath(c.Prometheus.RemoteWriteURL)
+		return c.Prometheus.RemoteWriteURL
 	case "prometheus.query_url":
-		return redactPath(c.Prometheus.QueryURL)
+		return c.Prometheus.QueryURL
 	case "prometheus.sample_interval_ms":
 		return strconv.Itoa(c.Prometheus.SampleIntervalMs)
 	case "prometheus.flush_interval_ms":
@@ -308,11 +334,72 @@ func (m *Manager) View() types.ConfigView {
 		// hide nothing.
 		entries = append(entries, types.ConfigEntry{
 			Section: "fleet",
-			Key:     "fleet.peers." + p.Name,
+			Key:     peerKeyPrefix + p.Name,
 			Value:   redactPath(p.URL),
 			Source:  peerSource,
 		})
 	}
 
 	return types.ConfigView{ConfigFile: configFileState(live.fileLoaded), Entries: entries}
+}
+
+// peerKeyPrefix begins every configured peer's entry in the settings view; the
+// rest of the key is the peer's name.
+const peerKeyPrefix = "fleet.peers."
+
+// relayWithheld are the settings withheld only when one node relays another's
+// view, on top of withheld.
+//
+// server.addr is the node's bind address. Served by the node itself it tells
+// the caller nothing it did not need to connect; relayed by an aggregator
+// through /api/fleet/{name}/config it is another machine's listening port,
+// handed to anyone who can resolve the peer's name -- part of the topology
+// GET /api/fleet withholds (#120).
+var relayWithheld = map[string]bool{
+	"server.addr": true,
+}
+
+// RedactPeerView withholds a peer's topology from its settings view before an
+// aggregator relays it, as View withholds this node's own.
+//
+// The view is the peer's own GET /api/config, so a current build has already
+// withheld everything in withheld and this changes nothing there. It is applied
+// anyway, because the aggregator cannot know what the peer runs: a build older
+// than #16 sends its certificate paths, its Prometheus addresses, its config
+// file's path and its peers' URLs verbatim, and one older than #37 keys an
+// unnamed peer by its whole URL. What the aggregator relays is its own
+// response, and it withholds on its own authority.
+//
+// A peer entry whose name is not a usable node name can only be a URL carried
+// in the key; it is re-keyed positionally, "fleet.peers.(unnamed 1)", which
+// keeps the count of peers and the fact that each is configured.
+func RedactPeerView(view types.ConfigView) types.ConfigView {
+	out := types.ConfigView{
+		ConfigFile: redactRelayed(view.ConfigFile),
+		Entries:    make([]types.ConfigEntry, 0, len(view.Entries)),
+	}
+	unnamed := 0
+	for _, e := range view.Entries {
+		if name, ok := strings.CutPrefix(e.Key, peerKeyPrefix); ok {
+			if nodename.Validate(name) != nil {
+				unnamed++
+				e.Key = peerKeyPrefix + "(unnamed " + strconv.Itoa(unnamed) + ")"
+			}
+			e.Value = redactRelayed(e.Value)
+		} else if withheld[e.Key] || relayWithheld[e.Key] {
+			e.Value = redactRelayed(e.Value)
+		}
+		out.Entries = append(out.Entries, e)
+	}
+	return out
+}
+
+// redactRelayed is redactPath for a value that may already have been through
+// it: a relayed "(not set)" stays not set rather than reading as a value that
+// is configured.
+func redactRelayed(v string) string {
+	if v == ValueNotSet {
+		return v
+	}
+	return redactPath(v)
 }

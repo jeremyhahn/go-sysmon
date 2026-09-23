@@ -21,7 +21,7 @@ const peerSnapshot = {
 
 function fleetNode(name: string, hostname: string) {
   return {
-    name, url: `http://${name}:9099`, self: false, reachable: true, error: '',
+    name, self: false, reachable: true, error: '',
     age_seconds: 1, status: 'healthy', hostname, version: '1.0.0',
     uptime_seconds: 3600, critical_count: 0, warning_count: 0,
     cpu_percent: 5, memory_percent: 20, swap_percent: 0, load_per_core: 0.1,

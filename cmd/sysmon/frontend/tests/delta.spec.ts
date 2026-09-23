@@ -804,7 +804,7 @@ test.describe('the delta stream', () => {
           enabled: true,
           nodes: [
             {
-              name: 'alpha', url: 'http://alpha:8081', self: false, reachable: true,
+              name: 'alpha', self: false, reachable: true,
               error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
               version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
               cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,

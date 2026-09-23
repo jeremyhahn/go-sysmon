@@ -193,8 +193,22 @@ scheme, port or path, and the host is the node's identity — the string
 `GET /api/fleet` titles its card with and routes `/api/fleet/{name}/...` by —
 so withholding it here would hide nothing.
 
-`GET /api/fleet` still carries each peer's `url`, which the fleet card renders.
-That is the same exposure on a different endpoint and is tracked separately.
+**A peer's settings, relayed through `GET /api/fleet/{name}/config`, withhold
+its bind address as well** (#120). Served by the node itself, `server.addr` is
+the address the caller already connected to and is shown as it is. Relayed by
+an aggregator it is another machine's listening port, handed to anyone who can
+name that machine, so it becomes `(configured)`. The aggregator applies the
+same withheld list to what it relays rather than trusting the peer to have
+applied it: a build older than #16 sends its paths and addresses verbatim, and
+one older than #37 keys an unnamed peer by its whole URL, which is re-keyed
+`fleet.peers.(unnamed N)`. The list lives in one place (`withheld` in
+`pkg/config/keys.go`), so a setting cannot be withheld on one path and served
+on the other.
+
+`GET /api/fleet` carries no peer URL either (#120). A card is titled by the
+host name the node reports; a peer that has never answered shows its `name`.
+A poll error is worded without the address — see
+[`GET /api/fleet`](api.md#get-apifleet).
 
 ## Alerts
 
@@ -559,8 +573,8 @@ alongside the unauthenticated read endpoints.
 
 **Peer URLs must not carry credentials.** `https://user:token@peer` is rejected
 at load, as is a bare `user@peer` — authenticated peers are not supported, and
-`GET /api/fleet` copies peer URLs into a response that has no authentication of
-its own. Rejecting rather than redacting means the secret is
+a peer's URL is written to this node's log when a poll of it fails. Rejecting
+rather than redacting means the secret is
 never stored, never rendered and never logged; the error names the peer and its
 host but never the URL. A URL that cannot be parsed at all is also a load
 error, rather than a connection failure repeated on every poll.

@@ -19,7 +19,6 @@ import { openTab } from './fixtures/tabs';
 function node(name: string, health: Record<string, number | boolean>) {
   return {
     name,
-    url: `http://${name}:9099`,
     self: false,
     reachable: true,
     error: '',

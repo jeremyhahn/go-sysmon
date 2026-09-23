@@ -525,7 +525,9 @@ func (p *Poller) poll(peer config.Peer, cfg config.Fleet, prev *peerState, recor
 	if err != nil {
 		st.summary = nil
 		st.err = err.Error()
-		p.logger.Debug("fleet: peer unreachable", "peer", peer.Name, "error", err)
+		// The served error is worded to name no address (PeerRequestError);
+		// the log is on this host, and keeps the whole chain for the operator.
+		p.logger.Debug("fleet: peer unreachable", "peer", peer.Name, "error", err, "cause", errors.Unwrap(err))
 		// Keep the last good summary alongside the error so a brief blip shows
 		// as stale data rather than an empty card -- and keep the time that
 		// summary was actually fetched with it. fetchedAt dates the DATA, not
@@ -624,7 +626,7 @@ func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet,
 
 	parsed, err := url.Parse(target)
 	if err != nil {
-		return &ErrPeerURL{Peer: peer.Name, URL: peer.URL, Cause: err}
+		return &ErrPeerURL{Peer: peer.Name, Cause: err}
 	}
 	// The scheme is checked before the request is built, so a peer that should
 	// not be spoken to in the clear is refused here rather than after the
@@ -644,11 +646,11 @@ func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet,
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return err
+		return &ErrPeerURL{Peer: peer.Name, Cause: err}
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return err
+		return &PeerRequestError{Peer: peer.Name, Cause: err}
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -668,7 +670,7 @@ func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet,
 		return &ErrPeerStatus{Peer: peer.Name, Endpoint: endpoint, Status: resp.StatusCode}
 	}
 	if err := p.bodies.decode(bufferKey(peer.Name, endpoint), resp.Body, limit, v); err != nil {
-		return err
+		return &PeerRequestError{Peer: peer.Name, Cause: err}
 	}
 	// A peer on an older build sends null for a list it has none of, and this
 	// node serves what it decoded on as its own. Normalised here, before it is
@@ -874,7 +876,11 @@ func (p *Poller) View() types.Fleet {
 	now := time.Now()
 	p.mu.RLock()
 	for _, peer := range cfg.Peers {
-		n := types.FleetNode{Name: peer.Name, URL: peer.URL}
+		// The peer's URL stays here, in the poller that dials it. The view is
+		// served without authentication, and a URL is the peer's scheme,
+		// address and port on the internal network (#120); the dashboard
+		// addresses every node by name.
+		n := types.FleetNode{Name: peer.Name}
 		st := p.peers[peer.Name]
 		if st != nil && st.url != peer.URL {
 			// Polled at an address a reload has since replaced: that reading
@@ -965,28 +971,33 @@ func (e *ErrPlaintextPeer) Error() string {
 // Without this the request fails inside the HTTP client with a message about
 // an unsupported protocol and no mention of which peer caused it, which in a
 // fleet of ten is most of the work of finding it.
+//
+// The message does not quote the scheme. It is served in the fleet view, which
+// withholds every peer's address (#120), and the likeliest bad scheme is not a
+// scheme at all: "fs.lan:8081" parses as scheme "fs.lan", the peer's host.
 type ErrPeerScheme struct {
 	Peer   string
 	Scheme string
 }
 
 func (e *ErrPeerScheme) Error() string {
-	scheme := e.Scheme
-	if scheme == "" {
-		scheme = "(none)"
-	}
-	return fmt.Sprintf("peer %s has URL scheme %q; fleet peers are http or https", e.Peer, scheme)
+	return "peer " + e.Peer + " has a URL that is neither http nor https; " +
+		"a peer written as host:port needs http:// or https:// in front"
 }
 
 // ErrPeerURL reports a peer URL that will not parse.
+//
+// The message names the peer and not the URL, nor the parse error, whose text
+// quotes the URL: it is served in the fleet view, which withholds every peer's
+// address (#120). The configuration holds the URL for anyone who may read it,
+// and Unwrap keeps the parse error for this node's log.
 type ErrPeerURL struct {
 	Peer  string
-	URL   string
 	Cause error
 }
 
 func (e *ErrPeerURL) Error() string {
-	return fmt.Sprintf("peer %s has an unparseable URL %q: %v", e.Peer, e.URL, e.Cause)
+	return "peer " + e.Peer + " has an unparseable URL; check its url in fleet.peers"
 }
 
 func (e *ErrPeerURL) Unwrap() error { return e.Cause }
@@ -1073,11 +1084,12 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, &ErrPeerURL{Peer: name, Cause: err}
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		p.logger.Debug("fleet: peer config unreadable", "peer", name, "error", err)
+		return nil, &PeerRequestError{Peer: name, Cause: err}
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
@@ -1090,10 +1102,14 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 
 	var view types.ConfigView
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSnapshotBytes)).Decode(&view); err != nil {
-		return nil, err
+		p.logger.Debug("fleet: peer config unreadable", "peer", name, "error", err)
+		return nil, &PeerRequestError{Peer: name, Cause: err}
 	}
 	// The same older-peer case as a snapshot's lists (#151).
 	types.ReplaceNilSlices(&view)
+	// Relayed with the peer's topology withheld, as this node's own settings
+	// are: its bind address, and anything an older build still sends verbatim.
+	view = config.RedactPeerView(view)
 	return &view, nil
 }
 

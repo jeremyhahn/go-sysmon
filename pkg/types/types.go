@@ -230,9 +230,14 @@ const (
 // a glance without opening the node. The node's own figures come from its
 // NodeSummary, embedded so they encode at the top level as they always have;
 // the fields declared here are what the aggregator knows about the poll.
+//
+// It carries no URL. The view is served without authentication, and a peer's
+// URL is its scheme, address and port on the internal network -- the fleet's
+// topology, handed to anyone who can reach one node (#120). Name is how every
+// consumer addresses a node, through /api/fleet/{name}/...; the URL stays in the
+// aggregator's configuration and poller, which dial it.
 type FleetNode struct {
 	Name      string `json:"name"`
-	URL       string `json:"url"`
 	Self      bool   `json:"self"`
 	Reachable bool   `json:"reachable"`
 	Error     string `json:"error,omitempty"`

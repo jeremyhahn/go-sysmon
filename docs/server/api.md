@@ -170,9 +170,23 @@ a fifth of the whole snapshot.
 
 The fleet view: `{enabled, nodes, rollup}`. `enabled` is false on a node with
 no peers, and then there is no roll-up. Each node is a `NodeSummary` with the
-poll's own fields beside it: `name`, `url`, `self`, `reachable`, `error`,
-`age_seconds`, `status`, `build_match`, and `source` (`local`, `summary`, or
-`snapshot` for a peer too old to serve a summary). `rollup` is the fleet-level
+poll's own fields beside it: `name`, `self`, `reachable`, `error`,
+`age_seconds`, `status`, `build_match`, `name_match`, and `source` (`local`,
+`summary`, or `snapshot` for a peer too old to serve a summary).
+
+**No field carries a peer's URL or address** (#120). The endpoint has no
+authentication of its own, and a peer's URL is its scheme, address and port on
+the internal network. A node is addressed by `name` everywhere, including
+`/api/fleet/{name}/...`; the URL stays in the aggregator's configuration and
+poller. A peer's `error` is worded without the address too: `fleet: request to
+peer fs failed: connection refused`, not the transport's `Get
+"http://198.51.100.10:8081/api/summary": dial tcp …`. The reasons are a fixed
+set — `connection refused` and the kernel's other socket errors, `timed out`,
+`host name not found`, `certificate signed by an unknown authority`, `peer
+refused the TLS handshake: tls: certificate required`, `peer did not answer
+with TLS`, `malformed response: …` — and anything else reads `request failed;
+see this node's log`. The aggregator logs the whole error at debug level, on
+its own host. The roll-up's `attention` reasons are the same strings. `rollup` is the fleet-level
 statement: state counts, how long the longest absence has lasted, the nodes
 needing attention with their reasons, worst values with the node named, and
 sums with their denominators. Every field is described in
@@ -186,7 +200,21 @@ has been read before, the last snapshot is served with `reachable: false`. The
 client must show it as stale. `404` means an unknown node, or this node before
 its first collection. `502` means a peer that cannot be read and never has
 been, or that did not answer within the response's write budget. `503` means
-a reload moved the node while its snapshot was being fetched; ask again.
+a reload moved the node while its snapshot was being fetched; ask again. An
+error body names the node, never its address, as in `GET /api/fleet`.
+
+## GET /api/fleet/{name}/config
+
+One node's settings view, the same `{config_file, entries}` shape as
+`GET /api/config`. For this node's own name it is exactly `GET /api/config`.
+For a peer the aggregator fetches the peer's `GET /api/config` and relays it
+with the peer's topology withheld: `server.addr`, the peer's bind address, is
+reported as `(configured)`, and so is anything an older build still sends
+verbatim — certificate paths, Prometheus addresses, the config file's path,
+peer URLs. A peer entry keyed by a URL (a build older than #37) is re-keyed
+`fleet.peers.(unnamed N)`. See
+[What the settings view withholds](alerting-fleet-config.md#what-the-settings-view-withholds).
+`502` means the peer could not be read; the body names it without its address.
 
 ## GET /
 

@@ -18,7 +18,6 @@ function fleetNode(name: string, over: Json = {}): Json {
   const reachable = status !== 'unreachable';
   return {
     name,
-    url: `http://${name}:9099`,
     self: false,
     reachable,
     error: reachable ? '' : 'dial tcp: connect: connection refused',
