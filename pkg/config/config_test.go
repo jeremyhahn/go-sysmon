@@ -1624,6 +1624,27 @@ func TestManagerReload_ValidatesAgainstTheIncomingLocalName(t *testing.T) {
 	}
 }
 
+// replaceFile gives path the contents body atomically, the way an editor or a
+// config-management tool saves: the new file is written in full beside the old
+// one and renamed over it, so a reader sees either the old file or the new one
+// and never a partly written one.
+func replaceFile(path, body string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".sysmon-*.yaml")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.WriteString(body); err != nil {
+		return errors.Join(err, tmp.Close(), os.Remove(tmp.Name()))
+	}
+	if err := tmp.Close(); err != nil {
+		return errors.Join(err, os.Remove(tmp.Name()))
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return errors.Join(err, os.Remove(tmp.Name()))
+	}
+	return nil
+}
+
 // l is a tiny helper so the tests read as one line per case.
 func l(path string) *config.Loader { return config.NewLoader(path) }
 
@@ -1670,10 +1691,14 @@ func TestManagerReload_ConcurrentReloadsStayConsistent(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			// Each goroutine rewrites the file and reloads, so the loads race
-			// as well as the applies.
+			// Each goroutine replaces the file and reloads, so the loads race
+			// as well as the applies. The replacement is atomic: os.WriteFile
+			// truncates and then writes, and a concurrent Reload could read
+			// the empty or not-yet-filled file between the two. What a reload
+			// makes of a partly written file is a separate question; the
+			// property asserted here needs every load to see a whole file.
 			body := fmt.Sprintf("server:\n  interval_ms: %d\n", 1000+n*100)
-			err := os.WriteFile(path, []byte(body), 0o644)
+			err := replaceFile(path, body)
 			if arrived.Add(1) == reloaders {
 				close(allIn)
 			}
