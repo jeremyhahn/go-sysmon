@@ -2,6 +2,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { fleetNode, serveFleet } from './fixtures/fleet';
 import { openTab, type TabLabel } from './fixtures/tabs';
+import { historyBody } from './fixtures/history';
 
 /**
  * The dashboard under the server's Content-Security-Policy (#200).
@@ -70,26 +71,13 @@ async function mockHistory(page: Page) {
       }),
     })
   );
-  await page.route(/\/api\/history\?/, (route) => {
-    const params = new URL(route.request().url()).searchParams;
-    const start = Number(params.get('start'));
-    const end = Number(params.get('end'));
-    return route.fulfill({
+  await page.route(/\/api\/history\?/, (route) =>
+    route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        enabled: true,
-        node: 'local',
-        metric: params.get('metric'),
-        label: params.get('metric'),
-        unit: 'percent',
-        start_ms: start,
-        end_ms: end,
-        step_ms: 15000,
-        series: [{ name: '', points: [{ t: start, v: 10 }, { t: (start + end) / 2, v: 40 }, { t: end, v: 20 }] }],
-      }),
-    });
-  });
+      body: JSON.stringify(historyBody(new URL(route.request().url()).searchParams)),
+    })
+  );
 }
 
 /**

@@ -277,6 +277,14 @@ the wire itself (`api`, `transport`) stay live, but they assert shape and never
 contents. `tests/tab-alerts.spec.ts` covers the noisy host: every tab present,
 each with an alert firing.
 
+History mocks are built the same way, by one helper: `tests/fixtures/history.ts`
+answers `/api/history` on the grid a real range query returns, a point at every
+step with optional gaps. Hand-written mocks had three points half an hour apart
+under a fifteen-second step. Once the chart learned to break a line at a
+missing step (#179) those became three outages drawn as dots, and every spec
+that "checked the chart" still passed without drawing a line. `expectLine` in
+the same file reads the canvas and fails on exactly that.
+
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`
 holds 1120 bytes captured from a real controller, and it caught a decoder bug
 within the hour: that machine's RAID10 lays two spans over *one* array, so

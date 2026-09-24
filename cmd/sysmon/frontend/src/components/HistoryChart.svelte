@@ -17,11 +17,19 @@
     type ECharts,
   } from "$lib/echarts";
   import { theme } from "$lib/theme.svelte";
-  import { formatTick, formatValue, unitLabel } from "$lib/history";
-  import type { HistorySeries, HistoryUnit } from "$lib/types";
+  import {
+    formatTick,
+    formatValue,
+    isLone,
+    lineWithBreaks,
+    unitLabel,
+    type HistoryLine,
+    type LinePoint,
+  } from "$lib/history";
+  import type { HistoryUnit } from "$lib/types";
 
   interface Props {
-    series: HistorySeries[];
+    series: HistoryLine[];
     unit: HistoryUnit;
     /** The requested window, used to pick a label resolution and to keep the
      * axis honest when the data does not span the whole range. */
@@ -36,7 +44,7 @@
   let chart: ECharts | null = null;
 
   function buildOption(
-    s: HistorySeries[],
+    s: HistoryLine[],
     p: ChartPalette,
     from: number,
     to: number
@@ -57,11 +65,20 @@
           crossStyle: { color: p.axisPointer },
         },
         formatter: (params: unknown) => {
-          const items = params as Array<{
-            seriesName: string;
-            value: [number, number];
-            color: string;
-          }>;
+          // A break is a point with no value, and the axis tooltip can land
+          // on one: that line has nothing to report at this instant, which
+          // is not a zero, so it is left out rather than formatted. ECharts
+          // may hand the break back as null or as NaN, so both are refused.
+          const items = (
+            params as Array<{
+              seriesName: string;
+              value: LinePoint;
+              color: string;
+            }>
+          ).filter(
+            (i): i is typeof i & { value: [number, number] } =>
+              Number.isFinite(i.value[1])
+          );
           if (items.length === 0) return "";
           const when = new Date(items[0].value[0]).toLocaleString();
           return tooltipContent(
@@ -105,14 +122,28 @@
         // connectNulls is deliberately left off: a break in the data is a
         // break in the line. Joining across it would draw a straight run
         // through an outage and read as a machine that was idle rather than
-        // one that was gone.
-        data: line.points.map((pt) => [pt.t, pt.v] as [number, number]),
+        // one that was gone. The breaks themselves come from lineWithBreaks,
+        // which puts a null wherever the range has a missing step --
+        // Prometheus leaves an outage out rather than sending one.
+        data: drawn(lineWithBreaks(line.points, line.stepMs)),
         smooth: false,
         symbol: "none",
         lineStyle: { color: p.series[idx % p.series.length], width: 1.5 },
         itemStyle: { color: p.series[idx % p.series.length] },
       })),
     };
+  }
+
+  /**
+   * drawn marks every lone reading with a dot. The line carries no markers, so
+   * a reading between two breaks -- or the only one in the range -- would
+   * otherwise draw nothing at all, and a node seen once in an outage would
+   * look as though it had never been seen.
+   */
+  function drawn(line: LinePoint[]) {
+    return line.map((pt, i) =>
+      isLone(line, i) ? { value: pt, symbol: "circle", symbolSize: 4 } : pt
+    );
   }
 
   const palette = $derived(chartPalette(theme.resolved));

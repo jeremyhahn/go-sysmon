@@ -5,6 +5,7 @@ import { mockSnapshotFeed } from './fixtures/mock-sse';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 import { openTab, type TabLabel } from './fixtures/tabs';
 import { connections, installFakeEventSource, send } from './fixtures/fake-eventsource';
+import { expectLine, historyBody } from './fixtures/history';
 
 /**
  * The date range control.
@@ -42,30 +43,6 @@ const CATALOG = {
     { key: 'cpu_power', label: 'CPU package power', unit: 'watts', split_by: 'source' },
   ],
 };
-
-/** A history payload whose step is a fingerprint the tests can read back. */
-function historyBody(params: URLSearchParams, stepMs = 15000, names: string[] = ['']) {
-  const start = Number(params.get('start'));
-  const end = Number(params.get('end'));
-  return {
-    enabled: true,
-    node: params.get('node') ?? 'local',
-    metric: params.get('metric'),
-    label: params.get('metric'),
-    unit: 'percent',
-    start_ms: start,
-    end_ms: end,
-    step_ms: stepMs,
-    series: names.map((name, i) => ({
-      name,
-      points: [
-        { t: start, v: 10 + i },
-        { t: (start + end) / 2, v: 40 + i },
-        { t: end, v: 20 + i },
-      ],
-    })),
-  };
-}
 
 interface HistoryMock {
   requests: URLSearchParams[];
@@ -232,7 +209,7 @@ test.describe('the date range control', () => {
         route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(historyBody(params, 15000, ['nvme0n1', 'nvme1n1'])),
+          body: JSON.stringify(historyBody(params, { names: ['nvme0n1', 'nvme1n1'] })),
         }),
     });
     await openPanel(page, 'Storage');
@@ -865,7 +842,7 @@ test.describe('the date range control', () => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(historyBody(params, 15000, names)),
+          body: JSON.stringify(historyBody(params, { names })),
         });
       },
     });
@@ -897,7 +874,7 @@ test.describe('the date range control', () => {
           contentType: 'application/json',
           // The device names the fixture host actually has, so the chart's
           // splitValue matches and it really would draw if it were allowed to.
-          body: JSON.stringify(historyBody(params, 15000, ['nvme0n1', 'nvme1n1'])),
+          body: JSON.stringify(historyBody(params, { names: ['nvme0n1', 'nvme1n1'] })),
         });
       },
     });
@@ -915,6 +892,8 @@ test.describe('the date range control', () => {
     await expect
       .poll(() => page.locator('main canvas').count())
       .toBeGreaterThan(beforeRelease);
+    // And what it draws once both are in is lines across the range.
+    await expectLine(page.getByRole('img', { name: /History chart/ }).first());
   });
 
   test('a chart whose history failed says so instead of waiting for ever', async ({ page }) => {
@@ -940,7 +919,7 @@ test.describe('the date range control', () => {
           contentType: 'application/json',
           // A device this host does not have, so a chart that filtered
           // correctly finds nothing and says so.
-          body: JSON.stringify(historyBody(params, 15000, ['not-a-real-device'])),
+          body: JSON.stringify(historyBody(params, { names: ['not-a-real-device'] })),
         }),
     });
     await openPanel(page, 'Storage');
@@ -1151,7 +1130,7 @@ test.describe('the date range control', () => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify(historyBody(params, window === 3600_000 ? 1000 : 99000)),
+          body: JSON.stringify(historyBody(params, { stepMs: window === 3600_000 ? 1000 : 99000 })),
         });
       },
     });

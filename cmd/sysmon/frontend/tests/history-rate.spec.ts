@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mockSnapshotFeed } from "./fixtures/mock-sse";
 import { formatValue, unitLabel } from "../src/lib/history";
+import { expectLine, gridPoints, leadInGap, stepFor, stepsIn } from "./fixtures/history";
 
 /**
  * Charting a counter's history as a rate (#159).
@@ -34,6 +35,8 @@ async function setup(page: Page, opts: { empty?: boolean } = {}) {
     const start = Number(params.get("start"));
     const end = Number(params.get("end"));
     const metric = CATALOG.metrics.find((m) => m.key === params.get("metric"));
+    const step = stepFor(end - start);
+    const steps = stepsIn(start, end, step);
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -45,20 +48,24 @@ async function setup(page: Page, opts: { empty?: boolean } = {}) {
         unit: metric?.unit,
         start_ms: start,
         end_ms: end,
-        step_ms: 6000,
+        step_ms: step,
         // Already a rate in bytes, as the server returns it: a burst of
-        // paging that falls away again, not a total that climbs. A node that
+        // paging that rises and falls away again, not a total that climbs.
+        // Recording starts just after the window opens, which leaves the
+        // chart an empty lead-in to compare its line against. A node that
         // does not export its page size answers with no series at all.
         series: opts.empty
           ? []
           : [
               {
                 name: "",
-                points: [
-                  { t: start, v: 0 },
-                  { t: (start + end) / 2, v: 5_120_000 },
-                  { t: end, v: 16_384 },
-                ],
+                points: gridPoints({
+                  startMs: start,
+                  endMs: end,
+                  stepMs: step,
+                  value: (k) => 16_384 + 5_120_000 * Math.sin((Math.PI * k) / steps),
+                  gaps: [leadInGap(steps)],
+                }),
               },
             ],
       }),
@@ -85,6 +92,7 @@ test.describe("counter history", () => {
     const chart = results(page).getByRole("img", { name: "History chart in bytes per second" });
     await expect(chart).toBeVisible();
     await expect(chart.locator("canvas").first()).toBeVisible();
+    await expectLine(chart);
 
     await expect.poll(() => requests.some((r) => r.get("metric") === "swap_out")).toBe(true);
   });

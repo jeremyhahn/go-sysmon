@@ -21,7 +21,8 @@
   import TimeSeriesChart, { type SeriesConfig } from "./TimeSeriesChart.svelte";
   import HistoryChart from "./HistoryChart.svelte";
   import { history } from "$stores/history.svelte";
-  import type { HistorySeries, HistoryUnit } from "$lib/types";
+  import type { HistoryLine } from "$lib/history";
+  import type { HistoryUnit } from "$lib/types";
 
   interface Props {
     /** The live series, drawn when no range is selected. */
@@ -111,11 +112,11 @@
    * value, labelled from the live series in the same position so a chart reads
    * the same in both modes.
    */
-  const historyByMetric = $derived.by<HistorySeries[][]>(() => {
-    const perMetric: HistorySeries[][] = [];
+  const historyByMetric = $derived.by<HistoryLine[][]>(() => {
+    const perMetric: HistoryLine[][] = [];
     metrics.forEach((key, index) => {
       if (key == null || key === "") return;
-      const out: HistorySeries[] = [];
+      const out: HistoryLine[] = [];
       perMetric.push(out);
       const loaded = history.get(key);
       if (loaded == null) return;
@@ -140,6 +141,7 @@
                 ? s.name
                 : `${splitBy} ${s.name}`,
           points: s.points,
+          stepMs: loaded.step_ms,
         });
       }
     });

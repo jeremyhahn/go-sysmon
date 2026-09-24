@@ -15,7 +15,7 @@
   import { history } from "$stores/history.svelte";
   import { search } from "$stores/search.svelte";
   import { hitKey, type SearchHit } from "$lib/search";
-  import type { HistorySeries } from "$lib/types";
+  import type { HistoryLine } from "$lib/history";
 
   const pinned = $derived(search.pinned);
   const active = $derived(history.active);
@@ -25,12 +25,13 @@
   });
 
   /** seriesFor narrows a metric's series to the resource the hit names. */
-  function seriesFor(hit: SearchHit): HistorySeries[] {
+  function seriesFor(hit: SearchHit): HistoryLine[] {
     const loaded = history.get(hit.metric);
     if (loaded == null) return [];
     const series = loaded.series ?? [];
-    if (hit.resource == null) return series;
-    return series.filter((s) => s.name === hit.resource);
+    const matching =
+      hit.resource == null ? series : series.filter((s) => s.name === hit.resource);
+    return matching.map((s) => ({ name: s.name, points: s.points, stepMs: loaded.step_ms }));
   }
 
   function windowFor(hit: SearchHit): { startMs: number; endMs: number } {

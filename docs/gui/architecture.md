@@ -294,6 +294,32 @@ to say the second line was missing rather than flat. A partial chart says so
 instead; a window with nothing in it at all keeps its own separate message,
 because "no history here" and "half a chart" are different facts.
 
+**A gap in the data is a break in the line.** A range query answers on a grid:
+Prometheus evaluates it at `start`, `start + step`, `start + 2*step` and so on,
+and an evaluation with no sample within the database's lookback before it is
+simply left out of the response. ECharts joins whatever points it is given, so
+a two-hour outage used to be drawn as a straight line between the readings
+either side of it — a smooth, plausible value across the time the node was
+gone. `lineWithBreaks` in `src/lib/history.ts` puts a null at the first missing
+evaluation wherever two consecutive points are more than
+
+```
+1.5 * step_ms
+```
+
+apart. Adjacent points on the grid are exactly one step apart and the nearest
+gap is two, so the threshold sits midway and the millisecond a decoded
+timestamp can be off by tips neither way. The collection cadence does not enter
+into it: a node is refused any cadence slower than the lookback, so however
+sparse its samples every evaluation finds one, and a missing evaluation is
+always an absence rather than spacing. The step comes from each response's
+`step_ms` and travels with every line (`HistoryLine`), because one chart can
+combine metrics; a response without a usable step is refused as a failed read
+(`HistoryStepError`) rather than drawn with guessed breaks. A reading with a
+break on both sides — or the only one in the range — is drawn as a dot, since a
+line needs two points and the chart draws no markers, and the axis tooltip
+leaves a line out at a break rather than formatting a null as a value.
+
 Charts ask for what they need through `history.need()` rather than fetching, so
 a metric wanted by nine disk cards is fetched once. `history.get()` returns what
 arrived. The store discards everything it holds whenever the window or the node

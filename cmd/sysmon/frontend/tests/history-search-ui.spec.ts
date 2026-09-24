@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mockSnapshotFeed } from "./fixtures/mock-sse";
 import snapshot from "./fixtures/snapshot.json" with { type: "json" };
+import { expectLine, historyBody } from "./fixtures/history";
 
 /**
  * Searching the recorded history, end to end through the dashboard.
@@ -25,29 +26,6 @@ const CATALOG = {
 /** The device names in the fixture snapshot, which is what the search offers. */
 const devices: string[] = (snapshot.disks ?? []).map((d: { name: string }) => d.name);
 
-function historyBody(params: URLSearchParams, names: string[]) {
-  const start = Number(params.get("start"));
-  const end = Number(params.get("end"));
-  return {
-    enabled: true,
-    node: params.get("node") ?? "local",
-    metric: params.get("metric"),
-    label: params.get("metric"),
-    unit: "percent",
-    start_ms: start,
-    end_ms: end,
-    step_ms: 15000,
-    series: names.map((name, i) => ({
-      name,
-      points: [
-        { t: start, v: 10 + i },
-        { t: (start + end) / 2, v: 40 + i },
-        { t: end, v: 20 + i },
-      ],
-    })),
-  };
-}
-
 async function setup(page: Page, opts: { series?: string[] } = {}) {
   const requests: URLSearchParams[] = [];
   await mockSnapshotFeed(page);
@@ -61,7 +39,7 @@ async function setup(page: Page, opts: { series?: string[] } = {}) {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(historyBody(params, names)),
+      body: JSON.stringify(historyBody(params, { names })),
     });
   });
   return { requests };
@@ -83,8 +61,10 @@ test.describe("history search", () => {
     await option.click();
 
     await expect(results(page).getByText("Disk read \u2014 " + devices[0])).toBeVisible();
-    // The chart is drawn, not merely announced.
-    await expect(results(page).locator("canvas").first()).toBeVisible();
+    // The chart is drawn, not merely announced: a line across the range.
+    const chart = results(page).getByRole("img", { name: /History chart/ }).first();
+    await expect(chart.locator("canvas").first()).toBeVisible();
+    await expectLine(chart);
 
     // And it asked the server for the metric the hit named.
     await expect.poll(() => requests.some((r) => r.get("metric") === "disk_read")).toBe(true);

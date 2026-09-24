@@ -5,7 +5,12 @@
 // answer different questions -- "what is happening now" and "what happened
 // then" -- and a node can have the first without the second.
 
-import type { History, HistoryCatalog, HistoryUnit } from "$lib/types";
+import type {
+  History,
+  HistoryCatalog,
+  HistoryPoint,
+  HistoryUnit,
+} from "$lib/types";
 
 const CATALOG_URL = "/api/history/metrics";
 const HISTORY_URL = "/api/history";
@@ -44,6 +49,28 @@ export class HistoryError extends Error {
   }
 }
 
+/** HistoryStepError is a range whose step cannot be drawn from: absent, zero,
+ * negative or not a number. The server always sends a positive step, so this
+ * is something other than go-sysmon answering -- and without the step a chart
+ * cannot tell an outage from the spacing between its points (see
+ * lineWithBreaks), so the range is refused rather than drawn. */
+export class HistoryStepError extends Error {
+  readonly stepMs: unknown;
+  constructor(stepMs: unknown) {
+    super(`history: the range has no usable step (${String(stepMs)})`);
+    this.name = "HistoryStepError";
+    this.stepMs = stepMs;
+  }
+}
+
+/** checkStep throws a HistoryStepError unless stepMs is a positive, finite
+ * number of milliseconds. */
+function checkStep(stepMs: unknown): asserts stepMs is number {
+  if (typeof stepMs !== "number" || !Number.isFinite(stepMs) || stepMs <= 0) {
+    throw new HistoryStepError(stepMs);
+  }
+}
+
 async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { signal });
   if (!response.ok) {
@@ -76,7 +103,7 @@ export interface RangeRequest {
  * chose its own would be guessing at a limit it cannot see, and would start
  * failing on exactly the widest ranges.
  */
-export function fetchHistory(
+export async function fetchHistory(
   req: RangeRequest,
   signal?: AbortSignal
 ): Promise<History> {
@@ -86,7 +113,96 @@ export function fetchHistory(
     end: String(Math.round(req.endMs)),
   });
   if (req.node) params.set("node", req.node);
-  return getJSON<History>(`${HISTORY_URL}?${params.toString()}`, signal);
+  const history = await getJSON<History>(
+    `${HISTORY_URL}?${params.toString()}`,
+    signal
+  );
+  // Checked here, where it arrives, so a range that cannot be drawn fails as
+  // a request -- the chart says history is unavailable -- rather than
+  // throwing out of a chart's render later.
+  checkStep(history.step_ms);
+  return history;
+}
+
+/**
+ * HistoryLine is one line a history chart draws: a series and the step of the
+ * range it came from. The step travels with the line rather than with the
+ * chart because a chart can combine metrics -- disk read and write -- and it
+ * is each line's own step that says where that line has a gap.
+ */
+export interface HistoryLine {
+  name: string;
+  points: HistoryPoint[];
+  stepMs: number;
+}
+
+/**
+ * LinePoint is one entry of a history line as handed to the chart: a reading,
+ * or a null value where the line must break.
+ */
+export type LinePoint = [timeMs: number, value: number | null];
+
+/**
+ * gapSteps is how many step intervals apart two consecutive points must be
+ * before the line between them is broken. See lineWithBreaks.
+ */
+const gapSteps = 1.5;
+
+/**
+ * lineWithBreaks turns a series' points into a chart line that breaks wherever
+ * the data does.
+ *
+ * A range query answers on a grid: Prometheus evaluates the query at start,
+ * start + step, start + 2*step and so on, and each evaluation yields a value
+ * if the series has a sample within the database's lookback before it.
+ * Samples are written at the collection interval, and a node is refused any
+ * cadence slower than the lookback (docs/server/api.md), so an ordinary
+ * cadence -- however sparse, and whatever the step -- has a value at every
+ * evaluation. A missing evaluation is therefore never spacing: it is the node
+ * down, unreachable or not recording. Prometheus leaves it out of the
+ * response, and a chart joins whatever points it is given, so without a break
+ * a two-hour outage is drawn as a plausible straight line.
+ *
+ * So two consecutive points more than
+ *
+ *	gapSteps * step  (one and a half step intervals)
+ *
+ * apart have at least one evaluation missing between them, and a null is
+ * inserted at the first missing one. Adjacent points on the grid are exactly
+ * one step apart and the nearest gap is two, so the threshold sits midway:
+ * the millisecond the server's float-seconds decoding can shift a timestamp by
+ * cannot tip an adjacent pair over it or a missing point under it.
+ *
+ * A point before the first reading or after the last is not a gap to mark:
+ * the chart's axis spans the requested window, so the empty lead-in and tail
+ * are already drawn as empty.
+ */
+export function lineWithBreaks(
+  points: readonly HistoryPoint[],
+  stepMs: number
+): LinePoint[] {
+  checkStep(stepMs);
+  const threshold = gapSteps * stepMs;
+  const line: LinePoint[] = [];
+  points.forEach((pt, i) => {
+    const prev = points[i - 1];
+    if (prev != null && pt.t - prev.t > threshold) {
+      line.push([prev.t + stepMs, null]);
+    }
+    line.push([pt.t, pt.v]);
+  });
+  return line;
+}
+
+/**
+ * isLone reports whether line[i] is a reading with no reading either side of
+ * it -- one evaluation between two gaps, or the only point in the range. A
+ * line needs two points to draw a segment, so a chart drawing lines without
+ * markers shows nothing for it; the chart marks it so it is not lost.
+ */
+export function isLone(line: readonly LinePoint[], i: number): boolean {
+  const hasValue = (j: number) => line[j] != null && line[j][1] != null;
+  return hasValue(i) && !hasValue(i - 1) && !hasValue(i + 1);
 }
 
 /** formatValue renders a history value for its unit. */
