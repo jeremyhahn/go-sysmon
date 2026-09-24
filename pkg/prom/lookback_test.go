@@ -42,10 +42,14 @@ func newStatusServer(t *testing.T, a statusAnswers) *statusServer {
 		case "/api/v1/status/flags":
 			s.requests.Add(1)
 			w.WriteHeader(a.flags)
-			_, _ = w.Write([]byte(a.flagsBody))
+			if _, err := w.Write([]byte(a.flagsBody)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 		case "/api/v1/status/buildinfo":
 			w.WriteHeader(a.build)
-			_, _ = w.Write([]byte(a.buildBody))
+			if _, err := w.Write([]byte(a.buildBody)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 		default:
 			http.NotFound(w, r)
 		}
@@ -293,12 +297,12 @@ func TestWithLookbackCache(t *testing.T) {
 	}
 	s.set(statusAnswers{flags: 200, flagsBody: `{"status":"success","data":{"query.lookback-delta":"9m"}}`})
 	clock = clock.Add(59 * time.Minute)
-	if got, _ := q.Lookback(context.Background()); got != 5*time.Minute {
-		t.Fatalf("inside the configured hour Lookback() = %v, want the cached 5m", got)
+	if got, err := q.Lookback(context.Background()); err != nil || got != 5*time.Minute {
+		t.Fatalf("inside the configured hour Lookback() = %v, %v; want the cached 5m", got, err)
 	}
 	clock = clock.Add(time.Minute)
-	if got, _ := q.Lookback(context.Background()); got != 9*time.Minute {
-		t.Fatalf("after the configured hour Lookback() = %v, want the new 9m", got)
+	if got, err := q.Lookback(context.Background()); err != nil || got != 9*time.Minute {
+		t.Fatalf("after the configured hour Lookback() = %v, %v; want the new 9m", got, err)
 	}
 }
 
@@ -396,7 +400,9 @@ func TestLookback_ConcurrentCallersShareOneFetch(t *testing.T) {
 		case <-r.Context().Done():
 			return
 		}
-		_, _ = w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"5m"}}`))
+		if _, err := w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"5m"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer slow.Close()
 	q := querier(slow.URL, 5*time.Second)

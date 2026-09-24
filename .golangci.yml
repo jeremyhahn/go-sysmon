@@ -43,3 +43,12 @@ linters:
         linters:
           - errcheck
         source: '(^|[^\w])_\s*(,\s*\w+\s*)*:?=[^=]|,\s*_\s*:?=[^=]'
+
+issues:
+  # golangci-lint caps its report by default: three findings of the same text,
+  # fifty per linter. A capped run exits non-zero but hides the rest, so a fix
+  # that clears the shown findings reveals new ones on the next run (#212 found
+  # ten errcheck findings through a report that showed five). Zero lifts both
+  # caps: every run reports every finding.
+  max-issues-per-linter: 0
+  max-same-issues: 0

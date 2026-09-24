@@ -33,10 +33,14 @@ func flagsServer(t *testing.T, status int, lookback string) (*httptest.Server, *
 		}
 		w.WriteHeader(status)
 		if status != http.StatusOK {
-			_, _ = w.Write([]byte(`{"status":"error","error":"down"}`))
+			if _, err := w.Write([]byte(`{"status":"error","error":"down"}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
-		_, _ = w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"` + lookback + `"}}`))
+		if _, err := w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"` + lookback + `"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, &requests
@@ -145,7 +149,9 @@ func TestHistoryCadence_UsesTheConfigurationsTimeout(t *testing.T) {
 		case <-r.Context().Done():
 			return
 		}
-		_, _ = w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"1m"}}`))
+		if _, err := w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"1m"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(gated.Close)
 

@@ -42,10 +42,14 @@ func newDatabase(t *testing.T) *database {
 		d.mu.Unlock()
 		if !up {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"error","error":"starting"}`))
+			if _, err := w.Write([]byte(`{"status":"error","error":"starting"}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
 			return
 		}
-		_, _ = w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"` + lookback + `"}}`))
+		if _, err := w.Write([]byte(`{"status":"success","data":{"query.lookback-delta":"` + lookback + `"}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(d.srv.Close)
 	return d
