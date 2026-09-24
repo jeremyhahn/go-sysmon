@@ -63,18 +63,63 @@ type QueryOptions struct {
 type Querier struct {
 	opts   func() QueryOptions
 	client *http.Client
+	// lookbacks caches each database's query lookback; see lookback.go. A
+	// pointer so a pinned querier shares it.
+	lookbacks *lookbackCache
+	// now is the clock the cache is read against, replaceable by a test.
+	now func() time.Time
+	// lookbackTTL and lookbackRetry are how long a lookback answer, and a
+	// failure to get one, are cached; see WithLookbackCache.
+	lookbackTTL, lookbackRetry time.Duration
+}
+
+// QuerierOption adjusts a Querier as it is built.
+type QuerierOption func(*Querier)
+
+// WithLookbackCache sets how long a database's query lookback is cached once
+// read (ttl), and how soon a failure to read it is retried (retry). The
+// defaults are ten minutes and thirty seconds; see lookback.go.
+func WithLookbackCache(ttl, retry time.Duration) QuerierOption {
+	return func(q *Querier) {
+		q.lookbackTTL, q.lookbackRetry = ttl, retry
+	}
 }
 
 // NewQuerier returns a Querier reading its settings from opts on every query.
-func NewQuerier(opts func() QueryOptions) *Querier {
+func NewQuerier(opts func() QueryOptions, options ...QuerierOption) *Querier {
 	// Same policy as every other outbound client: a query API that redirects
 	// off the configured host would have this node drawing another
 	// deployment's history and labelling it as its own.
-	return &Querier{opts: opts, client: outbound.NewClient(0)}
+	q := &Querier{
+		opts: opts, client: outbound.NewClient(0), lookbacks: &lookbackCache{}, now: time.Now,
+		lookbackTTL: lookbackTTL, lookbackRetry: lookbackRetry,
+	}
+	for _, option := range options {
+		option(q)
+	}
+	return q
 }
 
 // Enabled reports whether a Prometheus is currently configured to read from.
 func (q *Querier) Enabled() bool { return q.opts().BaseURL != "" }
+
+// Pinned returns a querier bound to the options in force now, sharing this
+// one's connections and lookback cache.
+//
+// A read that takes several requests -- a counter's lookback, gap and rate --
+// must make them all against one database. The options are re-read per
+// request so a reload retargets the querier; mid-read, that would let the gap
+// measured on one database size a query sent to another.
+func (q *Querier) Pinned() *Querier {
+	o := q.opts()
+	return &Querier{
+		opts: func() QueryOptions { return o }, client: q.client, lookbacks: q.lookbacks, now: q.now,
+		lookbackTTL: q.lookbackTTL, lookbackRetry: q.lookbackRetry,
+	}
+}
+
+// Timeout is how long one read of history may take, as configured.
+func (q *Querier) Timeout() time.Duration { return q.opts().Timeout }
 
 // URL returns the Prometheus base URL this querier reads from.
 func (q *Querier) URL() string { return strings.TrimRight(q.opts().BaseURL, "/") }
@@ -105,22 +150,8 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 	if o.BaseURL == "" {
 		return nil, &ErrNoQueryEndpoint{}
 	}
-	if !end.After(start) {
-		return nil, &ErrInvalidRange{Message: "end must be after start"}
-	}
-	if step <= 0 {
-		return nil, &ErrInvalidRange{Message: "step must be greater than zero"}
-	}
-	// Points, not intervals. A range query returns a sample at start, at every
-	// step, AND at end -- so t=0 to t=10s at 1s is eleven points, not ten.
-	// Counting intervals let a request one point over the ceiling through, and
-	// Prometheus rejected it, which reached the dashboard as a 502 from a range
-	// this server had already decided was fine.
-	if points := int(end.Sub(start)/step) + 1; points > maxPoints {
-		return nil, &ErrInvalidRange{
-			Message: "the range needs " + strconv.Itoa(points) + " points at this step; Prometheus returns at most " +
-				strconv.Itoa(maxPoints) + ", so widen the step or narrow the range",
-		}
+	if err := ValidateRange(start, end, step); err != nil {
+		return nil, err
 	}
 
 	params := url.Values{}
@@ -205,6 +236,32 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 	return out, nil
 }
 
+// ValidateRange reports whether Prometheus will answer a range query over
+// start to end at step, as an *ErrInvalidRange saying what to change if not.
+// QueryRange checks it; a caller that queries anything else first -- a
+// counter's gap measurement -- checks it before, so a range that would be
+// refused is refused before any work is done for it.
+func ValidateRange(start, end time.Time, step time.Duration) error {
+	if !end.After(start) {
+		return &ErrInvalidRange{Message: "end must be after start"}
+	}
+	if step <= 0 {
+		return &ErrInvalidRange{Message: "step must be greater than zero"}
+	}
+	// Points, not intervals. A range query returns a sample at start, at every
+	// step, AND at end -- so t=0 to t=10s at 1s is eleven points, not ten.
+	// Counting intervals let a request one point over the ceiling through, and
+	// Prometheus rejected it, which reached the dashboard as a 502 from a range
+	// this server had already decided was fine.
+	if points := int(end.Sub(start)/step) + 1; points > maxPoints {
+		return &ErrInvalidRange{
+			Message: "the range needs " + strconv.Itoa(points) + " points at this step; Prometheus returns at most " +
+				strconv.Itoa(maxPoints) + ", so widen the step or narrow the range",
+		}
+	}
+	return nil
+}
+
 // decodePoint reads one [timestamp, "value"] pair.
 func decodePoint(v [2]json.RawMessage) (Point, bool) {
 	var secs float64
@@ -248,4 +305,223 @@ func StepFor(window time.Duration) time.Duration {
 		return time.Second
 	}
 	return step.Round(time.Second)
+}
+
+// RateGap is the sample gap a counter's rate window at step is sized from,
+// measured over enough of the series to cover every window of the range.
+//
+// A window at a chart point reads back RateWindow(step, gap) before it, so the
+// point at start reads samples from before the range. Measuring over the range
+// alone misses them -- a one-minute range over a once-a-minute series holds at
+// most one gap, often only part of one -- and the first windows come out too
+// narrow to hold two samples. So the measurement reaches back an extent E
+// first: step plus two lookbacks, which covers any window whose gap is within
+// the lookback, and a gap is (SampleGap treats a longer hole as an outage). The
+// lookback is the database's own (Querier.Lookback), so a deployment that has
+// raised it is measured over enough to see its slower cadences. Should the
+// window come out wider than E all the same, the span is widened to the
+// window and measured again, until it covers it.
+//
+// budget is how far before start, at most, the caller allows the measurement
+// and the rate query to read; a span it would need beyond that is refused as
+// an invalid range, the same bound the rate query itself is held to.
+func (q *Querier) RateGap(ctx context.Context, selector string, start, end time.Time, step, budget time.Duration) (time.Duration, error) {
+	// Decidable without the database: the measurement reaches back more
+	// than a step, so a step the budget cannot hold is refused as the
+	// caller's mistake before anything upstream is asked -- including
+	// whether the database publishes a lookback at all.
+	if step >= budget {
+		return 0, &ErrInvalidRange{Message: "the range and the rate window it needs exceed the " +
+			"most that may be read at once; narrow the range or the step"}
+	}
+	lookback, err := q.Lookback(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return rateGap(step, lookback, budget, func(extent time.Duration) (time.Duration, error) {
+		// SampleGap moves the start back to align on end, by up to one
+		// resolution, and timestamp() of an instant selector reads a further
+		// lookback before its first evaluation. Both are read, so both are
+		// held to the budget.
+		from := start.Add(-extent)
+		if start.Sub(alignedStart(from, end, gapResolution(end.Sub(from))))+lookback > budget {
+			return 0, &ErrInvalidRange{Message: "the range and the rate window it needs exceed the " +
+				"most that may be read at once; narrow the range or the step"}
+		}
+		return q.SampleGap(ctx, selector, from, end)
+	})
+}
+
+// rateGap is RateGap's search, over any measurement of the span reaching
+// extent before the range's start.
+func rateGap(step, lookback, budget time.Duration, measure func(extent time.Duration) (time.Duration, error)) (time.Duration, error) {
+	if step <= 0 {
+		return 0, &ErrInvalidRange{Message: "step must be greater than zero"}
+	}
+	if lookback <= 0 || lookback > (math.MaxInt64-step)/2 {
+		return 0, &ErrInvalidRange{Message: "the step is too large to take a rate over"}
+	}
+	extent := step + 2*lookback
+	for {
+		if extent > budget {
+			return 0, &ErrInvalidRange{Message: "the range and the rate window it needs exceed the " +
+				"most that may be read at once; narrow the range or the step"}
+		}
+		gap, err := measure(extent)
+		if err != nil || gap == 0 {
+			return gap, err
+		}
+		window, err := RateWindow(step, gap)
+		if err != nil {
+			return 0, err
+		}
+		if window <= extent {
+			return gap, nil
+		}
+		extent = window
+	}
+}
+
+// SampleGap measures the longest interval between two consecutive samples of
+// the series selector matches, over start to end, from the samples actually
+// stored. A counter's rate window is sized from it (RateWindow), so the window
+// fits the cadence the data really has -- whoever wrote it, at whatever
+// interval it was collected, under whatever settings were in force then --
+// rather than a cadence this node would have to guess at. A peer's collection
+// interval, a peer pushing its own history, and a node whose dashboard
+// interval was changed mid-range are all just samples here.
+//
+// It reads timestamp(selector) over the range: at each evaluation point, the
+// time of the newest sample at or before it. Two adjacent points see sample
+// times s1 <= s2; if the series has a gap from a to b, the last point before b
+// sees a sample no later than a and the first point at or after b sees one no
+// earlier than b, so their difference is at least b - a. The largest
+// difference between adjacent points is therefore never less than the largest
+// real gap, and exceeds it by at most one resolution step -- which is why the
+// finest resolution Prometheus will serve for the range is used, not the
+// chart's.
+//
+// A point with no value means the series had no sample within the database's
+// lookback before it: the node was down, or not recording. Two samples either
+// side of such a hole are an outage, not a cadence, and are not measured
+// across: sizing every window in the chart from an outage would smear the
+// whole range flat.
+//
+// A missing point is the ONLY sure sign of one. Between two points that both
+// have a value, the jump in sample time can never exceed lookback plus one
+// resolution -- the newer sample is at or before the later point, the older
+// within the lookback of the earlier -- and any jump up to that bound can be
+// made by healthy samples the evaluations stepped over: samples at 0s, 299s
+// and 301s under a 5m lookback show as a 301s jump, where the real gaps are
+// 299s and 2s. So such a jump is measured as a gap. It can only overstate the
+// real one -- a wider window, never an empty one -- and the most a hole it
+// hides can be is lookback plus one resolution, which the window then spans as
+// any rate() spans a hole shorter than itself: the samples either side are
+// real, and the counter's increase between them is the average of what
+// happened.
+//
+// Zero means the series was not seen at all over the span: there is nothing a
+// rate could be taken over.
+func (q *Querier) SampleGap(ctx context.Context, selector string, start, end time.Time) (time.Duration, error) {
+	resolution := gapResolution(end.Sub(start))
+	// The first evaluation is moved back, not the last one forward, so that
+	// an evaluation lands exactly on end: whether the series is still there
+	// at end is what decides if its open gap counts (see longestGap), and an
+	// evaluation short of end cannot say. Whole resolutions only, so the
+	// point count stays within what gapResolution allowed for.
+	series, err := q.QueryRange(ctx, "timestamp("+selector+")", alignedStart(start, end, resolution), end, resolution)
+	if err != nil {
+		return 0, err
+	}
+	return longestGap(series, resolution, end.UnixMilli()), nil
+}
+
+// alignedStart moves start back to the nearest instant a whole number of
+// resolutions before end, so a range query from it evaluates exactly at end.
+func alignedStart(start, end time.Time, resolution time.Duration) time.Time {
+	steps := (end.Sub(start) + resolution - 1) / resolution
+	return end.Add(-steps * resolution)
+}
+
+// gapResolution is the finest step Prometheus serves for a window: one
+// second, or coarser when the window would otherwise need more than maxPoints.
+func gapResolution(window time.Duration) time.Duration {
+	// Rounded UP, to whole milliseconds, so the point count never exceeds
+	// maxPoints: QueryRange counts window/step + 1 points.
+	intervals := time.Duration(maxPoints - 1)
+	resolution := (window + intervals - 1) / intervals
+	if r := resolution % time.Millisecond; r != 0 {
+		resolution += time.Millisecond - r
+	}
+	return max(time.Second, resolution)
+}
+
+// longestGap is the largest difference between the sample times seen at two
+// adjacent evaluation points, in any series. Points are adjacent when they are
+// one resolution apart; anything further means a point between them had no
+// value, which is an outage rather than a gap between samples.
+//
+// The gap still open at endMs counts too. At the live edge the newest sample
+// is as old as it is, and the one that will follow it has not been written:
+// that interval is a gap LONGER than endMs minus the newest sample's time --
+// strictly, since no sample landed at endMs -- so it is counted as one
+// millisecond, the resolution of a sample time, more. The strictness matters:
+// a window of exactly twice the elapsed time is left-open, and would exclude
+// the sample before the newest one when it lay exactly that far back. A
+// window sized from the closed gaps alone could hold only the newest sample.
+// It is counted only for a series with a value AT endMs, which SampleGap
+// aligns an evaluation to: one with none there is past Prometheus' lookback
+// -- it has stopped -- and has no rate at the edge to draw. Counting its age
+// would size every window from an outage. And only once the series has two
+// samples since its last hole, for the same reason.
+func longestGap(series []RangeSeries, resolution time.Duration, endMs int64) time.Duration {
+	stepMs := resolution.Milliseconds()
+	var gapMs int64
+	for _, s := range series {
+		// Whether the run of adjacent points the series ends in has seen two
+		// different samples. A run begins after every hole.
+		pairedSinceHole := false
+		for i := 1; i < len(s.Points); i++ {
+			prev, cur := s.Points[i-1], s.Points[i]
+			if d := cur.TimeMs - prev.TimeMs; d < stepMs-1 || d > stepMs+1 {
+				pairedSinceHole = false
+				continue
+			}
+			// Measured as a gap, however long: see the note on outages
+			// above. It can only overstate the real gap -- a wider window,
+			// never an empty one.
+			if d := sampleMs(cur) - sampleMs(prev); d > 0 {
+				gapMs = max(gapMs, d)
+				pairedSinceHole = true
+			}
+		}
+		// Only after a pair. A lone sample after an outage has no cadence to
+		// speak of yet: counting its age would size a window that reaches
+		// back across the outage to the sample before it, and draw a rate
+		// over the time the node was gone.
+		if n := len(s.Points); pairedSinceHole && abs(endMs-s.Points[n-1].TimeMs) <= 1 {
+			gapMs = max(gapMs, endMs-sampleMs(s.Points[n-1])+1)
+		}
+		// Two samples inside one evaluation step show as one: the point after
+		// them sees only the newer. They are less than a resolution apart, so
+		// a series seen at all has gaps of at least that to allow for. Without
+		// it, a counter that began in the last few minutes of a month-long
+		// range -- one step at that resolution -- would measure as nothing,
+		// though a rate window of that size holds both samples.
+		if len(s.Points) > 0 {
+			gapMs = max(gapMs, stepMs)
+		}
+	}
+	return time.Duration(gapMs) * time.Millisecond
+}
+
+// sampleMs is the sample time a timestamp() point carries: seconds, as a
+// float, of a time stored in whole milliseconds.
+func sampleMs(p Point) int64 { return int64(math.Round(p.Value * 1000)) }
+
+func abs(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
 }

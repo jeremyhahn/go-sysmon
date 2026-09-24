@@ -5,17 +5,22 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/metrics"
@@ -25,29 +30,117 @@ import (
 )
 
 // fakePrometheus answers range queries and records what was asked of it.
+//
+// With cadence set it also answers timestamp() the way Prometheus would for a
+// series sampled every cadence since the epoch: at each evaluation point of
+// the request, the time of the newest sample. That is what the counter path
+// measures its sample gap from.
 type fakePrometheus struct {
-	srv    *httptest.Server
-	seen   url.Values
-	status int
-	body   string
+	srv     *httptest.Server
+	seen    url.Values
+	queries []url.Values
+	status  int
+	body    string
+	cadence time.Duration
+	// flagsStatus and flags answer /api/v1/status/flags, where the query
+	// lookback is read from: Prometheus' default unless a test says otherwise.
+	flagsStatus int
+	flags       string
+	// holdRate, when set, holds every rate query -- the last request of a
+	// counter read -- until it is closed or the client gives up; rateArrived
+	// is told each time one arrives. The lookback and gap requests are
+	// answered at once, so a held rate query is a read that has done
+	// everything else. No test waits on wall-clock latency.
+	holdRate    chan struct{}
+	rateArrived chan struct{}
+}
+
+// clientGone reports whether a failed write is the client having hung up --
+// the expected end of a request the client's deadline cancelled -- rather
+// than a fault in the fake.
+func clientGone(r *http.Request, err error) bool {
+	return r.Context().Err() != nil || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }
 
 func newFakePrometheus(t *testing.T) *fakePrometheus {
 	t.Helper()
-	f := &fakePrometheus{status: http.StatusOK}
+	f := &fakePrometheus{status: http.StatusOK, flagsStatus: http.StatusOK,
+		flags: `{"status":"success","data":{"query.lookback-delta":"5m"}}`}
 	f.body = `{"status":"success","data":{"resultType":"matrix","result":[
 	  {"metric":{"device":"sdb"},"values":[[100,"2"]]},
 	  {"metric":{"device":"sda"},"values":[[100,"1"],[115,"1.5"]]}
 	]}}`
-	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f.seen = r.URL.Query()
-		w.WriteHeader(f.status)
-		if _, err := w.Write([]byte(f.body)); err != nil {
+	write := func(w http.ResponseWriter, r *http.Request, body string) {
+		// A write can only fail because the client has gone -- a request its
+		// deadline cancelled -- and that is tolerated as exactly that, never
+		// ignored: any other failure fails the test.
+		if _, err := w.Write([]byte(body)); err != nil && !clientGone(r, err) {
 			t.Errorf("fake Prometheus: writing the response: %v", err)
 		}
+	}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/status/flags" {
+			w.WriteHeader(f.flagsStatus)
+			write(w, r, f.flags)
+			return
+		}
+		q := r.URL.Query()
+		f.seen = q
+		f.queries = append(f.queries, q)
+		timestamps := strings.HasPrefix(q.Get("query"), "timestamp(")
+		if !timestamps && f.holdRate != nil {
+			f.rateArrived <- struct{}{}
+			select {
+			case <-f.holdRate:
+			case <-r.Context().Done():
+				// The client gave up; there is no one to answer.
+				return
+			}
+		}
+		w.WriteHeader(f.status)
+		body := f.body
+		if timestamps {
+			body = f.timestamps(t, q)
+		}
+		write(w, r, body)
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// holdRates makes f hold every rate query until the test ends, releasing
+// them before the server closes so no handler is left waiting.
+func (f *fakePrometheus) holdRates(t *testing.T) {
+	t.Helper()
+	f.holdRate = make(chan struct{})
+	f.rateArrived = make(chan struct{}, 16)
+	t.Cleanup(func() { close(f.holdRate) })
+}
+
+// timestamps renders timestamp() over the request's range for a series
+// sampled every f.cadence; with no cadence, a series with no samples.
+func (f *fakePrometheus) timestamps(t *testing.T, q url.Values) string {
+	t.Helper()
+	if f.cadence == 0 {
+		return `{"status":"success","data":{"resultType":"matrix","result":[]}}`
+	}
+	parse := func(name string) float64 {
+		v, err := strconv.ParseFloat(q.Get(name), 64)
+		if err != nil {
+			t.Fatalf("fake prometheus: %s = %q", name, q.Get(name))
+		}
+		return v
+	}
+	start, end, step := parse("start"), parse("end"), parse("step")
+	cadence := f.cadence.Seconds()
+	var values []string
+	for at := start; at <= end+1e-9; at += step {
+		newest := math.Floor(at/cadence) * cadence
+		values = append(values, "["+strconv.FormatFloat(at, 'f', 3, 64)+`,"`+
+			strconv.FormatFloat(newest, 'f', 3, 64)+`"]`)
+	}
+	return `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{},"values":[` +
+		strings.Join(values, ",") + `]}]}}`
 }
 
 // historyConfig is a manager naming this node mon0 with one peer, fs. The
@@ -158,6 +251,289 @@ func TestHandleHistory_ServesARange(t *testing.T) {
 	}
 	if len(got.Series[0].Points) != 2 || got.Series[0].Points[0].TimeMs != 100000 {
 		t.Fatalf("sda points = %+v, want two points in milliseconds", got.Series[0].Points)
+	}
+}
+
+// TestHandleHistory_CounterIsQueriedAsARate. A counter drawn raw is a line
+// that only rises; the endpoint must measure how far apart its samples really
+// are, ask Prometheus for its rate over a window sized from that gap and the
+// step, scale the swap counters' pages to bytes by the node's page size, and
+// report bytes per second.
+func TestHandleHistory_CounterIsQueriedAsARate(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.cadence = time.Minute
+	s := historyServer(t, f.srv.URL)
+	const scale = ` * sysmon_memory_page_size_bytes{instance="mon0"}`
+
+	// A five-minute step over samples a minute apart: a step plus the gap.
+	rec := get(t, s, "/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000&step=300000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(f.queries) != 2 {
+		t.Fatalf("%d queries, want the measurement and the rate", len(f.queries))
+	}
+	measured := f.queries[0]
+	if got, want := measured.Get("query"), `timestamp(sysmon_swap_out_pages_total{instance="mon0"})`; got != want {
+		t.Errorf("measurement query = %q, want %q", got, want)
+	}
+	// It reaches back before the range, over the first windows: a step plus
+	// two lookbacks.
+	if got, want := measured.Get("start"), "1788299100.000"; got != want {
+		t.Errorf("measurement start = %s, want %s: fifteen minutes before the range", got, want)
+	}
+	if got, want := f.seen.Get("query"), `rate(sysmon_swap_out_pages_total{instance="mon0"}[360s])`+scale+
+		` and sysmon_swap_out_pages_total{instance="mon0"}`; got != want {
+		t.Errorf("upstream query = %q, want %q", got, want)
+	}
+	var got types.History
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Unit != types.HistoryUnitBytesPerSecond {
+		t.Errorf("unit = %q, want bytes_per_second", got.Unit)
+	}
+
+	// A one-second step is held at two gaps, or a node collecting once a
+	// minute would have one sample per window and draw nothing.
+	rec = get(t, s, "/api/history?metric=swap_in&node=mon0&start=1788300000000&end=1788300600000&step=1000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := f.seen.Get("query"), `rate(sysmon_swap_in_pages_total{instance="mon0"}[120s])`+scale+
+		` and sysmon_swap_in_pages_total{instance="mon0"}`; got != want {
+		t.Errorf("upstream query = %q, want %q", got, want)
+	}
+
+	// Samples every four minutes -- a peer configured far slower than any
+	// dashboard interval, which this node has no way to know -- are measured,
+	// not guessed at.
+	f.cadence = 4 * time.Minute
+	rec = get(t, s, "/api/history?metric=swap_in&node=fs&start=1788300000000&end=1788303600000&step=6000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got, want := f.seen.Get("query"), `rate(sysmon_swap_in_pages_total{instance="fs"}[480s])`; !strings.HasPrefix(got, want) {
+		t.Errorf("upstream query = %q, want it to start %q", got, want)
+	}
+}
+
+// TestHandleHistory_CounterWithNothingToMeasureIsEmpty. A counter with no
+// two samples close enough to measure has no rate to draw. That is an empty
+// range -- the same answer as a node that recorded nothing -- and no rate
+// query is sent with a window sized from nothing.
+func TestHandleHistory_CounterWithNothingToMeasureIsEmpty(t *testing.T) {
+	f := newFakePrometheus(t)
+	s := historyServer(t, f.srv.URL)
+
+	rec := get(t, s, "/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got types.History
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Enabled || len(got.Series) != 0 {
+		t.Errorf("history = %+v, want an enabled, empty range", got)
+	}
+	if len(f.queries) != 1 {
+		t.Errorf("%d queries, want only the measurement", len(f.queries))
+	}
+}
+
+// TestHandleHistory_CounterRangeIsValidatedFirst. A range Prometheus would
+// refuse -- more points than it returns -- is the same 400 for a counter as
+// for a gauge, and is refused before any query is made for it: not measured
+// first, and not answered as an empty 200 when the measurement finds nothing.
+func TestHandleHistory_CounterRangeIsValidatedFirst(t *testing.T) {
+	f := newFakePrometheus(t)
+	s := historyServer(t, f.srv.URL)
+
+	for _, metric := range []string{"swap", "swap_out"} {
+		f.queries = nil
+		rec := get(t, s, "/api/history?metric="+metric+"&node=mon0&start=0&end=20000000&step=1000")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", metric, rec.Code)
+		}
+		if len(f.queries) != 0 {
+			t.Errorf("%s: %d queries made for a range that is refused", metric, len(f.queries))
+		}
+	}
+}
+
+// TestHandleHistory_CounterMeasurementAlignmentIsBudgeted. The measurement
+// is aligned on the end, which moves its start back by up to a resolution.
+// Near the 90-day bound that slack is what would carry it past, so it is
+// counted: a range leaving room for the extent but not the slack is refused
+// before anything is read.
+func TestHandleHistory_CounterMeasurementAlignmentIsBudgeted(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.cadence = time.Minute
+	s := historyServer(t, f.srv.URL)
+
+	// 90 days less 22 minutes, at a 12-minute step (inside the point limit):
+	// the extent -- a step and two lookbacks, 22 minutes -- uses exactly what
+	// is left, and aligning the resulting 90-day span on its 706.974s
+	// resolution moves the start back a further 7.026s, past the bound.
+	const end = int64(1788300000000)
+	start := end - (90*24*time.Hour - 22*time.Minute).Milliseconds()
+	rec := get(t, s, "/api/history?metric=swap_out&node=mon0&start="+strconv.FormatInt(start, 10)+
+		"&end="+strconv.FormatInt(end, 10)+"&step=720000")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if len(f.queries) != 0 {
+		t.Errorf("%d queries made past the budget", len(f.queries))
+	}
+}
+
+// TestHandleHistory_CounterNeedsAPublishedLookback. A database that does
+// not publish its query lookback -- VictoriaMetrics serves no status/flags --
+// cannot have a counter's rate window measured against it. That is said as
+// what it is, a property of the database, and no rate is guessed at; a gauge
+// from the same database is unaffected.
+func TestHandleHistory_CounterNeedsAPublishedLookback(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.cadence = time.Minute
+	f.flagsStatus, f.flags = http.StatusNotFound, "404 page not found"
+	s := historyServer(t, f.srv.URL)
+
+	rec := get(t, s, "/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "does not publish") || strings.Contains(body, f.srv.URL) {
+		t.Errorf("body = %q, want the reason and not the database's address", body)
+	}
+	if len(f.queries) != 0 {
+		t.Errorf("%d queries made for a counter whose window cannot be sized", len(f.queries))
+	}
+
+	if rec := get(t, s, "/api/history?metric=swap&node=mon0&start=1788300000000&end=1788303600000"); rec.Code != http.StatusOK {
+		t.Errorf("gauge from the same database: status = %d, want 200", rec.Code)
+	}
+
+	// A request that is invalid on its own terms is the caller's 400, found
+	// without asking the database anything -- not a 502 because the database
+	// would not have answered.
+	rec = get(t, s, "/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000&step=31536000000")
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("a one-year step: status = %d, want 400 before the database is asked", rec.Code)
+	}
+}
+
+// TestHandleHistory_TheDatabaseLookbackIsBudgeted. An instant selector reads
+// one database lookback before its first evaluation -- the gap measurement's
+// timestamp() and the rate's presence gate both use one. Under a 10-day
+// lookback a 65-day range leaves 25 days: the measurement's extent (a step and
+// two lookbacks, ~20 days) fits, and the lookback its selector reads on top
+// does not.
+func TestHandleHistory_TheDatabaseLookbackIsBudgeted(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.cadence = time.Minute
+	f.flags = `{"status":"success","data":{"query.lookback-delta":"10d"}}`
+	s := historyServer(t, f.srv.URL)
+
+	const end = int64(1788300000000)
+	start := end - (65 * 24 * time.Hour).Milliseconds()
+	rec := get(t, s, "/api/history?metric=swap_out&node=mon0&start="+strconv.FormatInt(start, 10)+
+		"&end="+strconv.FormatInt(end, 10))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if len(f.queries) != 0 {
+		t.Errorf("%d queries made past the budget", len(f.queries))
+	}
+}
+
+// TestHandleHistory_ACounterReadEndsInsideTheWriteBudget. A counter read is
+// several requests -- the lookback, the gap, the rate -- under ONE deadline,
+// held inside the server's own write budget: a configured timeout longer than
+// that must not keep the read going past the point where even a 502 could be
+// sent.
+//
+// Deterministic, with no latency in it: the lookback and gap are answered at
+// once and the rate query is held until the test ends, under a Prometheus
+// timeout of an hour. Only a single deadline spanning the whole read, capped
+// at the write budget, can end it -- per-request timeouts would leave the
+// handler waiting out the hour, and the test would fail at await's bound
+// rather than pass.
+func TestHandleHistory_ACounterReadEndsInsideTheWriteBudget(t *testing.T) {
+	saved := responseWriteTimeout
+	responseWriteTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { responseWriteTimeout = saved })
+
+	f := newFakePrometheus(t)
+	f.cadence = time.Minute
+	f.holdRates(t)
+	s := newServer(Config{
+		Config: historyConfig(t),
+		History: prom.NewQuerier(func() prom.QueryOptions {
+			return prom.QueryOptions{BaseURL: f.srv.URL, Timeout: time.Hour}
+		}),
+	}, nil)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- get(t, s, "/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000")
+	}()
+	await.Recv(t, "the read to reach its rate query", f.rateArrived)
+	if rec := await.Recv(t, "the held read to end at its deadline", done); rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 once the write budget ran out", rec.Code)
+	}
+}
+
+// TestHandleHistory_CounterMeasurementFailureIsABadGateway. The measurement
+// is a query like any other: Prometheus failing it is a 502, with the detail
+// in the log.
+func TestHandleHistory_CounterMeasurementFailureIsABadGateway(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.status = http.StatusInternalServerError
+	s := historyServer(t, f.srv.URL)
+
+	rec := get(t, s, "/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if len(f.queries) != 1 {
+		t.Errorf("%d queries, want the rate never asked for after the measurement failed", len(f.queries))
+	}
+}
+
+// TestHandleHistory_CounterLookbackIsBounded. A counter's rate window grows
+// with the step, and the step is the caller's. The 90-day bound on how much
+// one unauthenticated request may make Prometheus read has to count that
+// window, or a short range at a huge step reads years before its start.
+func TestHandleHistory_CounterLookbackIsBounded(t *testing.T) {
+	f := newFakePrometheus(t)
+	s := historyServer(t, f.srv.URL)
+
+	cases := []string{
+		// One hour at a one-year step: one point, a year of lookback.
+		"/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000&step=31536000000",
+		// A step whose lookback is within seconds of the largest duration:
+		// range plus lookback would overflow negative and slip under a sum.
+		"/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000&step=9223372000000",
+		// A full 90-day range plus any lookback at all.
+		"/api/history?metric=swap_in&node=mon0&start=1780524000000&end=1788300000000",
+	}
+	for _, path := range cases {
+		f.seen = nil
+		rec := get(t, s, path)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", path, rec.Code)
+		}
+		if f.seen != nil {
+			t.Errorf("%s: Prometheus was queried with %q", path, f.seen.Get("query"))
+		}
+	}
+
+	// The same huge step on a gauge reads nothing before start, so it is
+	// served exactly as before.
+	rec := get(t, s, "/api/history?metric=swap&node=mon0&start=1788300000000&end=1788303600000&step=31536000000")
+	if rec.Code != http.StatusOK {
+		t.Errorf("gauge at a huge step: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

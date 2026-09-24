@@ -3,6 +3,7 @@ package fleet
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -165,6 +166,42 @@ func TestView_PageCarriesEveryStampedField(t *testing.T) {
 				n.Status != w.Status || n.BuildMatch != w.BuildMatch || n.NameMatch != w.NameMatch {
 				t.Errorf("View(%+v) node %s = status %q build %q name %q; unpaged has %q %q %q",
 					q, n.Name, n.Status, n.BuildMatch, n.NameMatch, w.Status, w.BuildMatch, w.NameMatch)
+			}
+		}
+	}
+}
+
+// TestView_PageCarriesHistoryState is TestView_PageCarriesEveryStampedField
+// for the history gate's decision (#159): a node shown on a page carries the
+// same history state and reason as in the whole view -- a refused peer is not
+// shown as recorded because it was reached by paging or search.
+func TestView_PageCarriesHistoryState(t *testing.T) {
+	p := largeFleet(t, 60)
+	p.Observe(func(string, *types.Snapshot) {}, func() time.Duration { return time.Hour })
+	states := []types.PeerHistoryState{types.PeerHistoryRecorded, types.PeerHistoryRefused, types.PeerHistoryUnverified}
+	for i, peer := range p.cfgFn().Peers {
+		p.historyStatus.Store(peer.Name, historyDecision{url: peer.URL, status: types.PeerHistory{
+			State: states[i%len(states)], Reason: "reason for " + peer.Name,
+		}})
+	}
+
+	whole := p.View(Query{})
+	byName := map[string]types.FleetNode{}
+	for _, n := range whole.Nodes {
+		byName[n.Name] = n
+	}
+	for _, q := range []Query{{Offset: 20, Limit: 10}, {Search: "node-0004", Limit: 5}, {Anchor: "node-00031", Limit: 7}} {
+		page := p.View(q).Nodes
+		if len(page) == 0 {
+			t.Fatalf("View(%+v) returned no nodes", q)
+		}
+		for _, n := range page {
+			if n.Self {
+				continue
+			}
+			w := byName[n.Name]
+			if n.History == nil || w.History == nil || *n.History != *w.History {
+				t.Errorf("View(%+v) node %s history = %+v; unpaged has %+v", q, n.Name, n.History, w.History)
 			}
 		}
 	}

@@ -292,6 +292,7 @@ override is usually the first thing reached for.
 | memory | `memory_high` | `memory_pct` | 90 | warning |
 | memory | `swap_high` | `swap_out_pages_per_sec` | 200 | warning |
 | memory | `psi_full` (memory) | `psi_full_avg10` | 10 | warning |
+| host | `history_cadence_unchartable` | — (the database's query lookback) | — | warning |
 
 `swap_high` is a **paging rate**, not an occupancy. Swap that is merely resident
 costs nothing: pages parked there by a burst that ended hours ago stay counted
@@ -937,9 +938,17 @@ sysmon_swap_out_pages_total 5310
 `sysmon_swap_in_pages_total` and `sysmon_swap_out_pages_total` are pages
 swapped in and out since boot (`/proc/vmstat` `pswpin`/`pswpout`). Query them
 with `rate()`: that is how much swapping is happening now, which
-`sysmon_swap_used_percent` cannot say. The type matters because `rate()` treats
+`sysmon_swap_used_percent` cannot say. The dashboard's history charts do
+exactly that — the catalog entries `swap_in` and `swap_out` are declared
+counters and drawn as bytes per second (see
+[the history API](api.md#counters)). The type matters because `rate()` treats
 a counter's drop as a reset — a reboot zeroes both — where over a gauge it
-would read as a large decrease. Multiply by the host's page size for bytes.
+would read as a large decrease. Multiply by `sysmon_memory_page_size_bytes`,
+the host's own page size (omitted when unknown), for bytes:
+
+```
+rate(sysmon_swap_out_pages_total[5m]) * sysmon_memory_page_size_bytes
+```
 
 Unlike the gauges, these are **omitted** when `/proc/vmstat` could not be read,
 rather than exported as zero. A counter stuck at zero reads as a host that has
@@ -1061,13 +1070,89 @@ and the default sampling — well inside the lookback, so a chart at any step is
 continuous: at a step finer than the collection interval it holds each reading
 until the next, which is what was measured. Only a real absence longer than five
 minutes — a stopped monitor, an unreachable peer, a clock step of that size —
-leaves points missing, and it should. (So does a `sample_interval_ms` above five
-minutes, which was already true.) A monitor that stops no longer has its last
-snapshot written forever, so a stopped node now shows as stopped.
+leaves points missing, and it should. A monitor that stops no longer has its
+last snapshot written forever, so a stopped node now shows as stopped.
+
+A cadence slower than the lookback would write history that is stale between
+its own samples, so **while `remote_write_url` is set, a configuration is
+refused** (`ErrHistoryCadence`) — on reload, once this node has read the lookback
+— if two stored samples could be further apart than the database's query
+lookback, read from the database itself (see [the history API](api.md#counters) for what each
+backend reports). A writer stores the newest reading each time it ticks, so
+samples can be a tick **plus** a collection apart, and both are counted:
+
+- `sample_interval_ms` plus the collection interval — the larger of
+  `server.interval_ms` and 60s, the slowest the dashboard can switch to at
+  runtime — plus `prometheus.timeout_ms`, since the exporter flushes in line
+  and samples nothing while a write is outstanding;
+- with peers to relay, the fleet poll — the larger of `fleet.poll_interval_ms`
+  and the 60s the dashboard can override it to at runtime — plus
+  four `fleet.timeout_ms` (the poller sleeps after each refresh, which waits
+  for its slowest peer -- asked for its summary, then its snapshot -- so one
+  peer's readings can be two such refreshes apart), plus
+  `prometheus.timeout_ms` for the write. The peers' own
+  collection intervals are not this node's to configure, and are checked per
+  peer instead, below.
+
+**Each relayed peer is checked against the interval it reports.** Its summary
+carries `collection_interval_ms`, and two of its stored samples can be a relay
+tick plus that interval apart. The tick depends on how the peer is read: a peer
+that serves a summary has its history fetched by its own worker, at
+`sample_interval_ms` plus, for each round of the queue it can wait in (history
+fetches run four at a time: `ceil(peers / 4)` rounds), two timeouts — a history
+request and its fallback to the whole snapshot; a peer too old to serve one is
+relayed by the snapshot poll, at the larger of `fleet.poll_interval_ms` and
+60s, plus four timeouts (two refreshes of two requests). Either way `prometheus.timeout_ms` is added once, for
+the write that carries the reading to the database. The gate is asked before
+the fetch and again before the reading is handed on, so an approval that went
+stale during the fetch is not acted on. If that gap exceeds the database's lookback, the peer's
+readings are **not written** — nor fetched: the check is made from the summary
+before the history payload is asked for — and its fleet card says "history not
+recorded", with the figures. A peer that reports no interval
+(an older build; any peer read by snapshot), or a database whose lookback has
+not been read yet, is written and marked "history unverified": nothing is
+assumed in place of the missing figure. The check asks the database nothing; it
+uses the last lookback the database gave, which the background check keeps and
+which stands through a failed refresh until the database gives another — so a
+refusal does not lapse, and the peer is not relayed again, merely because the
+database is briefly unreachable.
+
+A node that writes no history may run all three as slowly as it likes.
+
+The database asked is the one `query_url` reads from, or — on a node that only
+writes — the Prometheus whose `/api/v1/write` receiver `remote_write_url` names.
+**Starting and reloading never wait on the database** (owner ruling,
+2026-09-23): the load-time check asks it nothing, and uses only a lookback
+already read. Until one has been — at startup, always; later, whenever the
+database is down, publishes none, or the write path belongs to another
+product's receiver — the configuration is accepted and the check is
+**pending**, not skipped: a warning in the log and the unit's status
+(`systemctl status`, from sdnotify `STATUS=`) say so and why. No lookback is
+substituted for the one the database did not give.
+
+A background check runs at once, then every 30 seconds until the lookback is
+learned,
+and after that every ten minutes (the lookback cache's lifetime, so a database
+restarted with a different lookback is noticed) and on every reload. A violation
+it finds is reported loudly, in three places:
+
+- the unit's status reads `degraded: ` and the reason;
+- the alert `history_cadence_unchartable` fires (Host tab, warning), naming the
+  settings that add up to the cadence, the cadence and the lookback — so it
+  reaches the dashboard, the event stream, the API and `/metrics` like any other
+  alert;
+- an error in the log.
+
+All three clear when a reload, or a database lookback raised past the cadence,
+fixes it. A database that stops answering after a violation was measured does
+not clear it: nothing that decides the cadence has changed, so the node stays
+degraded with the re-check pending. A reload is a new configuration, and its
+check starts afresh.
 
 For a counter's `rate()`, the window has to hold at least two samples at the
-**collection** cadence, not the sample cadence: a window sized from
-`sample_interval_ms` alone is empty whenever the dashboard collects more slowly.
+cadence the data really has, which no one setting describes; the history API
+measures it from the stored samples — see
+[Counters](api.md#counters).
 
 The receiver needs `--web.enable-remote-write-receiver`.
 

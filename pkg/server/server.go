@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -194,6 +195,13 @@ type Config struct {
 	Version   string
 	GitCommit string
 	BuildDate string
+
+	// Alerts is the evaluator the server's snapshots are given their alerts
+	// by. Optional: nil gives the server one of its own. An embedding program
+	// passes its own to raise standing conditions into it -- facts about the
+	// service a snapshot cannot carry (alert.Evaluator.Raise) -- which then
+	// reach every place an alert does.
+	Alerts *alert.Evaluator
 }
 
 // Server exposes system metrics over HTTP.
@@ -226,6 +234,9 @@ type Server struct {
 	version   string
 	gitCommit string
 	buildDate string
+
+	// alerts is the evaluator the decorator uses; see Config.Alerts.
+	alerts *alert.Evaluator
 }
 
 // New creates a Server that delegates to mon for metric data.
@@ -280,6 +291,7 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 		cfg:       cfg.Config,
 		exporter:  cfg.Exporter,
 		history:   cfg.History,
+		alerts:    cfg.Alerts,
 		version:   cfg.Version,
 		gitCommit: cfg.GitCommit,
 		buildDate: cfg.BuildDate,

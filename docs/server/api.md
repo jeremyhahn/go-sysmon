@@ -202,7 +202,13 @@ node's `build_match` was compared with.
 Each node is a `NodeSummary` with the poll's own fields beside it: `name`,
 `self`, `reachable`, `error`, `age_seconds`, `status`, `build_match`,
 `name_match`, and `source` (`local`, `summary`, or `snapshot` for a peer too
-old to serve a summary).
+old to serve a summary). While the aggregator records history, each peer also
+carries `history`: `{state, reason}`, where `state` is `recorded`, `refused`
+(the peer collects too slowly for its history to be charted, and none is
+written) or `unverified` (written, but the peer reports no collection
+interval, or the database's lookback is not known yet); the card shows the
+last two. `reason` is worded from durations alone and names no address. It is
+carried on every page a node appears on.
 
 **No field carries a peer's URL or address** (#120). The endpoint has no
 authentication of its own, and a peer's URL is its scheme, address and port on
@@ -387,6 +393,126 @@ hide the date picker or report a failure.
 `key` is not the metric name. Several keys share a metric and differ only by a
 label matcher — `psi_cpu` and `psi_memory` are both `sysmon_psi_full_avg10`.
 
+`unit` is one of `percent`, `bytes_per_second`, `celsius`, `watts` or
+`count`. A counter is always drawn in `bytes_per_second`, as a rate.
+
+### Counters
+
+Most entries are gauges, queried as a plain selector. A few are **counters** —
+`swap_in` and `swap_out`, over `sysmon_swap_in_pages_total` and
+`sysmon_swap_out_pages_total` — and those are queried as a rate, never as the
+running total, and drawn in **bytes per second**:
+
+```
+rate(sysmon_swap_out_pages_total{instance="fs"}[120s])
+  * sysmon_memory_page_size_bytes{instance="fs"}
+  and sysmon_swap_out_pages_total{instance="fs"}
+```
+
+A cumulative total drawn over time is a line that only rises, with a cliff at
+every reboot; `rate()` turns it into how much is happening now and treats the
+reboot as a counter reset rather than a drop.
+
+**Bytes, from each node's own page size.** The kernel counts pages, and a page
+is 4 KiB on x86 but 16 or 64 KiB on some arm64 kernels, so every node exports
+its own as `sysmon_memory_page_size_bytes` and the rate is multiplied by it. A
+node that does not export it — a peer running a build from before it existed —
+matches nothing, and its swap charts are empty rather than scaled by a guess.
+The two are matched on every label, not `on(instance)`: the gauge is written
+with exactly the counter's labels, and joining on instance alone turns
+many-to-many — and fails the query — while old and new series coexist after an
+`external_labels` reload.
+
+**Only while the counter is there.** A range selector ignores Prometheus'
+lookback, so a week's window would keep answering with the last rate long after
+a counter stopped being written — and an unreadable counter is omitted on
+purpose, to leave a gap. The trailing `and <counter>` is an instant selector,
+which does apply the lookback, so the gap stays a gap.
+
+**The window.** A counter is read in two steps. First the server measures the
+longest gap between the counter's stored samples, then it takes the rate over
+
+```
+window = max(step + gap, 2 * gap)
+```
+
+`step + gap` makes consecutive windows overlap by a sample, so an increase
+between two chart points is counted in one of them instead of falling between
+both. `2 * gap` is what guarantees the two samples `rate()` needs: Prometheus
+windows are left-open, `(t-w, t]`, and with no two samples more than `gap`
+apart the newest sample at or before `t` is later than `t - gap` and the one
+before it later than `t - 2*gap`. A whole number of seconds is written as `Ns`,
+anything else as milliseconds, rounded up.
+
+**The gap is measured, not configured.** Samples are written once per real
+collection, at the collection's time (#173), so how far apart they are depends
+on who wrote them and how often that node was collecting — this node's
+exporter, the fleet poller relaying a peer, a peer's own exporter, a dashboard
+interval changed halfway through the range — none of which the node drawing the
+chart can know. So it asks the data: it reads `timestamp(<counter>)` over the
+range at the finest resolution Prometheus will serve for it, which at each
+point is the time of the newest sample, and takes the largest difference
+between adjacent points. That difference is never smaller than the real gap it
+spans: the last point before a sample `b` sees one no later than the sample
+`a` before it, and the next point sees `b` or later. Two things widen it:
+
+- **Before the range.** The window at the first point reads back before
+  `start`, so the measurement starts earlier — by the step plus two lookbacks —
+  and reaches back further, measuring again, if the window it finds is wider
+  than that.
+- **At the live edge.** The newest sample is as old as it is, and the one after
+  it is not written yet: that open gap is counted too, one millisecond longer
+  than it has lasted — it is strictly longer, since nothing landed at `end`,
+  and a left-open window of exactly twice it would drop the sample before the
+  newest. The measurement is aligned so an evaluation lands exactly on `end`,
+  and the open gap counts only for a series present there with two samples
+  since its last hole: one already past the lookback at `end` has stopped, and
+  a lone sample after an outage has no cadence yet — counting its age would
+  reach a window back across the outage.
+
+A hole longer than the database's query lookback — which shows as a point with
+no value — is the node being absent —
+down, or not recording — which is how the database treats it for every chart,
+gauges included. A node writing history is refused any cadence slower than that
+(see the Prometheus section of the configuration guide), so its regular gaps are
+always shorter. An outage is not measured across — sizing every window in the
+chart from it would smear the whole range flat — though a window still spans a
+hole shorter than itself, as any `rate()` does: the samples either side are
+real, and the increase between them is the average of what happened. A jump in
+sample time between two points that both have a value is always measured as a
+gap: it can be healthy samples the evaluations stepped over (samples at 0s,
+299s and 301s show as a 301s jump), so it cannot prove an outage, and counting
+it can only widen the window, never empty it. A range
+with no two samples close enough to measure has no rate to draw, and is
+answered as an empty range.
+
+**The lookback is read from the database**, not assumed, from
+`GET /api/v1/status/flags` (`query.lookback-delta`), and cached for ten minutes
+(thirty seconds after a failure to reach it). What each backend answers:
+
+| Backend | Answers | Used |
+|---|---|---|
+| Prometheus | `query.lookback-delta` | as reported |
+| Thanos | `query.lookback-delta` (every component, v0.15 on) | as reported |
+| either, reporting `0s` | the PromQL engine replaces a zero with its default | 5m — the engine's `defaultLookbackDelta`, and Thanos' documented "promql default" |
+| Grafana Mimir | an empty flag map, by design; `buildinfo` names it | 5m — Mimir's documented `-querier.lookback-delta` default, which it does not publish; a changed value is not visible |
+| VictoriaMetrics | 404; it has no fixed lookback (it follows the median interval between samples) | none |
+| anything else without the flag | — | none |
+
+With none, counter history is refused with a 502 that says so —
+`counter history needs the time-series database's query lookback, which it does
+not publish` — rather than drawn with a lookback the database never gave.
+Gauges are unaffected.
+
+A range Prometheus would refuse — more than 11,000 points — is refused before
+the measurement, exactly as for a gauge. The measurement reads before `start`
+as the rate query does — each by its window, and by one database lookback more
+for the instant selectors in them (`timestamp()`, and the presence gate) — so
+the 90-day
+bound on one request counts both: a counter's range **plus** what either reads
+before it must fit in 90 days. Without that, an hour at a one-year step would be
+one point on the chart and a year of samples read by Prometheus.
+
 ## GET /api/history
 
 Answers one metric over one date range, for one node.
@@ -439,7 +565,7 @@ Status codes:
 | Code | Meaning |
 |------|---------|
 | 200  | Answered. An empty `series` is a real answer: the node has no data for that window. |
-| 400  | Unknown metric, a node this dashboard does not serve, or a window it will not serve — an end at or before the start, more than 90 days, or a step needing over 11,000 points (counted inclusively: a sample at the start, at every step, and at the end). |
+| 400  | Unknown metric, a node this dashboard does not serve, or a window it will not serve — an end at or before the start, more than 90 days, a step needing over 11,000 points (counted inclusively: a sample at the start, at every step, and at the end), or, for a counter, a range plus rate window longer than 90 days. |
 | 502  | Prometheus could not be reached, or refused the query. The dashboard reached go-sysmon; go-sysmon did not reach Prometheus. The detail is in the server log, not the response. |
 
 ## Origins

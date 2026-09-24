@@ -24,6 +24,7 @@ func richSnapshot() *types.Snapshot {
 		Memory: types.MemoryInfo{
 			TotalBytes: 100, UsedBytes: 60, UsedPercent: 60, SwapPercent: 5,
 			SwapInPages: 1204, SwapOutPages: 5310, SwapCountersAvailable: true,
+			PageSizeBytes: 16384,
 		},
 		Sensors: types.SensorData{
 			CoreTemps:    []types.CoreTemp{{CoreID: 0, TempCelsius: 44}},

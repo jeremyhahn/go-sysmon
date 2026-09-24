@@ -361,6 +361,25 @@
                       polled by full snapshot
                     </span>
                   {/if}
+                  {#if node.history?.state === "refused"}
+                    <!-- A refusal is otherwise invisible: the node looks
+                         healthy and its charts are simply empty. -->
+                    <span
+                      class="badge badge-warning badge-xs"
+                      title={node.history.reason}
+                      data-testid="history-refused"
+                    >
+                      history not recorded
+                    </span>
+                  {:else if node.history?.state === "unverified"}
+                    <span
+                      class="badge badge-ghost badge-xs"
+                      title={node.history.reason}
+                      data-testid="history-unverified"
+                    >
+                      history unverified
+                    </span>
+                  {/if}
                 </div>
               </div>
 

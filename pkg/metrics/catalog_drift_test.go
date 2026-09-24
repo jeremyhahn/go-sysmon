@@ -106,3 +106,40 @@ func TestReservedLabelsCoverWhatIsExported(t *testing.T) {
 		}
 	}
 }
+
+// kindSink records whether each metric was written as a gauge or a counter.
+type kindSink map[string]bool // name -> is a counter
+
+func (k kindSink) Gauge(name, _ string, _ float64, _ ...string)   { k[name] = false }
+func (k kindSink) Counter(name, _ string, _ float64, _ ...string) { k[name] = true }
+
+// TestCatalogCountersMatchTheExportedType keeps a catalog entry's Counter flag
+// in step with how its metric is actually written.
+//
+// Either mismatch returns a well-formed query and a plausible chart. A gauge
+// catalogued as a counter is drawn as its rate -- the derivative of a
+// percentage, under the percentage's name -- and a counter catalogued as a
+// gauge is drawn as an ever-rising total, which is the defect #159 fixed.
+func TestCatalogCountersMatchTheExportedType(t *testing.T) {
+	kinds := kindSink{}
+	Write(kinds, richSnapshot())
+
+	for _, m := range prom.Catalog() {
+		// What a rate is scaled by is a per-node gauge, and must be exported
+		// as one: a scale that is never written matches nothing, and the
+		// chart would be permanently empty.
+		if m.ScaleBy != "" {
+			if counter, ok := kinds[m.ScaleBy]; !ok || counter {
+				t.Errorf("catalog key %q scales by %q, which is not exported as a gauge", m.Key, m.ScaleBy)
+			}
+		}
+		counter, ok := kinds[m.Name]
+		if !ok {
+			continue // TestCatalogMatchesWhatIsExported reports it
+		}
+		if m.Counter != counter {
+			t.Errorf("catalog key %q has Counter=%v, but %q is exported as a %s",
+				m.Key, m.Counter, m.Name, map[bool]string{true: "counter", false: "gauge"}[counter])
+		}
+	}
+}

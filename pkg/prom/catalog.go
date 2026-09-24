@@ -1,7 +1,10 @@
 package prom
 
 import (
+	"math"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -34,6 +37,8 @@ type Metric struct {
 	// Label is the series title shown in the UI.
 	Label string
 	// Unit is how the values are formatted, which also picks the chart's axis.
+	// A Counter entry's unit is always a per-second one, because what it draws
+	// is a rate.
 	Unit types.HistoryUnit
 	// SplitBy is the label that distinguishes one returned series from another
 	// -- device, interface, gpu. Empty when a node yields a single series.
@@ -52,6 +57,25 @@ type Metric struct {
 	// A literal from this file, never from a request -- the same rule as
 	// Matchers.
 	Aggregate string
+	// Counter marks Name as a cumulative counter rather than a gauge. Its
+	// history is drawn as rate(selector[window]), with the window derived
+	// from the query step and the series' measured sample gap -- see
+	// RateWindow and Querier.SampleGap.
+	//
+	// A raw counter charted over time is a line that only ever rises, and a
+	// reboot's reset draws as a cliff. rate() is what turns it into the
+	// question a chart answers -- how much is happening now -- and it is also
+	// what treats the reset as a reset, which is why the metric is exported as
+	// a counter in the first place (#135).
+	Counter bool
+	// ScaleBy names a per-node gauge the value is multiplied by, matched on
+	// the full label set: the swap counters count pages, and are drawn in
+	// bytes by multiplying their rate by the node's page size.
+	//
+	// A node that does not export the gauge -- a peer running a build from
+	// before it existed -- matches nothing, so its chart is empty rather than
+	// scaled by a guess. A literal from this file, never from a request.
+	ScaleBy string
 }
 
 // catalog is ordered so the UI's metric picker reads top-down in the order a
@@ -61,6 +85,21 @@ var catalog = []Metric{
 	{Key: "load1", Name: "sysmon_load1", Label: "Load (1m)", Unit: types.HistoryUnitCount},
 	{Key: "memory", Name: "sysmon_memory_used_percent", Label: "Memory", Unit: types.HistoryUnitPercent},
 	{Key: "swap", Name: "sysmon_swap_used_percent", Label: "Swap", Unit: types.HistoryUnitPercent},
+	// Paging, next to occupancy: resident swap says how much is parked there,
+	// and these say how hard the machine is moving it. The kernel counts
+	// pages, and the page size is not the same everywhere -- 4 KiB on x86, 16
+	// or 64 KiB on some arm64 kernels -- so each node's own page size, which
+	// it exports, is what turns its rate into bytes.
+	{
+		Key: "swap_in", Name: "sysmon_swap_in_pages_total", Counter: true,
+		ScaleBy: "sysmon_memory_page_size_bytes",
+		Label:   "Swap in", Unit: types.HistoryUnitBytesPerSecond,
+	},
+	{
+		Key: "swap_out", Name: "sysmon_swap_out_pages_total", Counter: true,
+		ScaleBy: "sysmon_memory_page_size_bytes",
+		Label:   "Swap out", Unit: types.HistoryUnitBytesPerSecond,
+	},
 	// Both halves of the pressure signal. "full" is the one worth alerting on,
 	// and "some" is the one the live dashboard already plots -- a range picker
 	// that could not draw the chart the operator was just looking at would be
@@ -184,23 +223,142 @@ func quote(s string) string { return nodename.Quote(s) }
 // string literal.
 var labelValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 
-// Expr builds the PromQL for one metric on one node.
+// Selector is the metric's plain series selector on one node, before any
+// rate, scaling or aggregation: what a caller measures the sample cadence of.
 //
 // instance is the only caller-supplied part. It is validated against
 // nodename's rule AND escaped. The rule alone already leaves nothing to escape;
 // the escaping is underneath it rather than instead of it, so the matcher stays
 // a single literal even if the rule is ever widened (ruling on #37, 2026-09-02).
-func (m Metric) Expr(instance string) (string, error) {
+func (m Metric) Selector(instance string) (string, error) {
+	matcher, err := instanceMatcher(instance)
+	if err != nil {
+		return "", err
+	}
+	matchers := make([]string, 0, len(m.Matchers)+1)
+	matchers = append(matchers, matcher)
+	matchers = append(matchers, m.Matchers...)
+	return m.Name + "{" + strings.Join(matchers, ",") + "}", nil
+}
+
+// instanceMatcher is the validated, escaped instance="..." matcher.
+func instanceMatcher(instance string) (string, error) {
 	if err := nodename.Validate(instance); err != nil {
 		return "", &ErrInvalidInstance{Instance: instance}
 	}
-	instance = labelValueEscaper.Replace(instance)
-	matchers := make([]string, 0, len(m.Matchers)+1)
-	matchers = append(matchers, `instance="`+instance+`"`)
-	matchers = append(matchers, m.Matchers...)
-	selector := m.Name + "{" + strings.Join(matchers, ",") + "}"
-	if m.Aggregate != "" {
-		return m.Aggregate + "(" + selector + ")", nil
+	return `instance="` + labelValueEscaper.Replace(instance) + `"`, nil
+}
+
+// Expr builds the PromQL for one metric on one node, for a range query at the
+// given step. gap is the longest interval between two samples of the series
+// over the range -- Querier.SampleGap measures it -- and with the step it
+// sizes a counter's rate window; see RateWindow.
+//
+// A gauge ignores step and gap: its query is the selector, exactly as it was
+// before counters existed.
+func (m Metric) Expr(instance string, step, gap time.Duration) (string, error) {
+	expr, err := m.Selector(instance)
+	if err != nil {
+		return "", err
 	}
-	return selector, nil
+	if m.Counter {
+		window, err := RateWindow(step, gap)
+		if err != nil {
+			return "", err
+		}
+		expr = "rate(" + expr + "[" + promDuration(window) + "])"
+	}
+	if m.ScaleBy != "" {
+		// Matched on every label, not on instance alone. The gauge is written
+		// by the same writer, in the same batch, with exactly the counter's
+		// labels, so the default one-to-one match pairs each counter series
+		// with its own node's page size. on(instance) would pair it with
+		// every page-size series of the node: when external_labels are
+		// reloaded the old and new series coexist for a lookback, the match
+		// turns many-to-many, and Prometheus refuses the whole query.
+		matcher, err := instanceMatcher(instance)
+		if err != nil {
+			return "", err
+		}
+		expr += " * " + m.ScaleBy + "{" + matcher + "}"
+	}
+	if m.Counter {
+		// Only while the counter itself is there. A range selector does not
+		// apply Prometheus' lookback, so once a window is longer than it --
+		// a week's range already is -- rate() keeps answering from old
+		// samples after the counter stops being written, and the chart draws
+		// the last rate as though it were still happening. An unread
+		// counter is omitted on purpose (#135): an absent series must stay a
+		// gap. The instant selector here does apply the lookback.
+		selector, err := m.Selector(instance)
+		if err != nil {
+			return "", err
+		}
+		expr += " and " + selector
+	}
+	if m.Aggregate != "" {
+		return m.Aggregate + "(" + expr + ")", nil
+	}
+	return expr, nil
+}
+
+// Lookback is how far before a range's start the query reads: the rate
+// window for a counter, nothing for a gauge. A caller bounding how much of the
+// database one request may scan has to count it, because a counter's window
+// grows with the step and the step is the caller's choice.
+func (m Metric) Lookback(step, gap time.Duration) (time.Duration, error) {
+	if !m.Counter {
+		return 0, nil
+	}
+	return RateWindow(step, gap)
+}
+
+// rateFloorGaps is how many sample gaps a rate window spans at the least.
+// See RateWindow.
+const rateFloorGaps = 2
+
+// RateWindow is the range a counter's rate() is taken over, for a query at
+// step against a series whose samples are never more than gap apart:
+//
+//	window = max(step + gap, 2 * gap)
+//
+// step + gap, because rate() at each point of a range query only sees the
+// samples inside its own window. A window exactly one step wide ends where the
+// next begins, and the increase between the last sample of one window and the
+// first of the next falls in neither -- a burst of paging between two chart
+// points would simply not be drawn. One extra gap makes consecutive windows
+// overlap by a sample, so every increase is counted somewhere.
+//
+// 2 * gap as the floor, because rate() needs two samples in a window to say
+// anything, and two gaps is exactly what guarantees them. Prometheus windows
+// are left-open, (t-w, t]. With no two samples more than gap apart, the last
+// sample at or before t is later than t-gap, and the one before it is later
+// than t-2*gap: both are inside a window of 2*gap. A lost write or a slow
+// collection is not a reason to widen this, because gap is MEASURED from the
+// samples actually stored (Querier.SampleGap), so it already includes them.
+func RateWindow(step, gap time.Duration) (time.Duration, error) {
+	if step <= 0 {
+		return 0, &ErrInvalidRange{Message: "step must be greater than zero"}
+	}
+	if gap <= 0 {
+		return 0, &ErrInvalidRange{Message: "the sample gap must be greater than zero"}
+	}
+	if gap > math.MaxInt64/rateFloorGaps || step > math.MaxInt64-gap {
+		return 0, &ErrInvalidRange{Message: "the step is too large to take a rate over"}
+	}
+	return max(step+gap, rateFloorGaps*gap), nil
+}
+
+// promDuration renders a duration as a PromQL range: whole seconds when it is
+// one, milliseconds otherwise, rounded up so a window is never shorter than
+// the one computed.
+func promDuration(d time.Duration) string {
+	if d%time.Second == 0 {
+		return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+	}
+	ms := d / time.Millisecond
+	if d%time.Millisecond != 0 {
+		ms++
+	}
+	return strconv.FormatInt(int64(ms), 10) + "ms"
 }

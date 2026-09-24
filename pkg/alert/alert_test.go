@@ -1219,3 +1219,59 @@ func TestEvaluate_SwapDegradedInputs(t *testing.T) {
 		}
 	})
 }
+
+// TestEvaluator_StandingConditions. A condition raised from outside -- a
+// check of the service, not a reading of the hardware -- is reported by every
+// evaluation until cleared, with its first-seen time held across them like
+// any other alert.
+func TestEvaluator_StandingConditions(t *testing.T) {
+	e := alert.New()
+	t0 := time.Unix(1788300000, 0)
+	e.Raise(alert.RuleHistoryCadence, types.SeverityWarning, alert.CategoryHost, "prometheus.sample_interval_ms",
+		"history is written too slowly", 360, 300)
+
+	first := e.Evaluate(config.Alerts{}, &types.Snapshot{}, t0)
+	if len(first) != 1 || first[0].Rule != alert.RuleHistoryCadence || first[0].Category != alert.CategoryHost ||
+		first[0].ID != alert.RuleHistoryCadence+":prometheus.sample_interval_ms" || !first[0].Since.Equal(t0) {
+		t.Fatalf("first evaluation = %+v, want the raised condition, seen from t0", first)
+	}
+
+	// Raised again with a new message: replaced, and still the same episode.
+	e.Raise(alert.RuleHistoryCadence, types.SeverityWarning, alert.CategoryHost, "prometheus.sample_interval_ms",
+		"history is written far too slowly", 600, 300)
+	second := e.Evaluate(config.Alerts{}, &types.Snapshot{}, t0.Add(time.Minute))
+	if len(second) != 1 || second[0].Value != 600 || !second[0].Since.Equal(t0) {
+		t.Fatalf("second evaluation = %+v, want the new value under the first-seen time", second)
+	}
+
+	e.Clear(alert.RuleHistoryCadence)
+	if cleared := e.Evaluate(config.Alerts{}, &types.Snapshot{}, t0.Add(2*time.Minute)); len(cleared) != 0 {
+		t.Fatalf("after Clear: %+v, want nothing firing", cleared)
+	}
+}
+
+// TestEvaluator_ClearLeavesOtherRules. Clearing one rule's condition must not
+// withdraw another's.
+func TestEvaluator_ClearLeavesOtherRules(t *testing.T) {
+	e := alert.New()
+	e.Raise(alert.RuleHistoryCadence, types.SeverityWarning, alert.CategoryHost, "", "a", 0, 0)
+	e.Raise("other_condition", types.SeverityWarning, alert.CategoryHost, "", "b", 0, 0)
+	e.Clear(alert.RuleHistoryCadence)
+	got := e.Evaluate(config.Alerts{}, &types.Snapshot{}, time.Unix(1788300000, 0))
+	if len(got) != 1 || got[0].Rule != "other_condition" {
+		t.Fatalf("after clearing one rule: %+v, want only the other", got)
+	}
+}
+
+// TestEvaluator_RaiseReplacesTheRulesCondition. A standing condition whose
+// cause moves to another resource replaces the old one; the old must not be
+// left firing with nothing to clear it.
+func TestEvaluator_RaiseReplacesTheRulesCondition(t *testing.T) {
+	e := alert.New()
+	e.Raise(alert.RuleHistoryCadence, types.SeverityWarning, alert.CategoryHost, "fleet.poll_interval_ms", "a", 0, 0)
+	e.Raise(alert.RuleHistoryCadence, types.SeverityWarning, alert.CategoryHost, "prometheus.sample_interval_ms", "b", 0, 0)
+	got := e.Evaluate(config.Alerts{}, &types.Snapshot{}, time.Unix(1788300000, 0))
+	if len(got) != 1 || got[0].Resource != "prometheus.sample_interval_ms" {
+		t.Fatalf("alerts = %+v, want only the current resource", got)
+	}
+}

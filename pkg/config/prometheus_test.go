@@ -377,3 +377,133 @@ prometheus:
 		t.Error("QueryEnabled() = true with no query_url; the node would offer history it cannot read")
 	}
 }
+
+// load reads a configuration body that must parse.
+func load(t *testing.T, body string) *config.Config {
+	t.Helper()
+	cfg, _, err := config.NewLoader(writeConfig(t, body)).Load()
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	return cfg
+}
+
+// TestCheckHistoryCadence_BeyondTheLookbackIsRefused. History written more
+// slowly than the database's lookback is stale between its own samples: no
+// chart can draw it, and a counter's rate cannot be told from an outage.
+func TestCheckHistoryCadence_BeyondTheLookbackIsRefused(t *testing.T) {
+	const write = "prometheus:\n  remote_write_url: http://mon0:9090/api/v1/write\n"
+	const peers = "fleet:\n  peers:\n    - name: fs\n      url: http://fs:8081\n"
+	tests := []struct {
+		name     string
+		body     string
+		lookback time.Duration
+		key      string
+	}{
+		{"a slow exporter", write + "  sample_interval_ms: 300001\n", 5 * time.Minute,
+			"prometheus.sample_interval_ms + server.interval_ms + prometheus.timeout_ms"},
+		{"a slow collection", write + "server:\n  interval_ms: 600000\n", 5 * time.Minute,
+			"prometheus.sample_interval_ms + server.interval_ms + prometheus.timeout_ms"},
+		// Each under the limit, together over it: readings three minutes
+		// apart, sampled every four, can be stored six minutes apart.
+		{"a tick and a collection that add up past it",
+			write + "  sample_interval_ms: 240000\nserver:\n  interval_ms: 180000\n", 5 * time.Minute,
+			"prometheus.sample_interval_ms + server.interval_ms + prometheus.timeout_ms"},
+		// The dashboard can switch collection to 60s at runtime, whatever
+		// the file says.
+		{"a tick that the slowest dashboard interval carries past it", write + "  sample_interval_ms: 250000\n",
+			5 * time.Minute, "prometheus.sample_interval_ms + server.interval_ms + prometheus.timeout_ms"},
+		{"a slow relay of peers", write + peers + "  poll_interval_ms: 600000\n", 5 * time.Minute,
+			"fleet.poll_interval_ms + 4 x fleet.timeout_ms + prometheus.timeout_ms"},
+		// The poller sleeps after each refresh, which can wait out the
+		// timeout. (The peer's own collection is checked per peer, against
+		// what it reports -- not assumed here.)
+		{"a relay whose timeout carries it past", write + peers + "  poll_interval_ms: 295000\n  timeout_ms: 10000\n",
+			5 * time.Minute, "fleet.poll_interval_ms + 4 x fleet.timeout_ms + prometheus.timeout_ms"},
+		// The dashboard can override the fleet poll to 60s at runtime, so a
+		// short configured poll does not bound it.
+		{"a relay the runtime poll override carries past", write + peers + "  poll_interval_ms: 5000\n  timeout_ms: 245000\n",
+			5 * time.Minute, "fleet.poll_interval_ms + 4 x fleet.timeout_ms + prometheus.timeout_ms"},
+		// The limit is the database's lookback, not a constant: a cadence
+		// fine for Prometheus' default is refused by one set lower.
+		{"a database with a shorter lookback", write, time.Minute,
+			"prometheus.sample_interval_ms + server.interval_ms + prometheus.timeout_ms"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := config.CheckHistoryCadence(load(t, tt.body), tt.lookback)
+			var cadence *config.ErrHistoryCadence
+			if !errors.As(err, &cadence) {
+				t.Fatalf("CheckHistoryCadence() = %v, want *ErrHistoryCadence", err)
+			}
+			if cadence.Key != tt.key || cadence.LookbackMs != int(tt.lookback.Milliseconds()) {
+				t.Errorf("error = %+v, want key %q against %v", cadence, tt.key, tt.lookback)
+			}
+		})
+	}
+}
+
+// TestCheckHistoryCadence_Accepted. The limit is about history written into a
+// database with a given lookback. A node that writes none -- or that has no
+// peers to relay -- may run its dashboard and fleet poll as slowly as it
+// likes; and a database whose lookback has been raised takes slower cadences.
+func TestCheckHistoryCadence_Accepted(t *testing.T) {
+	const write = "prometheus:\n  remote_write_url: http://mon0:9090/api/v1/write\n"
+	cases := []struct {
+		name     string
+		body     string
+		lookback time.Duration
+	}{
+		{"no remote write", "server:\n  interval_ms: 600000\nprometheus:\n  sample_interval_ms: 600000\n", time.Minute},
+		{"writing, with a slow poll but no peers", write + "fleet:\n  poll_interval_ms: 600000\n", 5 * time.Minute},
+		// No fixed allowance for the peer's collection: a relay tick well
+		// inside the lookback passes, whatever the peer turns out to do.
+		{"a relay tick inside the lookback", write + "fleet:\n  peers:\n    - name: fs\n      url: http://fs:8081\n" +
+			"  poll_interval_ms: 205000\n  timeout_ms: 10000\n", 5 * time.Minute},
+		// Two refreshes of two requests each are counted, but only those:
+		// 250s + 4 x 10s + the 10s write timeout = 300s.
+		{"a relay tick of exactly the lookback", write + "fleet:\n  peers:\n    - name: fs\n      url: http://fs:8081\n" +
+			"  poll_interval_ms: 250000\n  timeout_ms: 10000\n", 5 * time.Minute},
+		// 230s sampling + 60s collection + the 10s write timeout = 300s.
+		{"writing at exactly the limit", write + "  sample_interval_ms: 230000\n", 5 * time.Minute},
+		{"the defaults", write, 5 * time.Minute},
+		{"a slow cadence into a database with a raised lookback",
+			write + "  sample_interval_ms: 600000\nserver:\n  interval_ms: 600000\n", time.Hour},
+	}
+	for _, c := range cases {
+		if err := config.CheckHistoryCadence(load(t, c.body), c.lookback); err != nil {
+			t.Errorf("%s: CheckHistoryCadence() = %v, want it accepted", c.name, err)
+		}
+	}
+}
+
+// TestLoad_DoesNotCheckTheCadence. Parsing must give the same answer wherever
+// it runs, and the limit is the database's lookback -- so a slow cadence
+// parses, and the serve command's validator is what refuses it.
+func TestLoad_DoesNotCheckTheCadence(t *testing.T) {
+	load(t, "prometheus:\n  remote_write_url: http://mon0:9090/api/v1/write\n  sample_interval_ms: 600000\n")
+}
+
+// TestCheckHistoryCadence_TheWriteTimeoutCounts. The exporter flushes in
+// line, and a write may take up to prometheus.timeout_ms with nothing sampled
+// meanwhile: the default 15s tick and 60s collection under a 9m write timeout
+// can leave 10m between stored samples.
+func TestCheckHistoryCadence_TheWriteTimeoutCounts(t *testing.T) {
+	body := "prometheus:\n  remote_write_url: http://mon0:9090/api/v1/write\n  timeout_ms: 540000\n"
+	var cadence *config.ErrHistoryCadence
+	if err := config.CheckHistoryCadence(load(t, body), 5*time.Minute); !errors.As(err, &cadence) {
+		t.Fatalf("a 9m write timeout against a 5m lookback: %v, want *ErrHistoryCadence", err)
+	}
+}
+
+// TestCheckHistoryCadence_TheSampleIntervalIsInWholeTicks. The exporter
+// wakes once a second, so 230.5s samples every 231s: with a 60s collection
+// and a 9.5s write timeout that is 300.5s, past a 5m lookback -- though the
+// configured milliseconds add up to exactly 300s.
+func TestCheckHistoryCadence_TheSampleIntervalIsInWholeTicks(t *testing.T) {
+	body := "prometheus:\n  remote_write_url: http://mon0:9090/api/v1/write\n  sample_interval_ms: 230500\n  timeout_ms: 9500\n"
+	var cadence *config.ErrHistoryCadence
+	if err := config.CheckHistoryCadence(load(t, body), 5*time.Minute); !errors.As(err, &cadence) || cadence.IntervalMs != 300500 {
+		t.Fatalf("CheckHistoryCadence = %v, want *ErrHistoryCadence at 300500ms", err)
+	}
+}

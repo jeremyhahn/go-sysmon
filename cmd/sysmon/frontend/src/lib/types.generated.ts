@@ -66,6 +66,16 @@ export type NodeStatus =
   | "unreachable";
 
 /**
+ * PeerHistoryState is whether an aggregator records a peer's history. A named
+ * type, so the dashboard's union of its values is generated from these
+ * constants rather than kept by hand.
+ */
+export type PeerHistoryState =
+  | "recorded"
+  | "refused"
+  | "unverified";
+
+/**
  * Presence is whether a node has a class of software. It is a tri-state
  * because absence has to be proved: a node that could not look is not a node
  * that looked and found nothing, and only the second may hide a tab.
@@ -655,6 +665,13 @@ export interface FleetNode {
    * anything. Like BuildMatch, it is not a health signal.
    */
   name_match: NameMatch;
+  /**
+   * History says whether this aggregator records the node's history, when
+   * it records history at all; absent otherwise, and for the aggregator
+   * itself. It is shown on the card because a refusal is otherwise
+   * invisible: the node looks healthy and its charts are simply empty.
+   */
+  history?: PeerHistory | null;
   hostname: string;
   version: string;
   uptime_seconds: number;
@@ -1355,6 +1372,17 @@ export interface PartitionInfo {
   mountpoint: string;
   fstype: string;
   opts: string;
+}
+
+/** PeerHistory is whether an aggregator records one peer's history, and why. */
+export interface PeerHistory {
+  /**
+   * State is PeerHistoryRecorded, PeerHistoryRefused or
+   * PeerHistoryUnverified.
+   */
+  state: PeerHistoryState;
+  /** Reason says why, for anything but recorded. */
+  reason?: string;
 }
 
 /**

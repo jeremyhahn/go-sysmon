@@ -70,7 +70,18 @@ const (
 	// such host, which trains people to ignore the category and is worse than
 	// saying nothing. Only a drive that stops is worth telling anyone about.
 	RuleSMARTUnreadable = "smart_unreadable"
+
+	// RuleHistoryCadence fires while this node writes history more slowly
+	// than the time-series database's query lookback: every series is stale
+	// between its own samples, so none of it can be charted. It is a standing
+	// condition of the service rather than a reading of the hardware, raised
+	// and cleared by the check that measures it (see Raise).
+	RuleHistoryCadence = "history_cadence_unchartable"
 )
+
+// CategoryHost files an alert under the dashboard's Host tab: a condition of
+// the service on this machine rather than of one of its components.
+const CategoryHost = "host"
 
 // nonOperationalArrayStates are md array_state values in which the array is not
 // serving I/O. They are distinct from "degraded": a degraded array still works
@@ -153,6 +164,11 @@ type Evaluator struct {
 	// alternative -- persisting it -- would mean alerting on a fact nobody in
 	// this process observed.
 	answered map[string]bool
+	// standing holds the conditions raised from outside evaluation -- facts
+	// about the service no snapshot carries -- keyed by alert ID. Every
+	// Evaluate reports them until they are cleared, so they reach the same
+	// places as every other alert: the stream, the API, /metrics.
+	standing map[string]types.Alert
 }
 
 // New returns an Evaluator with no history.
@@ -162,6 +178,42 @@ func New() *Evaluator {
 		prevNet:   make(map[string]netCounters),
 		prevThr:   make(map[int]uint64),
 		answered:  make(map[string]bool),
+		standing:  make(map[string]types.Alert),
+	}
+}
+
+// Raise records a standing condition: an alert that holds until Clear, rather
+// than one derived from each snapshot. It is for facts about the service that
+// a snapshot cannot carry -- found by a check that runs on its own schedule --
+// and it is reported, first-seen stamped and sorted exactly as an evaluated
+// alert is.
+//
+// A rule holds one standing condition. Raising it again replaces the last one
+// -- message, value, and resource too -- in one step, so a condition whose
+// cause moves (a different setting now the one over the bound) never leaves
+// the old one standing, and no evaluation can land between the two and see
+// neither.
+func (e *Evaluator) Raise(rule string, severity types.Severity, category, resource, message string, value, threshold float64) {
+	b := &builder{}
+	b.add(rule, severity, category, resource, message, value, threshold)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, a := range e.standing {
+		if a.Rule == rule {
+			delete(e.standing, id)
+		}
+	}
+	e.standing[b.alerts[0].ID] = b.alerts[0]
+}
+
+// Clear withdraws every standing condition raised under rule.
+func (e *Evaluator) Clear(rule string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, a := range e.standing {
+		if a.Rule == rule {
+			delete(e.standing, id)
+		}
 	}
 }
 
@@ -252,6 +304,9 @@ func (e *Evaluator) Evaluate(cfg config.Alerts, snap *types.Snapshot, now time.T
 	e.evalNetwork(b, snap, elapsed)
 	evalGPU(b, snap)
 	evalVirt(b, snap)
+	for _, a := range e.standing {
+		b.alerts = append(b.alerts, a)
+	}
 	e.prevAt = now
 
 	// Stamp first-seen and drop history for anything that cleared, so a

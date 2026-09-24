@@ -105,6 +105,22 @@ export function formatValue(value: number, unit: HistoryUnit): string {
   }
 }
 
+/**
+ * unitLabel names a unit the way a reader says it, for the chart's accessible
+ * name. Empty for a plain count, which has no unit to name.
+ */
+export function unitLabel(unit: HistoryUnit): string {
+  return UNIT_LABELS[unit] ?? "";
+}
+
+const UNIT_LABELS: Record<HistoryUnit, string> = {
+  percent: "percent",
+  bytes_per_second: "bytes per second",
+  celsius: "degrees Celsius",
+  watts: "watts",
+  count: "",
+};
+
 const RATE_UNITS = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"];
 
 function formatRate(bytesPerSecond: number): string {

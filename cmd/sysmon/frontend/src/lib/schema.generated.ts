@@ -275,6 +275,7 @@ export const SCHEMA: Readonly<Record<string, TypeSchema>> = {
     { key: "source", optional: true, type: { kind: "string" } },
     { key: "build_match", type: { kind: "string" } },
     { key: "name_match", type: { kind: "string" } },
+    { key: "history", optional: true, type: { kind: "object", ref: "PeerHistory", nullable: true } },
     { key: "hostname", type: { kind: "string" } },
     { key: "version", type: { kind: "string" } },
     { key: "uptime_seconds", type: { kind: "number" } },
@@ -588,6 +589,10 @@ export const SCHEMA: Readonly<Record<string, TypeSchema>> = {
     { key: "mountpoint", type: { kind: "string" } },
     { key: "fstype", type: { kind: "string" } },
     { key: "opts", type: { kind: "string" } },
+  ],
+  PeerHistory: [
+    { key: "state", type: { kind: "string" } },
+    { key: "reason", optional: true, type: { kind: "string" } },
   ],
   PeerSnapshot: [
     { key: "snapshot", type: { kind: "object", ref: "Snapshot", nullable: true } },

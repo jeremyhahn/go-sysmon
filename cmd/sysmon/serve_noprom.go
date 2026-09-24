@@ -3,6 +3,9 @@
 package main
 
 import (
+	"context"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
@@ -30,4 +33,12 @@ func newHistoryQuerier(_ *config.Manager) server.HistoryQuerier {
 // observePeers does nothing here: with no exporter there is nowhere for a
 // peer's reading to be written, and observing them would cost a callback per
 // peer per poll to discard the result.
-func observePeers(_ *config.Manager, _ *fleet.Poller, _ server.MetricsExporter) {}
+func observePeers(_ *config.Manager, _ *fleet.Poller, _ server.MetricsExporter, _ server.HistoryQuerier) {
+}
+
+// startHistoryCadenceWatch has nothing to watch here: this build writes no
+// history.
+func startHistoryCadenceWatch(_ context.Context, _ *config.Manager, _ server.HistoryQuerier,
+	_ *alert.Evaluator, _ *serviceStatus) error {
+	return nil
+}

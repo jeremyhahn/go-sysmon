@@ -276,6 +276,29 @@ test('a peer polled by its whole snapshot is marked on its card', async ({ page 
   await expect(card(page, 'new').getByTestId('snapshot-source')).toHaveCount(0);
 });
 
+test('a peer whose history is refused says so, with the reason', async ({ page }) => {
+  const reason = 'the node collects every 10m0s, so its relayed samples can be 10m20s apart';
+  await showFleet(page, [
+    fleetNode('fast', { history: { state: 'recorded' } }),
+    fleetNode('slow', { history: { state: 'refused', reason } }),
+    fleetNode('old', { source: 'snapshot', history: { state: 'unverified', reason: 'no collection interval' } }),
+  ], rollup({ nodes: 3, healthy: 3 }));
+
+  const refused = card(page, 'slow').getByTestId('history-refused');
+  await expect(refused).toBeVisible();
+  await expect(refused).toHaveAttribute('title', reason);
+  await expect(card(page, 'old').getByTestId('history-unverified')).toBeVisible();
+  // Recorded is the normal case, and says nothing.
+  await expect(card(page, 'fast').getByTestId('history-refused')).toHaveCount(0);
+  await expect(card(page, 'fast').getByTestId('history-unverified')).toHaveCount(0);
+});
+
+test('a fleet recording no history shows no history badge', async ({ page }) => {
+  await showFleet(page, [fleetNode('a'), fleetNode('b')], rollup({ nodes: 2, healthy: 2 }));
+  await expect(page.getByTestId('history-refused')).toHaveCount(0);
+  await expect(page.getByTestId('history-unverified')).toHaveCount(0);
+});
+
 test('builds are listed as identity, the stragglers named', async ({ page }) => {
   await showFleet(page, [fleetNode('gitea')], rollup({
     builds: [

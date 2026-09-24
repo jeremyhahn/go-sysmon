@@ -100,6 +100,16 @@ type LocalFunc func() (prev, cur *types.Snapshot, interval time.Duration)
 // number that needs distrusting.
 type Reading func(node string, snap *types.Snapshot)
 
+// HistoryGate decides whether one peer's history reading is written: record
+// or not, and the status the fleet card shows for it. summary is the peer's
+// latest account of itself -- nil when there is none -- and source how the
+// poller read it, which decides how the reading was relayed.
+//
+// It is consulted for every reading before the observer sees it, so it must
+// be quick and must not wait on anything: the poll and the history workers
+// call it.
+type HistoryGate func(peer string, summary *types.NodeSummary, source types.SummarySource) (record bool, status types.PeerHistory)
+
 // observer is a registered Reading and how often history wants a reading.
 type observer struct {
 	fn      Reading
@@ -154,6 +164,13 @@ type Poller struct {
 
 	// history runs the per-peer history workers; see recorder.
 	history *recorder
+
+	// gate, when set, decides per reading whether a peer's history is
+	// written (see HistoryGate); set at wiring time, loaded per reading.
+	gate atomic.Pointer[HistoryGate]
+	// historyStatus holds each peer's last gate decision: peer name ->
+	// historyDecision. It is what the fleet card shows.
+	historyStatus sync.Map
 
 	mu    sync.RWMutex
 	peers map[string]*peerState
@@ -226,6 +243,33 @@ func (p *Poller) Observe(fn Reading, cadence func() time.Duration) {
 		return
 	}
 	p.observer.Store(&observer{fn: fn, cadence: cadence})
+}
+
+// configuredAt reports whether cfg configures a peer named name at url.
+func configuredAt(cfg config.Fleet, name, url string) bool {
+	for _, peer := range cfg.Peers {
+		if peer.Name == name {
+			return peer.URL == url
+		}
+	}
+	return false
+}
+
+// historyDecision is one gate decision, for the peer at url. A reload that
+// repoints the name makes it another machine's, and it is not shown.
+type historyDecision struct {
+	url    string
+	status types.PeerHistory
+}
+
+// GateHistory registers gate to decide, for each peer history reading, whether
+// it is written. Call it before Run. A nil gate records everything.
+func (p *Poller) GateHistory(gate HistoryGate) {
+	if gate == nil {
+		p.gate.Store(nil)
+		return
+	}
+	p.gate.Store(&gate)
 }
 
 // New returns a Poller. localNameFn supplies how this node names itself in the
@@ -304,6 +348,9 @@ func (p *Poller) cycle(cfg config.Fleet) {
 		p.mu.Lock()
 		clear(p.peers)
 		p.mu.Unlock()
+		// And the history decisions: a peer added back is judged afresh,
+		// not shown under a verdict from before it was removed.
+		p.historyStatus.Clear()
 		return
 	}
 	p.refresh(cfg)
@@ -454,6 +501,15 @@ func (p *Poller) refresh(cfg config.Fleet) {
 		}
 	}
 	p.mu.Unlock()
+	// A removed peer's history decision goes with it, so a name added back
+	// is judged afresh -- and one repointed at another address: that
+	// decision was about a different machine.
+	p.historyStatus.Range(func(name, d any) bool {
+		if !keep[name.(string)] || !configuredAt(cfg, name.(string), d.(historyDecision).url) {
+			p.historyStatus.Delete(name)
+		}
+		return true
+	})
 	// A drill-in snapshot goes with its peer, and with its peer's address: one
 	// fetched from a URL a reload has replaced is another machine's, and is
 	// dropped now rather than whenever that node is next opened. A detail
@@ -595,17 +651,42 @@ func (p *Poller) pollSnapshot(peer config.Peer, cfg config.Fleet, prev, st *peer
 	}
 	st.summary = &summary
 	st.source = types.SummarySourceSnapshot
-	if recording {
-		p.observe(peer.Name, &snap)
+	if recording && p.admit(peer, st.summary, st.source) {
+		p.deliver(peer.Name, &snap)
 	}
 	return nil
 }
 
-// observe hands one arrived reading to the observer, if there is one.
-func (p *Poller) observe(node string, snap *types.Snapshot) {
+// admit asks the gate whether peer's history is written, and records the
+// decision for its card. summary and source are what the gate judges the peer
+// by: its latest account of itself, and how it was read. Without a gate
+// everything is admitted.
+func (p *Poller) admit(peer config.Peer, summary *types.NodeSummary, source types.SummarySource) bool {
+	gate := p.gate.Load()
+	if gate == nil {
+		return true
+	}
+	record, status := (*gate)(peer.Name, summary, source)
+	p.historyStatus.Store(peer.Name, historyDecision{url: peer.URL, status: status})
+	return record
+}
+
+// deliver hands one admitted reading to the observer, if there is one.
+func (p *Poller) deliver(node string, snap *types.Snapshot) {
 	if obs := p.observer.Load(); obs != nil {
 		obs.fn(node, snap)
 	}
+}
+
+// peerSummary returns the latest summary of peer at its configured URL, and
+// how it was read; nil when no poll has read it there.
+func (p *Poller) peerSummary(peer config.Peer) (*types.NodeSummary, types.SummarySource) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if st := p.peers[peer.Name]; st != nil && st.url == peer.URL {
+		return st.summary, st.source
+	}
+	return nil, ""
 }
 
 // endpointNotServed reports whether a failed fetch of an endpoint this build
@@ -951,6 +1032,7 @@ func (p *Poller) nodes() (nodes []types.FleetNode, ok bool) {
 	nodes = append(nodes, self)
 
 	now := p.now()
+	recording := p.historyCadence() > 0
 	p.mu.RLock()
 	for _, peer := range cfg.Peers {
 		// The peer's URL stays here, in the poller that dials it. The view is
@@ -984,6 +1066,14 @@ func (p *Poller) nodes() (nodes []types.FleetNode, ok bool) {
 			n.Source = st.source
 			n.AgeSeconds = now.Sub(st.fetchedAt).Seconds()
 			n.NodeSummary = *st.summary
+		}
+		// Only while history is being recorded: a decision made while it was
+		// is no statement about a fleet that records nothing.
+		if recording {
+			if d, ok := p.historyStatus.Load(peer.Name); ok && d.(historyDecision).url == peer.URL {
+				h := d.(historyDecision).status
+				n.History = &h
+			}
 		}
 		nodes = append(nodes, n)
 	}

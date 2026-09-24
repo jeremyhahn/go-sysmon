@@ -9,11 +9,14 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// maxHistoryFetches bounds how many history payloads are fetched at once
+// MaxHistoryFetches bounds how many history payloads are fetched at once
 // across the whole fleet. Each is about a fifth of a busy host's snapshot, and
 // workers that fall into step -- they all start together after a reload --
 // would otherwise decode the fleet's worth at the same instant.
-const maxHistoryFetches = 4
+//
+// Exported because it bounds the relay cadence too: a worker waiting for a
+// slot waits on fetches that may each run to the timeout.
+const MaxHistoryFetches = 4
 
 // recorder runs one history worker per peer, apart from the summary poll.
 //
@@ -85,7 +88,7 @@ type historyWorker struct {
 func newRecorder(p *Poller) *recorder {
 	return &recorder{
 		p:        p,
-		sem:      make(chan struct{}, maxHistoryFetches),
+		sem:      make(chan struct{}, MaxHistoryFetches),
 		workers:  make(map[string]*historyWorker),
 		newTimer: newClockTimer,
 	}
@@ -183,6 +186,13 @@ func (r *recorder) record(ctx context.Context, peer config.Peer) {
 	if !r.current(peer) || r.p.peerSource(peer) != types.SummarySourceSummary {
 		return
 	}
+	// Judged before the fetch, from the summary already held: a peer whose
+	// reading would be refused is not asked for it, so a refused peer costs
+	// neither the payload nor one of the fetch slots.
+	summary, source := r.p.peerSummary(peer)
+	if !r.p.admit(peer, summary, source) {
+		return
+	}
 	select {
 	case r.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -208,11 +218,18 @@ func (r *recorder) record(ctx context.Context, peer config.Peer) {
 		return
 	}
 	// Checked again after the fetch: a reload may have repointed the name
-	// while it was in flight, and this reading is then another machine's.
+	// while it was in flight, and this reading is then another machine's --
+	// and the gate asked again, against the summary as it is now: the peer,
+	// the database or its lookback may have changed while this waited for a
+	// slot and fetched, and the approval given before is then stale.
 	if !r.current(peer) {
 		return
 	}
-	r.p.observe(peer.Name, &snap)
+	summary, source = r.p.peerSummary(peer)
+	if !r.p.admit(peer, summary, source) {
+		return
+	}
+	r.p.deliver(peer.Name, &snap)
 }
 
 // current reports whether peer is still configured at the URL this worker was

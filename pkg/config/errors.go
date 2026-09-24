@@ -257,3 +257,24 @@ func (e *ErrRetiredConfigKey) Error() string {
 func (e *ErrPrometheusLabel) Error() string {
 	return fmt.Sprintf("config: prometheus.external_labels %q is unusable: %s", e.Name, e.Reason)
 }
+
+// ErrHistoryCadence reports a configuration that would write history more
+// slowly than the time-series database's query lookback allows.
+//
+// A series with no sample for longer than the lookback is stale: the database
+// shows it as absent between samples, so a gauge charts as isolated dots, and
+// a counter's rate cannot be told from one whose node was down. A node that
+// writes history at such a cadence records something no chart can draw, so it
+// is refused rather than accepted and silently useless. Key names the
+// settings that add up to the cadence.
+type ErrHistoryCadence struct {
+	Key        string
+	IntervalMs int
+	LookbackMs int
+}
+
+func (e *ErrHistoryCadence) Error() string {
+	return fmt.Sprintf("config: %s is %dms; while remote_write_url is set it must be at most %dms, "+
+		"the time-series database's query lookback, or the history written is stale between samples",
+		e.Key, e.IntervalMs, e.LookbackMs)
+}

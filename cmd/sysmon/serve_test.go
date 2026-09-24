@@ -95,7 +95,7 @@ func TestServeUntilSignal_ReturnsListenError(t *testing.T) {
 	mon := startedMonitor(t)
 	srv := server.New(mon, l.Addr().String(), nil)
 
-	err = serveUntilSignal(context.Background(), srv, mon)
+	err = serveUntilSignal(context.Background(), srv, mon, nil)
 	if err == nil {
 		t.Fatal("serveUntilSignal() = nil, want the bind error")
 	}
@@ -130,7 +130,7 @@ func TestServeUntilSignal_ShutsDownOnSignal(t *testing.T) {
 	done := make(chan error, 1)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	go func() { done <- serveUntilSignal(ctx, srv, mon) }()
+	go func() { done <- serveUntilSignal(ctx, srv, mon, nil) }()
 
 	// Wait for the listener to come up before signalling.
 	awaitListening(t, addr)

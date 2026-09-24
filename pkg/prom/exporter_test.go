@@ -2,6 +2,7 @@ package prom
 
 import (
 	"encoding/binary"
+	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"io"
 	"log/slog"
 	"math"
@@ -1154,5 +1155,15 @@ func TestExporter_SubmitDiscardedWhileDisabled(t *testing.T) {
 		if got == "omega" {
 			t.Error("a submission made while remote write was off was delivered after it was turned on")
 		}
+	}
+}
+
+// TestTickIntervalMatchesConfig. pkg/config rounds a sample interval up to the
+// exporter's tick when it checks the history cadence, and has to spell the
+// tick out -- configuration must not depend on this package. This is where
+// the two are held equal.
+func TestTickIntervalMatchesConfig(t *testing.T) {
+	if tickInterval != time.Duration(config.ExporterTickMs)*time.Millisecond {
+		t.Errorf("tickInterval = %v, config.ExporterTickMs = %d; they must agree", tickInterval, config.ExporterTickMs)
 	}
 }

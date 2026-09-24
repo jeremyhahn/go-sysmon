@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"errors"
+	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -408,5 +409,20 @@ func TestHandleSetInterval_AcceptsEveryAllowedValue(t *testing.T) {
 		if got := m.Interval(); got != time.Duration(ms)*time.Millisecond {
 			t.Errorf("monitor interval = %v, want %dms", got, ms)
 		}
+	}
+}
+
+// TestSlowestDashboardIntervalMatchesConfig. pkg/config refuses a history
+// cadence that the dashboard's slowest interval would carry past Prometheus'
+// lookback, and has to spell that interval out -- configuration must not
+// depend on the server. This is where the two are held equal.
+func TestSlowestDashboardIntervalMatchesConfig(t *testing.T) {
+	slowest := 0
+	for ms := range allowedIntervals {
+		slowest = max(slowest, ms)
+	}
+	if slowest != config.SlowestDashboardIntervalMs {
+		t.Errorf("slowest allowed interval = %dms, config.SlowestDashboardIntervalMs = %d; they must agree",
+			slowest, config.SlowestDashboardIntervalMs)
 	}
 }

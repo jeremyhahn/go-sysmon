@@ -178,7 +178,7 @@ func TestHistoryCadence_FollowsRemoteWrite(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loadServeConfig(): %v", err)
 			}
-			if got := historyCadence(mgr)(); got != tc.want {
+			if got := historyFetchCadence(mgr)(); got != tc.want {
 				t.Errorf("historyCadence() = %v, want %v", got, tc.want)
 			}
 		})

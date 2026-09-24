@@ -85,7 +85,7 @@ func TestServeUntilSignal_AlreadyCancelledNeverServes(t *testing.T) {
 	cancel() // the signal arrived while the collectors were starting
 
 	done := make(chan error, 1)
-	go func() { done <- serveUntilSignal(ctx, srv, mon) }()
+	go func() { done <- serveUntilSignal(ctx, srv, mon, nil) }()
 
 	if err := await.Recv(t, "serveUntilSignal to return for an already-cancelled context", done); err != nil {
 		t.Errorf("serveUntilSignal() = %v, want nil", err)

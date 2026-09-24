@@ -143,21 +143,27 @@ func newHistoryQuerier(mgr *config.Manager) server.HistoryQuerier {
 // apart from the summary poll: with remote write off the fleet view needs
 // nothing beyond the peers' summaries, and with it on a slow history endpoint
 // must never hold back a card.
-func observePeers(mgr *config.Manager, poller *fleet.Poller, exporter server.MetricsExporter) {
+//
+// Each reading passes the history gate first (peerHistoryGate): a peer that
+// collects too slowly for its history to be charted is not written, and the
+// fleet card says so.
+func observePeers(mgr *config.Manager, poller *fleet.Poller, exporter server.MetricsExporter,
+	history server.HistoryQuerier) {
 	if poller == nil || exporter == nil {
 		return
 	}
-	poller.Observe(peerSamples(exporter.Submit), historyCadence(mgr))
+	poller.GateHistory(peerHistoryGate(mgr, history))
+	poller.Observe(peerSamples(exporter.Submit), historyFetchCadence(mgr))
 }
 
-// historyCadence is how often the fleet poller fetches each peer's history
+// historyFetchCadence is how often the fleet poller fetches each peer's history
 // payload: the exporter's sample interval while this node writes history, and
 // zero -- record nothing, fetch nothing -- while it does not. It is read from
 // the current configuration, so turning remote write on or off, or retiming
 // it, is a reload. Fetching at the sample interval cannot double-write: the
 // exporter writes a peer's reading only when the peer has collected since the
 // last one it wrote (#173).
-func historyCadence(mgr *config.Manager) func() time.Duration {
+func historyFetchCadence(mgr *config.Manager) func() time.Duration {
 	return func() time.Duration {
 		p := mgr.Current().Prometheus
 		if p.RemoteWriteURL == "" {

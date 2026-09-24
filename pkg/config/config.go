@@ -1056,3 +1056,82 @@ func (m *Manager) BootOnly() []string { return bootOnlyKeys() }
 // configFileDir is used by the file watcher to watch the directory rather than
 // the file, so an editor that replaces the file still triggers a reload.
 func configFileDir(path string) string { return filepath.Dir(path) }
+
+// ExporterTickMs is how often the remote-write exporter wakes to see whether a
+// sample is due: pkg/prom's tickInterval, which a test there holds equal to
+// this. A sample interval takes effect only in whole ticks.
+const ExporterTickMs = 1000
+
+// SlowestDashboardIntervalMs is the slowest collection interval the
+// dashboard can switch a node to at runtime -- the largest of pkg/server's
+// allowed intervals, which a test there holds equal to this.
+const SlowestDashboardIntervalMs = 60000
+
+// CheckHistoryCadence refuses a configuration that would write history more
+// slowly than lookback, the query lookback of the time-series database it is
+// read back from: a series with no sample for longer than that is stale, so
+// what was written could not be charted -- neither a gauge nor a counter's
+// rate, whose sample gap pkg/prom measures against the same lookback.
+//
+// The lookback is the database's, read from it (prom.Querier.Lookback), so
+// this is not part of parsing: loading must give the same result wherever it
+// runs. The serve command registers it as a Validator.
+//
+// Only while this node writes history. A reading is written once per real
+// collection (#173), so every interval that paces a write counts: the
+// exporter's tick, the collection it samples, and -- when there are peers to
+// relay -- the fleet poll that carries their readings in, timeout included.
+func CheckHistoryCadence(c *Config, lookback time.Duration) error {
+	if !c.Prometheus.WriteEnabled() {
+		return nil
+	}
+	limit := int(lookback.Milliseconds())
+	// A writer writes the newest reading each time it ticks, so two stored
+	// samples can be a tick plus a collection apart: the reading one tick
+	// finds may be almost a collection old, and the next tick's brand new.
+	// Neither interval bounds the gap on its own. The collection is the
+	// slower of the configured one and the slowest the dashboard can switch
+	// to at runtime, since either may be in force.
+	//
+	// The exporter's loop also stops for a write: it flushes in line, and a
+	// write may take up to prometheus.timeout_ms, during which nothing is
+	// sampled or relayed. That wait is part of every tick.
+	//
+	// The sample interval is rounded up to a whole second: the exporter wakes
+	// once a second to see whether a sample is due (pkg/prom's tickInterval),
+	// so 230.5s samples every 231s.
+	collection := max(c.Server.IntervalMs, SlowestDashboardIntervalMs)
+	sample := (c.Prometheus.SampleIntervalMs + ExporterTickMs - 1) / ExporterTickMs * ExporterTickMs
+	cadences := []struct {
+		key string
+		ms  int
+	}{
+		{"prometheus.sample_interval_ms + server.interval_ms + prometheus.timeout_ms",
+			sample + collection + c.Prometheus.TimeoutMs},
+	}
+	if len(c.Fleet.Peers) > 0 {
+		// Peers too old to serve a summary are relayed by the snapshot poll,
+		// which sleeps its interval AFTER each refresh -- the slower of the
+		// configured one and the 60s the dashboard can override it to -- and
+		// a refresh waits for its slowest peer: two requests, each up to the
+		// timeout, since such a peer is asked for its summary before its
+		// snapshot. One peer's reading can land at the start of a refresh
+		// another peer holds for both requests, and its next at the end of the
+		// following refresh after the sleep: the poll interval plus four
+		// timeouts apart. That tick is bounded here. The PEER'S collection interval, which the gap also
+		// includes, is not this node's to configure: it is checked per peer,
+		// against the interval the peer reports, by the relay itself.
+		poll := max(c.Fleet.PollIntervalMs, SlowestDashboardIntervalMs)
+		cadences = append(cadences, struct {
+			key string
+			ms  int
+		}{"fleet.poll_interval_ms + 4 x fleet.timeout_ms + prometheus.timeout_ms",
+			poll + 4*c.Fleet.TimeoutMs + c.Prometheus.TimeoutMs})
+	}
+	for _, cadence := range cadences {
+		if cadence.ms > limit {
+			return &ErrHistoryCadence{Key: cadence.key, IntervalMs: cadence.ms, LookbackMs: limit}
+		}
+	}
+	return nil
+}

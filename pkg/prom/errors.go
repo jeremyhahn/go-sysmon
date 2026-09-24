@@ -152,3 +152,23 @@ type ErrUnknownNode struct {
 func (e *ErrUnknownNode) Error() string {
 	return "prom: " + quote(e.Node) + " is not this node or one of its configured peers"
 }
+
+// ErrLookbackUnpublished reports a time-series database that does not say how
+// long its query lookback is. Reason says what it did answer. See lookback.go
+// for what each known backend publishes.
+type ErrLookbackUnpublished struct {
+	Reason string
+}
+
+func (e *ErrLookbackUnpublished) Error() string {
+	return "prom: the time-series database does not publish its query lookback: " + e.Reason
+}
+
+// ErrDuration reports a string that is not a duration in Prometheus' syntax.
+type ErrDuration struct {
+	Value string
+}
+
+func (e *ErrDuration) Error() string {
+	return "prom: " + strconv.Quote(e.Value) + " is not a Prometheus duration"
+}

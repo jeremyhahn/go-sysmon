@@ -165,6 +165,14 @@ func Write(m Sink, snap *types.Snapshot) {
 	m.Gauge("sysmon_memory_used_bytes", "Used physical memory.", float64(snap.Memory.UsedBytes))
 	m.Gauge("sysmon_memory_used_percent", "Used physical memory as a percentage.", snap.Memory.UsedPercent)
 	m.Gauge("sysmon_swap_used_percent", "Used swap as a percentage.", snap.Memory.SwapPercent)
+	// The kernel's page size, which turns the paging counters below into
+	// bytes: it is 4 KiB on x86 but 16 or 64 KiB on some arm64 kernels, so no
+	// constant in a query could. Omitted when unknown -- a reading from a peer
+	// too old to report it -- because a zero would scale every rate to zero.
+	if snap.Memory.PageSizeBytes > 0 {
+		m.Gauge("sysmon_memory_page_size_bytes", "Memory page size in bytes.",
+			float64(snap.Memory.PageSizeBytes))
+	}
 	// Paging, not occupancy: rate() over these is how much swapping is
 	// happening now, which resident swap cannot say. Gated on availability
 	// because an unreadable /proc/vmstat reports zero, and a zero counter is

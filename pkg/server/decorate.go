@@ -47,13 +47,17 @@ type decorationKey struct {
 	version, gitCommit, buildDate string
 	cfg                           *config.Manager
 	fleet                         *fleet.Poller
+	// alerts is the evaluator the embedding program supplied, nil when the
+	// server builds its own: two servers raising into different evaluators
+	// would not describe the node the same way.
+	alerts *alert.Evaluator
 }
 
 // decorationKeyOf is the key a decorator built for s would have.
 func decorationKeyOf(s *Server) decorationKey {
 	return decorationKey{
 		version: s.version, gitCommit: s.gitCommit, buildDate: s.buildDate,
-		cfg: s.cfg, fleet: s.fleet,
+		cfg: s.cfg, fleet: s.fleet, alerts: s.alerts,
 	}
 }
 
@@ -65,6 +69,10 @@ func newSnapshotDecorator(s *Server) *snapshotDecorator {
 	if s.cfg != nil {
 		thresholds = func() config.Alerts { return s.cfg.Current().Alerts }
 	}
+	eval := s.alerts
+	if eval == nil {
+		eval = alert.New()
+	}
 	return &snapshotDecorator{
 		key:        decorationKeyOf(s),
 		version:    s.version,
@@ -72,7 +80,7 @@ func newSnapshotDecorator(s *Server) *snapshotDecorator {
 		buildDate:  s.buildDate,
 		name:       s.localName,
 		thresholds: thresholds,
-		eval:       alert.New(),
+		eval:       eval,
 	}
 }
 

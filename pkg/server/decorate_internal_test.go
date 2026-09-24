@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -64,5 +65,29 @@ func TestSnapshotDecorator_IdentifiesTheServingNode(t *testing.T) {
 	}
 	if snap.NodeName == "" {
 		t.Error("NodeName empty; a server always writes history under some name")
+	}
+}
+
+// TestSnapshotDecorator_UsesTheSuppliedEvaluator. An embedding program that
+// raises a standing condition into its own evaluator -- a fact about the
+// service no reading carries -- sees it on every snapshot the server serves.
+// Without one, the server builds its own.
+func TestSnapshotDecorator_UsesTheSuppliedEvaluator(t *testing.T) {
+	eval := alert.New()
+	eval.Raise(alert.RuleHistoryCadence, types.SeverityWarning, alert.CategoryHost, "", "too slow", 360, 300)
+	d := newSnapshotDecorator(&Server{alerts: eval})
+
+	snap := &types.Snapshot{Timestamp: time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)}
+	d.Evaluate(snap)
+	if len(snap.Alerts) != 1 || snap.Alerts[0].Rule != alert.RuleHistoryCadence {
+		t.Fatalf("alerts = %+v, want the raised condition", snap.Alerts)
+	}
+
+	own := newSnapshotDecorator(&Server{})
+	if own.eval == nil || own.eval == eval {
+		t.Error("a server given no evaluator did not build its own")
+	}
+	if decorationKeyOf(&Server{alerts: eval}) == decorationKeyOf(&Server{}) {
+		t.Error("two servers raising into different evaluators share a decoration key")
 	}
 }

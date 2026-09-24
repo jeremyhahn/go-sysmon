@@ -340,8 +340,42 @@ type FleetNode struct {
 	// anything. Like BuildMatch, it is not a health signal.
 	NameMatch NameMatch `json:"name_match"`
 
+	// History says whether this aggregator records the node's history, when
+	// it records history at all; absent otherwise, and for the aggregator
+	// itself. It is shown on the card because a refusal is otherwise
+	// invisible: the node looks healthy and its charts are simply empty.
+	History *PeerHistory `json:"history,omitempty"`
+
 	NodeSummary
 }
+
+// PeerHistory is whether an aggregator records one peer's history, and why.
+type PeerHistory struct {
+	// State is PeerHistoryRecorded, PeerHistoryRefused or
+	// PeerHistoryUnverified.
+	State PeerHistoryState `json:"state"`
+	// Reason says why, for anything but recorded.
+	Reason string `json:"reason,omitempty"`
+}
+
+// PeerHistoryState is whether an aggregator records a peer's history. A named
+// type, so the dashboard's union of its values is generated from these
+// constants rather than kept by hand.
+type PeerHistoryState string
+
+// PeerHistory states.
+const (
+	// PeerHistoryRecorded: the peer's readings are written, at a cadence the
+	// time-series database can chart.
+	PeerHistoryRecorded PeerHistoryState = "recorded"
+	// PeerHistoryRefused: the peer collects too slowly for its history to
+	// be charted, and its readings are not written.
+	PeerHistoryRefused PeerHistoryState = "refused"
+	// PeerHistoryUnverified: the readings are written, but whether they can
+	// be charted could not be checked -- the peer does not report its
+	// collection interval, or the database's lookback is not known yet.
+	PeerHistoryUnverified PeerHistoryState = "unverified"
+)
 
 // Fleet is the aggregated view served at /api/fleet. Enabled is false when no
 // peers are configured, which is what keeps a standalone node behaving exactly

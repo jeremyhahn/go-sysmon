@@ -3,6 +3,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -77,26 +78,32 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, (&prom.ErrUnknownNode{Node: node}).Error(), http.StatusBadRequest)
 		return
 	}
-	expr, err := metric.Expr(node)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
 	start, end, step, err := historyWindow(q)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
-	series, err := s.history.QueryRange(r.Context(), expr, start, end, step)
+	series, err := s.readHistory(r.Context(), metric, node, start, end, step)
 	if err != nil {
-		// A range this server will not serve is the caller's mistake, and the
-		// message is this package's own: it says what to ask for instead, and
-		// discloses nothing.
+		// A request this server will not serve is the caller's mistake, and
+		// the message is this package's own: it says what to ask for instead,
+		// and discloses nothing.
 		var badRange *prom.ErrInvalidRange
-		if errors.As(err, &badRange) {
+		var badNode *prom.ErrInvalidInstance
+		if errors.As(err, &badRange) || errors.As(err, &badNode) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// A database that does not publish its lookback cannot have a
+		// counter drawn from it: the rate window is measured against that
+		// lookback (pkg/prom/lookback.go). It is said as such -- a fact about
+		// the database, not a failure of this request -- and without the
+		// database's address, which is kept to the log as below.
+		var unpublished *prom.ErrLookbackUnpublished
+		if errors.As(err, &unpublished) {
+			slog.Warn("server: counter history unavailable", "metric", metric.Key, "node", node, "error", err)
+			http.Error(w, "counter history needs the time-series database's query lookback, "+
+				"which it does not publish; see the server log", http.StatusBadGateway)
 			return
 		}
 		// Everything else is the receiver's answer. 502 says the dashboard
@@ -123,6 +130,90 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		StepMs:  step.Milliseconds(),
 		Series:  toHistorySeries(metric, series),
 	})
+}
+
+// readHistory runs one metric's range query for one node.
+//
+// A counter is read in two steps. The first measures the longest gap between
+// its samples over the range and the windows reaching back before it, from
+// the samples actually stored (prom.Querier.RateGap); the second takes its
+// rate over a window sized from that gap and the step, so every window holds
+// the two samples rate() needs whatever cadence the series was written at --
+// by this node, by a peer, or under settings since changed. A range with no
+// two samples close enough to measure has nothing to take a rate over, and is
+// answered as the empty range it is.
+func (s *Server) readHistory(ctx context.Context, metric prom.Metric, node string,
+	start, end time.Time, step time.Duration) ([]prom.RangeSeries, error) {
+	// One database and one deadline for the whole read. A counter is several
+	// requests -- the lookback, the gap measurement, the rate -- and a reload
+	// between them must not send the rate to a different database from the
+	// one its window was measured on; nor may a timeout per request let them
+	// add up past the server's own write deadline, so the answer could never
+	// be sent.
+	// The deadline is also held inside the server's own write budget: a
+	// configured timeout longer than it would keep the read going past the
+	// point where even a 502 can be sent.
+	history := s.history.Pinned()
+	deadline := drillInBudget()
+	if timeout := history.Timeout(); timeout > 0 {
+		deadline = min(deadline, timeout)
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	if err := prom.ValidateRange(start, end, step); err != nil {
+		return nil, err
+	}
+	var gap time.Duration
+	if metric.Counter {
+		selector, err := metric.Selector(node)
+		if err != nil {
+			return nil, err
+		}
+		// The measurement reads before start as the rate query does, and is
+		// held to the same allowance.
+		gap, err = history.RateGap(ctx, selector, start, end, step, maxHistoryWindow-end.Sub(start))
+		if err != nil {
+			return nil, err
+		}
+		if gap == 0 {
+			return []prom.RangeSeries{}, nil
+		}
+	}
+
+	expr, err := metric.Expr(node, step, gap)
+	if err != nil {
+		return nil, err
+	}
+	// A counter reads its rate window before start as well, and that window
+	// grows with the step -- which the caller chooses. Without counting it, a
+	// one-hour range at a one-year step would pass the bound on the range and
+	// have Prometheus scan a year of samples: the work that bound exists to cap.
+	lookback, err := metric.Lookback(step, gap)
+	if err != nil {
+		return nil, err
+	}
+	if metric.Counter {
+		// The rate is gated on the counter's presence with an instant
+		// selector, which reads one database lookback before start; the
+		// read reaches back whichever is further. Cached: RateGap has just
+		// read it.
+		dbLookback, err := history.Lookback(ctx)
+		if err != nil {
+			return nil, err
+		}
+		lookback = max(lookback, dbLookback)
+	}
+	// Compared against what the range leaves of the allowance rather than
+	// added to it: historyWindow has already held the range to the bound, so
+	// the subtraction cannot overflow, while a step near the largest duration
+	// makes a lookback that the addition would wrap negative -- and pass.
+	if lookback > maxHistoryWindow-end.Sub(start) {
+		return nil, &prom.ErrInvalidRange{
+			Message: "the range and its rate window exceed " + maxHistoryWindow.String() +
+				", the most that may be read at once; narrow the range or the step",
+		}
+	}
+	return history.QueryRange(ctx, expr, start, end, step)
 }
 
 // knownNode reports whether name is a node this dashboard is meant to show:

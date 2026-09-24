@@ -218,7 +218,7 @@ func TestClockTimer_IsATimeTimer(t *testing.T) {
 }
 
 // TestRecorder_BoundsConcurrentFetches: however many peers there are, no more
-// than maxHistoryFetches history payloads are in flight at once.
+// than MaxHistoryFetches history payloads are in flight at once.
 func TestRecorder_BoundsConcurrentFetches(t *testing.T) {
 	var inflight, peak, done atomic.Int64
 	release := make(chan struct{})
@@ -246,12 +246,12 @@ func TestRecorder_BoundsConcurrentFetches(t *testing.T) {
 
 	p.refresh(*cfg.Load())
 	p.history.sync(*cfg.Load())
-	await.Until(t, "the concurrency limit to fill", func(context.Context) bool { return inflight.Load() == maxHistoryFetches })
+	await.Until(t, "the concurrency limit to fill", func(context.Context) bool { return inflight.Load() == MaxHistoryFetches })
 	close(release)
 	await.Until(t, "every peer's reading", func(context.Context) bool { return readings.Load() == 10 })
 
-	if got := peak.Load(); got != maxHistoryFetches {
-		t.Errorf("peak concurrent history fetches = %d, want %d", got, maxHistoryFetches)
+	if got := peak.Load(); got != MaxHistoryFetches {
+		t.Errorf("peak concurrent history fetches = %d, want %d", got, MaxHistoryFetches)
 	}
 }
 

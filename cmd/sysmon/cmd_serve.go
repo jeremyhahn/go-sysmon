@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/alert"
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
@@ -148,7 +149,10 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	sc := collector.NewSystemCollector(slog.Default())
 	// The build, the node's name and the alerts are attached by the server's
 	// decorator on this monitor, the same for every path that serves a
-	// snapshot; see server.NewWithConfig.
+	// snapshot; see server.NewWithConfig. alerts is its evaluator, created
+	// here so the service's own checks can raise standing conditions into it
+	// from before the server exists.
+	alerts := alert.New()
 	mon, err := monitor.New(newMonitorSnapshotter(sc), interval)
 	if err != nil {
 		return err
@@ -228,6 +232,15 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 
 	// Nil in a build without prometheus support; the server has always
 	// treated that as "this node keeps no history" (#100).
+	history := newHistoryQuerier(cfgMgr)
+	// Before anything is written: a cadence the database cannot chart is
+	// refused at startup and on every reload, against the database's own
+	// query lookback.
+	// The monitor is not started yet, so there is nothing to stop.
+	status := &serviceStatus{}
+	if err := startHistoryCadenceWatch(ctx, cfgMgr, history, alerts, status); err != nil {
+		return err
+	}
 	exporter := startExporter(cfgMgr, mon, done)
 
 	// Topology A (owner ruling 2026-09-04): the aggregator holds every peer's
@@ -239,7 +252,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	// the exporter reading the current config, so turning remote write on stays
 	// a reload rather than a restart. In a build without prometheus support
 	// this observes nothing, because there is nothing to write to.
-	observePeers(cfgMgr, fleetPoller, exporter)
+	observePeers(cfgMgr, fleetPoller, exporter, history)
 	go fleetPoller.Run(done)
 
 	webAssets, err := fs.Sub(frontendAssets, "frontend/dist")
@@ -255,7 +268,8 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		Fleet:     fleetPoller,
 		Config:    cfgMgr,
 		Exporter:  exporter,
-		History:   newHistoryQuerier(cfgMgr),
+		History:   history,
+		Alerts:    alerts,
 		Version:   version,
 		GitCommit: gitCommit,
 		BuildDate: buildDate,
@@ -297,7 +311,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	slog.Info(serverListeningMsg, "addr", bound.String())
 	afterListen()
 
-	return serveUntilSignal(ctx, srv, mon)
+	return serveUntilSignal(ctx, srv, mon, status)
 }
 
 // watchdogFor builds the systemd watchdog for a running server, or a Watchdog
@@ -408,7 +422,10 @@ func collectionIsCurrent(mon *monitor.Monitor) watchdog.Collecting {
 // serveUntilSignal runs srv until it fails or the process receives SIGINT or
 // SIGTERM, then shuts both srv and mon down cleanly. It returns the error that
 // ended the server, or nil when the shutdown was signal-initiated and clean.
-func serveUntilSignal(ctx context.Context, srv *server.Server, mon *monitor.Monitor) error {
+//
+// status is the unit's status line; it is sent to systemd from the moment the
+// notification socket is open until shutdown begins. It may be nil.
+func serveUntilSignal(ctx context.Context, srv *server.Server, mon *monitor.Monitor, status *serviceStatus) error {
 	// A signal that arrived during startup is already in ctx, and the server is
 	// stopped without ever being started rather than serving one request and
 	// then being told to stop.
@@ -460,6 +477,7 @@ func serveUntilSignal(ctx context.Context, srv *server.Server, mon *monitor.Moni
 	if err := notifier.Ready(); err != nil {
 		slog.Warn("watchdog: READY notification failed", "err", err)
 	}
+	status.Attach(notifier.Status)
 
 	select {
 	case err := <-errCh:
@@ -476,6 +494,7 @@ func serveUntilSignal(ctx context.Context, srv *server.Server, mon *monitor.Moni
 	// is draining reports a service that is deliberately on its way out as
 	// healthy, and systemd is entitled to act on it.
 	stopWatchdog()
+	status.Detach()
 	if err := notifier.Status("shutting down"); err != nil {
 		slog.Debug("watchdog: status notification failed", "err", err)
 	}

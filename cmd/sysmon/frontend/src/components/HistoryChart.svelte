@@ -17,7 +17,7 @@
     type ECharts,
   } from "$lib/echarts";
   import { theme } from "$lib/theme.svelte";
-  import { formatTick, formatValue } from "$lib/history";
+  import { formatTick, formatValue, unitLabel } from "$lib/history";
   import type { HistorySeries, HistoryUnit } from "$lib/types";
 
   interface Props {
@@ -142,4 +142,12 @@
   });
 </script>
 
-<div bind:this={container} style="width:100%;height:{height};"></div>
+<!-- The canvas carries no text a screen reader or a test can read, so the
+     unit the chart is drawn in -- a rate for a counter, never its total -- is
+     stated in its accessible name. -->
+<div
+  bind:this={container}
+  role="img"
+  aria-label={unitLabel(unit) ? `History chart in ${unitLabel(unit)}` : "History chart"}
+  style="width:100%;height:{height};"
+></div>

@@ -157,7 +157,9 @@ everywhere.
 `GET /metrics` exports the two totals as Prometheus counters,
 `sysmon_swap_in_pages_total` and `sysmon_swap_out_pages_total`, and only when
 `swap_counters_available` is true — see
-[the Prometheus section](../server/alerting-fleet-config.md#prometheus).
+[the Prometheus section](../server/alerting-fleet-config.md#prometheus). It
+exports `page_size_bytes` as the gauge `sysmon_memory_page_size_bytes`, when
+known, so those counters can be read in bytes.
 
 Hardware: `dimms` (array of `DIMMInfo`), `temp_sensor_detected`.
 

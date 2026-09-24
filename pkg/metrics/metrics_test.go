@@ -466,3 +466,30 @@ func TestWrite_IsDeterministicWithCounters(t *testing.T) {
 		t.Errorf("two renders differ\n--- first ---\n%s\n--- second ---\n%s", first, second)
 	}
 }
+
+// TestWrite_PageSizeIsExportedAsAGauge. The page size is what the history
+// charts multiply the paging counters' rate by to draw bytes, and it differs
+// between hosts -- 16 KiB here, as on some arm64 kernels -- so it has to come
+// from the node rather than from a constant.
+func TestWrite_PageSizeIsExportedAsAGauge(t *testing.T) {
+	out := render(&types.Snapshot{Memory: types.MemoryInfo{PageSizeBytes: 16384}})
+	for _, want := range []string{
+		"# TYPE sysmon_memory_page_size_bytes gauge\n",
+		"sysmon_memory_page_size_bytes 16384\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("exposition is missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// TestWrite_PageSizeOmittedWhenUnknown. A reading with no page size -- a peer
+// running a build from before the field -- must not publish a zero: every
+// swap rate multiplied by it would draw as no paging at all, where an absent
+// series leaves the chart honestly empty.
+func TestWrite_PageSizeOmittedWhenUnknown(t *testing.T) {
+	out := render(&types.Snapshot{Memory: types.MemoryInfo{SwapCountersAvailable: true}})
+	if strings.Contains(out, "sysmon_memory_page_size_bytes") {
+		t.Errorf("an unknown page size was exported:\n%s", out)
+	}
+}
