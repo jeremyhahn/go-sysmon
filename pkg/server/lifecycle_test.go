@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"net"
@@ -9,8 +10,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -30,40 +31,51 @@ func freeAddr(t *testing.T) string {
 	return addr
 }
 
-// waitForServer polls addr until it accepts a connection or the deadline passes.
-func waitForServer(addr string, deadline time.Duration) bool {
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if err == nil {
-			conn.Close() //nolint:errcheck
-			return true
+// waitForServer returns once addr accepts a TCP connection. Start gives no
+// signal when its listener is bound, so this polls the listener itself, which
+// is the real condition.
+func waitForServer(t *testing.T, addr string) {
+	t.Helper()
+	var dialer net.Dialer
+	await.Until(t, "the server to accept connections on "+addr, func(ctx context.Context) bool {
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return false
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
+		if err := conn.Close(); err != nil {
+			t.Errorf("close probe connection: %v", err)
+		}
+		return true
+	})
 }
 
-// pollUntilOK requests url until it returns 200 or the deadline passes,
-// returning the last status code observed.
-func pollUntilOK(t *testing.T, url string, deadline time.Duration) int {
+// stopServer stops srv, bounded by await.Timeout, failing the test on error.
+func stopServer(t *testing.T, srv *server.Server) {
 	t.Helper()
-	end := time.Now().Add(deadline)
-	last := 0
-	for time.Now().Before(end) {
-		resp, err := http.Get(url) //nolint:noctx
-		if err == nil {
-			last = resp.StatusCode
-			if err := resp.Body.Close(); err != nil {
-				t.Errorf("close body: %v", err)
-			}
-			if last == http.StatusOK {
-				return last
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
+	defer cancel()
+	if err := srv.Stop(ctx); err != nil {
+		t.Errorf("Stop: %v", err)
 	}
-	return last
+}
+
+// newConnTrackingServer starts an httptest server over h and returns a channel
+// that receives once for every connection the server has finished with.
+// net/http moves a connection to StateClosed only after the handler serving it
+// has returned, so a receive proves that handler unwound -- the event a test of
+// a vanished client needs, rather than a pause it hopes is long enough.
+func newConnTrackingServer(t *testing.T, h http.Handler) (*httptest.Server, <-chan struct{}) {
+	t.Helper()
+	closed := make(chan struct{}, 64)
+	ts := httptest.NewUnstartedServer(h)
+	ts.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			closed <- struct{}{}
+		}
+	}
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return ts, closed
 }
 
 // ---- Start / Stop ---------------------------------------------------------
@@ -78,29 +90,27 @@ func TestStart_ServesUntilStopped(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()
 
-	if !waitForServer(addr, 2*time.Second) {
-		t.Fatal("server did not start listening")
+	waitForServer(t, addr)
+
+	// The monitor answers 503 until its first collection completes, so wait
+	// for that collection rather than assuming the first request is already
+	// serviceable.
+	waitForSnapshot(t, m)
+	resp, err := http.Get("http://" + addr + "/api/snapshot") //nolint:noctx
+	if err != nil {
+		t.Fatalf("GET /api/snapshot: %v", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /api/snapshot status = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 
-	// The monitor answers 503 until its first collection completes, so poll
-	// rather than assuming the first request is already serviceable.
-	if code := pollUntilOK(t, "http://"+addr+"/api/snapshot", 5*time.Second); code != http.StatusOK {
-		t.Errorf("GET /api/snapshot status = %d, want %d", code, http.StatusOK)
-	}
+	stopServer(t, srv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := srv.Stop(ctx); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("Start() = %v, want nil after a clean Stop", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Start did not return after Stop")
+	if err := await.Recv(t, "Start to return after Stop", errCh); err != nil {
+		t.Errorf("Start() = %v, want nil after a clean Stop", err)
 	}
 }
 
@@ -113,7 +123,11 @@ func TestStart_AddressInUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close() //nolint:errcheck
+	defer func() {
+		if err := l.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+	}()
 
 	m := newMonitor(t, "conflict-host")
 	srv := server.New(m, l.Addr().String(), nil)
@@ -139,7 +153,11 @@ func TestStart_TLSAddressInUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close() //nolint:errcheck
+	defer func() {
+		if err := l.Close(); err != nil {
+			t.Errorf("close listener: %v", err)
+		}
+	}()
 
 	cert, _ := selfSigned(t)
 	certPath, keyPath := writeKeyPair(t, cert)
@@ -171,7 +189,7 @@ func TestStop_BeforeStart(t *testing.T) {
 	m := newMonitor(t, "never-started")
 	srv := server.New(m, freeAddr(t), nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 	defer cancel()
 
 	if err := srv.Stop(ctx); err != nil {
@@ -191,27 +209,24 @@ func TestEvents_ByeEventWhenMonitorStops(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()
-	if !waitForServer(addr, 2*time.Second) {
-		t.Fatal("server did not start listening")
-	}
+	waitForServer(t, addr)
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Stop(ctx); err != nil {
-			t.Errorf("Stop: %v", err)
+		stopServer(t, srv)
+		if err := await.Recv(t, "Start to return after Stop", errCh); err != nil {
+			t.Errorf("Start() = %v, want nil after a clean Stop", err)
 		}
 	}()
 
 	c := dialEvents(t, "http://"+addr+"/api/events", false)
 
 	// Drain the first snapshot so the handler is definitely streaming.
-	c.nextNamed(t, "snapshot", 5*time.Second)
+	c.nextNamed(t, "snapshot")
 
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
 
-	c.nextNamed(t, "bye", 5*time.Second)
+	c.nextNamed(t, "bye")
 }
 
 // TestShutdown_CompletesWithOpenStream is the regression test for a hung
@@ -224,40 +239,26 @@ func TestShutdown_CompletesWithOpenStream(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()
-	if !waitForServer(addr, 2*time.Second) {
-		t.Fatal("server did not start listening")
-	}
+	waitForServer(t, addr)
 
 	c := dialEvents(t, "http://"+addr+"/api/events", false)
-	c.nextNamed(t, "snapshot", 5*time.Second)
+	c.nextNamed(t, "snapshot")
 
 	// Release the streaming handler, then shut the listener down.
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
+	// The context is never cancelled: a hung shutdown must show up as Stop
+	// not returning, not as Stop returning a deadline error.
 	done := make(chan error, 1)
-	go func() { done <- srv.Stop(ctx) }()
+	go func() { done <- srv.Stop(context.Background()) }()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Stop with an open stream: %v", err)
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("Stop did not return with an event stream open")
+	if err := await.Recv(t, "Stop to return with an event stream open", done); err != nil {
+		t.Fatalf("Stop with an open stream: %v", err)
 	}
-
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("Start() = %v, want nil after a clean Stop", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Start did not return after Stop")
+	if err := await.Recv(t, "Start to return after Stop", errCh); err != nil {
+		t.Errorf("Start() = %v, want nil after a clean Stop", err)
 	}
 }
 
@@ -341,8 +342,7 @@ func TestHandleEvents_WriteToClosedConnection(t *testing.T) {
 	waitForSnapshot(t, m)
 
 	srv := server.New(m, ":0", nil)
-	ts := httptest.NewServer(srv)
-	t.Cleanup(ts.Close)
+	ts, closed := newConnTrackingServer(t, srv)
 
 	// Speak HTTP by hand so the socket can be ripped away mid-stream.
 	conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
@@ -353,15 +353,29 @@ func TestHandleEvents_WriteToClosedConnection(t *testing.T) {
 		t.Fatalf("write request: %v", err)
 	}
 
-	// Let the handler start streaming, then drop the connection.
-	time.Sleep(100 * time.Millisecond)
+	// The status line arriving proves the handler is streaming.
+	statusLine := make(chan string, 1)
+	go func() {
+		line, err := bufio.NewReader(conn).ReadString('\n')
+		if err != nil {
+			line = "read failed: " + err.Error()
+		}
+		statusLine <- line
+	}()
+	if line := await.Recv(t, "the stream's status line", statusLine); !strings.HasPrefix(line, "HTTP/1.1 200") {
+		t.Fatalf("status line = %q, want a 200 stream", line)
+	}
+
+	// Drop the connection mid-stream.
 	if err := conn.Close(); err != nil {
 		t.Fatalf("close conn: %v", err)
 	}
 
-	// Give the server time to attempt a write and unwind the handler; the test
-	// passes as long as the server survives and keeps serving.
-	time.Sleep(200 * time.Millisecond)
+	// The handler has to notice and unwind; the connection reaching
+	// StateClosed is the proof that it returned.
+	await.Recv(t, "the streaming handler to unwind after its client vanished", closed)
+
+	// And the server survives and keeps serving.
 
 	resp, err := http.Get(ts.URL + "/api/snapshot") //nolint:noctx
 	if err != nil {

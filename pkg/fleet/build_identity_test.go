@@ -1,9 +1,11 @@
 package fleet_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -37,7 +39,7 @@ func pollUntilReachable(t *testing.T, p *fleet.Poller, names ...string) types.Fl
 	t.Helper()
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool {
+	await.Until(t, "every named peer to answer", func(context.Context) bool {
 		view := p.View(fleet.Query{})
 		answered := 0
 		for _, n := range view.Nodes {
@@ -225,7 +227,7 @@ func TestView_ASilentNodeHasNoBuildAgreement(t *testing.T) {
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool {
+	await.Until(t, "the dead peer to be polled as unreachable", func(context.Context) bool {
 		return node(t, p.View(fleet.Query{}), "dead").Status == fleet.StatusUnreachable
 	})
 	close(done)

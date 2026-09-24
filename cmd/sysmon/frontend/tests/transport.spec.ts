@@ -94,8 +94,10 @@ test.describe('Server-sent events transport', () => {
   test('the stream delivers at least 3 consecutive snapshots', async ({ page }) => {
     await page.goto('/');
 
-    // The server runs with --interval 500ms, so 3 events arrive well inside
-    // the timeout.
+    // Waits for the third event itself rather than counting whatever arrives
+    // in a fixed window: the server runs with --interval 500ms, but a loaded
+    // runner can stretch that, and only the test timeout bounds the wait. A
+    // stream error ends it early with the count so far, which then fails.
     const count = await page.evaluate((): Promise<number> => {
       return new Promise((resolve) => {
         const es = new EventSource('/api/events');
@@ -111,7 +113,6 @@ test.describe('Server-sent events transport', () => {
           if (seen >= 3) finish();
         });
         es.onerror = () => finish();
-        setTimeout(finish, 10000);
       });
     });
 

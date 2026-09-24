@@ -3,16 +3,20 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/delta"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -117,8 +121,152 @@ func hubMonitor(t *testing.T) *monitor.Monitor {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Stop() })
+	t.Cleanup(func() { stopHubMonitor(t, m) })
 	return m
+}
+
+// stopHubMonitor stops m at the end of a test, tolerating a test that has
+// already stopped it.
+func stopHubMonitor(t *testing.T, m *monitor.Monitor) {
+	t.Helper()
+	var notRunning *types.MonitorNotRunningError
+	if err := m.Stop(); err != nil && !errors.As(err, &notRunning) {
+		t.Errorf("monitor.Stop: %v", err)
+	}
+}
+
+// onceSnapshotter collects once and then holds every later collection until
+// the test ends. A hub over it publishes exactly one frame of its own, so any
+// other frame a test sees is one it published by hand, and nothing the hub
+// does can interleave with what the test is arranging.
+type onceSnapshotter struct {
+	calls   atomic.Int64
+	parked  chan struct{} // closed when the second collection begins
+	release chan struct{} // closed at the end of the test
+}
+
+func (s *onceSnapshotter) Snapshot() (*types.Snapshot, error) {
+	n := s.calls.Add(1)
+	if n == 2 {
+		close(s.parked)
+	}
+	if n > 1 {
+		<-s.release
+	}
+	return &types.Snapshot{Host: types.HostInfo{Hostname: "mon0", Uptime: 1}}, nil
+}
+
+// singleCollectionMonitor returns a running monitor that has published exactly
+// one collection and is parked inside the next. The poll loop publishes before
+// it collects again, so once the second collection has begun the first has
+// been published and broadcast, and no further broadcast can happen.
+func singleCollectionMonitor(t *testing.T) *monitor.Monitor {
+	t.Helper()
+	s := &onceSnapshotter{parked: make(chan struct{}), release: make(chan struct{})}
+	m, err := monitor.New(s, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	if err := m.Start(); err != nil {
+		t.Fatalf("monitor.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		// Released first: Stop waits for the poll loop, which is parked.
+		close(s.release)
+		stopHubMonitor(t, m)
+	})
+	await.Recv(t, "the monitor to publish once and park in its next collection", s.parked)
+	return m
+}
+
+// permitSnapshotter completes a collection only against a permit, so a test
+// states exactly how many readings its monitor publishes and knows the
+// published reading cannot change under it. openAll lets every collection
+// through, which is how a test stops the monitor: Stop waits for a collection
+// in progress.
+type permitSnapshotter struct {
+	mu      sync.Mutex
+	changed *sync.Cond
+	permits int
+	open    bool
+	uptime  uint64
+}
+
+func newPermitSnapshotter(permits int) *permitSnapshotter {
+	s := &permitSnapshotter{permits: permits}
+	s.changed = sync.NewCond(&s.mu)
+	return s
+}
+
+func (s *permitSnapshotter) Snapshot() (*types.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for !s.open && s.permits == 0 {
+		s.changed.Wait()
+	}
+	if !s.open {
+		s.permits--
+	}
+	s.uptime++
+	return &types.Snapshot{Host: types.HostInfo{Hostname: "mon0", Uptime: s.uptime}}, nil
+}
+
+// openAll lets every collection through, now and from then on.
+func (s *permitSnapshotter) openAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.open = true
+	s.changed.Broadcast()
+}
+
+// gate closes the snapshotter again, allowing exactly permits more collections.
+func (s *permitSnapshotter) gate(permits int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.open, s.permits = false, permits
+	s.changed.Broadcast()
+}
+
+// permitMonitor starts a monitor over s and returns it once its first reading
+// is published. s must allow at least one collection.
+func permitMonitor(t *testing.T, s *permitSnapshotter) *monitor.Monitor {
+	t.Helper()
+	m, err := monitor.New(s, 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
+	if err := m.Start(); err != nil {
+		t.Fatalf("monitor.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		// Opened first: Stop waits for the poll loop, which may be held.
+		s.openAll()
+		stopHubMonitor(t, m)
+	})
+	await.Recv(t, "the monitor's first reading", sub.Ch)
+	return m
+}
+
+// stopPermitMonitor stops m mid-test, letting through the collection the poll
+// loop may be held in.
+func stopPermitMonitor(t *testing.T, s *permitSnapshotter, m *monitor.Monitor) {
+	t.Helper()
+	s.openAll()
+	if err := m.Stop(); err != nil {
+		t.Fatalf("monitor.Stop: %v", err)
+	}
+}
+
+// currentReading is the reading m publishes now.
+func currentReading(t *testing.T, m *monitor.Monitor) *types.Snapshot {
+	t.Helper()
+	snap, err := m.Snapshot()
+	if err != nil {
+		t.Fatalf("monitor.Snapshot: %v", err)
+	}
+	return snap
 }
 
 func quietHubLogger() *slog.Logger {
@@ -270,13 +418,15 @@ func TestDeltaHub_PatchReconstructsTheSnapshot(t *testing.T) {
 
 func waitForFrame(t *testing.T, sub *deltaSubscriber) *deltaFrame {
 	t.Helper()
+	bound := time.NewTimer(await.Timeout)
+	defer bound.Stop()
 	select {
 	case frame := <-sub.frames:
 		return frame
 	case <-sub.done:
 		t.Fatal("the hub stopped while waiting for a frame")
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for a frame")
+	case <-bound.C:
+		t.Fatalf("no frame arrived within %v", await.Timeout)
 	}
 	return nil
 }
@@ -443,31 +593,32 @@ func TestDeltaHub_TellsAClientArrivingAfterTheMonitorStopped(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
-	select {
-	case <-held.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the held subscriber was never told the monitor stopped")
-	}
+	await.Recv(t, "the held subscriber to be told the monitor stopped", held.done)
 
 	next := h.subscribe()
 	defer h.unsubscribe(next)
 
+	bound := time.NewTimer(await.Timeout)
+	defer bound.Stop()
 	select {
 	case <-next.done:
 	case frame := <-next.frames:
 		t.Fatalf("a client arriving after the monitor stopped was sent frame %d; "+
 			"that is the last reading before shutdown, presented as current", frame.seq)
-	case <-time.After(2 * time.Second):
+	case <-bound.C:
 		t.Fatal("a client arriving after the monitor stopped was neither told nor served; " +
 			"it would sit on keepalives for as long as the tab stayed open")
 	}
 
 	// And nothing arrives afterwards either: the run returned rather than
-	// blocking on a subscription the monitor will never write to.
+	// blocking on a subscription the monitor will never write to. Once the
+	// loop has exited nothing is left that could publish, so the queue is
+	// final and a non-blocking look at it is the whole answer.
+	waitForHubLoop(t, h)
 	select {
 	case frame := <-next.frames:
 		t.Fatalf("frame %d arrived after the stream was closed", frame.seq)
-	case <-time.After(100 * time.Millisecond):
+	default:
 	}
 }
 
@@ -495,11 +646,7 @@ func TestDeltaHub_DropsTheCachedFrameWhenTheMonitorStops(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
-	select {
-	case <-held.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the held subscriber was never told the monitor stopped")
-	}
+	await.Recv(t, "the held subscriber to be told the monitor stopped", held.done)
 
 	// Checked without unsubscribing: the subscriber count is still one, so
 	// shutdown() has not run and this is the hub's own doing.
@@ -514,7 +661,9 @@ func TestDeltaHub_DropsTheCachedFrameWhenTheMonitorStops(t *testing.T) {
 // latest is a store the handler races; refusing to serve it while the monitor
 // is not collecting needs no ordering at all.
 func TestDeltaHub_CachedFrameIsNotServedByAStoppedMonitor(t *testing.T) {
-	m := hubMonitor(t)
+	// One reading, so the cache cannot be superseded while this looks at it.
+	s := newPermitSnapshotter(1)
+	m := permitMonitor(t, s)
 	h := newDeltaHub(m, quietHubLogger())
 
 	held := h.subscribe()
@@ -529,9 +678,7 @@ func TestDeltaHub_CachedFrameIsNotServedByAStoppedMonitor(t *testing.T) {
 		t.Fatalf("cachedFrame() = %v while the monitor is collecting, want the cached frame", got)
 	}
 
-	if err := m.Stop(); err != nil {
-		t.Fatalf("monitor.Stop: %v", err)
-	}
+	stopPermitMonitor(t, s, m)
 
 	// Put it back, standing in for the window between a run ending and the
 	// store landing. Even then it must not be served.
@@ -559,7 +706,8 @@ func TestDeltaHub_CachedFrameIsNotServedByAStoppedMonitor(t *testing.T) {
 // that cannot be scheduled: the frame is put back by hand, which is what the
 // losing interleaving leaves behind.
 func TestDeltaHub_CachedFrameIsRefusedAfterTheMonitorRestarts(t *testing.T) {
-	m := hubMonitor(t)
+	s := newPermitSnapshotter(1)
+	m := permitMonitor(t, s)
 	h := newDeltaHub(m, quietHubLogger())
 
 	sub := h.subscribe()
@@ -570,9 +718,7 @@ func TestDeltaHub_CachedFrameIsRefusedAfterTheMonitorRestarts(t *testing.T) {
 		t.Fatal("nothing was cached to begin with, so this proves nothing")
 	}
 
-	if err := m.Stop(); err != nil {
-		t.Fatalf("monitor.Stop: %v", err)
-	}
+	stopPermitMonitor(t, s, m)
 
 	// Wait for the hub's own loop to finish reacting to that stop before
 	// touching h.latest below.
@@ -586,9 +732,15 @@ func TestDeltaHub_CachedFrameIsRefusedAfterTheMonitorRestarts(t *testing.T) {
 	// goroutine writes latest, and a client never stores a frame at all.
 	waitForHubLoop(t, h)
 
+	// The restarted run publishes exactly one reading, so the one it has is
+	// the one it will keep while this looks.
+	s.gate(1)
+	restarted := m.Subscribe()
+	defer m.Unsubscribe(restarted.ID)
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
+	await.Recv(t, "the restarted run's reading", restarted.Ch)
 	if !m.Running() {
 		t.Fatal("the monitor is not running after the restart, so this tests nothing")
 	}
@@ -604,10 +756,39 @@ func TestDeltaHub_CachedFrameIsRefusedAfterTheMonitorRestarts(t *testing.T) {
 
 	// And a frame from the current generation is still served, so this refuses
 	// the stale one rather than everything.
-	fresh := &deltaFrame{seq: 99, generation: m.Generation(), full: []byte("{}")}
+	fresh := &deltaFrame{seq: 99, generation: m.Generation(), source: currentReading(t, m), full: []byte("{}")}
 	h.latest.Store(fresh)
 	if got := h.cachedFrame(); got != fresh {
 		t.Fatalf("cachedFrame() = %v for a frame from the current generation, want it served", got)
+	}
+}
+
+// TestDeltaHub_CachedFrameIsRefusedOnceTheMonitorHasMovedOn. The hub learns of
+// a publication only when its loop takes it off the subscription, so the
+// monitor can be a reading ahead of the cache. A restamp makes that visible: a
+// rename lands in the monitor before Reload returns, and a client connecting
+// straight afterwards was sent the cached frame with the old name while GET
+// /api/snapshot already served the new one. Such a frame is superseded, and a
+// connecting client must wait for the one replacing it rather than be sent it.
+//
+// Constructed rather than raced: the window is the hub loop's reaction time,
+// so the superseded cache is put there by hand.
+func TestDeltaHub_CachedFrameIsRefusedOnceTheMonitorHasMovedOn(t *testing.T) {
+	m := singleCollectionMonitor(t)
+	h := newDeltaHub(m, quietHubLogger())
+
+	current := &deltaFrame{seq: 7, generation: m.Generation(), source: currentReading(t, m), full: []byte("{}")}
+	h.latest.Store(current)
+	if got := h.cachedFrame(); got != current {
+		t.Fatalf("cachedFrame() = %v for the frame of the monitor's current reading, want it served", got)
+	}
+
+	// Same run, but encoding a reading the monitor no longer publishes.
+	superseded := &deltaFrame{seq: 6, generation: m.Generation(), source: &types.Snapshot{}, full: []byte("{}")}
+	h.latest.Store(superseded)
+	if got := h.cachedFrame(); got != nil {
+		t.Fatalf("cachedFrame() = frame %d, which the monitor has already superseded; a client "+
+			"connecting now would be sent an older reading than GET /api/snapshot serves", got.seq)
 	}
 }
 
@@ -733,11 +914,7 @@ func TestStreamDeltas_ServesNoCachedFrameAfterTheMonitorStopped(t *testing.T) {
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
-	select {
-	case <-held.done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the held subscriber was never told the monitor stopped")
-	}
+	await.Recv(t, "the held subscriber to be told the monitor stopped", held.done)
 
 	// A browser opening the dashboard now.
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/events?deltas=1", nil)
@@ -749,7 +926,11 @@ func TestStreamDeltas_ServesNoCachedFrameAfterTheMonitorStopped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dialling the late stream: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close stream: %v", err)
+		}
+	}()
 
 	var names []string
 	scanner := bufio.NewScanner(resp.Body)
@@ -797,23 +978,32 @@ func TestDeltaHub_ReplacesALoopThatIsOnItsWayOut(t *testing.T) {
 	h.stopped = stopped
 	h.ending.Store(true)
 
-	// It finishes shortly, as the real one does -- it has only a return left.
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		close(stopped)
-	}()
-
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		h.ensureRunning()
 	}()
 
+	// ensureRunning holds the lifecycle lock for its whole decision, so once
+	// it has the lock it is past any check of stopped it could make before
+	// the loop finishes -- and with stopped still open it cannot return.
+	await.Until(t, "ensureRunning to take the lifecycle lock", func(context.Context) bool {
+		if h.lifecycle.TryLock() {
+			h.lifecycle.Unlock()
+			return false
+		}
+		return true
+	})
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("ensureRunning never returned; it should wait out the loop that is ending")
+		t.Fatal("ensureRunning returned while the ending loop had not finished; " +
+			"it should wait it out")
+	default:
 	}
+
+	// The loop finishes, as the real one does -- it has only a return left.
+	close(stopped)
+	await.Recv(t, "ensureRunning to return once the ending loop has finished", done)
 
 	h.lifecycle.Lock()
 	replaced := h.stopped != stopped
@@ -848,7 +1038,7 @@ func TestDeltaHub_ReplacesALoopThatIsOnItsWayOut(t *testing.T) {
 // request handler, so the queue is filled by hand with exactly what that window
 // leaves behind.
 func TestDeltaHub_InitialFrameLeavesNothingOlderQueued(t *testing.T) {
-	m := hubMonitor(t)
+	m := singleCollectionMonitor(t)
 	h := newDeltaHub(m, quietHubLogger())
 
 	sub := h.subscribe()
@@ -859,13 +1049,8 @@ func TestDeltaHub_InitialFrameLeavesNothingOlderQueued(t *testing.T) {
 	// stores the cache before it queues, so the newest of them is the cache.
 	var newest *deltaFrame
 	for i := 0; i < 3; i++ {
-		snap, err := m.Snapshot()
-		if err != nil {
-			t.Fatalf("Snapshot: %v", err)
-		}
-		newest = &deltaFrame{seq: h.nextSeq(), generation: m.Generation(), full: []byte("{}")}
+		newest = &deltaFrame{seq: h.nextSeq(), generation: m.Generation(), source: currentReading(t, m), full: []byte("{}")}
 		h.fanOut(newest)
-		_ = snap
 	}
 
 	got := h.initialFrame(sub)
@@ -887,7 +1072,7 @@ func TestDeltaHub_InitialFrameLeavesNothingOlderQueued(t *testing.T) {
 // the stream: a frame published after the initial one is the next thing the
 // client needs, and dropping it would cost a resync on every connection.
 func TestDeltaHub_InitialFrameKeepsWhatArrivesAfterIt(t *testing.T) {
-	m := hubMonitor(t)
+	m := singleCollectionMonitor(t)
 	h := newDeltaHub(m, quietHubLogger())
 
 	sub := h.subscribe()
@@ -898,16 +1083,18 @@ func TestDeltaHub_InitialFrameKeepsWhatArrivesAfterIt(t *testing.T) {
 		t.Fatal("initialFrame() = nil while the hub is publishing")
 	}
 
-	next := &deltaFrame{seq: h.nextSeq(), generation: m.Generation(), full: []byte("{}")}
+	next := &deltaFrame{seq: h.nextSeq(), generation: m.Generation(), source: currentReading(t, m), full: []byte("{}")}
 	h.fanOut(next)
 
+	// fanOut queues synchronously and nothing else publishes on this hub, so
+	// the frame is either queued now or was swallowed.
 	select {
 	case queued := <-sub.frames:
 		if queued != next {
 			t.Fatalf("received frame %d, want the one published after the initial frame", queued.seq)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the frame published after the initial one never arrived")
+	default:
+		t.Fatal("the frame published after the initial one was not queued")
 	}
 }
 
@@ -930,19 +1117,8 @@ func TestEvents_LegacyStreamAlsoSaysByeAfterTheMonitorStopped(t *testing.T) {
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 
-	if _, err := m.Snapshot(); err != nil {
-		// Wait for a collection, so there is something stale to serve.
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := m.Snapshot(); err == nil {
-				break
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
-	}
-	if _, err := m.Snapshot(); err != nil {
-		t.Fatalf("the monitor never collected: %v", err)
-	}
+	// Wait for a collection, so there is something stale to serve.
+	waitForFirstSnapshot(t, m)
 
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
@@ -958,12 +1134,16 @@ func TestEvents_LegacyStreamAlsoSaysByeAfterTheMonitorStopped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dialling the legacy stream: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close stream: %v", err)
+		}
+	}()
 
-	// Read with a deadline rather than until "bye" arrives. The bug is that it
-	// never does -- the client sits on keepalives -- so waiting for it makes
-	// the failure a timeout that names nothing. Bounded, the first event is
-	// there immediately either way and the assertion says what is wrong.
+	// Read the first event rather than until "bye" arrives. The bug is that
+	// "bye" never does -- the client sits on keepalives -- so waiting for it
+	// makes the failure a timeout that names nothing. The first event is there
+	// at once either way, and the assertion says what is wrong.
 	first := make(chan string, 1)
 	go func() {
 		scanner := bufio.NewScanner(resp.Body)
@@ -976,16 +1156,12 @@ func TestEvents_LegacyStreamAlsoSaysByeAfterTheMonitorStopped(t *testing.T) {
 		first <- ""
 	}()
 
-	select {
-	case name := <-first:
-		if name != "bye" {
-			t.Fatalf("the legacy stream's first event after the monitor stopped is %q; "+
-				"want bye -- a snapshot here is the last reading before shutdown, "+
-				"rendered as live", name)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the legacy stream sent no event at all after the monitor stopped; " +
-			"it should be told rather than left on keepalives")
+	name := await.Recv(t, "the legacy stream's first event after the monitor stopped "+
+		"(it should be told rather than left on keepalives)", first)
+	if name != "bye" {
+		t.Fatalf("the legacy stream's first event after the monitor stopped is %q; "+
+			"want bye -- a snapshot here is the last reading before shutdown, "+
+			"rendered as live", name)
 	}
 }
 
@@ -1001,11 +1177,7 @@ func waitForHubLoop(t *testing.T, h *deltaHub) {
 		return
 	}
 
-	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the hub's publishing loop did not exit after the monitor stopped")
-	}
+	await.Recv(t, "the hub's publishing loop to exit", stopped)
 }
 
 // TestDeltaHub_EndingClearsTheCache demonstrates, deterministically, the
@@ -1021,7 +1193,7 @@ func waitForHubLoop(t *testing.T, h *deltaHub) {
 // latest, and no client ever stores a frame, so nothing in the product can lose
 // a frame this way. The race was between a fixture and the code it was testing.
 func TestDeltaHub_EndingClearsTheCache(t *testing.T) {
-	m := hubMonitor(t)
+	m := singleCollectionMonitor(t)
 	h := newDeltaHub(m, quietHubLogger())
 
 	sub := h.subscribe()

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/sdnotify"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -32,14 +33,22 @@ func newListener(t *testing.T) *listener {
 	if err != nil {
 		t.Fatalf("temp dir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("removing %s: %v", dir, err)
+		}
+	})
 
 	addr := filepath.Join(dir, "n.sock")
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: addr, Net: "unixgram"})
 	if err != nil {
 		t.Fatalf("listen on %s: %v", addr, err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing the listener: %v", err)
+		}
+	})
 
 	return &listener{conn: conn, addr: addr}
 }
@@ -48,7 +57,7 @@ func newListener(t *testing.T) *listener {
 func (l *listener) recv(t *testing.T) string {
 	t.Helper()
 
-	if err := l.conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := l.conn.SetReadDeadline(time.Now().Add(await.Timeout)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
 	buf := make([]byte, 256)
@@ -57,6 +66,16 @@ func (l *listener) recv(t *testing.T) string {
 		t.Fatalf("read notification: %v", err)
 	}
 	return string(buf[:n])
+}
+
+// closeOnCleanup closes n when the test ends, failing it if the close does.
+func closeOnCleanup(t *testing.T, n *sdnotify.Notifier) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := n.Close(); err != nil {
+			t.Errorf("closing the notifier: %v", err)
+		}
+	})
 }
 
 func env(pairs map[string]string) func(string) string {
@@ -70,7 +89,7 @@ func TestNotifier_SendsEachMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = n.Close() })
+	closeOnCleanup(t, n)
 
 	tests := []struct {
 		name string
@@ -142,18 +161,22 @@ func TestNew_AbstractSocketNameIsTranslated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen on abstract socket: %v", err)
 	}
-	defer conn.Close() //nolint:errcheck
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing the abstract socket: %v", err)
+		}
+	})
 
 	n, err := sdnotify.New(env(map[string]string{"NOTIFY_SOCKET": "@" + name[1:]}), os.Getpid())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer n.Close() //nolint:errcheck
+	closeOnCleanup(t, n)
 
 	if err := n.Ready(); err != nil {
 		t.Fatalf("Ready: %v", err)
 	}
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(await.Timeout)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
 	buf := make([]byte, 64)
@@ -211,7 +234,7 @@ func TestWatchdogInterval(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			t.Cleanup(func() { _ = n.Close() })
+			closeOnCleanup(t, n)
 
 			if got := n.WatchdogInterval(); got != tt.want {
 				t.Errorf("WatchdogInterval = %v, want %v", got, tt.want)
@@ -254,7 +277,7 @@ func TestNew_IntervalSurvivesUnsetenv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = n.Close() })
+	closeOnCleanup(t, n)
 
 	if err := sdnotify.Unsetenv(); err != nil {
 		t.Fatalf("Unsetenv: %v", err)

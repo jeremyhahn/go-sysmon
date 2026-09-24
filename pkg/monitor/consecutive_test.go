@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -28,41 +29,66 @@ func collection(s *types.Snapshot) int64 {
 	return int64(s.Timestamp.Sub(epoch0) / time.Second)
 }
 
-// waitConsecutive polls until the monitor has a previous snapshot to report.
-func waitConsecutive(t *testing.T, m *monitor.Monitor) (prev, cur *types.Snapshot) {
+// consecutive returns the monitor's published pair, failing the test on error.
+func consecutive(t *testing.T, m *monitor.Monitor) (prev, cur *types.Snapshot) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		p, c, err := m.Consecutive()
-		if err == nil && p != nil {
-			return p, c
-		}
-		time.Sleep(2 * time.Millisecond)
+	prev, cur, err := m.Consecutive()
+	if err != nil {
+		t.Fatalf("Consecutive: %v", err)
 	}
-	t.Fatal("the monitor never published two consecutive snapshots")
-	return nil, nil
+	return prev, cur
 }
 
 // TestConsecutive_PairsEachSnapshotWithTheOneBeforeIt is the property a swap
 // rate is computed from: the two snapshots are adjacent collections of the
 // same run, never two ticks apart and never mismatched.
 func TestConsecutive_PairsEachSnapshotWithTheOneBeforeIt(t *testing.T) {
-	m, err := monitor.New(&countingSnapshotter{}, 5*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = m.Stop() }()
+	m := newMonitor(t, &countingSnapshotter{}, time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
 
-	for range 20 {
-		prev, cur := waitConsecutive(t, m)
-		if collection(cur) != collection(prev)+1 {
-			t.Fatalf("Consecutive() = collection %d then %d; want adjacent collections",
-				collection(prev), collection(cur))
+	// A reader racing the publications: whatever instant it reads at, the
+	// pair it gets is two adjacent collections, never mismatched.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			prev, cur, err := m.Consecutive()
+			if err == nil && prev != nil && collection(cur) != collection(prev)+1 {
+				t.Errorf("Consecutive() = collection %d then %d; want adjacent collections",
+					collection(prev), collection(cur))
+				return
+			}
+		}
+	}()
+
+	// Collection n has been published once a subscriber receives it, and
+	// collection n+1 cannot start before the next tick: the pair is exactly
+	// (n-1, n).
+	sub := m.Subscribe()
+	t.Cleanup(func() { m.Unsubscribe(sub.ID) })
+	for n := int64(1); n <= 20; n++ {
+		ticker.tick(t)
+		await.Recv(t, "the collection to be published", sub.Ch)
+		prev, cur := consecutive(t, m)
+		if collection(cur) != n {
+			t.Fatalf("Consecutive() current = collection %d, want %d", collection(cur), n)
+		}
+		switch {
+		case n == 1 && prev != nil:
+			t.Fatalf("the first collection was paired with collection %d", collection(prev))
+		case n > 1 && (prev == nil || collection(prev) != n-1):
+			t.Fatalf("collection %d was paired with %v; want collection %d", n, prev, n-1)
 		}
 	}
+	close(stop)
+	await.Recv(t, "the concurrent reader to finish", done)
 
 	snap, err := m.Snapshot()
 	if err != nil || snap == nil {
@@ -75,44 +101,37 @@ func TestConsecutive_PairsEachSnapshotWithTheOneBeforeIt(t *testing.T) {
 // length of time earlier. A rate over that gap would be a number describing no
 // interval anyone chose.
 func TestConsecutive_ARestartHasNoPrevious(t *testing.T) {
-	m, err := monitor.New(&countingSnapshotter{}, 5*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	m := newMonitor(t, &countingSnapshotter{}, time.Hour)
+	ticker := useManualTicker(m)
 	if err := m.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	waitConsecutive(t, m)
+	// Three collections; Stop lets the third, already started, finish.
+	for range 3 {
+		ticker.tick(t)
+	}
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-
-	// A long interval, so the restarted run collects exactly once, on its
-	// first tick, within the test.
-	if err := m.SetInterval(50 * time.Millisecond); err != nil {
-		t.Fatalf("SetInterval: %v", err)
+	if prev, cur := consecutive(t, m); prev == nil || collection(cur) != 3 {
+		t.Fatalf("the first run ended on %v paired with %v; want collection 3 with a previous", cur, prev)
 	}
-	if err := m.Start(); err != nil {
-		t.Fatalf("second Start: %v", err)
-	}
-	defer func() { _ = m.Stop() }()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		prev, cur, err := m.Consecutive()
-		if err == nil {
-			if prev != nil && collection(cur) != collection(prev)+1 {
-				t.Fatalf("after a restart, collection %d was paired with %d from the previous run",
-					collection(cur), collection(prev))
-			}
-			if prev == nil {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("never observed the restarted run's first collection")
-		}
-		time.Sleep(time.Millisecond)
+	// Exactly one collection in the restarted run: Stop lets the one the tick
+	// started finish, and nothing can start another.
+	startMonitor(t, m)
+	ticker.tick(t)
+	if err := m.Stop(); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+
+	prev, cur := consecutive(t, m)
+	if collection(cur) != 4 {
+		t.Fatalf("Consecutive() current = collection %d, want the restarted run's first, 4", collection(cur))
+	}
+	if prev != nil {
+		t.Fatalf("after a restart, collection %d was paired with %d from the previous run",
+			collection(cur), collection(prev))
 	}
 }
 
@@ -128,10 +147,9 @@ func TestConsecutive_Errors(t *testing.T) {
 		t.Errorf("Consecutive() on a monitor never started = %v; want MonitorNotRunningError", err)
 	}
 
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = m.Stop() }()
+	// No tick is delivered, so nothing can have been collected.
+	useManualTicker(m)
+	startMonitor(t, m)
 	var noneYet *types.NoSnapshotYetError
 	if _, _, err := m.Consecutive(); !errors.As(err, &noneYet) {
 		t.Errorf("Consecutive() before the first collection = %v; want NoSnapshotYetError", err)
@@ -142,16 +160,15 @@ func TestConsecutive_Errors(t *testing.T) {
 // for its counters, not whole -- a busy host's process list is not held twice.
 func TestConsecutive_KeepsOnlyABaselineOfThePrevious(t *testing.T) {
 	s := &fullSnapshotter{}
-	m, err := monitor.New(s, 5*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	m := newMonitor(t, s, time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
+	// The third tick is taken only once the second collection is published.
+	for range 3 {
+		ticker.tick(t)
 	}
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = m.Stop() }()
 
-	prev, cur := waitConsecutive(t, m)
+	prev, cur := consecutive(t, m)
 	if len(cur.Processes.Processes) == 0 {
 		t.Fatal("the current snapshot lost its process list")
 	}

@@ -81,8 +81,16 @@ echo "DBUS_SESSION_BUS_PID=$!;"
 [ "$FAKE_GSETTINGS" = "fails" ] && exit 1
 exit 0
 `,
+    // Real Cinnamon has written the startup lines -- the applet loading, any
+    // display-mode warning -- before it sets runState to RUNNING. The stand-in
+    // keeps that order as an event rather than a race: once its log is
+    // written it says so on a FIFO, and gdbus reads that before it first
+    // answers RUNNING. Without it the runner, started in the background, could
+    // be told RUNNING and scan the log before cat had written it -- which a
+    // loaded CI runner did.
     cinnamon: `#!/bin/sh
 cat "$FAKE_DIR/cinnamon.log.src"
+echo written > "$FAKE_DIR/log-written"
 exec sleep 60 </dev/null >/dev/null 2>&1
 `,
     // gdbus models the order Cinnamon's main.js starts in: the panel exists
@@ -106,6 +114,12 @@ polls=$(cat "$count_file" 2>/dev/null || echo 0)
 running=false
 if [ "$FAKE_RUNNING_AFTER" != "never" ] && [ "$polls" -ge "$FAKE_RUNNING_AFTER" ]; then
     running=true
+    # The first RUNNING waits for the log to be written; see the cinnamon
+    # stand-in.
+    if [ ! -e "$FAKE_DIR/log-synced" ]; then
+        read -r _ < "$FAKE_DIR/log-written"
+        : > "$FAKE_DIR/log-synced"
+    fi
 fi
 reply() { printf "(true, '%s')\\n" "$1"; exit 0; }
 case "$js" in
@@ -155,6 +169,10 @@ function runRunner(scenario = {}) {
         }
         // Cinnamon ends every log line with a newline, so the stand-in does too.
         fs.writeFileSync(path.join(dir, "cinnamon.log.src"), `${scenario.log ?? LOADED_LOG}\n`);
+        // The FIFO the cinnamon stand-in announces its written log on.
+        const mkfifo = spawnSync("mkfifo", [path.join(dir, "log-written")]);
+        assert.ifError(mkfifo.error);
+        assert.strictEqual(mkfifo.status, 0, mkfifo.stderr?.toString());
 
         const result = spawnSync("bash", [RUNNER], {
             encoding: "utf8",
@@ -189,8 +207,12 @@ function runRunner(scenario = {}) {
         assert.ifError(result.error);
 
         const lines = result.stdout.split("\n");
+        const pollsFile = path.join(dir, "runstate-polls");
         return {
             status: result.status,
+            // How many times the runner asked whether Cinnamon had finished
+            // starting: what its wait did, counted rather than timed.
+            runStatePolls: fs.existsSync(pollsFile) ? Number(fs.readFileSync(pollsFile, "utf8").trim()) : 0,
             stdout: result.stdout,
             ok: lines.filter((l) => l.startsWith("ok   ")),
             failed: lines.filter((l) => l.startsWith("FAIL ")),
@@ -214,12 +236,19 @@ test("a healthy session passes every check and exits zero", () => {
 // Job 42277, 2026-09-03: Eval answered and the panel existed before
 // AppletManager.init() had resolved, so a one-shot "is the applet registered"
 // check ran 55 ms too early and failed on a desktop that was about to be fine.
+//
+// The stand-in finishes starting on a poll count, not after a delay, and the
+// runner's wait checks at least WAIT_MIN_POLLS (3) times however slow the host
+// is, so a session that needs its third poll is waited for deterministically.
+// Its timeout alone once decided, and a starved CI runner reported this very
+// session as never starting.
 test("a session still loading its applets is waited for, not failed", () => {
-    const run = runRunner({ runningAfter: "1" });
+    const run = runRunner({ runningAfter: "2" });
 
     assert.strictEqual(run.status, 0, run.stdout);
     assert.deepStrictEqual(run.failed, []);
     assert.ok(run.ok.includes("ok   the sysmon applet is registered with the panel"), run.stdout);
+    assert.strictEqual(run.runStatePolls, 3, "the runner stopped waiting at a different poll than the one that answered RUNNING");
 });
 
 // Issue #83's shape: a Cinnamon that answers Eval but never finishes starting.
@@ -235,6 +264,9 @@ test("a session that never finishes starting passes nothing", () => {
         "FAIL Cinnamon never finished starting (runState did not reach RUNNING)",
     ]);
     assert.strictEqual(run.notRun.length, 17, run.stdout);
+    // "Never" is a verdict on several observations, not on however few fit in
+    // the timeout on a loaded host.
+    assert.ok(run.runStatePolls >= 3, `the runner gave up after ${run.runStatePolls} polls`);
 });
 
 test("an applet Cinnamon dropped fails the gate and nothing after it runs", () => {

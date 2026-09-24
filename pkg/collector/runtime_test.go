@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -264,40 +262,22 @@ func TestRuntimeCollector_UnreachableSocket(t *testing.T) {
 // TestRuntimeCollector_AgainstFakeDaemon drives the whole path against a unix
 // socket serving canned Docker API responses.
 func TestRuntimeCollector_AgainstFakeDaemon(t *testing.T) {
-	dir := t.TempDir()
-	sock := filepath.Join(dir, "docker.sock")
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/info", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(dockerInfo{
+		if err := json.NewEncoder(w).Encode(dockerInfo{
 			ServerVersion: "29.1.3", Driver: "overlay2", DockerRootDir: "/data/docker",
 			Images: 2, Containers: 1, ContainersRunning: 1,
 			DriverStatus: [][]string{{"Backing Filesystem", "extfs"}},
-		})
+		}); err != nil {
+			t.Errorf("encoding /info: %v", err)
+		}
 	})
 	mux.HandleFunc("/system/df", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(diskUsageFixture())
+		if err := json.NewEncoder(w).Encode(diskUsageFixture()); err != nil {
+			t.Errorf("encoding /system/df: %v", err)
+		}
 	})
-
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	srv := &http.Server{Handler: mux} //nolint:gosec
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(ctx)
-		_ = os.Remove(sock)
-	})
-
-	original := runtimeSocketPaths
-	runtimeSocketPaths = []struct {
-		path   string
-		engine string
-	}{{sock, "docker"}}
-	t.Cleanup(func() { runtimeSocketPaths = original })
+	serveFakeDaemon(t, mux)
 
 	c := NewRuntimeCollector(slog.Default())
 
@@ -312,7 +292,7 @@ func TestRuntimeCollector_AgainstFakeDaemon(t *testing.T) {
 	}
 
 	// Disk usage is collected in the background; wait for it.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 	defer cancel()
 	if err := c.WaitForDiskUsage(ctx); err != nil {
 		t.Fatalf("WaitForDiskUsage() = %v", err)
@@ -340,12 +320,7 @@ func TestWaitForDiskUsage_ReturnsWhenNothingIsComing(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- c.WaitForDiskUsage(context.Background()) }()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("WaitForDiskUsage() = %v, want nil: nothing is coming", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Error("WaitForDiskUsage hung when no result could arrive")
+	if err := await.Recv(t, "WaitForDiskUsage to return when no result could arrive", done); err != nil {
+		t.Errorf("WaitForDiskUsage() = %v, want nil: nothing is coming", err)
 	}
 }

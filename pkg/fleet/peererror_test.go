@@ -156,14 +156,14 @@ func TestFetch_FailuresNameNoAddress(t *testing.T) {
 	})
 
 	t.Run("untrusted certificate", func(t *testing.T) {
-		srv := httptest.NewTLSServer(snapshotPeer())
+		srv := httptest.NewTLSServer(snapshotPeer(t))
 		defer srv.Close()
 		_, err := fetchSnapshot(testPoller(t), config.Peer{Name: "peer", URL: srv.URL}, plaintextAllowed())
 		assertPeerFailure(t, err, srv.URL, "certificate")
 	})
 
 	t.Run("plain http behind an https url", func(t *testing.T) {
-		srv := httptest.NewServer(snapshotPeer())
+		srv := httptest.NewServer(snapshotPeer(t))
 		defer srv.Close()
 		target := strings.Replace(srv.URL, "http://", "https://", 1)
 		_, err := fetchSnapshot(testPoller(t), config.Peer{Name: "peer", URL: target}, plaintextAllowed())
@@ -214,7 +214,7 @@ func TestFetch_MutualTLSRefusalNamesNoAddress(t *testing.T) {
 	if !clientCAs.AppendCertsFromPEM(certPEM) {
 		t.Fatal("client CA pool did not accept the generated certificate")
 	}
-	srv := httptest.NewUnstartedServer(snapshotPeer())
+	srv := httptest.NewUnstartedServer(snapshotPeer(t))
 	srv.TLS = &tls.Config{ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientCAs, MinVersion: tls.VersionTLS13}
 	srv.StartTLS()
 	defer srv.Close()

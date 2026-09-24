@@ -16,10 +16,10 @@ import { openTab } from './fixtures/tabs';
  * Reproducing it needs the delay between the response resolving and its body
  * parsing, which `route.fulfill` cannot express — it sends headers and body
  * together. So window.fetch is patched to hand back a response whose json()
- * settles late, which is precisely the window the old code was blind to.
+ * settles only when the test releases it, which is precisely the window the
+ * old code was blind to -- held open for as long as the test needs rather
+ * than for a duration it hopes is long enough.
  */
-
-const PARSE_DELAY_MS = 2000;
 
 const alphaSnapshot = {
   ...snapshot,
@@ -63,17 +63,29 @@ async function setupFleet(page: Page) {
     nodes: [fleetNode('alpha', 'alpha-host'), fleetNode('bravo', 'bravo-host')],
   });
 
-  // Patch fetch so alpha's body parses slowly and bravo's resolves at once.
+  // Patch fetch so alpha's body parses only once the test releases it, and
+  // bravo's at once. Each alpha body is counted as handled in a task queued
+  // after it resolves: the page's handling of it -- the selection check, the
+  // apply, the render -- is all microtasks, so it has finished by then.
   await page.addInitScript(
-    ({ alphaSnap, bravoSnap, delayMs }) => {
+    ({ alphaSnap, bravoSnap }) => {
+      const alpha = { parsing: 0, handled: 0, release: () => {} };
+      const released = new Promise<void>((resolve) => {
+        alpha.release = resolve;
+      });
+      (window as unknown as { __alpha: typeof alpha }).__alpha = alpha;
+
       const realFetch = window.fetch.bind(window);
-      const fake = (payload: unknown, delay: number) =>
+      const fake = (payload: unknown, parsed: Promise<void>, onHandled: () => void) =>
         Promise.resolve({
           ok: true,
           status: 200,
           json: () =>
-            new Promise((resolve) => {
-              window.setTimeout(() => resolve(payload), delay);
+            parsed.then(() => {
+              const channel = new MessageChannel();
+              channel.port1.onmessage = onHandled;
+              channel.port2.postMessage(null);
+              return payload;
             }),
         } as unknown as Response);
 
@@ -90,15 +102,18 @@ async function setupFleet(page: Page) {
         // into the live series -- and this test would pass for the wrong
         // reason, never having exercised the race it exists to catch.
         if (url.includes('/api/fleet/alpha/snapshot')) {
+          alpha.parsing++;
           return fake(
             { snapshot: alphaSnap, reachable: true, age_seconds: 0 },
-            delayMs
+            released,
+            () => alpha.handled++
           );
         }
         if (url.includes('/api/fleet/bravo/snapshot')) {
           return fake(
             { snapshot: bravoSnap, reachable: true, age_seconds: 0 },
-            0
+            Promise.resolve(),
+            () => {}
           );
         }
         return realFetch(input, init);
@@ -107,9 +122,31 @@ async function setupFleet(page: Page) {
     {
       alphaSnap: alphaSnapshot,
       bravoSnap: bravoSnapshot,
-      delayMs: PARSE_DELAY_MS,
     }
   );
+}
+
+interface AlphaBodies {
+  parsing: number;
+  handled: number;
+}
+
+function alphaBodies(page: Page): Promise<AlphaBodies> {
+  return page.evaluate(() => {
+    const { parsing, handled } = (window as unknown as { __alpha: AlphaBodies }).__alpha;
+    return { parsing, handled };
+  });
+}
+
+/** Lets every held alpha body parse, and returns once the page has handled them all. */
+async function releaseAlpha(page: Page) {
+  await page.evaluate(() => (window as unknown as { __alpha: { release: () => void } }).__alpha.release());
+  await expect
+    .poll(async () => {
+      const { parsing, handled } = await alphaBodies(page);
+      return handled === parsing;
+    }, { message: "alpha's response was never handled" })
+    .toBe(true);
 }
 
 /** Clicks a node card on the fleet dashboard. */
@@ -126,6 +163,11 @@ async function selectNode(page: Page, name: string) {
  * so a test that only looks at the end state sees the right answer and misses
  * the bug entirely. What matters is that the wrong hostname is never shown at
  * any instant, so every value the node takes is recorded and checked.
+ *
+ * A MutationObserver sees every one: its callback runs after each batch of DOM
+ * changes, before the page can paint, so a value that is on screen for any
+ * frame is recorded. (A value written and replaced within one batch is never
+ * painted, and no sampler could see it either.)
  */
 async function recordHostnames(page: Page) {
   await page.evaluate(() => {
@@ -140,14 +182,11 @@ async function recordHostnames(page: Page) {
     };
 
     sample();
-    // Mutations catch the update the instant Svelte makes it; the sampler is a
-    // backstop in case a value is written and replaced between mutations.
     new MutationObserver(sample).observe(document.body, {
       childList: true,
       subtree: true,
       characterData: true,
     });
-    window.setInterval(sample, 50);
   });
 }
 
@@ -174,10 +213,13 @@ test.describe('Fleet peer selection race', () => {
     await page.goto('/');
     await slowPolling(page);
 
-    // Select alpha; its snapshot body will not parse for PARSE_DELAY_MS.
+    // Select alpha; its snapshot body will not parse until released.
     await selectNode(page, 'alpha');
+    await expect
+      .poll(async () => (await alphaBodies(page)).parsing, { message: 'alpha was never polled' })
+      .toBeGreaterThan(0);
 
-    // Switch to bravo well inside that window.
+    // Switch to bravo while alpha's body is still parsing.
     await selectNode(page, 'bravo');
 
     // Bravo's data is what the panels must show.
@@ -187,10 +229,9 @@ test.describe('Fleet peer selection race', () => {
 
     await recordHostnames(page);
 
-    // Wait past alpha's parse delay. This is a deliberate fixed wait: the
-    // event being waited for is the stale response landing, and the assertion
-    // is that nothing happens when it does.
-    await page.waitForTimeout(PARSE_DELAY_MS + 1500);
+    // Let alpha's stale response land, and wait until the page has handled
+    // it: the assertion is that nothing happens when it does.
+    await releaseAlpha(page);
 
     const seen = await seenHostnames(page);
     expect(seen).toContain('bravo-host');

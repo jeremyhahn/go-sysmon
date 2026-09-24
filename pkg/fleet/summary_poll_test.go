@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -371,6 +372,8 @@ func TestPeerSnapshot_ReusedForTheFleetInterval(t *testing.T) {
 	cfg := config.Fleet{Peers: []config.Peer{{Name: "omega", URL: srv.URL}}, PollIntervalMs: 60000, TimeoutMs: 2000}
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
+	clk := fleet.NewManualClock()
+	fleet.SetClock(p, clk.Now)
 
 	for range 5 {
 		if _, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); err != nil {
@@ -381,12 +384,24 @@ func TestPeerSnapshot_ReusedForTheFleetInterval(t *testing.T) {
 		t.Errorf("5 drill-ins within a 60 s fleet interval fetched the snapshot %d times, want 1", n)
 	}
 
-	// Following the dashboard's rate control, which sets the fleet cadence.
+	// A second later the fetch is still inside the 60 s window.
+	clk.Advance(time.Second)
+	if _, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); err != nil {
+		t.Fatalf("PeerSnapshot: %v", err)
+	}
+	if n := remote.count("/api/snapshot"); n != 1 {
+		t.Fatalf("a drill-in 1 s into a 60 s fleet interval fetched the snapshot again (%d fetches)", n)
+	}
+
+	// Following the dashboard's rate control, which sets the fleet cadence:
+	// at 1 s the same fetch is now a full interval old and is fetched anew.
 	p.SetPollInterval(time.Second)
-	waitFor(t, func() bool {
-		_, err := p.PeerSnapshot(context.Background(), "omega", time.Minute)
-		return err == nil && remote.count("/api/snapshot") == 2
-	})
+	if _, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); err != nil {
+		t.Fatalf("PeerSnapshot: %v", err)
+	}
+	if n := remote.count("/api/snapshot"); n != 2 {
+		t.Errorf("a drill-in a full 1 s interval after the last fetch made %d fetches in all, want 2", n)
+	}
 }
 
 // TestView_APeerRepointedMidPollShowsNoStaleMachine: a poll that answers from
@@ -648,14 +663,25 @@ func TestPeerSnapshot_TheBudgetCoversWaitingForTheLock(t *testing.T) {
 		_, err := p.PeerSnapshot(context.Background(), "omega", time.Minute)
 		first <- err
 	}()
-	<-entered
+	await.Recv(t, "the first drill-in's fetch to reach the peer", entered)
 
-	started := time.Now()
-	if _, err := p.PeerSnapshot(context.Background(), "omega", 100*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+	// The first fetch holds the lock until release, which only the deferred
+	// close sends, or until its own minute runs out. A queued drill-in that
+	// waited for the lock could therefore not return before the bound below.
+	queued := make(chan error, 1)
+	go func() {
+		_, err := p.PeerSnapshot(context.Background(), "omega", 100*time.Millisecond)
+		queued <- err
+	}()
+	if err := await.Recv(t, "the queued drill-in to give up", queued); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("queued drill-in = %v; want its budget's deadline", err)
 	}
-	if waited := time.Since(started); waited > 5*time.Second {
-		t.Errorf("queued drill-in took %v; its budget was 100ms", waited)
+	// And it gave up with the lock still held: the fetch it queued behind has
+	// not finished, so it cannot have waited for it.
+	select {
+	case err := <-first:
+		t.Errorf("the first drill-in finished (%v) before the queued one returned; the queued one waited for the lock", err)
+	default:
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -93,20 +94,6 @@ func cadenceOf(d time.Duration) *atomic.Int64 {
 	return &c
 }
 
-// within waits for cond, failing the test at the deadline. It polls observable
-// state rather than sleeping for a guessed duration.
-func within(t *testing.T, d time.Duration, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(d)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		runtime.Gosched()
-		time.Sleep(time.Millisecond)
-	}
-}
-
 // TestRecorder_AStalledHistoryEndpointNeverDelaysTheSummary is the owner's
 // requirement on #181: a slow or failing history endpoint must never affect a
 // card or the freshness of the summaries. The history handler here never
@@ -130,6 +117,9 @@ func TestRecorder_AStalledHistoryEndpointNeverDelaysTheSummary(t *testing.T) {
 
 	cfg := fleetOf(time.Minute, srv.URL)
 	p, readings := recordingPoller(t, cfg, cadenceOf(time.Second))
+	// A clock that stands still: a card kept current by every cycle is then
+	// exactly zero seconds old, not "recent enough".
+	p.now = newManualClock().Now
 
 	p.refresh(*cfg.Load())
 	p.history.sync(*cfg.Load())
@@ -139,7 +129,7 @@ func TestRecorder_AStalledHistoryEndpointNeverDelaysTheSummary(t *testing.T) {
 		p.refresh(*cfg.Load())
 		p.history.sync(*cfg.Load())
 		n := p.View(Query{}).Nodes[1]
-		if !n.Reachable || n.Status != StatusHealthy || n.AgeSeconds > 5 {
+		if !n.Reachable || n.Status != StatusHealthy || n.AgeSeconds != 0 {
 			t.Fatalf("cycle %d with history stalled: reachable %v status %q age %.1fs; the card must stay current",
 				i, n.Reachable, n.Status, n.AgeSeconds)
 		}
@@ -157,12 +147,18 @@ func TestRecorder_AStalledHistoryEndpointNeverDelaysTheSummary(t *testing.T) {
 }
 
 // TestRecorder_RecordsTheSlimmedPayloadAtItsCadence: a worker takes a reading
-// at once and then one per cadence, each the history payload.
+// at once and then one per cadence, each the history payload. The worker's
+// timer and the poller's clock are both driven by hand: every fetch takes
+// exactly 300ms by that clock, so the next turn must be armed for the cadence
+// less those 300ms -- timed from the start of the turn, not its end.
 func TestRecorder_RecordsTheSlimmedPayloadAtItsCadence(t *testing.T) {
+	const fetchTakes = 300 * time.Millisecond
+	clk := newManualClock()
 	var got atomic.Pointer[types.Snapshot]
 	var fetched atomic.Int64
 	peer := &historyPeer{history: func(w http.ResponseWriter, r *http.Request) {
 		fetched.Add(1)
+		clk.Advance(fetchTakes)
 		servesHistory(w, r)
 	}}
 	srv := httptest.NewServer(peer)
@@ -172,12 +168,26 @@ func TestRecorder_RecordsTheSlimmedPayloadAtItsCadence(t *testing.T) {
 	p := New(func() config.Fleet { return *cfg.Load() },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthyPeerSnapshot(), 0 },
 		func() string { return "local" }, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p.now = clk.Now
+	timers, made := newManualTimers()
+	p.history.newTimer = timers
 	p.Observe(func(_ string, s *types.Snapshot) { got.Store(s) }, func() time.Duration { return MinPollInterval })
 	defer p.history.stop()
 
 	p.refresh(*cfg.Load())
 	p.history.sync(*cfg.Load())
-	within(t, 5*time.Second, "two history readings", func() bool { return fetched.Load() >= 2 })
+	worker := await.Recv(t, "the peer's worker to start its timer", made)
+
+	for turn := int64(1); turn <= 2; turn++ {
+		await.Send(t, fmt.Sprintf("turn %d", turn), worker.c, clk.Now())
+		if next := await.Recv(t, fmt.Sprintf("turn %d to arm the next", turn), worker.resets); next != MinPollInterval-fetchTakes {
+			t.Errorf("turn %d armed the next for %v, want the %v cadence less the %v fetch",
+				turn, next, MinPollInterval, fetchTakes)
+		}
+		if n := fetched.Load(); n != turn {
+			t.Fatalf("%d history fetches after %d turns, want one per turn", n, turn)
+		}
+	}
 
 	s := got.Load()
 	if s == nil || s.Host.Hostname != "peer" || len(s.Processes.Processes) != 0 || s.Processes.Total != 1 {
@@ -186,6 +196,25 @@ func TestRecorder_RecordsTheSlimmedPayloadAtItsCadence(t *testing.T) {
 	if peer.snapshots.Load() != 0 {
 		t.Errorf("the whole snapshot was fetched %d times; history uses the payload", peer.snapshots.Load())
 	}
+}
+
+// TestClockTimer_IsATimeTimer covers the production timer: it expires on its
+// own, Reset rearms it, and Stop disarms it.
+func TestClockTimer_IsATimeTimer(t *testing.T) {
+	tm := newClockTimer(0)
+	await.Recv(t, "an immediate timer to expire", tm.Chan())
+
+	tm.Reset(time.Hour)
+	if !tm.Stop() {
+		t.Error("Stop() = false on a timer armed for an hour; Reset did not arm it")
+	}
+	if tm.Stop() {
+		t.Error("Stop() = true on a timer already stopped")
+	}
+	if tm.Reset(0) {
+		t.Error("Reset() = true on a stopped timer")
+	}
+	await.Recv(t, "the rearmed timer to expire", tm.Chan())
 }
 
 // TestRecorder_BoundsConcurrentFetches: however many peers there are, no more
@@ -217,9 +246,9 @@ func TestRecorder_BoundsConcurrentFetches(t *testing.T) {
 
 	p.refresh(*cfg.Load())
 	p.history.sync(*cfg.Load())
-	within(t, 5*time.Second, "the concurrency limit to fill", func() bool { return inflight.Load() == maxHistoryFetches })
+	await.Until(t, "the concurrency limit to fill", func(context.Context) bool { return inflight.Load() == maxHistoryFetches })
 	close(release)
-	within(t, 5*time.Second, "every peer's reading", func() bool { return readings.Load() == 10 })
+	await.Until(t, "every peer's reading", func(context.Context) bool { return readings.Load() == 10 })
 
 	if got := peak.Load(); got != maxHistoryFetches {
 		t.Errorf("peak concurrent history fetches = %d, want %d", got, maxHistoryFetches)
@@ -284,7 +313,7 @@ func TestRecorder_WorkersFollowTheConfiguration(t *testing.T) {
 	a.Close()
 	b.Close()
 	p.client.CloseIdleConnections()
-	within(t, 5*time.Second, fmt.Sprintf("goroutines to return to %d", baseline), func() bool {
+	await.Until(t, fmt.Sprintf("goroutines to return to %d", baseline), func(context.Context) bool {
 		return runtime.NumGoroutine() <= baseline
 	})
 }
@@ -379,7 +408,7 @@ func TestRecorder_ARetimedCadenceRestartsTheWorkers(t *testing.T) {
 
 	p.refresh(*cfg.Load())
 	p.history.sync(*cfg.Load())
-	within(t, 5*time.Second, "the first reading", func() bool { return fetched.Load() == 1 })
+	await.Until(t, "the first reading", func(context.Context) bool { return fetched.Load() == 1 })
 	before := p.history.workers["peer-00"]
 
 	cadence.Store(int64(MinPollInterval))
@@ -387,7 +416,7 @@ func TestRecorder_ARetimedCadenceRestartsTheWorkers(t *testing.T) {
 	if after := p.history.workers["peer-00"]; after == before {
 		t.Fatal("the worker was kept across a cadence change; its timer is still armed for an hour")
 	}
-	within(t, 5*time.Second, "a reading at the new cadence", func() bool { return fetched.Load() >= 2 })
+	await.Until(t, "a reading at the new cadence", func(context.Context) bool { return fetched.Load() >= 2 })
 }
 
 // TestRecorder_ATickWithRecordingOffFetchesNothing: between remote write being

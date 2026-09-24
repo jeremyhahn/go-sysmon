@@ -26,7 +26,7 @@ test.describe('Core Application', () => {
   test('connection status transitions to Connected once the event stream opens', async ({ page }) => {
     await page.goto('/');
     // Wait for the "Connected" text to appear in the navbar status area
-    const connectedText = page.locator('nav').getByText('Connected');
+    const connectedText = page.locator('nav').getByText('Connected', { exact: true });
     await expect(connectedText).toBeVisible({ timeout: 10000 });
   });
 

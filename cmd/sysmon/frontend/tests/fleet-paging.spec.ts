@@ -1,7 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { openTab } from './fixtures/tabs';
-import { fleetNode, serveFleet, type FleetFixture } from './fixtures/fleet';
+import { FLEET_API, fleetNode, serveFleet, type FleetFixture } from './fixtures/fleet';
+import { logRequests, settledRequests } from './fixtures/request-log';
 
 /**
  * The fleet view at fleet scale (#15).
@@ -154,20 +155,22 @@ test('a slow answer to an old search never replaces the newer one', async ({ pag
   await serveFleet(page, bigFleet(200));
   // Answer "node-001" slowly and everything else at once, so the first
   // search's page would arrive after the second's.
-  let slowSettled = false;
+  // The first search is held until the second's page is on screen, so it is
+  // answered after it -- by the test, not by a delay the host may outrun.
+  let answerOld: () => void = () => {};
+  const oldMayAnswer = new Promise<void>((resolve) => (answerOld = resolve));
   await page.route(/\/api\/fleet(\?[^/]*)?$/, async (route) => {
     const params = new URL(route.request().url()).searchParams;
     if (params.get('q') !== 'node-001') return route.fallback();
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await oldMayAnswer;
     try {
       await route.fallback();
     } catch {
       // The view aborted this request when the newer search superseded it;
       // there is nothing left to answer.
-    } finally {
-      slowSettled = true;
     }
   });
+  await logRequests(page, FLEET_API);
   await page.goto('/');
   await openTab(page, 'Fleet');
   await expect(cards(page)).toHaveCount(25);
@@ -177,9 +180,12 @@ test('a slow answer to an old search never replaces the newer one', async ({ pag
   await box.fill('node-0019');
   const newer = Array.from({ length: 10 }, (_, i) => `node-0019${i}`);
   await expect(cards(page)).toHaveText(newer);
-  // Once the old search has been answered (or abandoned), the newer page is
-  // still the one on screen.
-  await expect.poll(() => slowSettled).toBe(true);
+  // Now answer the old search, and wait until the page has finished with it
+  // -- read its body or seen it aborted. Whatever it would do with that page
+  // has happened, so the newer page still being on screen is conclusive.
+  answerOld();
+  const requests = await settledRequests(page, (url) => url.searchParams.get('q') === 'node-001');
+  expect(requests.some((r) => r.get('q') === 'node-001'), 'the old search was never made').toBe(true);
   await expect(cards(page)).toHaveText(newer);
 });
 

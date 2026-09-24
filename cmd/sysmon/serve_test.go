@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -35,6 +36,24 @@ func startedMonitor(t *testing.T) *monitor.Monitor {
 		t.Fatalf("monitor.Start: %v", err)
 	}
 	return m
+}
+
+// awaitListening returns once addr accepts a connection. A listener coming up
+// is not announced to anything outside the code under test, so this polls it,
+// dialling afresh on every pass.
+func awaitListening(t *testing.T, addr string) {
+	t.Helper()
+	var dialer net.Dialer
+	await.Until(t, "the server to listen on "+addr, func(ctx context.Context) bool {
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return false
+		}
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing the probe connection: %v", err)
+		}
+		return true
+	})
 }
 
 // ---- runServeCmd validation -----------------------------------------------
@@ -69,7 +88,11 @@ func TestServeUntilSignal_ReturnsListenError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer l.Close() //nolint:errcheck
+	defer func() {
+		if err := l.Close(); err != nil {
+			t.Errorf("closing the occupying listener: %v", err)
+		}
+	}()
 
 	mon := startedMonitor(t)
 	srv := server.New(mon, l.Addr().String(), nil)
@@ -112,15 +135,7 @@ func TestServeUntilSignal_ShutsDownOnSignal(t *testing.T) {
 	go func() { done <- serveUntilSignal(ctx, srv, mon) }()
 
 	// Wait for the listener to come up before signalling.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if dialErr == nil {
-			conn.Close() //nolint:errcheck
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	awaitListening(t, addr)
 
 	// serveUntilSignal installs a handler, so this does not terminate the test
 	// binary.
@@ -128,13 +143,8 @@ func TestServeUntilSignal_ShutsDownOnSignal(t *testing.T) {
 		t.Fatalf("send SIGTERM: %v", err)
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("serveUntilSignal() = %v, want nil after a clean shutdown", err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("serveUntilSignal did not return after SIGTERM")
+	if err := await.Recv(t, "serveUntilSignal to return after SIGTERM", done); err != nil {
+		t.Errorf("serveUntilSignal() = %v, want nil after a clean shutdown", err)
 	}
 }
 
@@ -190,31 +200,13 @@ func TestRunServeCmd_ServesAndShutsDown(t *testing.T) {
 	go func() { done <- runServeCmd(nil, nil) }()
 
 	// Wait for the listener before signalling.
-	deadline := time.Now().Add(10 * time.Second)
-	up := false
-	for time.Now().Before(deadline) {
-		conn, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
-		if dialErr == nil {
-			conn.Close() //nolint:errcheck
-			up = true
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if !up {
-		t.Fatal("runServeCmd never started listening")
-	}
+	awaitListening(t, addr)
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatalf("send SIGTERM: %v", err)
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("runServeCmd() = %v, want nil after a clean shutdown", err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("runServeCmd did not return after SIGTERM")
+	if err := await.Recv(t, "runServeCmd to return after SIGTERM", done); err != nil {
+		t.Errorf("runServeCmd() = %v, want nil after a clean shutdown", err)
 	}
 }

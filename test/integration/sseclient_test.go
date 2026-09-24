@@ -6,11 +6,13 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
 // sseEvent is a single decoded server-sent event.
@@ -60,7 +62,9 @@ func dialEventStream(t *testing.T, url string, acceptGzip bool) *eventStream {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close() //nolint:errcheck
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("closing the refused %s response: %v", url, err)
+		}
 		cancel()
 		t.Fatalf("GET %s status = %d, want 200", url, resp.StatusCode)
 	}
@@ -76,7 +80,9 @@ func dialEventStream(t *testing.T, url string, acceptGzip bool) *eventStream {
 	if s.encoding == "gzip" {
 		gz, err := gzip.NewReader(resp.Body)
 		if err != nil {
-			resp.Body.Close() //nolint:errcheck
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				t.Errorf("closing the %s response: %v", url, closeErr)
+			}
 			cancel()
 			t.Fatalf("gzip reader: %v", err)
 		}
@@ -87,7 +93,9 @@ func dialEventStream(t *testing.T, url string, acceptGzip bool) *eventStream {
 
 	t.Cleanup(func() {
 		cancel()
-		resp.Body.Close() //nolint:errcheck
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("closing the %s event stream: %v", url, err)
+		}
 	})
 
 	return s
@@ -126,8 +134,8 @@ func (s *eventStream) next() (sseEvent, error) {
 }
 
 // nextNamed reads events until one with the given name arrives, failing the
-// test on timeout.
-func (s *eventStream) nextNamed(t *testing.T, name string, timeout time.Duration) sseEvent {
+// test if the stream ends first or none arrives within await.Timeout.
+func (s *eventStream) nextNamed(t *testing.T, name string) sseEvent {
 	t.Helper()
 
 	type result struct {
@@ -150,14 +158,9 @@ func (s *eventStream) nextNamed(t *testing.T, name string, timeout time.Duration
 		}
 	}()
 
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			t.Fatalf("waiting for %q event: %v", name, r.err)
-		}
-		return r.ev
-	case <-time.After(timeout):
-		t.Fatalf("timed out after %v waiting for a %q event", timeout, name)
-		return sseEvent{}
+	r := await.Recv(t, fmt.Sprintf("a %q event", name), ch)
+	if r.err != nil {
+		t.Fatalf("waiting for %q event: %v", name, r.err)
 	}
+	return r.ev
 }

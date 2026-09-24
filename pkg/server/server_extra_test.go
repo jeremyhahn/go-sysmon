@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -146,7 +147,7 @@ func TestHandleEvents_StreamsBeforeFirstSnapshot(t *testing.T) {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	stopMonitorAtCleanup(t, m)
 
 	s := server.New(m, ":0", nil)
 	ts := httptest.NewServer(s)
@@ -155,7 +156,7 @@ func TestHandleEvents_StreamsBeforeFirstSnapshot(t *testing.T) {
 	// Connect immediately, racing the monitor's first tick.
 	c := dialEvents(t, ts.URL+"/api/events", false)
 
-	ev := c.nextNamed(t, "snapshot", 3*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 	if snap.Host.Hostname != "early-host" {
@@ -185,7 +186,7 @@ func TestHandleEvents_ConcurrentClients(t *testing.T) {
 
 			c := dialEvents(t, ts.URL+"/api/events", false)
 
-			ev := c.nextNamed(t, "snapshot", 5*time.Second)
+			ev := c.nextNamed(t, "snapshot")
 			var snap types.Snapshot
 			if err := json.Unmarshal([]byte(ev.Data), &snap); err != nil {
 				errs <- fmt.Sprintf("client %d unmarshal: %v", id, err)
@@ -214,17 +215,20 @@ func TestHandleEvents_AbruptClientClose(t *testing.T) {
 	waitForSnapshot(t, m)
 
 	s := server.New(m, ":0", nil)
-	ts := httptest.NewServer(s)
-	t.Cleanup(ts.Close)
+	ts, closed := newConnTrackingServer(t, s)
 
-	for range 3 {
+	const clients = 3
+	for range clients {
 		c := dialEvents(t, ts.URL+"/api/events", false)
-		c.nextNamed(t, "snapshot", 3*time.Second)
+		c.nextNamed(t, "snapshot")
 		c.Close()
 	}
 
-	// Give the server goroutines time to notice the disconnections.
-	time.Sleep(100 * time.Millisecond)
+	// Every streaming handler has noticed its disconnection and returned: each
+	// connection reaching StateClosed proves one did.
+	for range clients {
+		await.Recv(t, "a streaming handler to unwind after its client closed", closed)
+	}
 
 	resp, err := http.Get(ts.URL + "/api/snapshot")
 	if err != nil {
@@ -257,7 +261,7 @@ func TestSetInterval_AppliesToActiveStream(t *testing.T) {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	stopMonitorAtCleanup(t, m)
 
 	s := server.New(m, ":0", nil)
 	ts := httptest.NewServer(s)
@@ -280,7 +284,7 @@ func TestSetInterval_AppliesToActiveStream(t *testing.T) {
 
 	// A snapshot must now arrive on the already-open stream well inside the
 	// original hour-long interval.
-	ev := c.nextNamed(t, "snapshot", 5*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 	if snap.Host.Hostname != "rate-host" {

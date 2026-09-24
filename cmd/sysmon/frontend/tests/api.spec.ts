@@ -4,14 +4,14 @@ import type { Snapshot } from '../src/lib/types';
 test.describe('REST API', () => {
   // The server answers 503 until the monitor completes its first collection.
   // Wait for readiness once so the suite does not race a cold start.
+  // The 20s is a failure bound only; each pass re-asks the server.
   test.beforeAll(async ({ request }) => {
-    const deadline = Date.now() + 20000;
-    while (Date.now() < deadline) {
-      const probe = await request.get('/api/snapshot');
-      if (probe.status() === 200) return;
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    throw new Error('server never produced a snapshot within 20s');
+    await expect
+      .poll(async () => (await request.get('/api/snapshot')).status(), {
+        message: 'the server never produced a snapshot',
+        timeout: 20000,
+      })
+      .toBe(200);
   });
 
   test('GET /api/snapshot returns HTTP 200', async ({ request }) => {

@@ -89,40 +89,45 @@ func TestStartStop_Concurrent(t *testing.T) {
 // is still able to broadcast. After Stop, a subscriber must never receive a
 // further snapshot.
 func TestStop_WaitsForPollLoop(t *testing.T) {
-	m, err := monitor.New(lifecycleStub{}, 5*time.Millisecond)
-	if err != nil {
-		t.Fatalf("monitor.New: %v", err)
-	}
+	m := newMonitor(t, lifecycleStub{}, time.Hour)
+	ticker := useManualTicker(m)
 	if err := m.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
 	sub := m.Subscribe()
 
-	// Let a few snapshots flow.
-	time.Sleep(30 * time.Millisecond)
+	// Let a few snapshots flow; each tick is taken only once the previous
+	// collection has been broadcast.
+	for range 3 {
+		ticker.tick(t)
+	}
 
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-
-	// Drain whatever was already buffered.
-	for {
-		select {
-		case <-sub.Ch:
-			continue
-		default:
-		}
-		break
+	// The loop stops its ticker only on its way out: it has exited.
+	if !ticker.isStopped() {
+		t.Fatal("Stop returned while the poll loop was still running")
 	}
 
-	// Nothing new may arrive now that the loop has exited.
-	select {
-	case snap, ok := <-sub.Ch:
-		if ok && snap != nil {
-			t.Error("received a snapshot after Stop returned; the poll loop outlived Stop")
+	// Drain whatever was already buffered: the loop published it before Stop
+	// returned, which is allowed.
+	for drained := false; !drained; {
+		select {
+		case <-sub.Ch:
+		default:
+			drained = true
 		}
-	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Nothing new may arrive now that the loop has exited. With no loop left
+	// to publish, the channel staying empty is certain, so checking it once is
+	// conclusive rather than a guess about how long to wait.
+	select {
+	case snap := <-sub.Ch:
+		t.Errorf("received %v after Stop returned; the poll loop outlived Stop", snap)
+	default:
 	}
 
 	select {

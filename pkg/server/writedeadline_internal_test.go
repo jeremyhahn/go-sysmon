@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -66,34 +68,68 @@ func serveOnEphemeralPort(t *testing.T, srv *Server) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	serveOnListener(t, srv, l)
+	return l.Addr().String()
+}
+
+// waitForFirstSnapshot blocks until m has collected once, so a request cannot
+// race the poll loop and get a 503 instead of the body under test. It
+// subscribes before asking, so a collection landing in between is still seen.
+func waitForFirstSnapshot(t *testing.T, m *monitor.Monitor) {
+	t.Helper()
+
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
+	if _, err := m.Snapshot(); err == nil {
+		return
+	}
+	await.Recv(t, "the monitor's first snapshot", sub.Ch)
+}
+
+// closeSignallingListener hands out connections that report when the server
+// closes them, so a test can wait for the server to abandon a response instead
+// of guessing how long that takes.
+type closeSignallingListener struct {
+	net.Listener
+	closed chan struct{} // one signal per server-side connection closed
+}
+
+func (l *closeSignallingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &closeSignallingConn{Conn: c, closed: l.closed}, nil
+}
+
+// closeSignallingConn signals once, on its first Close.
+type closeSignallingConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeSignallingConn) Close() error {
+	c.once.Do(func() { c.closed <- struct{}{} })
+	return c.Conn.Close()
+}
+
+// serveOnListener runs srv's configured http.Server on l until the test ends.
+func serveOnListener(t *testing.T, srv *Server, l net.Listener) {
+	t.Helper()
+
 	go func() {
 		if err := srv.server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			t.Errorf("serve: %v", err)
 		}
 	}()
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 		defer cancel()
 		if err := srv.Stop(ctx); err != nil {
 			t.Errorf("stop: %v", err)
 		}
 	})
-	return l.Addr().String()
-}
-
-// waitForFirstSnapshot blocks until m has collected once, so a request cannot
-// race the poll loop and get a 503 instead of the body under test.
-func waitForFirstSnapshot(t *testing.T, m *monitor.Monitor) {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := m.Snapshot(); err == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("monitor never produced a snapshot")
 }
 
 // A peer that stops reading is the failure this deadline exists for: the write
@@ -112,45 +148,90 @@ func TestResponseWriteDeadline_AbortsAWriteToAPeerThatNeverReads(t *testing.T) {
 	}
 	m := startedMonitor(t, &bigSnapshotter{snap: snap}, 20*time.Millisecond)
 	waitForFirstSnapshot(t, m)
-	addr := serveOnEphemeralPort(t, New(m, "127.0.0.1:0", nil))
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	l := &closeSignallingListener{Listener: inner, closed: make(chan struct{}, 1)}
+	serveOnListener(t, New(m, "127.0.0.1:0", nil), l)
 
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close() //nolint:errcheck
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close client connection: %v", err)
+		}
+	})
 
 	if _, err := io.WriteString(conn, "GET /api/snapshot HTTP/1.1\r\nHost: sysmon\r\n\r\n"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
-	// Read nothing at all until well past the deadline. This is the whole
-	// fixture: the peer is present at the TCP level and consumes nothing.
-	time.Sleep(4 * responseWriteTimeout)
+	// Read nothing at all until the server has given up on the connection.
+	// This is the whole fixture: the peer is present at the TCP level and
+	// consumes nothing. With the deadline the server abandons the response
+	// and closes its end; without it the write is parked for good and the
+	// close never comes, so the wait below fails at its bound.
+	await.Recv(t, "the server to close a connection whose peer never reads", l.closed)
 
-	// Now drain. With the deadline in place the server has already abandoned
-	// the response and closed, so this ends promptly and short of the full
-	// body. Without it the server is merely blocked, resumes the moment we
-	// start reading, and delivers every byte.
-	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	// Now drain. The server has already abandoned the response, so this ends
+	// short of the full body. Were the write unbounded, draining would let it
+	// resume and deliver every byte.
+	if err := conn.SetReadDeadline(time.Now().Add(await.Timeout)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
 	n, err := io.Copy(io.Discard, conn)
 	if err != nil && errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("connection still open %v after the write deadline: read %d of %d body bytes",
-			4*responseWriteTimeout, n, len(body))
+		t.Fatalf("connection still open after the server closed it: read %d of %d body bytes",
+			n, len(body))
 	}
 	if n >= int64(len(body)) {
-		t.Fatalf("server delivered the whole %d-byte body to a peer that read nothing until %v had passed; the write was never bounded",
-			len(body), 4*responseWriteTimeout)
+		t.Fatalf("server delivered the whole %d-byte body to a peer that read nothing until the server closed; the write was never bounded",
+			len(body))
 	}
+}
+
+// stampingSnapshotter names every collection it makes and records, on the
+// monotonic clock, when it made it. A streamed snapshot then says when it was
+// collected, and so a lower bound on when the server wrote it.
+type stampingSnapshotter struct {
+	mu        sync.Mutex
+	collected map[string]time.Time
+}
+
+func newStampingSnapshotter() *stampingSnapshotter {
+	return &stampingSnapshotter{collected: make(map[string]time.Time)}
+}
+
+func (s *stampingSnapshotter) Snapshot() (*types.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := fmt.Sprintf("collection-%d", len(s.collected)+1)
+	s.collected[name] = time.Now()
+	return &types.Snapshot{Host: types.HostInfo{Hostname: name}}, nil
+}
+
+// collectedAt reports when the collection named name was made.
+func (s *stampingSnapshotter) collectedAt(name string) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.collected[name]
+	return at, ok
 }
 
 // The stream is the response that must NOT be bounded in total. It resets its
 // own deadline before every event, which replaces the server-wide one, so it
-// outlives a deadline that would have killed an ordinary response several times
-// over. A fixture shorter than the deadline would pass either way, so this one
-// runs to four times it.
+// outlives a deadline that would have killed an ordinary response.
+//
+// The proof is one event the server can only have written after the
+// server-wide deadline would have fired: a snapshot collected later than that.
+// The server arms the deadline when it reads the request, which is before the
+// response headers reach the client, so a collection made more than
+// responseWriteTimeout after the headers arrived was written past it. Were the
+// stream bounded, the server would close it at the deadline and the stream
+// would end without ever carrying such a snapshot.
 func TestResponseWriteDeadline_EventStreamOutlivesIt(t *testing.T) {
 	originalWrite, originalKeepalive := responseWriteTimeout, keepaliveInterval
 	responseWriteTimeout = 150 * time.Millisecond
@@ -159,14 +240,12 @@ func TestResponseWriteDeadline_EventStreamOutlivesIt(t *testing.T) {
 		responseWriteTimeout, keepaliveInterval = originalWrite, originalKeepalive
 	})
 
-	m := startedMonitor(t, &bigSnapshotter{snap: &types.Snapshot{
-		Host: types.HostInfo{Hostname: "stream-host"},
-	}}, 20*time.Millisecond)
+	stamps := newStampingSnapshotter()
+	m := startedMonitor(t, stamps, 20*time.Millisecond)
 	waitForFirstSnapshot(t, m)
 	addr := serveOnEphemeralPort(t, New(m, "127.0.0.1:0", nil))
 
-	watch := 4 * responseWriteTimeout
-	ctx, cancel := context.WithTimeout(context.Background(), watch)
+	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/events", nil)
@@ -177,26 +256,34 @@ func TestResponseWriteDeadline_EventStreamOutlivesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get events: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close stream: %v", err)
+		}
+	}()
+	pastDeadline := time.Now().Add(responseWriteTimeout)
 
-	start := time.Now()
-	var last time.Duration
 	var events int
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), "data: ") {
-			events++
-			last = time.Since(start)
+		payload, ok := strings.CutPrefix(scanner.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		events++
+		var snap types.Snapshot
+		if err := json.Unmarshal([]byte(payload), &snap); err != nil {
+			t.Fatalf("decode event %d: %v", events, err)
+		}
+		at, ok := stamps.collectedAt(snap.Host.Hostname)
+		if !ok {
+			t.Fatalf("event %d carries %q, which was never collected", events, snap.Host.Hostname)
+		}
+		if at.After(pastDeadline) {
+			return
 		}
 	}
 
-	if events == 0 {
-		t.Fatal("stream delivered no events at all")
-	}
-	// The last event has to land after the server-wide deadline would have
-	// fired, or the test proves nothing about the exemption.
-	if last <= responseWriteTimeout {
-		t.Fatalf("stream stopped delivering after %v, at or before the %v response write deadline: the stream inherited it (%d events)",
-			last, responseWriteTimeout, events)
-	}
+	t.Fatalf("stream ended (%v) after %d events without delivering a snapshot collected past the %v response write deadline: the stream inherited it",
+		scanner.Err(), events, responseWriteTimeout)
 }

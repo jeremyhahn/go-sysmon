@@ -6,9 +6,12 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -28,7 +31,11 @@ func newTestMonitor(t *testing.T, hostname string) *monitor.Monitor {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	t.Cleanup(func() {
+		if err := m.Stop(); err != nil {
+			t.Errorf("monitor.Stop: %v", err)
+		}
+	})
 	return m
 }
 
@@ -36,27 +43,39 @@ func newTestMonitor(t *testing.T, hostname string) *monitor.Monitor {
 type monitorStub struct {
 	snapshot *types.Snapshot
 	err      error
+	// polled, when set, is signalled on every collection. It holds one
+	// signal and the send never blocks, so the monitor is never held up by a
+	// test that has stopped listening; each signal received was sent by a
+	// collection after the previous one was received.
+	polled chan struct{}
 }
 
 func (s *monitorStub) Snapshot() (*types.Snapshot, error) {
+	if s.polled != nil {
+		select {
+		case s.polled <- struct{}{}:
+		default:
+		}
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
 	return s.snapshot, nil
 }
 
-// waitSnapshot blocks until the monitor has at least one snapshot or the
-// timeout expires.
+// waitSnapshot returns once the monitor has published a snapshot.
+//
+// It subscribes before checking, so a snapshot published after the check is
+// delivered to it and one published before is answered by Snapshot: the
+// monitor stores a reading before broadcasting it.
 func waitSnapshot(t *testing.T, m *monitor.Monitor) {
 	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if _, err := m.Snapshot(); err == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
+	if _, err := m.Snapshot(); err == nil {
+		return
 	}
-	t.Fatal("monitor never produced a snapshot within 500 ms")
+	await.Recv(t, "the monitor's first snapshot", sub.Ch)
 }
 
 // ---- NewMonitorBinding ----------------------------------------------------
@@ -123,7 +142,7 @@ func TestNewMonitorBinding_NeedsNoCollector(t *testing.T) {
 // the dependency -- the binding has no collector of its own to ask, so the
 // only way it can fail is the monitor's.
 func TestNewMonitorBinding_SurfacesACollectionFailure(t *testing.T) {
-	stub := &monitorStub{err: errors.New("collector unavailable")}
+	stub := &monitorStub{err: errors.New("collector unavailable"), polled: make(chan struct{}, 1)}
 	m, err := monitor.New(stub, 5*time.Millisecond)
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
@@ -131,11 +150,18 @@ func TestNewMonitorBinding_SurfacesACollectionFailure(t *testing.T) {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Stop() })
+	t.Cleanup(func() {
+		if err := m.Stop(); err != nil {
+			t.Errorf("monitor.Stop: %v", err)
+		}
+	})
 	b := NewMonitorBinding(m)
 
-	// Several ticks' worth, so this is the failure rather than a warm-up.
-	time.Sleep(50 * time.Millisecond)
+	// Several failed collections, so this is the failure rather than a
+	// warm-up.
+	for range 3 {
+		await.Recv(t, "a collection attempt", stub.polled)
+	}
 
 	snap, err := b.GetSnapshot()
 	if err == nil {
@@ -332,11 +358,16 @@ func TestStreamToFrontend_SendsDeltasNotSnapshots(t *testing.T) {
 	// Observed per binding, so a stream started by another test cannot be
 	// mistaken for this one's -- which it was, until this test failed in the
 	// package run and passed alone.
+	framed := make(chan struct{}, 1)
 	b.emit = func(_ context.Context, name string, payload []byte) {
 		mu.Lock()
-		defer mu.Unlock()
 		names = append(names, name)
 		sizes = append(sizes, len(payload))
+		mu.Unlock()
+		select {
+		case framed <- struct{}{}:
+		default:
+		}
 	}
 
 	go b.streamToFrontend(context.Background())
@@ -349,22 +380,18 @@ func TestStreamToFrontend_SendsDeltasNotSnapshots(t *testing.T) {
 		}
 	})
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		mu.Lock()
 		enough := len(names) >= 3
 		mu.Unlock()
 		if enough {
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
+		await.Recv(t, "another frame", framed)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(names) < 3 {
-		t.Fatalf("got %d frames in 3s, want at least 3", len(names))
-	}
 	if names[0] != "full" {
 		t.Errorf("first frame is %q, want full -- there is nothing to patch yet", names[0])
 	}
@@ -379,4 +406,121 @@ func TestStreamToFrontend_SendsDeltasNotSnapshots(t *testing.T) {
 			t.Errorf("frame %d is %d bytes against a first frame of %d; it is not a patch", i+1, size, sizes[0])
 		}
 	}
+}
+
+// ---- Resync -----------------------------------------------------------------
+
+// endStream cancels b's current stream and waits for it to exit.
+func endStream(t *testing.T, b *MonitorBinding) {
+	t.Helper()
+	b.mu.RLock()
+	cancel, done := b.streamCancel, b.streamDone
+	b.mu.RUnlock()
+	if cancel == nil {
+		t.Fatal("the binding has no stream to end")
+	}
+	cancel()
+	await.Recv(t, "the stream to exit", done)
+}
+
+// TestResync_WaitsForTheOldStreamToExit: a resync must not start the new
+// stream until the old one has let go of the flag, because a stream started
+// while the flag is held returns at once and leaves the window with none.
+//
+// It used to poll the flag for up to 100ms and then start the new stream
+// regardless, so an old stream slower than that to exit -- one inside an emit
+// on a busy host -- cost the window its stream. Here the old stream is held
+// inside an emit until the test releases it.
+//
+// Resync itself returns at once, since the old stream may be inside an emit
+// that cancellation cannot interrupt. It runs in a synctest bubble so "nothing
+// streams while the old stream is held" is exact rather than a guess:
+// synctest.Wait returns only once every goroutine in the bubble is blocked, so
+// anything that could emit has had its chance. Were the new stream started
+// without waiting, it would find the flag held and return, and no full frame
+// would follow the release.
+func TestResync_WaitsForTheOldStreamToExit(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, err := monitor.New(&monitorStub{snapshot: &types.Snapshot{Host: types.HostInfo{Hostname: "resync-host"}}}, time.Second)
+		if err != nil {
+			t.Fatalf("monitor.New: %v", err)
+		}
+		if err := m.Start(); err != nil {
+			t.Fatalf("monitor.Start: %v", err)
+		}
+		defer func() {
+			if err := m.Stop(); err != nil {
+				t.Errorf("monitor.Stop: %v", err)
+			}
+		}()
+
+		b := NewMonitorBinding(m)
+		held := make(chan struct{})    // the old stream is inside its first emit
+		release := make(chan struct{}) // closed to let that emit return
+		frames := make(chan string, 64)
+		var calls atomic.Int64
+		b.emit = func(_ context.Context, name string, _ []byte) {
+			if calls.Add(1) == 1 {
+				close(held)
+				<-release
+				return
+			}
+			select {
+			case frames <- name:
+			default:
+			}
+		}
+
+		go b.streamToFrontend(context.Background())
+		await.Recv(t, "the old stream to emit its first frame", held)
+
+		// Resync returns at once: the frontend's call must not hang behind an
+		// emit that cancellation cannot interrupt.
+		resynced := make(chan struct{})
+		go func() {
+			b.Resync()
+			close(resynced)
+		}()
+		await.Recv(t, "Resync to return while the old stream is held", resynced)
+
+		// Every goroutine in the bubble is now blocked: the old stream in its
+		// held emit, and the handoff waiting for it to exit. Nothing can emit
+		// until the test releases it, so this check is conclusive.
+		synctest.Wait()
+		select {
+		case name := <-frames:
+			t.Fatalf("a %q frame was emitted while the old stream was held; nothing else may stream yet", name)
+		default:
+		}
+
+		close(release)
+		// The new stream begins with a whole snapshot. The old one may have
+		// emitted a patch on its way out; it cannot emit a full frame.
+		for name := await.Recv(t, "a frame from the new stream", frames); name != "full"; {
+			name = await.Recv(t, "a full frame from the new stream", frames)
+		}
+		endStream(t, b)
+	})
+}
+
+// TestResync_StartsAStreamWhenNoneIsRunning covers a resync before any stream
+// has started: there is nothing to wait for, and it must still leave the window
+// streaming.
+func TestResync_StartsAStreamWhenNoneIsRunning(t *testing.T) {
+	m := newTestMonitor(t, "resync-idle-host")
+	b := NewMonitorBinding(m)
+	frames := make(chan string, 64)
+	b.emit = func(_ context.Context, name string, _ []byte) {
+		select {
+		case frames <- name:
+		default:
+		}
+	}
+
+	b.Resync()
+
+	if name := await.Recv(t, "the stream Resync started to emit a frame", frames); name != "full" {
+		t.Errorf("the first frame is %q, want full", name)
+	}
+	endStream(t, b)
 }

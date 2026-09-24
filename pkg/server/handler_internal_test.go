@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -89,7 +90,13 @@ func startedMonitor(t *testing.T, s monitor.Snapshotter, interval time.Duration)
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	t.Cleanup(func() {
+		// A test may have stopped it already, which is the one error expected.
+		var notRunning *types.MonitorNotRunningError
+		if err := m.Stop(); err != nil && !errors.As(err, &notRunning) {
+			t.Errorf("monitor.Stop: %v", err)
+		}
+	})
 	return m
 }
 
@@ -115,14 +122,19 @@ func TestHandleEvents_KeepaliveComment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close() //nolint:errcheck
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close connection: %v", err)
+		}
+	})
 
 	if _, err := conn.Write([]byte(
 		"GET /api/events HTTP/1.1\r\nHost: x\r\nAccept-Encoding: identity\r\n\r\n")); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	// A failure bound only: keepalives come every 20ms on a working stream.
+	if err := conn.SetReadDeadline(time.Now().Add(await.Timeout)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
 
@@ -159,11 +171,7 @@ func TestHandleEvents_KeepaliveWriteFailureEndsHandler(t *testing.T) {
 		srv.ServeHTTP(w, req)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("handler did not return after a failed keepalive write")
-	}
+	await.Recv(t, "the handler to return after a failed keepalive write", done)
 }
 
 // ---- stream write failures ----------------------------------------------
@@ -183,11 +191,7 @@ func TestHandleEvents_RetryWriteFailure(t *testing.T) {
 		srv.ServeHTTP(w, req)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("handler did not return after a failed retry write")
-	}
+	await.Recv(t, "the handler to return after a failed retry write", done)
 }
 
 // TestHandleEvents_InitialSnapshotWriteFailure covers the cached-snapshot send
@@ -196,13 +200,7 @@ func TestHandleEvents_InitialSnapshotWriteFailure(t *testing.T) {
 	m := startedMonitor(t, idleSnapshotter{}, 10*time.Millisecond)
 
 	// Wait for the monitor to cache a snapshot so the handler has one to send.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := m.Snapshot(); err == nil {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForFirstSnapshot(t, m)
 
 	srv := New(m, ":0", nil)
 
@@ -216,20 +214,20 @@ func TestHandleEvents_InitialSnapshotWriteFailure(t *testing.T) {
 		srv.ServeHTTP(w, req)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("handler did not return after a failed initial snapshot write")
-	}
+	await.Recv(t, "the handler to return after a failed initial snapshot write", done)
 }
 
 // TestHandleEvents_ByeWriteFailure covers a peer that dies in the window
 // between the monitor stopping and the farewell frame being delivered.
 func TestHandleEvents_ByeWriteFailure(t *testing.T) {
+	original := keepaliveInterval
+	keepaliveInterval = 10 * time.Millisecond
+	t.Cleanup(func() { keepaliveInterval = original })
+
 	m := startedMonitor(t, idleSnapshotter{}, time.Hour)
 	srv := New(m, ":0", nil)
 
-	w := &countingFailWriter{okWrites: 1, err: errors.New("broken pipe")}
+	w := &farewellFailWriter{err: errors.New("broken pipe"), keepalive: make(chan struct{}, 1)}
 	req := httptest.NewRequest(http.MethodGet, "/api/events", nil)
 
 	done := make(chan struct{})
@@ -238,17 +236,63 @@ func TestHandleEvents_ByeWriteFailure(t *testing.T) {
 		srv.ServeHTTP(w, req)
 	}()
 
-	// Give the handler time to subscribe, then release it via the monitor.
-	time.Sleep(100 * time.Millisecond)
+	// A keepalive is written only from inside the subscription loop, so once
+	// one has been accepted the handler is subscribed and it is the loop's
+	// farewell, not the pre-loop one, that the stop below reaches.
+	await.Recv(t, "the handler's first keepalive", w.keepalive)
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("handler did not return after a failed bye write")
+	await.Recv(t, "the handler to return after a failed bye write", done)
+	if !w.farewellAttempted() {
+		t.Fatal("the handler returned without attempting the bye frame")
 	}
+}
+
+// farewellFailWriter accepts every frame except the farewell, which fails, and
+// reports each keepalive it accepts.
+type farewellFailWriter struct {
+	mu        sync.Mutex
+	header    http.Header
+	err       error
+	keepalive chan struct{} // signalled, without blocking, per keepalive written
+	farewell  bool
+}
+
+func (w *farewellFailWriter) Header() http.Header {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *farewellFailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if strings.HasPrefix(string(p), "event: bye") {
+		w.farewell = true
+		return 0, w.err
+	}
+	if strings.HasPrefix(string(p), ": keepalive") {
+		select {
+		case w.keepalive <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
+func (w *farewellFailWriter) WriteHeader(int) {}
+func (w *farewellFailWriter) Flush()          {}
+
+// farewellAttempted reports whether the bye frame was written.
+func (w *farewellFailWriter) farewellAttempted() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.farewell
 }
 
 // ---- writeJSON ----------------------------------------------------------
@@ -283,7 +327,11 @@ func TestEventStream_DeadlineFailurePropagates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 
 	if err := s.send("snapshot", map[string]string{"host": "x"}); !errors.Is(err, wantErr) {
 		t.Errorf("send() error = %v, want it to wrap %v", err, wantErr)
@@ -300,7 +348,11 @@ func TestEventStream_DeadlineUnsupportedIsTolerated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 
 	if err := s.send("snapshot", map[string]string{"host": "x"}); err != nil {
 		t.Errorf("send() = %v, want nil when deadlines are merely unsupported", err)
@@ -320,7 +372,13 @@ func TestEventStream_GzipFlushFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	// Closing the gzip writer flushes into the same broken writer, so it must
+	// report the same failure rather than swallow it.
+	t.Cleanup(func() {
+		if err := s.Close(); !errors.Is(err, wantErr) {
+			t.Errorf("Close() error = %v, want it to wrap %v", err, wantErr)
+		}
+	})
 
 	// Enough payload to force the deflate writer to emit bytes downstream.
 	big := strings.Repeat("payload", 4096)

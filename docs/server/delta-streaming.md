@@ -308,6 +308,16 @@ gap — for a service restarted after an hour, an hour old. The hub's own run
 counter does not work here either, because in that window its run has not
 turned over. The generation has to come from the thing that actually restarted.
 
+The cache must also still be the monitor's **current** reading. The hub hears
+of a publication only when its loop takes it off the subscription, so the
+monitor can be one reading ahead of the cache. A rename shows it: the restamp
+lands in the monitor before `Reload` returns, and a client connecting straight
+afterwards was sent the cached frame with the old node name while
+`/api/snapshot` already served the new one. Each frame records the reading it
+encodes, and a cached frame whose reading is no longer `Monitor.Snapshot()` is
+not served. The client is already subscribed, so the frame that replaces it
+reaches it next, whole.
+
 Stamping alone would still not be enough. A fresh run publishes
 `Monitor.Snapshot()` as its first frame, so that a client connecting between
 ticks is not blank — and after a restart that was the *previous* run's
@@ -372,6 +382,9 @@ rendering a page of undefined values.
 a frame reopens the socket, and a new connection begins with a whole snapshot.
 The desktop has no socket to reopen, so the frontend calls
 `MonitorBinding.Resync()`, which restarts the stream; its first frame is a full.
+Resync returns at once and hands off on its own goroutine: the new stream
+starts only once the old one has exited and released the stream flag, however
+long an in-flight emit takes, so the window is never left without a stream.
 Without that, a window that lost its place would go on applying patches to a
 snapshot the server never sent it -- drifting silently instead of failing, which
 is the one thing this protocol exists to prevent.

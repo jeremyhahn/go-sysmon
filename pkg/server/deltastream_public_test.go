@@ -9,28 +9,64 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // collectFrames runs a DeltaStream and records what it emits.
 type collectFrames struct {
-	mu    sync.Mutex
-	names []string
-	sizes []int
-	seqs  []uint64
+	t       *testing.T
+	arrived chan struct{} // signalled, without blocking, after each frame
+
+	mu     sync.Mutex
+	names  []string
+	sizes  []int
+	seqs   []uint64
+	sealed bool // set once Run has returned; any later frame is a failure
+}
+
+func newCollectFrames(t *testing.T) *collectFrames {
+	return &collectFrames{t: t, arrived: make(chan struct{}, 1)}
 }
 
 func (c *collectFrames) emit(name string, payload []byte) {
 	var envelope struct {
 		Seq uint64 `json:"seq"`
 	}
-	_ = json.Unmarshal(payload, &envelope)
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		c.t.Errorf("frame %q is not a JSON envelope: %v", name, err)
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.sealed {
+		c.t.Errorf("frame %q emitted after Run returned", name)
+	}
 	c.names = append(c.names, name)
 	c.sizes = append(c.sizes, len(payload))
 	c.seqs = append(c.seqs, envelope.Seq)
+	c.mu.Unlock()
+	select {
+	case c.arrived <- struct{}{}:
+	default:
+	}
+}
+
+// awaitFrames returns once at least n frames have been emitted.
+func (c *collectFrames) awaitFrames(t *testing.T, n int) {
+	t.Helper()
+	for {
+		if names, _, _ := c.snapshotOf(); len(names) >= n {
+			return
+		}
+		await.Recv(t, "another frame from the stream", c.arrived)
+	}
+}
+
+// seal marks the stream finished: a frame emitted after it fails the test.
+func (c *collectFrames) seal() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sealed = true
 }
 
 func (c *collectFrames) snapshotOf() ([]string, []int, []uint64) {
@@ -87,12 +123,16 @@ func TestDeltaStream_SendsOneFullThenPatches(t *testing.T) {
 	if err := mon.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = mon.Stop() })
+	t.Cleanup(func() {
+		if err := mon.Stop(); err != nil {
+			t.Errorf("monitor.Stop: %v", err)
+		}
+	})
 
 	stream := NewDeltaStream(mon, quietStreamLogger())
 	t.Cleanup(stream.Shutdown)
 
-	frames := &collectFrames{}
+	frames := newCollectFrames(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -105,25 +145,12 @@ func TestDeltaStream_SendsOneFullThenPatches(t *testing.T) {
 		stream.Run(ctx, frames.emit)
 	}()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if names, _, _ := frames.snapshotOf(); len(names) >= 4 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	frames.awaitFrames(t, 4)
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after its context was cancelled")
-	}
+	await.Recv(t, "Run to return after its context was cancelled", done)
 
 	names, sizes, seqs := frames.snapshotOf()
-	if len(names) < 4 {
-		t.Fatalf("got %d frames in 3s, want at least 4", len(names))
-	}
 	if names[0] != "full" {
 		t.Errorf("first frame is %q, want full -- a client cannot apply a patch to nothing", names[0])
 	}
@@ -159,12 +186,16 @@ func TestDeltaStream_StopsWithTheContext(t *testing.T) {
 	if err := mon.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = mon.Stop() })
+	t.Cleanup(func() {
+		if err := mon.Stop(); err != nil {
+			t.Errorf("monitor.Stop: %v", err)
+		}
+	})
 
 	stream := NewDeltaStream(mon, quietStreamLogger())
 	t.Cleanup(stream.Shutdown)
 
-	frames := &collectFrames{}
+	frames := newCollectFrames(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -173,26 +204,26 @@ func TestDeltaStream_StopsWithTheContext(t *testing.T) {
 		stream.Run(ctx, frames.emit)
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if names, _, _ := frames.snapshotOf(); len(names) >= 2 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	frames.awaitFrames(t, 2)
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after its context was cancelled")
-	}
+	await.Recv(t, "Run to return after its context was cancelled", done)
 
-	before, _, _ := frames.snapshotOf()
-	time.Sleep(100 * time.Millisecond)
-	after, _, _ := frames.snapshotOf()
-	if len(after) != len(before) {
-		t.Errorf("frames kept arriving after cancellation: %d -> %d", len(before), len(after))
+	// Run emits only from its own goroutine, so once it has returned nothing
+	// may reach emit again; the seal fails the test if anything does, for as
+	// long as the test and its cleanup run.
+	frames.seal()
+
+	// And the hub is not left diffing for nobody: Run's return unsubscribed
+	// it, and the last unsubscribe stops the publishing loop and waits for it.
+	if n := stream.hub.count.Load(); n != 0 {
+		t.Errorf("hub still counts %d subscribers after Run returned", n)
+	}
+	stream.hub.lifecycle.Lock()
+	running := stream.hub.running
+	stream.hub.lifecycle.Unlock()
+	if running {
+		t.Error("hub publishing loop still running after its only client's Run returned")
 	}
 }
 
@@ -212,9 +243,10 @@ func TestDeltaStream_NilEmitIsRefused(t *testing.T) {
 		stream.Run(context.Background(), nil)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("Run with a nil emit did not return immediately")
+	await.Recv(t, "Run with a nil emit to return", done)
+
+	// Refused outright, not subscribed and then abandoned.
+	if n := stream.hub.count.Load(); n != 0 {
+		t.Errorf("a nil emit left %d subscribers on the hub", n)
 	}
 }

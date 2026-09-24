@@ -12,9 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
-	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -1017,11 +1018,7 @@ func TestWatch_ApplierErrorStillReportsTheReload(t *testing.T) {
 
 	// Wait on the callback rather than sleeping for the debounce: the timeout
 	// is a generous upper bound, not the expected duration.
-	select {
-	case <-reloaded:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the watcher never reported the reload; an apply error swallowed it")
-	}
+	await.Recv(t, "the watcher to report the reload (an apply error would swallow it)", reloaded)
 
 	if live := mgr.Current().Alerts.CPUPct; live != 70 {
 		t.Errorf("cpu_pct = %v, want the new 70 to be live", live)
@@ -1647,10 +1644,17 @@ func TestManagerReload_ConcurrentReloadsStayConsistent(t *testing.T) {
 	var mu sync.Mutex
 	var mismatches int
 
-	// A deliberately slow applier widens the window an unserialised reload
-	// would interleave in.
+	// Every applier call holds until all the reloaders have written their
+	// file and gone on into Reload. That is the widest window an unserialised
+	// reload could interleave in -- every other reload is under way while
+	// this one applies -- and it is reached by an event, not by waiting some
+	// milliseconds and hoping the others got that far. It cannot deadlock a
+	// serialised manager: every goroutine arrives before it calls Reload.
+	const reloaders = 8
+	var arrived atomic.Int64
+	allIn := make(chan struct{})
 	mgr.OnReload(func(c *config.Config) error {
-		time.Sleep(2 * time.Millisecond)
+		<-allIn
 		mu.Lock()
 		defer mu.Unlock()
 		if live := mgr.Current(); live.Server.IntervalMs != c.Server.IntervalMs {
@@ -1662,14 +1666,19 @@ func TestManagerReload_ConcurrentReloadsStayConsistent(t *testing.T) {
 	})
 
 	var wg sync.WaitGroup
-	for i := range 8 {
+	for i := range reloaders {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
 			// Each goroutine rewrites the file and reloads, so the loads race
 			// as well as the applies.
 			body := fmt.Sprintf("server:\n  interval_ms: %d\n", 1000+n*100)
-			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			err := os.WriteFile(path, []byte(body), 0o644)
+			if arrived.Add(1) == reloaders {
+				close(allIn)
+			}
+			if err != nil {
+				t.Errorf("writing the config: %v", err)
 				return
 			}
 			if _, err := mgr.Reload(); err != nil {

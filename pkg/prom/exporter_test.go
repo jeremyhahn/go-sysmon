@@ -10,9 +10,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/golang/snappy"
+
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
 func quietLogger() *slog.Logger {
@@ -267,15 +270,6 @@ func uvarint(buf []byte) (uint64, int) {
 	return 0, 0
 }
 
-// fastTicks shrinks the exporter's base tick for the duration of a test, so the
-// loop runs at test speed rather than the one-second production cadence.
-func fastTicks(t *testing.T) {
-	t.Helper()
-	previous := tickInterval
-	tickInterval = 2 * time.Millisecond
-	t.Cleanup(func() { tickInterval = previous })
-}
-
 // fixedOptions returns settings that flush promptly, so tests do not wait on
 // production cadences.
 func fixedOptions(url string) Options {
@@ -313,37 +307,130 @@ func newReadingEveryCall(write func(b *Builder, timeMs int64)) Collect {
 	}
 }
 
-// runExporter starts an exporter and stops it when the test ends.
-func runExporter(t *testing.T, e *Exporter) {
+// maxTicks bounds every wait on the exporter's loop. It is counted in ticks
+// the test delivered, not in time, so a slow machine cannot reach it: a
+// condition still false after this many is one the loop is never going to
+// satisfy.
+const maxTicks = 1000
+
+// loop drives an exporter's loop by hand. Every tick is delivered by the test
+// at a time the test chose, so which ticks have happened, and what each was
+// due for, is known exactly rather than estimated from elapsed time.
+type loop struct {
+	t     *testing.T
+	ticks chan time.Time
+	// read receives once per tick, as the loop reads its options. The loop
+	// reads them once, first thing, so after it the tick's configuration is
+	// fixed and a test changing it affects only later ticks.
+	read chan struct{}
+	now  time.Time
+}
+
+// runExporter starts e's loop on ticks delivered by the returned loop, and
+// stops it when the test ends.
+func runExporter(t *testing.T, e *Exporter) *loop {
 	t.Helper()
-	fastTicks(t)
+	l := &loop{
+		t:     t,
+		ticks: make(chan time.Time),
+		read:  make(chan struct{}),
+		now:   time.UnixMilli(baseMs),
+	}
+	opts := e.opts
+	e.opts = func() Options {
+		o := opts()
+		l.read <- struct{}{}
+		return o
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		e.run(done, l.ticks)
+	}()
+	t.Cleanup(func() {
+		close(done)
+		await.Recv(t, "the loop to return after done was closed", stopped)
+	})
+	return l
+}
+
+// deliver hands the loop one tick at now and returns once the loop has read
+// the options it will handle it under. The loop takes a tick only after
+// finishing the one before, so that one is complete as well.
+func (l *loop) deliver(now time.Time) {
+	l.t.Helper()
+	await.Send(l.t, "the exporter loop to take a tick", l.ticks, now)
+	await.Recv(l.t, "the exporter loop to read its options", l.read)
+}
+
+// step advances the loop's clock by d and delivers one tick at the new time.
+func (l *loop) step(d time.Duration) {
+	l.t.Helper()
+	l.now = l.now.Add(d)
+	l.deliver(l.now)
+}
+
+// settle returns once everything the last tick triggered has finished.
+//
+// It does so by delivering one more tick, which the loop takes only after
+// finishing the last one. That tick is still being handled as the test goes
+// on, so it must do nothing the test could observe. It is stamped with the
+// zero time, before every tick already handled, so no interval has elapsed
+// since the last sample or flush and neither is due. (A loop that has never
+// sampled finds everything due, so settle follows a tick handled under the
+// same options: if that one was enabled it sampled and flushed, and if it
+// was disabled so is this.) Its options were read before settle returned, so
+// a change the test makes next cannot reach it.
+func (l *loop) settle() {
+	l.t.Helper()
+	l.deliver(time.Time{})
+}
+
+// tick delivers one tick a production base tick after the last one and
+// returns once all of its work is done.
+func (l *loop) tick() {
+	l.t.Helper()
+	l.step(tickInterval)
+	l.settle()
+}
+
+// tickN delivers n ticks, as tick does.
+func (l *loop) tickN(n int) {
+	l.t.Helper()
+	for range n {
+		l.tick()
+	}
+}
+
+// until ticks the loop until cond holds, failing the test if it still does not
+// after maxTicks. cond is checked before the first tick and after each one has
+// finished.
+func (l *loop) until(why string, cond func() bool) {
+	l.t.Helper()
+	for range maxTicks {
+		if cond() {
+			return
+		}
+		l.tick()
+	}
+	if !cond() {
+		l.t.Fatalf("%s did not happen within %d ticks", why, maxTicks)
+	}
+}
+
+// TestExporter_RunStopsWhenDoneIsClosed covers Run itself: it paces the loop
+// with a real ticker and returns when done is closed.
+func TestExporter_RunStopsWhenDoneIsClosed(t *testing.T) {
+	e := NewExporter(func() Options { return Options{} }, countingCollector(new(atomic.Int64)), quietLogger())
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
 		e.Run(done)
 	}()
-	t.Cleanup(func() {
-		close(done)
-		select {
-		case <-stopped:
-		case <-time.After(5 * time.Second):
-			t.Error("Run did not return after done was closed")
-		}
-	})
-}
-
-// waitFor polls cond until it holds or the test gives up.
-func waitFor(t *testing.T, why string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", why)
+	close(done)
+	await.Recv(t, "Run to return after done was closed", stopped)
 }
 
 // TestExporter_DisabledCollectsNothing is the load-bearing property of this
@@ -360,9 +447,11 @@ func TestExporter_DisabledCollectsNothing(t *testing.T) {
 		o.RemoteWriteURL = ""
 		return o
 	}, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	time.Sleep(150 * time.Millisecond)
+	// Every tick is due for a sample and a flush, so each is a chance to
+	// collect or send that a disabled exporter must pass up.
+	l.tickN(10)
 
 	if got := calls.Load(); got != 0 {
 		t.Errorf("collector ran %d times with no endpoint configured, want 0", got)
@@ -382,10 +471,10 @@ func TestExporter_PushesSamples(t *testing.T) {
 	var calls atomic.Int64
 
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "the first batch to be accepted", func() bool { return rec.acceptedSamples(t) > 0 })
-	waitFor(t, "several samples to arrive", func() bool { return rec.acceptedSamples(t) >= 3 })
+	l.until("the first batch to be accepted", func() bool { return rec.acceptedSamples(t) > 0 })
+	l.until("several samples to arrive", func() bool { return rec.acceptedSamples(t) >= 3 })
 
 	st := e.Stats()
 	if !st.Enabled {
@@ -399,9 +488,10 @@ func TestExporter_PushesSamples(t *testing.T) {
 	}
 }
 
-// TestExporter_BatchSizeFlushesEarly: the flush interval is 10s here, so
-// anything that arrives inside the test window got there because the batch
-// filled, not because the timer fired.
+// TestExporter_BatchSizeFlushesEarly: the flush interval is 10s here and the
+// loop's clock is never advanced that far after the first tick's flush, so
+// the later samples got there because the batch filled, not because the timer
+// fired.
 func TestExporter_BatchSizeFlushesEarly(t *testing.T) {
 	rec := newRecorder(t)
 	var calls atomic.Int64
@@ -412,9 +502,19 @@ func TestExporter_BatchSizeFlushesEarly(t *testing.T) {
 		o.BatchSize = 3
 		return o
 	}, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "a batch-triggered flush", func() bool { return rec.acceptedSamples(t) >= 3 })
+	// The first tick flushes at once -- a node's first flush does not wait out
+	// the interval -- so one sample is delivered by the timer. The three after
+	// it can only be delivered by the batch filling.
+	l.tick()
+	if got := rec.acceptedSamples(t); got != 1 {
+		t.Fatalf("delivered %d samples after the first tick, want the 1 of its immediate flush", got)
+	}
+	l.tickN(3) // three seconds on the loop's clock: well inside the 10s interval
+	if got := rec.acceptedSamples(t); got != 4 {
+		t.Fatalf("delivered %d samples after three more ticks, want 4: a full batch of 3 must flush early", got)
+	}
 }
 
 // TestExporter_RetryableFailureKeepsTheBatch. A receiver that is restarting
@@ -426,10 +526,10 @@ func TestExporter_RetryableFailureKeepsTheBatch(t *testing.T) {
 	var calls atomic.Int64
 
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "the exporter to record failures", func() bool { return e.Stats().ConsecutiveFailures > 0 })
-	waitFor(t, "samples to accumulate in the buffer", func() bool { return e.Stats().BufferedSamples >= 2 })
+	l.until("the exporter to record failures", func() bool { return e.Stats().ConsecutiveFailures > 0 })
+	l.until("samples to accumulate in the buffer", func() bool { return e.Stats().BufferedSamples >= 2 })
 
 	if st := e.Stats(); st.SamplesDropped != 0 {
 		t.Errorf("Stats().SamplesDropped = %d during a retryable outage, want 0", st.SamplesDropped)
@@ -437,10 +537,10 @@ func TestExporter_RetryableFailureKeepsTheBatch(t *testing.T) {
 	buffered := e.Stats().BufferedSamples
 
 	rec.status.Store(http.StatusNoContent)
-	waitFor(t, "the buffered samples to be delivered", func() bool {
+	l.until("the buffered samples to be delivered", func() bool {
 		return rec.acceptedSamples(t) >= buffered
 	})
-	waitFor(t, "the failure counter to reset", func() bool { return e.Stats().ConsecutiveFailures == 0 })
+	l.until("the failure counter to reset", func() bool { return e.Stats().ConsecutiveFailures == 0 })
 }
 
 // TestExporter_PermanentRejectionIsDropped. A batch Prometheus will never
@@ -454,13 +554,13 @@ func TestExporter_PermanentRejectionIsDropped(t *testing.T) {
 	var calls atomic.Int64
 
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "the rejected batch to be dropped", func() bool { return e.Stats().SamplesDropped > 0 })
-	waitFor(t, "the buffer to stay bounded", func() bool { return e.Stats().BufferedSamples <= 1 })
+	l.until("the rejected batch to be dropped", func() bool { return e.Stats().SamplesDropped > 0 })
+	l.until("the buffer to stay bounded", func() bool { return e.Stats().BufferedSamples <= 1 })
 
 	rec.status.Store(http.StatusNoContent)
-	waitFor(t, "history to resume once the receiver recovers", func() bool {
+	l.until("history to resume once the receiver recovers", func() bool {
 		return rec.acceptedSamples(t) > 0
 	})
 }
@@ -481,14 +581,18 @@ func TestExporter_BacklogIsBounded(t *testing.T) {
 	}, newReadingEveryCall(func(b *Builder, timeMs int64) {
 		b.Add("sysmon_up", 1, timeMs)
 	}), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "the backlog to reach its bound", func() bool { return e.Stats().SamplesDropped > 0 })
-	time.Sleep(200 * time.Millisecond)
+	l.until("the backlog to reach its bound", func() bool { return e.Stats().SamplesDropped > 0 })
 
-	if buffered := e.Stats().BufferedSamples; buffered > 1*bufferedBatches+1 {
-		t.Fatalf("BufferedSamples = %d, want at most %d; the bound is not holding",
-			buffered, 1*bufferedBatches+1)
+	// Keep collecting well past the bound: it has to hold on every tick, not
+	// just the one that first reached it.
+	for range 3 * bufferedBatches {
+		l.tick()
+		if buffered := e.Stats().BufferedSamples; buffered > 1*bufferedBatches+1 {
+			t.Fatalf("BufferedSamples = %d, want at most %d; the bound is not holding",
+				buffered, 1*bufferedBatches+1)
+		}
 	}
 }
 
@@ -508,20 +612,20 @@ func TestExporter_ReloadDisables(t *testing.T) {
 		o.RemoteWriteURL = url.Load().(string)
 		return o
 	}, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "samples to buffer while the receiver is down", func() bool {
+	l.until("samples to buffer while the receiver is down", func() bool {
 		return e.Stats().BufferedSamples > 0
 	})
 
 	url.Store("")
-	waitFor(t, "the exporter to go quiet", func() bool {
+	l.until("the exporter to go quiet", func() bool {
 		st := e.Stats()
 		return !st.Enabled && st.BufferedSamples == 0
 	})
 
 	before := calls.Load()
-	time.Sleep(100 * time.Millisecond)
+	l.tickN(10)
 	if after := calls.Load(); after != before {
 		t.Errorf("collector ran %d more times after remote write was turned off", after-before)
 	}
@@ -553,18 +657,18 @@ func TestExporter_ReloadRetargets(t *testing.T) {
 	}, newReadingEveryCall(func(b *Builder, timeMs int64) {
 		b.Add("sysmon_up", float64(target.Load()), timeMs)
 	}), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "a backlog to build against the first receiver", func() bool {
+	l.until("a backlog to build against the first receiver", func() bool {
 		return e.Stats().BufferedSamples >= 3
 	})
 
 	target.Store(2)
 	url.Store(second.srv.URL)
-	waitFor(t, "the second receiver to be used", func() bool { return second.acceptedSamples(t) > 0 })
+	l.until("the second receiver to be used", func() bool { return second.acceptedSamples(t) > 0 })
 
-	// Give the retargeted exporter time to drain anything it kept.
-	time.Sleep(100 * time.Millisecond)
+	// Let the retargeted exporter flush anything it kept: each tick flushes.
+	l.tickN(10)
 	for _, value := range second.deliveredValues(t) {
 		if value == 1 {
 			t.Fatalf("a sample intended for the first endpoint was delivered to the second")
@@ -592,17 +696,17 @@ func TestExporter_IdentityChangeDiscardsTheBuffer(t *testing.T) {
 		o.Labels = []Label{{Name: "instance", Value: instance.Load().(string)}}
 		return o
 	}, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "a backlog to build", func() bool { return e.Stats().BufferedSamples >= 3 })
+	l.until("a backlog to build", func() bool { return e.Stats().BufferedSamples >= 3 })
 
 	instance.Store("mon1")
-	waitFor(t, "the buffer to be discarded and counted", func() bool {
+	l.until("the buffer to be discarded and counted", func() bool {
 		return e.Stats().SamplesDropped > 0
 	})
 
 	rec.status.Store(http.StatusNoContent)
-	waitFor(t, "the new identity to be delivered", func() bool { return rec.acceptedSamples(t) > 0 })
+	l.until("the new identity to be delivered", func() bool { return rec.acceptedSamples(t) > 0 })
 	for _, name := range rec.deliveredInstances(t) {
 		if name != "mon1" {
 			t.Fatalf("delivered a sample labelled %q after the node was renamed", name)
@@ -630,17 +734,20 @@ func TestExporter_NewestBatchSurvivesTheBound(t *testing.T) {
 			b.Add("sysmon_disk_used_percent", float64(i), timeMs, "device", "sd"+string(rune('a'+i%26)))
 		}
 	}), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "the bound to start dropping", func() bool { return e.Stats().SamplesDropped > 0 })
-	time.Sleep(150 * time.Millisecond)
+	l.until("the bound to start dropping", func() bool { return e.Stats().SamplesDropped > 0 })
 
-	if buffered := e.Stats().BufferedSamples; buffered == 0 {
-		t.Fatal("everything was discarded; a batch larger than the bound must still be kept")
+	// The newest batch has to survive every trim, not only the first.
+	for range 10 {
+		l.tick()
+		if buffered := e.Stats().BufferedSamples; buffered == 0 {
+			t.Fatal("everything was discarded; a batch larger than the bound must still be kept")
+		}
 	}
 
 	rec.status.Store(http.StatusNoContent)
-	waitFor(t, "the kept batch to be delivered once the receiver recovers", func() bool {
+	l.until("the kept batch to be delivered once the receiver recovers", func() bool {
 		return rec.acceptedSamples(t) > 0
 	})
 }
@@ -664,19 +771,30 @@ func TestExporter_ReloadShortensALongInterval(t *testing.T) {
 		}
 		return o
 	}, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
 	// The first tick fires immediately -- a node with an hourly cadence must
 	// not record nothing for its first hour -- so exactly one sample is
-	// expected, and no more.
-	waitFor(t, "the first sample", func() bool { return calls.Load() >= 1 })
-	time.Sleep(80 * time.Millisecond)
+	// expected, and no more for the rest of the hour.
+	l.tick()
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("collector ran %d times on an hourly interval, want 1", got)
+		t.Fatalf("collector ran %d times on the first tick, want 1", got)
+	}
+	for range 59 {
+		l.step(time.Minute)
+	}
+	l.settle()
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("collector ran %d times within an hourly interval, want 1", got)
 	}
 
+	// The reload takes effect on the very next tick, not when the hour is up.
 	slow.Store(false)
-	waitFor(t, "the shortened interval to take effect", func() bool { return calls.Load() >= 4 })
+	l.tick()
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("collector ran %d times on the tick after the interval was shortened, want 2", got)
+	}
+	l.until("the shortened interval to keep sampling", func() bool { return calls.Load() >= 4 })
 }
 
 // TestExporter_CollectFailureIsNotFatal: a snapshot that is not ready yet is
@@ -694,9 +812,9 @@ func TestExporter_CollectFailureIsNotFatal(t *testing.T) {
 			b.Add("sysmon_up", 1, timeMs)
 		}}, nil
 	}, quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "the exporter to recover and push", func() bool { return rec.acceptedSamples(t) > 0 })
+	l.until("the exporter to recover and push", func() bool { return rec.acceptedSamples(t) > 0 })
 }
 
 // TestExporter_StatsAreRaceFree exercises the published statistics from another
@@ -706,7 +824,7 @@ func TestExporter_StatsAreRaceFree(t *testing.T) {
 	var calls atomic.Int64
 
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -724,7 +842,7 @@ func TestExporter_StatsAreRaceFree(t *testing.T) {
 			}
 		}()
 	}
-	waitFor(t, "a push while stats are being read", func() bool { return rec.acceptedSamples(t) > 0 })
+	l.until("a push while stats are being read", func() bool { return rec.acceptedSamples(t) > 0 })
 	close(stop)
 	wg.Wait()
 }
@@ -748,10 +866,10 @@ func TestExporter_RequestTimeoutIsNotRetried(t *testing.T) {
 	var calls atomic.Int64
 
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	waitFor(t, "the 408-rejected batch to be dropped", func() bool { return e.Stats().SamplesDropped > 0 })
-	waitFor(t, "the buffer not to fill with batches the receiver refused", func() bool {
+	l.until("the 408-rejected batch to be dropped", func() bool { return e.Stats().SamplesDropped > 0 })
+	l.until("the buffer not to fill with batches the receiver refused", func() bool {
 		return e.Stats().BufferedSamples <= 1
 	})
 
@@ -759,7 +877,7 @@ func TestExporter_RequestTimeoutIsNotRetried(t *testing.T) {
 	// written to immediately, rather than after working through a queue of
 	// rejections it was holding.
 	rec.status.Store(http.StatusNoContent)
-	waitFor(t, "history to resume once the receiver recovers", func() bool {
+	l.until("history to resume once the receiver recovers", func() bool {
 		return rec.acceptedSamples(t) > 0
 	})
 }
@@ -809,67 +927,96 @@ func TestErrRemoteWrite_RetryableFollowsTheSpec(t *testing.T) {
 // per-request one. The receiver therefore refuses first, until several batches
 // are held, and only then starts accepting.
 //
-// And the CANCELLATION as the assertion, seen from the receiver, rather than
-// throughput -- which barely separates the two, since the shared deadline
-// still lets one request through per pass. A request the exporter abandoned
-// while the receiver was still holding it is unambiguous, and correct
-// behaviour produces exactly none.
+// And the DEADLINE each request carried as the assertion, rather than whether
+// a slow receiver happened to see a request abandoned -- which depends on how
+// fast the machine is. Each request's deadline must lie a full timeout after
+// the previous request was answered: a request given its own timeout when it
+// is sent always satisfies that, and one sharing a deadline set before the
+// first request never can.
 func TestExporter_TheTimeoutIsPerRequestNotPerFlush(t *testing.T) {
 	const timeout = 300 * time.Millisecond
 
-	var refusing atomic.Bool
-	refusing.Store(true)
-	var accepted, aborted atomic.Int64
+	rec := newRecorder(t)
+	rec.status.Store(http.StatusServiceUnavailable) // retryable, so the batches are kept
 
-	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		if refusing.Load() {
-			// Retryable, so the batches are kept rather than dropped.
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		// Long enough that two cannot share one deadline, short enough that
-		// each fits comfortably in its own.
-		select {
-		case <-time.After(timeout * 2 / 3):
-		case <-r.Context().Done():
-			aborted.Add(1)
-			return
-		}
-		accepted.Add(1)
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer slow.Close()
+	o := fixedOptions(rec.srv.URL)
+	o.Timeout = timeout
+	// One sample per batch, so the backlog below is several batches rather
+	// than one large one.
+	o.BatchSize = 1
+	// Driven directly on this goroutine rather than through the loop, so the
+	// writer's transport can be replaced without racing it.
+	e := NewExporter(func() Options { return o }, countingCollector(new(atomic.Int64)), quietLogger())
 
-	var calls atomic.Int64
-	opts := func() Options {
-		o := fixedOptions(slow.URL)
-		o.Timeout = timeout
-		// One sample per batch, so the backlog below is several batches rather
-		// than one large one.
-		o.BatchSize = 1
-		return o
+	// With a batch size of one every sample flushes at once, and every flush
+	// is refused, so each leaves one more batch held.
+	for range 3 {
+		e.sample(o)
+	}
+	if got := e.Stats().BufferedSamples; got != 3 {
+		t.Fatalf("BufferedSamples = %d after three refused flushes, want a backlog of 3", got)
 	}
 
-	e := NewExporter(opts, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	tr := &deadlineTransport{next: rec.srv.Client().Transport}
+	e.writer.client.Transport = tr
+	rec.status.Store(http.StatusNoContent)
+	e.flush(o)
 
-	waitFor(t, "a backlog of batches to build up", func() bool {
-		return e.Stats().BufferedSamples >= 3
-	})
-	refusing.Store(false)
-
-	waitFor(t, "the backlog to be delivered", func() bool { return accepted.Load() >= 3 })
-
-	if n := aborted.Load(); n != 0 {
-		t.Errorf("the receiver saw %d request(s) abandoned mid-flight; every one of "+
-			"them was inside the configured %v and was cut short by an earlier "+
-			"batch's share of it", n, timeout)
+	if got := rec.acceptedSamples(t); got != 3 {
+		t.Fatalf("the receiver accepted %d samples, want the backlog of 3 in one flush", got)
 	}
 	if st := e.Stats(); st.SamplesDropped != 0 {
 		t.Errorf("Stats().SamplesDropped = %d against a receiver that accepted every "+
 			"request, want 0", st.SamplesDropped)
 	}
+	sent := tr.requests()
+	if len(sent) != 3 {
+		t.Fatalf("%d requests were sent, want 3", len(sent))
+	}
+	for i, r := range sent {
+		if r.deadline.IsZero() {
+			t.Fatalf("request %d was sent with no deadline; the timeout does not bound it", i)
+		}
+		if i == 0 {
+			continue
+		}
+		if earliest := sent[i-1].answered.Add(timeout); r.deadline.Before(earliest) {
+			t.Errorf("request %d had to finish by %v, %v short of a full %v after request %d "+
+				"was answered: it was sharing an earlier request's deadline",
+				i, r.deadline, earliest.Sub(r.deadline), timeout, i-1)
+		}
+	}
+}
+
+// sentRequest is one request a deadlineTransport passed on.
+type sentRequest struct {
+	sent     time.Time // when it reached the transport
+	deadline time.Time // zero when the request carried none
+	answered time.Time // when its response, or its failure, arrived
+}
+
+// deadlineTransport records the deadline each request is sent under and when
+// its response arrived, then passes it on.
+type deadlineTransport struct {
+	next http.RoundTripper
+	mu   sync.Mutex
+	sent []sentRequest
+}
+
+func (d *deadlineTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	sent := time.Now()
+	deadline, _ := r.Context().Deadline()
+	resp, err := d.next.RoundTrip(r)
+	d.mu.Lock()
+	d.sent = append(d.sent, sentRequest{sent: sent, deadline: deadline, answered: time.Now()})
+	d.mu.Unlock()
+	return resp, err
+}
+
+func (d *deadlineTransport) requests() []sentRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]sentRequest(nil), d.sent...)
 }
 
 // TestExporter_SubmitWritesUnderTheSubmittedInstance is topology A's contract
@@ -882,7 +1029,7 @@ func TestExporter_SubmitWritesUnderTheSubmittedInstance(t *testing.T) {
 	var calls atomic.Int64
 
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(&calls), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
 	if !e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000, Write: func(b *Builder, timeMs int64) {
 		b.Add("sysmon_up", 1, timeMs, "instance", "omega")
@@ -890,7 +1037,7 @@ func TestExporter_SubmitWritesUnderTheSubmittedInstance(t *testing.T) {
 		t.Fatal("Submit refused a sample with an empty queue")
 	}
 
-	waitFor(t, "the submitted sample to be delivered", func() bool {
+	l.until("the submitted sample to be delivered", func() bool {
 		for _, got := range rec.deliveredInstances(t) {
 			if got == "omega" {
 				return true
@@ -901,7 +1048,7 @@ func TestExporter_SubmitWritesUnderTheSubmittedInstance(t *testing.T) {
 
 	// The local samples must still be the local node's: a submission changes
 	// one batch entry, not the exporter's identity.
-	waitFor(t, "a local sample to be delivered", func() bool {
+	l.until("a local sample to be delivered", func() bool {
 		for _, got := range rec.deliveredInstances(t) {
 			if got == "mon0" {
 				return true
@@ -923,37 +1070,45 @@ func TestExporter_SubmitWritesUnderTheSubmittedInstance(t *testing.T) {
 // required is that a caller is refused promptly and within a sane amount of
 // memory, so the test says that instead.
 func TestExporter_SubmitDropsRatherThanBlocks(t *testing.T) {
-	rec := newRecorder(t)
-	// Deliberately NOT run: with no Run goroutine nothing drains the queue, so
-	// this measures what a caller sees when the exporter cannot keep up.
-	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, countingCollector(new(atomic.Int64)), quietLogger())
+	// Inside a synctest bubble the clock advances only while every goroutine
+	// in it is blocked, so a Submit that waited in any way -- on the queue, or
+	// on a timer however short -- shows up as time having passed, and one that
+	// blocked for good is reported as a deadlock. Nothing here depends on how
+	// fast the machine is.
+	synctest.Test(t, func(t *testing.T) {
+		// Deliberately NOT run: with no loop nothing drains the queue, so this
+		// measures what a caller sees when the exporter cannot keep up. No
+		// request is ever made, so the endpoint need not exist.
+		e := NewExporter(func() Options { return fixedOptions("http://receiver.invalid/api/v1/write") },
+			countingCollector(new(atomic.Int64)), quietLogger())
 
-	const sane = 10000 // a queue deeper than this is a memory bug of its own
-	accepted, refused := 0, 0
-	for i := 0; i < sane && refused == 0; i++ {
-		start := time.Now()
-		ok := e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000, Write: func(b *Builder, timeMs int64) {
-			b.Add("sysmon_up", 1, timeMs)
-		}})
-		if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
-			t.Fatalf("Submit blocked for %v on call %d; it must never wait on the exporter", elapsed, i)
+		const sane = 10000 // a queue deeper than this is a memory bug of its own
+		accepted, refused := 0, 0
+		for i := 0; i < sane && refused == 0; i++ {
+			start := time.Now()
+			ok := e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000, Write: func(b *Builder, timeMs int64) {
+				b.Add("sysmon_up", 1, timeMs)
+			}})
+			if waited := time.Since(start); waited != 0 {
+				t.Fatalf("Submit waited %v on call %d; it must never wait on the exporter", waited, i)
+			}
+			if ok {
+				accepted++
+			} else {
+				refused++
+			}
 		}
-		if ok {
-			accepted++
-		} else {
-			refused++
-		}
-	}
 
-	if refused == 0 {
-		t.Fatalf("Submit accepted %d samples with nothing draining them and never refused; the queue is unbounded in practice", accepted)
-	}
-	if dropped := e.Stats().SamplesDropped; dropped != int64(refused) {
-		t.Errorf("SamplesDropped = %d after %d refusals, want them counted", dropped, refused)
-	}
-	if e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000}) {
-		t.Error("Submit accepted a measurement with nothing to write")
-	}
+		if refused == 0 {
+			t.Fatalf("Submit accepted %d samples with nothing draining them and never refused; the queue is unbounded in practice", accepted)
+		}
+		if dropped := e.Stats().SamplesDropped; dropped != int64(refused) {
+			t.Errorf("SamplesDropped = %d after %d refusals, want them counted", dropped, refused)
+		}
+		if e.Submit(Measurement{Source: "omega", TimeMs: 1700000000000}) {
+			t.Error("Submit accepted a measurement with nothing to write")
+		}
+	})
 }
 
 // TestExporter_SubmitDiscardedWhileDisabled keeps a disabled node costing
@@ -971,17 +1126,22 @@ func TestExporter_SubmitDiscardedWhileDisabled(t *testing.T) {
 		}
 		return o
 	}, countingCollector(new(atomic.Int64)), quietLogger())
-	runExporter(t, e)
+	l := runExporter(t, e)
 
-	e.Submit(Measurement{Source: "omega", TimeMs: 1600000000000, Write: func(b *Builder, timeMs int64) {
+	if !e.Submit(Measurement{Source: "omega", TimeMs: 1600000000000, Write: func(b *Builder, timeMs int64) {
 		b.Add("sysmon_stale", 1, timeMs, "instance", "omega")
-	}})
-	waitFor(t, "the disabled exporter to discard the submission", func() bool {
-		return e.Stats().SamplesDropped >= 1
-	})
+	}}) {
+		t.Fatal("Submit refused a sample with an empty queue")
+	}
+	// The next tick drains the queue, and a disabled exporter drops what it
+	// drains.
+	l.tick()
+	if got := e.Stats().SamplesDropped; got != 1 {
+		t.Fatalf("SamplesDropped = %d after the disabled exporter drained one submission, want 1", got)
+	}
 
 	enabled.Store(true)
-	waitFor(t, "the enabled exporter to deliver its own samples", func() bool {
+	l.until("the enabled exporter to deliver its own samples", func() bool {
 		return len(rec.deliveredInstances(t)) > 0
 	})
 

@@ -3,9 +3,12 @@
 package fleet
 
 import (
+	"context"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
 // Wall time is the wrong instrument for an aggregation cycle, and reporting it
@@ -83,7 +86,7 @@ func BenchmarkPoller_RefreshCPU(b *testing.B) {
 }
 
 // TestProcessCPU_Advances is the guard on the benchmark's headline figure: a
-// processCPU that returned wall time, or zero, would leave the benchmark
+// processCPU that returned zero, or stood still, would leave the benchmark
 // reporting a confidently wrong number, which is the defect class #76 is about.
 func TestProcessCPU_Advances(t *testing.T) {
 	before := processCPU(t)
@@ -91,35 +94,45 @@ func TestProcessCPU_Advances(t *testing.T) {
 		t.Fatalf("processCPU returned %v before any work; want a positive duration", before)
 	}
 
-	// Busy work rather than a sleep: sleeping advances the wall clock and not
-	// the CPU clock, so this also distinguishes the two.
-	deadline := time.Now().Add(20 * time.Millisecond)
+	// Busy work, a chunk per check, until the CPU clock moves. Burning for a
+	// fixed wall-clock window instead would let a starved runner schedule the
+	// loop so little that the clock had not visibly moved when it ended.
 	sink := 0
-	for time.Now().Before(deadline) {
-		sink++
-	}
+	await.Until(t, "processCPU to advance under busy work", func(context.Context) bool {
+		for range 1 << 20 {
+			sink++
+		}
+		return processCPU(t) > before
+	})
 	if sink == 0 {
 		t.Fatal("busy loop did not run")
 	}
-
-	after := processCPU(t)
-	if after <= before {
-		t.Errorf("processCPU did not advance across %d iterations of busy work: before=%v after=%v",
-			sink, before, after)
-	}
 }
 
-// TestProcessCPU_DoesNotAdvanceWhileSleeping is the other half: a sleeping
-// process burns wall time and no CPU, so a processCPU tracking the wall clock
-// fails here even though it would pass the advancing test above.
-func TestProcessCPU_DoesNotAdvanceWhileSleeping(t *testing.T) {
-	before := processCPU(t)
-	time.Sleep(50 * time.Millisecond)
-	after := processCPU(t)
+// TestProcessCPU_IsTheWholeProcessRusage is the other half: the figure must be
+// the kernel's CPU accounting for the whole process -- user plus system, every
+// thread -- read between two independent readings of that same accounting. A
+// processCPU tracking the wall clock lands outside the bracket, as does one
+// reporting only the calling thread, while the runtime's other threads have
+// used CPU. Waiting for wall time to pass without CPU would show the first
+// directly, but only by sleeping, and how much CPU the runtime's own
+// goroutines accrue meanwhile is up to the scheduler.
+func TestProcessCPU_IsTheWholeProcessRusage(t *testing.T) {
+	rusage := func() time.Duration {
+		var ru syscall.Rusage
+		if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+			t.Fatalf("getrusage(RUSAGE_SELF): %v", err)
+		}
+		return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+	}
 
-	// Not an equality assertion: the runtime's own goroutines keep running, so
-	// a little CPU accrues. It must be far below the wall time that elapsed.
-	if grew := after - before; grew > 25*time.Millisecond {
-		t.Errorf("processCPU grew %v while sleeping 50ms; it is tracking wall time, not CPU", grew)
+	low := rusage()
+	got := processCPU(t)
+	high := rusage()
+	if got < low || got > high {
+		t.Errorf("processCPU = %v, outside the process's CPU time read around it [%v, %v]", got, low, high)
+	}
+	if got <= 0 {
+		t.Errorf("processCPU = %v; the process has used CPU to get here", got)
 	}
 }

@@ -1,10 +1,15 @@
 package collector_test
 
 import (
+	"context"
+	"fmt"
+	"reflect"
+	"syscall"
 	"testing"
-	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // TestHostCollector_Collect verifies that a successful Collect populates the
@@ -30,8 +35,9 @@ func TestHostCollector_Collect(t *testing.T) {
 // HostInfo before the first Collect call (no panic or nil dereference).
 func TestHostCollector_InfoBeforeCollect(t *testing.T) {
 	c := collector.NewHostCollector(silentLogger())
-	info := c.Info() // must not panic
-	_ = info
+	if info := c.Info(); !reflect.DeepEqual(info, types.HostInfo{}) {
+		t.Errorf("Info() before Collect = %+v, want the zero HostInfo", info)
+	}
 }
 
 // TestHostCollector_IdentitySurvivesEveryCollect is the regression this split
@@ -96,14 +102,22 @@ func TestHostCollector_UptimeAdvances(t *testing.T) {
 	}
 	before := c.Info().Uptime
 
-	// One second is the resolution of /proc/uptime's seconds field as gopsutil
-	// reports it, so anything shorter can legitimately show no change.
-	time.Sleep(1100 * time.Millisecond)
+	// Uptime is the kernel's sysinfo(2) figure, in whole seconds. Wait for the
+	// kernel itself to report a later second -- the real condition, read from
+	// the source Collect reads -- rather than sleeping for one and hoping the
+	// tick landed inside the sleep.
+	await.Until(t, fmt.Sprintf("the kernel's uptime to pass %ds", before), func(context.Context) bool {
+		var si syscall.Sysinfo_t
+		if err := syscall.Sysinfo(&si); err != nil {
+			t.Fatalf("sysinfo: %v", err)
+		}
+		return uint64(si.Uptime) > before
+	})
 
 	if err := c.Collect(); err != nil {
 		t.Fatalf("second Collect: %v", err)
 	}
 	if after := c.Info().Uptime; after <= before {
-		t.Errorf("uptime went %d -> %d across a second: it is being cached", before, after)
+		t.Errorf("uptime went %d -> %d after the kernel's passed %d: it is being cached", before, after, before)
 	}
 }

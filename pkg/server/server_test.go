@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -31,6 +33,22 @@ func (s *stubSnapshotter) Snapshot() (*types.Snapshot, error) {
 	return s.snapshot, nil
 }
 
+// firstOnlySnapshotter answers its first Snapshot call with snap and holds
+// every later call until held is closed, so a monitor over it publishes
+// exactly one reading however many ticks pass.
+type firstOnlySnapshotter struct {
+	snap  *types.Snapshot
+	held  chan struct{}
+	calls atomic.Int64
+}
+
+func (f *firstOnlySnapshotter) Snapshot() (*types.Snapshot, error) {
+	if f.calls.Add(1) > 1 {
+		<-f.held
+	}
+	return f.snap, nil
+}
+
 func newMonitor(t *testing.T, hostname string) *monitor.Monitor {
 	t.Helper()
 	stub := &stubSnapshotter{
@@ -43,21 +61,33 @@ func newMonitor(t *testing.T, hostname string) *monitor.Monitor {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	stopMonitorAtCleanup(t, m)
 	return m
 }
 
-// waitForSnapshot blocks until the monitor has produced its first snapshot.
+// stopMonitorAtCleanup stops m when the test ends. A test may already have
+// stopped it, so MonitorNotRunningError is expected; any other error fails.
+func stopMonitorAtCleanup(t *testing.T, m *monitor.Monitor) {
+	t.Helper()
+	t.Cleanup(func() {
+		var notRunning *types.MonitorNotRunningError
+		if err := m.Stop(); err != nil && !errors.As(err, &notRunning) {
+			t.Errorf("monitor.Stop: %v", err)
+		}
+	})
+}
+
+// waitForSnapshot blocks until the monitor has published a snapshot, so
+// Snapshot() answers with it. The monitor stores a reading before it
+// broadcasts it, so one received by a subscriber is already the published one.
 func waitForSnapshot(t *testing.T, m *monitor.Monitor) {
 	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if _, err := m.Snapshot(); err == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
+	if _, err := m.Snapshot(); err == nil {
+		return
 	}
-	t.Fatal("monitor never produced a snapshot")
+	await.Recv(t, "the monitor's first snapshot", sub.Ch)
 }
 
 // ---- New ----------------------------------------------------------------
@@ -180,7 +210,7 @@ func TestHandleEvents_ReceivesSnapshot(t *testing.T) {
 
 	c := dialEvents(t, ts.URL+"/api/events", false)
 
-	ev := c.nextNamed(t, "snapshot", 2*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 
@@ -216,28 +246,27 @@ func TestHandleEvents_SendsRetryHint(t *testing.T) {
 // blank dashboard after reconnect: the handler must not make the client wait a
 // full poll interval for its first frame.
 func TestHandleEvents_SendsCurrentSnapshotImmediately(t *testing.T) {
-	stub := &stubSnapshotter{
-		snapshot: &types.Snapshot{Host: types.HostInfo{Hostname: "immediate-host"}},
+	// Only the first collection completes; every later one is held until the
+	// test ends. The monitor therefore publishes exactly once, before the
+	// client connects, and any frame the client receives can only be that
+	// cached reading -- never a freshly polled tick.
+	once := &firstOnlySnapshotter{
+		snap: &types.Snapshot{Host: types.HostInfo{Hostname: "immediate-host"}},
+		held: make(chan struct{}),
 	}
-	// A very slow poll: any snapshot that arrives promptly must be the cached
-	// one, not a freshly polled tick.
-	m, err := monitor.New(stub, time.Hour)
+	m, err := monitor.New(once, 10*time.Millisecond)
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
 	}
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	stopMonitorAtCleanup(t, m)
+	// Registered after the Stop, so it runs first and lets the held
+	// collection return for the Stop to complete.
+	t.Cleanup(func() { close(once.held) })
 
-	// Seed the cached snapshot by driving one fast tick, then slow back down.
-	if err := m.SetInterval(10 * time.Millisecond); err != nil {
-		t.Fatalf("SetInterval: %v", err)
-	}
 	waitForSnapshot(t, m)
-	if err := m.SetInterval(time.Hour); err != nil {
-		t.Fatalf("SetInterval: %v", err)
-	}
 
 	s := server.New(m, ":0", nil)
 	ts := httptest.NewServer(s)
@@ -245,7 +274,7 @@ func TestHandleEvents_SendsCurrentSnapshotImmediately(t *testing.T) {
 
 	c := dialEvents(t, ts.URL+"/api/events", false)
 
-	ev := c.nextNamed(t, "snapshot", 2*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 	if snap.Host.Hostname != "immediate-host" {
@@ -264,7 +293,7 @@ func TestHandleEvents_MultipleSnapshots(t *testing.T) {
 	c := dialEvents(t, ts.URL+"/api/events", false)
 
 	for i := range 3 {
-		ev := c.nextNamed(t, "snapshot", 3*time.Second)
+		ev := c.nextNamed(t, "snapshot")
 		var snap types.Snapshot
 		decodeSnapshot(t, ev, &snap)
 		if snap.Host.Hostname != "multi-host" {
@@ -294,7 +323,7 @@ func TestHandleEvents_GzipEncodesStream(t *testing.T) {
 	}
 
 	// The payload must still decode correctly through the gzip reader.
-	ev := c.nextNamed(t, "snapshot", 2*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 	if snap.Host.Hostname != "gzip-host" {
@@ -319,7 +348,7 @@ func TestHandleEvents_NoGzipWhenNotOffered(t *testing.T) {
 		t.Errorf("Content-Encoding = %q, want it unset for an identity request", got)
 	}
 
-	ev := c.nextNamed(t, "snapshot", 2*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 	if snap.Host.Hostname != "identity-host" {
@@ -332,15 +361,15 @@ func TestHandleEvents_ClientDisconnect(t *testing.T) {
 	waitForSnapshot(t, m)
 
 	s := server.New(m, ":0", nil)
-	ts := httptest.NewServer(s)
-	t.Cleanup(ts.Close)
+	ts, closed := newConnTrackingServer(t, s)
 
 	c := dialEvents(t, ts.URL+"/api/events", false)
-	c.nextNamed(t, "snapshot", 2*time.Second)
+	c.nextNamed(t, "snapshot")
 	c.Close()
 
-	// The handler must unwind without taking the server with it.
-	time.Sleep(50 * time.Millisecond)
+	// The handler must unwind without taking the server with it: the stream's
+	// connection reaching StateClosed proves the handler returned.
+	await.Recv(t, "the streaming handler to unwind after its client disconnected", closed)
 
 	resp, err := http.Get(ts.URL + "/api/snapshot")
 	if err != nil {
@@ -372,13 +401,13 @@ func TestHandleEvents_MonitorStopSendsBye(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	c := dialEvents(t, ts.URL+"/api/events", false)
-	c.nextNamed(t, "snapshot", 2*time.Second)
+	c.nextNamed(t, "snapshot")
 
 	if err := m.Stop(); err != nil {
 		t.Fatalf("monitor.Stop: %v", err)
 	}
 
-	ev := c.nextNamed(t, "bye", 2*time.Second)
+	ev := c.nextNamed(t, "bye")
 	if ev.Data == "" {
 		t.Error("bye event carried no reason")
 	}
@@ -560,10 +589,10 @@ func TestStop_GracefulShutdown(t *testing.T) {
 	s := server.New(m, ":0", nil)
 	ts := httptest.NewServer(s)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 	defer cancel()
 
-	if err := s.Stop(ctx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	if err := s.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 

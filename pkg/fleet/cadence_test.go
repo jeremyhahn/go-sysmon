@@ -21,18 +21,21 @@ import (
 // config file rather than describing the service, and on mon0 that was a 6.7%
 // lie: 3.20s measured against 3.00s configured (#76).
 
-// slowPeer serves a snapshot after a fixed delay, so a refresh has a known
-// floor on how long it must take.
-func slowPeer(t *testing.T, delay time.Duration) *httptest.Server {
+// slowPeer serves a snapshot that takes delay to produce, by the poller's
+// clock: answering advances clk by delay. Nothing else moves clk, so a refresh
+// that polls only this peer takes exactly delay -- stated, not waited out.
+func slowPeer(t *testing.T, clk *manualClock, delay time.Duration) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/snapshot" {
 			http.NotFound(w, r)
 			return
 		}
-		time.Sleep(delay)
+		clk.Advance(delay)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(&types.Snapshot{Host: types.HostInfo{Hostname: "peer"}})
+		if err := json.NewEncoder(w).Encode(&types.Snapshot{Host: types.HostInfo{Hostname: "peer"}}); err != nil {
+			t.Errorf("encoding the peer snapshot: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -67,7 +70,8 @@ func TestPollInterval_BeforeAnyRefresh(t *testing.T) {
 // number the dashboard must be given.
 func TestPollInterval_IncludesTheRefreshItJustDid(t *testing.T) {
 	const delay = 150 * time.Millisecond
-	srv := slowPeer(t, delay)
+	clk := newManualClock()
+	srv := slowPeer(t, clk, delay)
 
 	cfg := config.Fleet{
 		PollIntervalMs: 3000,
@@ -75,11 +79,12 @@ func TestPollInterval_IncludesTheRefreshItJustDid(t *testing.T) {
 		Peers:          []config.Peer{{Name: "peer", URL: srv.URL}},
 	}
 	p := cadencePoller(t, cfg)
+	p.now = clk.Now
 	p.refresh(cfg)
 
 	last := p.LastRefresh()
-	if last < delay {
-		t.Fatalf("LastRefresh() = %v, want at least the peer's %v delay", last, delay)
+	if last != delay {
+		t.Fatalf("LastRefresh() = %v, want the %v the refresh took", last, delay)
 	}
 
 	got := p.PollInterval()
@@ -95,8 +100,9 @@ func TestPollInterval_IncludesTheRefreshItJustDid(t *testing.T) {
 // not a high-water mark: when the work gets cheaper the reported cadence must
 // come back down, or it would be just as untrue in the other direction.
 func TestPollInterval_TracksTheLatestCycle(t *testing.T) {
-	slow := slowPeer(t, 200*time.Millisecond)
-	fast := slowPeer(t, 0)
+	clk := newManualClock()
+	slow := slowPeer(t, clk, 200*time.Millisecond)
+	fast := slowPeer(t, clk, 0)
 
 	slowCfg := config.Fleet{PollIntervalMs: 1000, TimeoutMs: 3000,
 		Peers: []config.Peer{{Name: "slow", URL: slow.URL}}}
@@ -110,6 +116,7 @@ func TestPollInterval_TracksTheLatestCycle(t *testing.T) {
 		func() string { return "local" },
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
+	p.now = clk.Now
 
 	p.refresh(slowCfg)
 	afterSlow := p.PollInterval()
@@ -118,7 +125,10 @@ func TestPollInterval_TracksTheLatestCycle(t *testing.T) {
 	p.refresh(fastCfg)
 	afterFast := p.PollInterval()
 
-	if afterFast >= afterSlow {
+	if want := time.Second + 200*time.Millisecond; afterSlow != want {
+		t.Errorf("PollInterval() = %v after the slow cycle, want %v", afterSlow, want)
+	}
+	if afterFast != time.Second {
 		t.Errorf("PollInterval() = %v after a fast cycle and %v after a slow one; it must follow the latest cycle, not hold the worst",
 			afterFast, afterSlow)
 	}

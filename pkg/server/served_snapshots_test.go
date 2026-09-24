@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
@@ -63,7 +64,11 @@ func getJSON(t *testing.T, url string, v any) {
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("GET %s: close body: %v", url, err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET %s: status %d", url, resp.StatusCode)
 	}
@@ -85,11 +90,11 @@ func servedSnapshots(t *testing.T, base, self string) map[string]map[string]any 
 	out["GET /api/snapshot"] = polled
 
 	var legacy map[string]any
-	decodeSnapshot(t, dialEvents(t, base+"/api/events", false).nextNamed(t, "snapshot", 3*time.Second), &legacy)
+	decodeSnapshot(t, dialEvents(t, base+"/api/events", false).nextNamed(t, "snapshot"), &legacy)
 	out["GET /api/events (snapshot frame)"] = legacy
 
 	var full fullFrame
-	decodeSnapshot(t, dialEvents(t, base+"/api/events?deltas=1", false).nextNamed(t, "full", 3*time.Second), &full)
+	decodeSnapshot(t, dialEvents(t, base+"/api/events?deltas=1", false).nextNamed(t, "full"), &full)
 	var streamed map[string]any
 	if err := json.Unmarshal(full.Snapshot, &streamed); err != nil {
 		t.Fatalf("full frame snapshot: %v", err)
@@ -162,22 +167,19 @@ func writeConfig(t *testing.T, path, body string) {
 	}
 }
 
-// awaitNodeName polls /api/snapshot until it reports want.
-func awaitNodeName(t *testing.T, base, want string) {
+// awaitNodeName returns once m has published a snapshot naming want. The
+// monitor stores a reading before it broadcasts it, so from then on every
+// serving path reads a snapshot with that name.
+func awaitNodeName(t *testing.T, m *monitor.Monitor, want string) {
 	t.Helper()
-	deadline := time.After(3 * time.Second)
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
+	if snap, err := m.Snapshot(); err == nil && snap.NodeName == want {
+		return
+	}
 	for {
-		var polled map[string]any
-		getJSON(t, base+"/api/snapshot", &polled)
-		if polled["node_name"] == want {
+		if snap := await.Recv(t, "a snapshot naming "+want, sub.Ch); snap.NodeName == want {
 			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("node_name = %v, want %q", polled["node_name"], want)
-		case <-tick.C:
 		}
 	}
 }
@@ -216,8 +218,7 @@ func TestServedSnapshots_ConfiguredServerAgreesAcrossARename(t *testing.T) {
 	}
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
-	waitForSnapshot(t, m)
-	awaitNodeName(t, ts.URL, "db-01")
+	awaitNodeName(t, m, "db-01")
 
 	snap := assertIdentical(t, servedSnapshots(t, ts.URL, "db-01"))
 	for field, want := range map[string]string{

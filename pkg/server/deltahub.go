@@ -8,6 +8,7 @@ import (
 
 	"github.com/jeremyhahn/go-sysmon/pkg/delta"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // resyncEvery is how many frames may pass before every client is sent a whole
@@ -51,6 +52,18 @@ type deltaFrame struct {
 	// ties the cache to the run rather than to the monitor's running flag,
 	// which is true again the instant a restart completes.
 	generation uint64
+	// source is the monitor's published reading this frame encodes, compared
+	// by identity with what the monitor publishes now.
+	//
+	// The hub learns of a publication only when its loop takes it off the
+	// subscription, so for a moment the monitor can be ahead of the cache. A
+	// restamp makes that visible: a rename lands in the monitor before Reload
+	// returns, and a client connecting straight afterwards was handed the
+	// cached frame with the old name while GET /api/snapshot already served
+	// the new one. A cache whose source is not the current reading is
+	// superseded, and a connecting client waits for the frame that replaces
+	// it rather than being sent it.
+	source *types.Snapshot
 	// full is the complete snapshot envelope. Always present: any client can
 	// need it at any tick.
 	full []byte
@@ -473,6 +486,12 @@ func (h *deltaHub) cachedFrame() *deltaFrame {
 	if frame == nil || frame.generation != h.generation() {
 		return nil
 	}
+	// Superseded: the monitor has published a newer reading -- a collection,
+	// or a restamp -- that the loop has not turned into a frame yet. The
+	// client is already subscribed, so that frame reaches it next, whole.
+	if current, err := h.mon.Snapshot(); err != nil || frame.source != current {
+		return nil
+	}
 	return frame
 }
 
@@ -496,7 +515,7 @@ func (h *deltaHub) generation() uint64 {
 // mark that says it can be trusted. Carrying it in means a frame can only ever
 // claim the run it came from, and one whose run has ended is dropped rather
 // than sent.
-func (h *deltaHub) publish(seq uint64, snapshot any, base delta.Tree, gen uint64) delta.Tree {
+func (h *deltaHub) publish(seq uint64, snapshot *types.Snapshot, base delta.Tree, gen uint64) delta.Tree {
 	if gen != h.generation() {
 		// The monitor restarted while this collection was in hand. The
 		// sequence has already advanced, so every client is now behind and the
@@ -516,7 +535,7 @@ func (h *deltaHub) publish(seq uint64, snapshot any, base delta.Tree, gen uint64
 		return base
 	}
 
-	frame := &deltaFrame{seq: seq, generation: gen, full: fullEnvelope(seq, raw)}
+	frame := &deltaFrame{seq: seq, generation: gen, source: snapshot, full: fullEnvelope(seq, raw)}
 
 	current, err := delta.Decode(raw)
 	if err != nil {

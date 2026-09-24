@@ -56,7 +56,12 @@ func TestUnsubscribeDuringStop_DoesNotPanic(t *testing.T) {
 
 		var wg sync.WaitGroup
 		wg.Add(len(subs) + 1)
-		go func() { defer wg.Done(); _ = m.Stop() }()
+		go func() {
+			defer wg.Done()
+			if err := m.Stop(); err != nil {
+				t.Errorf("attempt %d: Stop: %v", attempt, err)
+			}
+		}()
 		for _, sub := range subs {
 			go func() { defer wg.Done(); m.Unsubscribe(sub.ID) }()
 		}
@@ -105,11 +110,7 @@ func TestStopDoesNotCloseALaterRunsSubscribers(t *testing.T) {
 		t.Fatal("the stopped run's own subscriber was not closed, so this proves nothing")
 	}
 
-	if err := m.Start(); err != nil {
-		t.Fatalf("second Start: %v", err)
-	}
-	t.Cleanup(func() { _ = m.Stop() })
-
+	startMonitor(t, m)
 	second := m.Subscribe()
 	if m.Generation() == firstGen {
 		t.Fatal("the generation did not advance across a restart")
@@ -150,10 +151,16 @@ func TestSubscribeDuringStop_BelongsToTheEndingRun(t *testing.T) {
 
 		var wg sync.WaitGroup
 		wg.Add(1)
-		go func() { defer wg.Done(); _ = m.Stop() }()
+		go func() {
+			defer wg.Done()
+			if err := m.Stop(); err != nil {
+				t.Errorf("attempt %d: Stop: %v", attempt, err)
+			}
+		}()
 
 		sub := m.Subscribe()
 		wg.Wait()
+		sweptByItsRun := isClosed(sub.Done)
 
 		// Either the sweep saw it -- in which case Done is closed -- or the
 		// sweep missed it because sync.Map.Range may skip an entry added while
@@ -165,7 +172,24 @@ func TestSubscribeDuringStop_BelongsToTheEndingRun(t *testing.T) {
 		if got := m.Generation(); got == 0 {
 			t.Fatalf("attempt %d: generation did not advance", attempt)
 		}
-		_ = m.Stop()
-		_ = sub
+		if err := m.Stop(); err != nil {
+			t.Fatalf("attempt %d: stopping the later run: %v", attempt, err)
+		}
+		// The later run's stop sweeps only its own subscribers, so it must
+		// leave this one exactly as the ending run's stop did.
+		if isClosed(sub.Done) != sweptByItsRun {
+			t.Fatalf("attempt %d: the later run's Stop closed a subscription taken "+
+				"during the previous run's stop", attempt)
+		}
+	}
+}
+
+// isClosed reports whether done has been closed.
+func isClosed(done <-chan struct{}) bool {
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }

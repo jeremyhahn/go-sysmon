@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -21,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -103,7 +103,7 @@ func clientFor(t *testing.T, leaf *x509.Certificate) *http.Client {
 	pool.AddCert(leaf)
 
 	return &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: await.Timeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
 		},
@@ -118,24 +118,13 @@ func startTLSServer(t *testing.T, srv *server.Server, addr string) {
 	go func() { errCh <- srv.Start() }()
 
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Stop(ctx); err != nil {
-			t.Errorf("Stop: %v", err)
-		}
-		select {
-		case err := <-errCh:
-			if err != nil {
-				t.Errorf("Start() = %v, want nil after a clean Stop", err)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("Start did not return after Stop")
+		stopServer(t, srv)
+		if err := await.Recv(t, "Start to return after Stop", errCh); err != nil {
+			t.Errorf("Start() = %v, want nil after a clean Stop", err)
 		}
 	})
 
-	if !waitForServer(addr, 3*time.Second) {
-		t.Fatal("TLS server did not start listening")
-	}
+	waitForServer(t, addr)
 }
 
 // ---- NewWithConfig ------------------------------------------------------
@@ -215,7 +204,7 @@ func TestTLS_PlainHTTPRejectedOnTLSListener(t *testing.T) {
 	// Go answers a cleartext request on a TLS listener with a plain 400 rather
 	// than dropping it, so the meaningful assertion is that the request is
 	// refused, not that the transport errors.
-	client := &http.Client{Timeout: 3 * time.Second}
+	client := &http.Client{Timeout: await.Timeout}
 	resp, err := client.Get("http://" + addr + "/api/snapshot")
 	if err != nil {
 		return // refused at the transport layer, which is also acceptable
@@ -374,7 +363,7 @@ func TestTLS_MinVersionDefaultsWhenUnset(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
 	old := &http.Client{
-		Timeout: 3 * time.Second,
+		Timeout: await.Timeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs:    pool,
@@ -386,7 +375,9 @@ func TestTLS_MinVersionDefaultsWhenUnset(t *testing.T) {
 
 	resp, err := old.Get("https://" + addr + "/api/snapshot")
 	if err == nil {
-		resp.Body.Close() //nolint:errcheck
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close body: %v", err)
+		}
 		t.Fatal("a TLS 1.1 client completed a handshake; the floor should be TLS 1.2")
 	}
 }
@@ -433,7 +424,7 @@ func TestTLS_GetConfigForClientResolvesPerHandshake(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: await.Timeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs:    pool,
@@ -494,7 +485,7 @@ func TestTLS_GetConfigForClientErrorFailsHandshake(t *testing.T) {
 	startTLSServer(t, srv, addr)
 
 	client := &http.Client{
-		Timeout: 3 * time.Second,
+		Timeout: await.Timeout,
 		Transport: &http.Transport{
 			//nolint:gosec // The handshake must fail before verification matters.
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -503,7 +494,9 @@ func TestTLS_GetConfigForClientErrorFailsHandshake(t *testing.T) {
 
 	resp, err := client.Get("https://" + addr + "/api/snapshot")
 	if err == nil {
-		resp.Body.Close() //nolint:errcheck
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close body: %v", err)
+		}
 		t.Fatal("handshake succeeded although the resolver returned an error")
 	}
 }
@@ -590,7 +583,7 @@ func TestTLS_EventStreamOverHTTPS(t *testing.T) {
 		t.Fatal("stream response carried no TLS state; the connection was not encrypted")
 	}
 
-	ev := c.nextNamed(t, "snapshot", 5*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 	if snap.Host.Hostname != "tls-stream-host" {
@@ -630,7 +623,7 @@ func TestTLS_GzipEventStreamOverHTTPS(t *testing.T) {
 		t.Fatalf("Content-Encoding = %q, want gzip", got)
 	}
 
-	ev := c.nextNamed(t, "snapshot", 5*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
 	if snap.Host.Hostname != "tls-gzip-host" {

@@ -67,13 +67,7 @@ func TestSnapshotSamples_DatesTheReadingByItsCollection(t *testing.T) {
 			t.Errorf("Stop: %v", err)
 		}
 	})
-	deadline := time.Now().Add(3 * time.Second)
-	for _, err := mon.Snapshot(); err != nil; _, err = mon.Snapshot() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the monitor never collected: %v", err)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitSnapshot(t, mon)
 
 	collect := snapshotSamples(mon)
 	first, err := collect()

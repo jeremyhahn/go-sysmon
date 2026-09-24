@@ -73,17 +73,19 @@ func testPoller(t *testing.T) *Poller {
 }
 
 // snapshotPeer serves a minimal snapshot at /api/snapshot.
-func snapshotPeer() http.Handler {
+func snapshotPeer(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/snapshot" {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(&types.Snapshot{
+		if err := json.NewEncoder(w).Encode(&types.Snapshot{
 			Version: "test",
 			Host:    types.HostInfo{Hostname: "peer"},
-		})
+		}); err != nil {
+			t.Errorf("encoding the peer snapshot: %v", err)
+		}
 	})
 }
 
@@ -106,7 +108,7 @@ func plaintextAllowed() config.Fleet {
 // TestFetch_HTTPSPeerVerifiedAgainstConfiguredCA is the issue's actual fix: the
 // aggregator now authenticates the node that answered.
 func TestFetch_HTTPSPeerVerifiedAgainstConfiguredCA(t *testing.T) {
-	srv := httptest.NewTLSServer(snapshotPeer())
+	srv := httptest.NewTLSServer(snapshotPeer(t))
 	defer srv.Close()
 
 	client, err := outbound.NewTLSClient(0, outbound.TLS{CAFile: caFileFor(t, srv)})
@@ -129,7 +131,7 @@ func TestFetch_HTTPSPeerVerifiedAgainstConfiguredCA(t *testing.T) {
 // test above would pass just as well against a client that verified nothing,
 // which is the state this feature exists to leave behind.
 func TestFetch_HTTPSPeerRefusedWhenUntrusted(t *testing.T) {
-	srv := httptest.NewTLSServer(snapshotPeer())
+	srv := httptest.NewTLSServer(snapshotPeer(t))
 	defer srv.Close()
 
 	// A client with no CA configured at all falls back to the system roots,
@@ -154,7 +156,7 @@ func TestFetch_HTTPSPeerRefusedWhenUntrusted(t *testing.T) {
 // an http peer keeps working by default, and stops working the moment an
 // operator says the fleet has finished moving to TLS.
 func TestFetch_PlaintextPeer(t *testing.T) {
-	srv := httptest.NewServer(snapshotPeer())
+	srv := httptest.NewServer(snapshotPeer(t))
 	defer srv.Close()
 
 	t.Run("allowed by default", func(t *testing.T) {
@@ -245,7 +247,7 @@ func TestFetch_MutualTLS(t *testing.T) {
 		t.Fatal("client CA pool did not accept the generated certificate")
 	}
 
-	srv := httptest.NewUnstartedServer(snapshotPeer())
+	srv := httptest.NewUnstartedServer(snapshotPeer(t))
 	srv.TLS = &tls.Config{
 		ClientAuth: tls.RequireAndVerifyClientCert,
 		ClientCAs:  clientCAs,

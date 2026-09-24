@@ -6,8 +6,8 @@ import (
 	"os"
 	"syscall"
 	"testing"
-	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
 )
 
@@ -49,14 +49,9 @@ func TestServe_StopDuringStartupIsHandled(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runServeCmd(nil, nil) }()
 
-	select {
-	case err := <-done:
-		// The process survived the signal and shut down on its own terms.
-		if err != nil {
-			t.Errorf("runServeCmd() = %v, want nil after a stop during startup", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("runServeCmd did not return after a SIGTERM sent between the bind and serving")
+	// The process survived the signal and shut down on its own terms.
+	if err := await.Recv(t, "runServeCmd to return after a SIGTERM sent between the bind and serving", done); err != nil {
+		t.Errorf("runServeCmd() = %v, want nil after a stop during startup", err)
 	}
 }
 
@@ -92,20 +87,18 @@ func TestServeUntilSignal_AlreadyCancelledNeverServes(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- serveUntilSignal(ctx, srv, mon) }()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("serveUntilSignal() = %v, want nil", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("serveUntilSignal did not return for an already-cancelled context")
+	if err := await.Recv(t, "serveUntilSignal to return for an already-cancelled context", done); err != nil {
+		t.Errorf("serveUntilSignal() = %v, want nil", err)
 	}
 
 	// The socket is closed rather than left listening on a process that is on
-	// its way out.
-	conn, dialErr := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-	if dialErr == nil {
-		conn.Close() //nolint:errcheck
+	// its way out. A loopback dial is answered at once either way -- accepted
+	// by a listener or refused without one -- so no timeout stands in for the
+	// answer.
+	if conn, dialErr := net.Dial("tcp", addr); dialErr == nil {
 		t.Error("the listener is still accepting after a shutdown during startup")
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing the probe connection: %v", err)
+		}
 	}
 }

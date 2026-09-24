@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -52,7 +54,8 @@ func TestFleetEndpoints_PublishNoPeerAddress(t *testing.T) {
 		Config:  managerFor(t, "fleet:\n  peers:\n    - name: live\n      url: "+live+"\n    - name: dead\n      url: "+deadURL+"\n"),
 	}, nil)
 
-	waitUntil(t, func() bool {
+	// The poller announces no cycle, so this re-reads the served view.
+	await.Until(t, "the live peer reachable and the dead one's failure recorded", func(context.Context) bool {
 		var view types.Fleet
 		if getJSON(t, aggregator, "/api/fleet", &view) != http.StatusOK {
 			return false

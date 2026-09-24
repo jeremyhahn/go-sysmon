@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -89,7 +90,7 @@ func TestView_SummarizesLocalAndPeer(t *testing.T) {
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool {
+	await.Until(t, "omega to answer", func(context.Context) bool {
 		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Name == "omega" && n.Reachable {
 				return true
@@ -143,7 +144,7 @@ func TestView_UnreachablePeerIsNotHealthy(t *testing.T) {
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool {
+	await.Until(t, "the dead peer to be polled as unreachable", func(context.Context) bool {
 		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Name == "dead" && n.Status == fleet.StatusUnreachable {
 				return true
@@ -265,29 +266,34 @@ func TestPeerSnapshot_MarksAnUnreachablePeerStale(t *testing.T) {
 	cfg := config.Fleet{Peers: []config.Peer{{Name: "omega", URL: srv.URL}}, TimeoutMs: 2000}
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 }, func() string { return "local" }, quiet())
+	clk := fleet.NewManualClock()
+	fleet.SetClock(p, clk.Now)
 
 	if peer, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); err != nil || !peer.Reachable {
 		t.Fatalf("first PeerSnapshot(omega) = %+v, %v; want a live reading", peer, err)
 	}
 
 	// The peer goes away. The last reading survives; its honesty must not.
-	// Waited out past the reuse window, so this is a real second fetch.
+	// The clock moves an hour, past any reuse window, so this is a real
+	// second fetch.
 	down.Store(true)
-	var peer types.PeerSnapshot
-	waitFor(t, func() bool {
-		got, err := p.PeerSnapshot(context.Background(), "omega", time.Minute)
-		peer = got
-		return err == nil && !got.Reachable
-	})
+	clk.Advance(time.Hour)
+	peer, err := p.PeerSnapshot(context.Background(), "omega", time.Minute)
+	if err != nil {
+		t.Fatalf("PeerSnapshot(omega) with a snapshot retained = %v; want the stale reading", err)
+	}
+	if peer.Reachable {
+		t.Error("a failed fetch was served as a live reading")
+	}
+	if want := time.Hour.Seconds(); peer.AgeSeconds != want {
+		t.Errorf("AgeSeconds = %v, want %v: the age of the retained reading", peer.AgeSeconds, want)
+	}
 
 	if peer.Snapshot == nil || peer.Snapshot.Host.Hostname != "omega" {
 		t.Errorf("the last snapshot was discarded: %+v", peer)
 	}
 	if peer.Error == "" {
 		t.Error("Error is empty for an unreachable peer; the client has nothing to explain the staleness with")
-	}
-	if peer.AgeSeconds <= 0 {
-		t.Errorf("AgeSeconds = %v; a stale reading must say how old it is", peer.AgeSeconds)
 	}
 }
 
@@ -320,20 +326,6 @@ func TestPeerSnapshot_ConcurrentDrillInsShareOneFetch(t *testing.T) {
 	if n := fetches.Load(); n != 1 {
 		t.Errorf("8 concurrent drill-ins made %d fetches of the peer; want 1", n)
 	}
-}
-
-// waitFor polls cond until it holds or the test times out. Polling keeps the
-// test independent of the poller's internal scheduling.
-func waitFor(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("condition not met before the deadline")
 }
 
 // TestPeerConfig_FetchesFromThePeer covers the settings view following the
@@ -413,54 +405,36 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 },
 		func() string { return "local" }, quiet())
 
-	done := make(chan struct{})
-	go p.Run(done)
-	defer close(done)
+	// The poller's clock is stepped by hand, so the age below is exact.
+	clk := fleet.NewManualClock()
+	fleet.SetClock(p, clk.Now)
 
-	// Let one good poll land.
-	waitFor(t, func() bool {
-		for _, n := range p.View(fleet.Query{}).Nodes {
-			if n.Name == "omega" && n.Reachable {
-				return true
-			}
-		}
-		return false
-	})
+	// One good poll lands.
+	fleet.Refresh(p)
+	if !node(t, p.View(fleet.Query{}), "omega").Reachable {
+		t.Fatal("the first poll of a serving peer did not reach it")
+	}
 
-	// Take the peer down and let several failed polls go by.
+	// Take the peer down and let two failed polls go by, an hour apart.
 	serving.Store(false)
-	waitFor(t, func() bool {
-		for _, n := range p.View(fleet.Query{}).Nodes {
-			if n.Name == "omega" && !n.Reachable {
-				return true
-			}
-		}
-		return false
-	})
-	time.Sleep(250 * time.Millisecond)
+	clk.Advance(time.Hour)
+	fleet.Refresh(p)
+	clk.Advance(time.Hour)
+	fleet.Refresh(p)
 
-	var node *types.FleetNode
-	for i, n := range p.View(fleet.Query{}).Nodes {
-		if n.Name == "omega" {
-			node = &p.View(fleet.Query{}).Nodes[i]
-			_ = n
-		}
-	}
-	if node == nil {
-		t.Fatal("peer omega missing from the view")
-	}
-	if node.Reachable {
+	omega := node(t, p.View(fleet.Query{}), "omega")
+	if omega.Reachable {
 		t.Fatal("peer should be reporting unreachable by now")
 	}
 	// The retained snapshot must still be there...
-	if node.Hostname != "omega" {
-		t.Errorf("stale snapshot was dropped; hostname = %q", node.Hostname)
+	if omega.Hostname != "omega" {
+		t.Errorf("stale snapshot was dropped; hostname = %q", omega.Hostname)
 	}
-	// ...and its age must reflect the last SUCCESSFUL fetch, which was at least
-	// the sleep above ago, not the most recent failed retry.
-	if node.AgeSeconds < 0.2 {
-		t.Errorf("AgeSeconds = %.3f, want it to keep growing from the successful fetch; "+
-			"a failed retry must not reset it", node.AgeSeconds)
+	// ...and its age must reflect the last SUCCESSFUL fetch, two hours ago,
+	// not the most recent failed retry, which was just now.
+	if want := (2 * time.Hour).Seconds(); omega.AgeSeconds != want {
+		t.Errorf("AgeSeconds = %.3f, want %.0f: it must keep growing from the successful fetch; "+
+			"a failed retry must not reset it", omega.AgeSeconds, want)
 	}
 }
 
@@ -498,7 +472,7 @@ func TestView_OrdersByNameNotSeverity(t *testing.T) {
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool {
+	await.Until(t, "three reachable nodes", func(context.Context) bool {
 		reachable := 0
 		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Reachable {
@@ -809,37 +783,26 @@ func TestView_APeerThatNeverAnsweredHasNoAge(t *testing.T) {
 		func() string { return "local" }, quiet(),
 	)
 
-	done := make(chan struct{})
-	go p.Run(done)
-	defer close(done)
+	// One failed poll, so this is the "polled and failed" state rather than
+	// the "not polled yet" one -- they are different code paths and only one
+	// of them is under test here. The clock then moves on an hour, so an age
+	// dated from the attempt could not pass for zero.
+	clk := fleet.NewManualClock()
+	fleet.SetClock(p, clk.Now)
+	fleet.Refresh(p)
+	clk.Advance(time.Hour)
 
-	// Wait for at least one failed poll, so this is the "polled and failed"
-	// state rather than the "not polled yet" one -- they are different code
-	// paths and only one of them is under test here.
-	deadline := time.Now().Add(2 * time.Second)
-	var node types.FleetNode
-	for time.Now().Before(deadline) {
-		for _, n := range p.View(fleet.Query{}).Nodes {
-			if n.Name == "dead" && n.Error != "" && n.Error != "not polled yet" {
-				node = n
-			}
-		}
-		if node.Name != "" {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	polled := node(t, p.View(fleet.Query{}), "dead")
+	if polled.Error == "" || polled.Error == "not polled yet" {
+		t.Fatalf("error = %q; the peer was never polled, so this tests the wrong path", polled.Error)
 	}
-	if node.Name == "" {
-		t.Fatal("the peer was never polled, so this tests the wrong path")
-	}
-
-	if node.Reachable {
+	if polled.Reachable {
 		t.Fatal("a peer refusing every request is reachable, so this proves nothing")
 	}
-	if node.AgeSeconds != 0 {
+	if polled.AgeSeconds != 0 {
 		t.Errorf("age_seconds = %v for a peer that has never answered, want 0. "+
 			"A non-zero age here is the time since the last ATTEMPT, which reads as "+
-			"a brief gap forever and is exactly what #69 is about", node.AgeSeconds)
+			"a brief gap forever and is exactly what #69 is about", polled.AgeSeconds)
 	}
 }
 
@@ -869,18 +832,17 @@ func TestObserve_ReportsEveryReadingThatArrives(t *testing.T) {
 		}
 	}, func() time.Duration { return time.Hour })
 
-	done := make(chan struct{})
-	go p.Run(done)
-	defer close(done)
-
-	waitFor(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(names) >= 2
-	})
+	// The peer serves no summary, so each poll reads its whole snapshot and
+	// records it there and then. Two cycles stepped by hand are therefore
+	// exactly two readings -- not "at least", which a duplicate would pass.
+	fleet.Refresh(p)
+	fleet.Refresh(p)
 
 	mu.Lock()
 	defer mu.Unlock()
+	if len(names) != 2 || len(hosts) != 2 {
+		t.Fatalf("%d readings (%d with a snapshot) from two polls, want exactly 2", len(names), len(hosts))
+	}
 	for i, got := range names {
 		if got != "omega" {
 			t.Errorf("reading %d reported node %q, want omega", i, got)
@@ -930,22 +892,23 @@ func TestObserve_SilentWhileAPeerIsUnreachable(t *testing.T) {
 	var readings atomic.Int64
 	p.Observe(func(string, *types.Snapshot) { readings.Add(1) }, func() time.Duration { return time.Hour })
 
-	done := make(chan struct{})
-	go p.Run(done)
-	defer close(done)
-
-	waitFor(t, func() bool { return readings.Load() >= 2 })
+	// The peer serves no summary, so each poll reads its whole snapshot and
+	// records it there and then: stepping the cycles by hand makes the count
+	// exact, with no reading in flight when serving flips.
+	fleet.Refresh(p)
+	fleet.Refresh(p)
+	if got := readings.Load(); got != 2 {
+		t.Fatalf("%d readings from two polls of a serving peer, want 2", got)
+	}
 	serving.Store(false)
 
-	// Let several polls fail, then confirm the count stopped moving while the
-	// peer stayed visible in the view with its retained snapshot.
-	settled := readings.Load()
-	time.Sleep(120 * time.Millisecond)
-	after := readings.Load()
-
-	// One reading may have been in flight when serving flipped.
-	if after > settled+1 {
-		t.Errorf("readings went %d -> %d while the peer was unreachable; a retained snapshot was reported as a new observation", settled, after)
+	// Several polls fail; the count must not move while the peer stays
+	// visible in the view with its retained snapshot.
+	for range 3 {
+		fleet.Refresh(p)
+	}
+	if got := readings.Load(); got != 2 {
+		t.Errorf("readings went 2 -> %d while the peer was unreachable; a retained snapshot was reported as a new observation", got)
 	}
 
 	var found bool
@@ -1008,7 +971,7 @@ func TestPeerPayloads_AnOlderPeersNullListsAreNotPassedOn(t *testing.T) {
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool { return node(t, p.View(fleet.Query{}), "old").Reachable })
+	await.Until(t, "the old peer to answer", func(context.Context) bool { return node(t, p.View(fleet.Query{}), "old").Reachable })
 	close(done)
 	assertNoNullLists(t, "fleet view", p.View(fleet.Query{}))
 

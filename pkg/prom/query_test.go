@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
 // promServer serves a canned body and records the query it was asked for.
@@ -253,22 +255,44 @@ func TestQuerier_TrailingSlashInBaseURL(t *testing.T) {
 // TestQuerier_TimeoutBoundsTheQuery: the timeout is per request rather than on
 // the client, so it can be reconfigured without discarding the connection pool.
 // It still has to actually bound the request.
+//
+// The receiver never answers until the test ends, so the query returning at
+// all proves something other than the receiver ended it; the deadline it was
+// sent under proves that something was the configured timeout, measured from
+// when the query was made.
 func TestQuerier_TimeoutBoundsTheQuery(t *testing.T) {
+	const timeout = 50 * time.Millisecond
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		<-release
-		_, _ = w.Write([]byte(`{"status":"success","data":{"result":[]}}`))
+		if _, err := w.Write([]byte(`{"status":"success","data":{"result":[]}}`)); err != nil {
+			t.Errorf("writing the late answer: %v", err)
+		}
 	}))
 	t.Cleanup(func() { close(release); srv.Close() })
 
-	q := querier(srv.URL, 50*time.Millisecond)
-	start := time.Now()
-	_, err := q.QueryRange(context.Background(), "m", time.UnixMilli(0), time.UnixMilli(60000), time.Second)
-	if err == nil {
-		t.Fatal("QueryRange() against a hung receiver = nil, want a timeout")
+	q := querier(srv.URL, timeout)
+	tr := &deadlineTransport{next: srv.Client().Transport}
+	q.client.Transport = tr
+
+	queried := time.Now()
+	failed := make(chan error, 1)
+	go func() {
+		_, err := q.QueryRange(context.Background(), "m", time.UnixMilli(0), time.UnixMilli(60000), time.Second)
+		failed <- err
+	}()
+	err := await.Recv(t, "QueryRange against a hung receiver to return", failed)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("QueryRange() against a hung receiver = %v, want it to end on its deadline", err)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("QueryRange() took %v; the timeout did not bound it", elapsed)
+
+	sent := tr.requests()
+	if len(sent) != 1 {
+		t.Fatalf("%d requests were sent, want 1", len(sent))
+	}
+	if earliest, latest := queried.Add(timeout), sent[0].sent.Add(timeout); sent[0].deadline.Before(earliest) || sent[0].deadline.After(latest) {
+		t.Fatalf("the query was sent with deadline %v, want the configured %v from when it was made: between %v and %v",
+			sent[0].deadline, timeout, earliest, latest)
 	}
 }
 

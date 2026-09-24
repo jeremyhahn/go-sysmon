@@ -31,13 +31,11 @@ const submitQueue = 256
 // tickInterval is how often the exporter wakes to decide whether to sample or
 // flush.
 //
-// It is a variable rather than a constant so tests can drive the loop without
-// waiting on production cadences, the same way keepaliveInterval works in
-// pkg/server. Waking on a fixed base tick rather than on tickers sized to the
-// configured intervals is what bounds reload latency: with a ticker per
-// interval, moving from a one-hour cadence to a one-minute one would not be
-// noticed until the hour was up.
-var tickInterval = time.Second
+// Waking on a fixed base tick rather than on tickers sized to the configured
+// intervals is what bounds reload latency: with a ticker per interval, moving
+// from a one-hour cadence to a one-minute one would not be noticed until the
+// hour was up.
+const tickInterval = time.Second
 
 // Options is the exporter's runtime configuration. It is re-read on every
 // cycle, so remote write can be turned on, retargeted or turned off by
@@ -260,7 +258,14 @@ func (e *Exporter) drain(o Options) {
 func (e *Exporter) Run(done <-chan struct{}) {
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
+	e.run(done, ticker.C)
+}
 
+// run is Run's loop, woken by ticks and deciding from each tick's time what is
+// due. It takes the ticks as a channel so a test can deliver them itself and
+// choose their times: it then knows exactly which ticks the loop has handled,
+// instead of estimating it from how long it waited.
+func (e *Exporter) run(done <-chan struct{}, ticks <-chan time.Time) {
 	var lastSample, lastFlush time.Time
 
 	for {
@@ -272,7 +277,7 @@ func (e *Exporter) Run(done <-chan struct{}) {
 			// alternative is a service that will not stop.
 			return
 
-		case now := <-ticker.C:
+		case now := <-ticks:
 			o := e.opts()
 			if o.RemoteWriteURL == "" {
 				e.disable()

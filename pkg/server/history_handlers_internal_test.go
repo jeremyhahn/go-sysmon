@@ -42,7 +42,9 @@ func newFakePrometheus(t *testing.T) *fakePrometheus {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.seen = r.URL.Query()
 		w.WriteHeader(f.status)
-		_, _ = w.Write([]byte(f.body))
+		if _, err := w.Write([]byte(f.body)); err != nil {
+			t.Errorf("fake Prometheus: writing the response: %v", err)
+		}
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -394,20 +396,16 @@ func newStaticMonitor(t *testing.T, snap *types.Snapshot) *monitor.Monitor {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Stop() })
+	t.Cleanup(func() {
+		if err := m.Stop(); err != nil {
+			t.Errorf("monitor.Stop: %v", err)
+		}
+	})
 
 	// Start returns before the first collection has landed, and a handler that
 	// reads too early gets "no snapshot available" instead of the fixture.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := m.Snapshot(); err == nil {
-			return m
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the monitor produced no snapshot")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	awaitPublications(t, m, 1)
+	return m
 }
 
 func quietServerLogger() *slog.Logger {

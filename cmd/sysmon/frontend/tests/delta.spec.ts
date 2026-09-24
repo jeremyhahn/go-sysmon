@@ -7,6 +7,16 @@ import accepted from '../../../../pkg/delta/testdata/accepted.json' with { type:
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 import { openTab } from './fixtures/tabs';
 import { serveFleet } from './fixtures/fleet';
+import {
+  connections,
+  installFakeEventSource,
+  lastURL,
+  latestOpened,
+  send,
+} from './fixtures/fake-eventsource';
+
+/** The transport's first reconnect backoff, RECONNECT_DELAY_MS in src/lib/transport.ts. */
+const RECONNECT_DELAY_MS = 3000;
 
 /**
  * Delta streaming.
@@ -134,76 +144,6 @@ test.describe('the patch format', () => {
 
 // --- 2. the stream ---------------------------------------------------------
 
-/**
- * Replaces EventSource with one the test drives.
- *
- * The frames matter here, not the socket: what is under test is how the
- * transport reacts to a sequence, and Playwright's route interception cannot
- * hold a response open and push to it. The Go side covers the real socket
- * end to end.
- */
-async function installFakeEventSource(page: Page) {
-  await page.addInitScript(() => {
-    class FakeEventSource extends EventTarget {
-      static readonly CONNECTING = 0;
-      static readonly OPEN = 1;
-      static readonly CLOSED = 2;
-      static instances: FakeEventSource[] = [];
-
-      readonly url: string;
-      readyState = FakeEventSource.OPEN;
-      onopen: ((e: Event) => void) | null = null;
-      onerror: ((e: Event) => void) | null = null;
-
-      constructor(url: string) {
-        super();
-        this.url = url;
-        FakeEventSource.instances.push(this);
-        // Asynchronous, as the real one is: the caller has to have attached
-        // its listeners before anything arrives.
-        setTimeout(() => this.onopen?.(new Event('open')), 0);
-      }
-
-      close() {
-        this.readyState = FakeEventSource.CLOSED;
-      }
-    }
-    const w = window as unknown as { EventSource: unknown; __es: typeof FakeEventSource };
-    w.EventSource = FakeEventSource;
-    w.__es = FakeEventSource;
-  });
-}
-
-interface FakeES {
-  instances: Array<{ url: string; dispatchEvent(e: Event): boolean }>;
-}
-
-/** Pushes one frame onto the stream the page most recently opened. */
-async function send(page: Page, event: string, data: unknown) {
-  await page.evaluate(
-    ([name, payload]) => {
-      const es = (window as unknown as { __es: FakeES }).__es.instances;
-      const latest = es[es.length - 1];
-      latest.dispatchEvent(new MessageEvent(name as string, { data: JSON.stringify(payload) }));
-    },
-    [event, data] as const
-  );
-}
-
-/** How many times the page has opened a stream. */
-function connections(page: Page): Promise<number> {
-  return page.evaluate(
-    () => (window as unknown as { __es: FakeES }).__es.instances.length
-  );
-}
-
-/** The URL of the most recently opened stream. */
-function lastURL(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const es = (window as unknown as { __es: FakeES }).__es.instances;
-    return es[es.length - 1]?.url ?? '';
-  });
-}
 
 function snapshotWith(hostname: string) {
   return { ...snapshot, host: { ...snapshot.host, hostname } };
@@ -572,6 +512,12 @@ test.describe('the delta stream', () => {
     // and then the same broken delta would reset the counter a moment after the
     // resync raised it: reconnect, full, break, reconnect, as fast as the frames
     // arrive, forever, against a server that is already unwell.
+    //
+    // The backoff is a timer, so the page runs on a clock the test controls:
+    // it flows normally through the rounds that reopen at once, and is paused
+    // before the one that must not, so "it has not reopened yet" is a fact
+    // about the clock rather than a guess about how long to wait.
+    await page.clock.install();
     await openHostTab(page);
     const opened = await connections(page);
 
@@ -595,21 +541,29 @@ test.describe('the delta stream', () => {
         .toBe(opened + i);
     }
 
-    // The next one must not. Waited out rather than polled: what is being
-    // asserted is that nothing happens, and a poll that passes on its first
-    // read proves only that it read early.
+    // The next one must not. The resync runs synchronously as the broken
+    // frame is dispatched, and says so when it backs off; with the clock
+    // paused no backoff timer can fire, so the count read after that is final
+    // rather than early.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    const backingOff = page.waitForEvent('console', (msg) => msg.text().includes('backing off'));
     await round('over-the-limit');
-    await page.waitForTimeout(1000);
+    await backingOff;
     expect(
       await connections(page),
       'the limiter never fired: the client is reopening the stream as fast as it breaks'
     ).toBe(opened + MAX_IMMEDIATE_RESYNCS);
 
-    // Backing off is not giving up. The delay is 3s, so this is the same
-    // client coming back on its own once it has stopped hammering.
-    await expect
-      .poll(() => connections(page), { timeout: 8000, message: 'the client never came back' })
-      .toBe(opened + MAX_IMMEDIATE_RESYNCS + 1);
+    // Backing off is not giving up: the same client comes back on its own
+    // once the delay has passed -- and not a millisecond sooner.
+    await page.clock.runFor(RECONNECT_DELAY_MS - 1);
+    expect(await connections(page), 'the client reopened before its backoff elapsed').toBe(
+      opened + MAX_IMMEDIATE_RESYNCS
+    );
+    await page.clock.runFor(1);
+    expect(await connections(page), 'the client never came back').toBe(
+      opened + MAX_IMMEDIATE_RESYNCS + 1
+    );
   });
 
   test('a reopened stream is not called live until it has sent something', async ({ page }) => {
@@ -623,7 +577,7 @@ test.describe('the delta stream', () => {
     // moment a new stream exists, and leaves them that way for as long as it
     // sends nothing.
     await openHostTab(page);
-    const connected = page.locator('nav').getByText('Connected');
+    const connected = page.locator('nav').getByText('Connected', { exact: true });
     const disconnected = page.locator('nav').getByText('Disconnected');
 
     await send(page, 'full', { seq: 1, snapshot: snapshotWith('last-real-reading') });
@@ -638,11 +592,15 @@ test.describe('the delta stream', () => {
     });
     await expect.poll(() => connections(page)).toBe(opened + 1);
 
-    // The replacement socket is open by now -- the fake fires onopen on the
-    // next tick, as the real one does -- and it has sent nothing. The reading
-    // on screen is the one from the stream that just failed, and it must be
-    // labelled as such.
-    await page.waitForTimeout(250);
+    // The replacement socket opens -- the fake fires onopen on the next tick,
+    // as the real one does -- and sends nothing. Once it has, the reading on
+    // screen is the one from the stream that just failed, and it must be
+    // labelled as such. Anything onopen changed has rendered by the time the
+    // flag can be read, so these checks see its result, not an earlier frame.
+    await expect.poll(() => latestOpened(page), { message: 'the new stream never opened' }).toBe(
+      true
+    );
+    await expect(connected).toHaveCount(0);
     await expect(disconnected).toBeVisible();
     expect(await shownHostname(page), 'the last reading was blanked, not held').toBe(
       'last-real-reading'

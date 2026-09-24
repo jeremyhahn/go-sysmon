@@ -1,8 +1,10 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { logRequests, settledRequests } from './fixtures/request-log';
 import { serveFleet } from './fixtures/fleet';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 import { openTab, type TabLabel } from './fixtures/tabs';
+import { connections, installFakeEventSource, send } from './fixtures/fake-eventsource';
 
 /**
  * The date range control.
@@ -78,6 +80,7 @@ async function mockHistory(
 ): Promise<HistoryMock> {
   const mock: HistoryMock = { requests: [] };
 
+  await logRequests(page, /\/api\/history\?/);
   await mockSnapshotFeed(page);
   await page.route(/\/api\/history\/metrics$/, (route) =>
     route.fulfill({
@@ -100,6 +103,68 @@ async function mockHistory(
     });
   });
   return mock;
+}
+
+/**
+ * Counts a peer's snapshot polls in the page: started when the fetch is made,
+ * settled in a task queued once the answer has been handled -- a failure on
+ * arrival, a success once its body is parsed -- by when the page has also
+ * scheduled the next poll, which it does in the same continuation. A
+ * MessageChannel, because page.clock replaces setTimeout.
+ */
+async function countPeerPolls(page: Page, peer: string) {
+  await page.addInitScript((name) => {
+    const polls = { started: 0, settled: 0 };
+    (window as unknown as { __peerPolls: typeof polls }).__peerPolls = polls;
+
+    const nextTask = (fn: () => void) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => fn();
+      channel.port2.postMessage(null);
+    };
+    const realFetch = window.fetch.bind(window);
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const call = realFetch(input, init);
+      if (!url.includes(`/api/fleet/${name}/snapshot`)) return call;
+      polls.started++;
+      const settle = () => nextTask(() => polls.settled++);
+      return call.then(
+        (response) => {
+          // A failed answer is handled without reading its body; a good one
+          // is handled once its body has been parsed.
+          if (!response.ok) {
+            settle();
+            return response;
+          }
+          const json = response.json.bind(response);
+          response.json = () => json().finally(settle);
+          return response;
+        },
+        (error: unknown) => {
+          settle();
+          throw error;
+        }
+      );
+    }) as typeof window.fetch;
+  }, peer);
+}
+
+function peerPolls(page: Page): Promise<{ started: number; settled: number }> {
+  return page.evaluate(
+    () => ({ ...(window as unknown as { __peerPolls: { started: number; settled: number } }).__peerPolls })
+  );
+}
+
+/** Waits until no peer poll is in flight. */
+async function pollsSettled(page: Page) {
+  await expect
+    .poll(async () => {
+      const { started, settled } = await peerPolls(page);
+      return started === settled;
+    }, { message: 'a peer poll never finished' })
+    .toBe(true);
 }
 
 const picker = (page: Page) => page.getByLabel('Date range');
@@ -174,10 +239,11 @@ test.describe('the date range control', () => {
     await picker(page).selectOption('1h');
 
     await expect.poll(() => mock.requests.length).toBeGreaterThan(0);
-    await page.waitForTimeout(500);
 
+    // Counted from the page, once every request has settled: a duplicate made
+    // as a response lands is made before that response settles.
     const counts = new Map<string, number>();
-    for (const r of mock.requests) {
+    for (const r of await settledRequests(page)) {
       const key = r.get('metric') ?? '';
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
@@ -250,8 +316,14 @@ test.describe('the date range control', () => {
   });
 
   test('returning to live is one click and no reload', async ({ page }) => {
+    // A stream the test holds open and feeds, so "live again" can be shown by
+    // a frame arriving after the return rather than assumed: the mocked feed
+    // serves one frame and closes, which leaves the page disconnected.
     await mockHistory(page);
+    await installFakeEventSource(page);
     await openPanel(page, 'CPU');
+    await expect.poll(() => connections(page)).toBeGreaterThan(0);
+    await send(page, 'full', { seq: 1, snapshot });
 
     const loadedOnce = await page.evaluate(() => performance.now());
 
@@ -266,8 +338,15 @@ test.describe('the date range control', () => {
     const still = await page.evaluate(() => performance.now());
     expect(still).toBeGreaterThan(loadedOnce);
 
-    // And the live stream is feeding the panels again.
-    await expect(page.locator('nav').getByText('Connected')).toBeVisible();
+    // And the live stream is feeding the panels again: a frame sent now is
+    // what the CPU panel draws, and the page calls itself connected.
+    const model = 'Frame sent after returning to live';
+    await send(page, 'full', {
+      seq: 2,
+      snapshot: { ...snapshot, cpus: snapshot.cpus.map((c) => ({ ...c, model_name: model })) },
+    });
+    await expect(page.getByRole('cell', { name: model }).first()).toBeVisible();
+    await expect(page.locator('nav').getByText('Connected', { exact: true })).toBeVisible();
     await expect(page.locator('canvas').first()).toBeVisible();
   });
 
@@ -290,8 +369,12 @@ test.describe('the date range control', () => {
     // held its own, every tab change would re-ask Prometheus for what it
     // already had.
     await openTab(page, 'CPU');
-    await page.waitForTimeout(400);
-    const cpuRequests = mock.requests.filter((r) => r.get('metric') === 'cpu').length;
+    await expect(banner(page)).toBeVisible();
+    // A remounted chart asks as it mounts, so a re-fetch is already in the log
+    // -- and settled with the rest -- by the time this reads it.
+    const cpuRequests = (await settledRequests(page)).filter(
+      (r) => r.get('metric') === 'cpu'
+    ).length;
     expect(cpuRequests, 'cpu was re-fetched on returning to its panel').toBe(1);
   });
 
@@ -443,6 +526,11 @@ test.describe('the date range control', () => {
     // unreachable" -- and the badge is driven by the very field that path did
     // not touch.
     let failing = false;
+    // The age is arithmetic on the page's clock, so the page runs on one the
+    // test controls, and each of the peer's polls is counted in the page as it
+    // starts and once the page has finished handling it.
+    await page.clock.install();
+    await countPeerPolls(page, 'alpha');
     const mock = await mockHistory(page);
 
     await serveFleet(page, () => ({
@@ -483,30 +571,49 @@ test.describe('the date range control', () => {
     await expect.poll(() => mock.requests.length).toBeGreaterThan(0);
     await expect(banner(page)).toContainText('still show live values');
 
+    // From here the clock moves only when the test moves it. With no poll in
+    // flight, exactly one is scheduled, one period ahead at most.
+    await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
+    await pollsSettled(page);
+    const period = Math.max(Number(await page.getByLabel('Polling interval').inputValue()), 1000);
+
+    // One poll of the peer: the next is due within a period, and the one
+    // after it is scheduled only once this one has been handled, so each call
+    // runs exactly one -- handled at a paused clock one period after the last.
+    const pollOnce = async () => {
+      const before = await peerPolls(page);
+      await page.clock.runFor(period);
+      await expect
+        .poll(() => peerPolls(page), { message: 'the peer was not polled' })
+        .toEqual({ started: before.started + 1, settled: before.started + 1 });
+    };
+
     // The aggregator starts failing. Nothing about the peer changes in any
     // envelope, because no envelope arrives at all.
     failing = true;
-    await expect(page.getByText(/stale/).first()).toBeVisible();
+    await pollOnce();
+    const badge = page.getByText(/stale/).first();
+    await expect(badge).toBeVisible();
     await expect(banner(page)).toContainText('last snapshot received');
-
 
     // The age must MEASURE, not accumulate. Consecutive failures each add the
     // whole elapsed time to an age that already contained it, so failures at
-    // +1s, +2s and +3s reported 1s, 3s and 6s. Read twice across several poll
-    // cycles: the second reading must be close to the elapsed time, not a
-    // multiple of it.
-    const badge = page.getByText(/stale/).first();
-    const first = await badge.innerText();
-    await page.waitForTimeout(3000);
-    const second = await badge.innerText();
-    const secs = (t: string) => Number(/(\d+)s/.exec(t)?.[1] ?? NaN);
-    if (!Number.isNaN(secs(first)) && !Number.isNaN(secs(second))) {
-      expect(
-        secs(second) - secs(first),
-        `age went ${first} -> ${second} over ~3s; an age that grows faster than ` +
-          'the clock is accumulating rather than measuring'
-      ).toBeLessThanOrEqual(6);
-    }
+    // +1s, +2s and +3s reported 1s, 3s and 6s. Three more failed polls, each
+    // exactly one period later on the page's clock, must age the reading by
+    // exactly three periods -- not by a multiple of them.
+    const secs = (t: string) => {
+      const match = /(\d+)s old/.exec(t);
+      expect(match, `the badge "${t}" does not give an age in seconds`).not.toBeNull();
+      return Number(match![1]);
+    };
+    const first = secs(await badge.innerText());
+    for (let i = 0; i < 3; i++) await pollOnce();
+    const second = secs(await badge.innerText());
+    expect(
+      second - first,
+      `age went ${first}s -> ${second}s over three polls ${period}ms apart; an age that ` +
+        'grows faster than the clock is accumulating rather than measuring'
+    ).toBe((3 * period) / 1000);
   });
 
   test('drilling into a peer draws that peer\'s past', async ({ page }) => {
@@ -584,7 +691,7 @@ test.describe('the date range control', () => {
     const start = Number(applied.get('start'));
     const end = Number(applied.get('end'));
 
-    mock.requests.length = 0;
+    const before = (await settledRequests(page)).length;
     await picker(page).selectOption('custom');
 
     // Still historical, still the same window: nothing moved, and nothing was
@@ -604,8 +711,10 @@ test.describe('the date range control', () => {
     await expect(page.getByLabel('Range start')).toHaveValue(toLocal(start));
     await expect(page.getByLabel('Range end')).toHaveValue(toLocal(end));
 
-    await page.waitForTimeout(300);
-    expect(mock.requests.length, 'switching to Custom re-fetched an unchanged window').toBe(0);
+    expect(
+      (await settledRequests(page)).length,
+      'switching to Custom re-fetched an unchanged window'
+    ).toBe(before);
   });
 
   test('invalidating an applied custom range takes it off the screen', async ({ page }) => {
@@ -626,6 +735,7 @@ test.describe('the date range control', () => {
     await picker(page).selectOption('custom');
     await expect(banner(page)).toBeVisible();
     mock.requests.length = 0;
+    const before = (await settledRequests(page)).length;
 
     // The edit that invalidates the pair. A datetime-local input reports an
     // incomplete value as an empty one, so this is what clearing a field or
@@ -639,9 +749,13 @@ test.describe('the date range control', () => {
     await expect(banner(page)).toHaveCount(0);
     await expect(page.getByText(/Enter a start and an end/)).toBeVisible();
 
-    // And nothing was fetched for a window that was never asked for.
-    await page.waitForTimeout(300);
-    expect(mock.requests.length, 'an invalid pair requested history anyway').toBe(0);
+    // And nothing was fetched for a window that was never asked for. The edit
+    // that cleared the banner is the one that would have asked, so its
+    // request would already be in the log.
+    expect(
+      (await settledRequests(page)).length,
+      'an invalid pair requested history anyway'
+    ).toBe(before);
 
     // Completing the pair applies it, so this is not a way of getting stuck
     // out of historical mode.
@@ -669,6 +783,7 @@ test.describe('the date range control', () => {
     await picker(page).selectOption('custom');
 
     await expect(banner(page)).toHaveCount(0);
+    expect(await settledRequests(page)).toHaveLength(0);
     expect(mock.requests.length).toBe(0);
     // The inputs are open and usable, just not applied.
     await expect(page.getByLabel('Range start')).not.toHaveValue('');
@@ -726,9 +841,8 @@ test.describe('the date range control', () => {
     await picker(page).selectOption('1h');
 
     await expect(page.getByText('This chart has no recorded history.').first()).toBeVisible();
-    await page.waitForTimeout(400);
     expect(
-      mock.requests.some((r) => r.get('metric') === 'cpu'),
+      (await settledRequests(page)).some((r) => r.get('metric') === 'cpu'),
       'a metric absent from the catalog was requested anyway'
     ).toBe(false);
   });
@@ -1008,7 +1122,12 @@ test.describe('the date range control', () => {
     await expect(page.locator('canvas').first()).toBeVisible();
 
     releaseStale!();
-    await page.waitForTimeout(800);
+    // Every request settled, the hour's included: its answer has been
+    // delivered and handled -- or it was aborted and never will be.
+    const settled = await settledRequests(page);
+    expect(settled.some((r) => Number(r.get('end')) - Number(r.get('start')) === 3600_000)).toBe(
+      true
+    );
 
     // The hour's empty answer must have been dropped on arrival.
     await expect(page.getByText('No data recorded for this range.')).toHaveCount(0);
@@ -1019,12 +1138,15 @@ test.describe('the date range control', () => {
     // The banner changes the instant a range is picked; the data takes a round
     // trip. If the old lines kept rendering meanwhile they would be numbers
     // that look measured under a label saying they are something else.
-    let holdSlow = true;
+    let releaseSlow: (() => void) | null = null;
+    const slowHeld = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
     await mockHistory(page, {
       handler: async (route, params) => {
         const window = Number(params.get('end')) - Number(params.get('start'));
         if (window !== 3600_000) {
-          while (holdSlow) await new Promise((r) => setTimeout(r, 25));
+          await slowHeld;
         }
         await route.fulfill({
           status: 200,
@@ -1049,7 +1171,7 @@ test.describe('the date range control', () => {
     // request finally lands.
     await expect(page.getByText('Loading…').first()).toBeVisible();
 
-    holdSlow = false;
+    releaseSlow!();
     await expect.poll(() => page.locator('canvas').count()).toBeGreaterThan(0);
   });
 });

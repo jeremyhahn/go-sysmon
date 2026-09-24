@@ -6,14 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
-
-// waitBound is a failure-only bound: a correct implementation returns long
-// before it, so it never paces a passing test.
-const waitBound = 10 * time.Second
 
 // gatedDaemon is a fake runtime whose /system/df handler holds each query open
 // until the test chooses its outcome. That lets a test observe waiters while a
@@ -72,26 +68,31 @@ func (d *gatedDaemon) startQuery(t *testing.T, c *RuntimeCollector) {
 	if err := c.Collect(); err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
-	select {
-	case <-d.entered:
-	case <-time.After(waitBound):
-		t.Fatal("/system/df was never queried")
-	}
+	await.Recv(t, "the /system/df query", d.entered)
 }
 
+// waitingFrame is WaitForDiskUsage's line in a goroutine dump.
+const waitingFrame = "collector.(*RuntimeCollector).WaitForDiskUsage("
+
 // startWaiters launches n concurrent WaitForDiskUsage calls and returns the
-// channel each result arrives on.
-func startWaiters(ctx context.Context, c *RuntimeCollector, n int) chan error {
+// channel each result arrives on, once every one of them is either blocked
+// inside the wait or has returned.
+func startWaiters(t *testing.T, ctx context.Context, c *RuntimeCollector, n int) chan error {
+	t.Helper()
 	results := make(chan error, n)
 	for range n {
 		go func() { results <- c.WaitForDiskUsage(ctx) }()
 	}
+	await.Until(t, "every waiter to block in the wait or return", func(context.Context) bool {
+		return await.Parked(waitingFrame)+len(results) >= n
+	})
 	return results
 }
 
-// assertStillWaiting fails when any waiter has returned. It cannot fail
-// spuriously: while the query is held open, a correct wait has nothing to
-// return.
+// assertStillWaiting fails when any waiter has returned. startWaiters has seen
+// each one either return or block inside the wait, so this is conclusive: a
+// wait that returned early is in results now. It cannot fail spuriously:
+// while the query is held open, a correct wait has nothing to return.
 func assertStillWaiting(t *testing.T, results chan error) {
 	t.Helper()
 	select {
@@ -105,14 +106,8 @@ func assertStillWaiting(t *testing.T, results chan error) {
 func collectResults(t *testing.T, results chan error, n int) []error {
 	t.Helper()
 	errs := make([]error, 0, n)
-	timeout := time.After(waitBound)
 	for range n {
-		select {
-		case err := <-results:
-			errs = append(errs, err)
-		case <-timeout:
-			t.Fatalf("only %d of %d waiters were released", len(errs), n)
-		}
+		errs = append(errs, await.Recv(t, "every waiter to be released", results))
 	}
 	return errs
 }
@@ -126,7 +121,7 @@ func TestWaitForDiskUsage_ReleasesAllWaitersWhenResultLands(t *testing.T) {
 	d.startQuery(t, c)
 
 	const waiters = 8
-	results := startWaiters(context.Background(), c, waiters)
+	results := startWaiters(t, context.Background(), c, waiters)
 	assertStillWaiting(t, results)
 
 	d.statuses <- http.StatusOK
@@ -150,9 +145,9 @@ func TestWaitForDiskUsage_FailedQueryReleasesWaitersWithError(t *testing.T) {
 	d.startQuery(t, c)
 
 	const waiters = 4
-	ctx, cancel := context.WithTimeout(context.Background(), waitBound)
+	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 	defer cancel()
-	results := startWaiters(ctx, c, waiters)
+	results := startWaiters(t, ctx, c, waiters)
 	assertStillWaiting(t, results)
 
 	d.statuses <- http.StatusInternalServerError
@@ -177,7 +172,7 @@ func TestWaitForDiskUsage_CancellationReturnsPromptly(t *testing.T) {
 	d.startQuery(t, c)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	results := startWaiters(ctx, c, 1)
+	results := startWaiters(t, ctx, c, 1)
 	assertStillWaiting(t, results)
 
 	cancel()
@@ -198,7 +193,7 @@ func TestWaitForDiskUsage_CancellationReturnsPromptly(t *testing.T) {
 func TestWaitForDiskUsage_NewQueryRearms(t *testing.T) {
 	d := serveGatedDaemon(t)
 	c := NewRuntimeCollector(quietLogger())
-	ctx, cancel := context.WithTimeout(context.Background(), waitBound)
+	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 	defer cancel()
 
 	d.startQuery(t, c)
@@ -211,7 +206,7 @@ func TestWaitForDiskUsage_NewQueryRearms(t *testing.T) {
 	c.dfLastStart.Store(0)
 	d.startQuery(t, c)
 
-	results := startWaiters(ctx, c, 1)
+	results := startWaiters(t, ctx, c, 1)
 	assertStillWaiting(t, results)
 
 	d.statuses <- http.StatusOK

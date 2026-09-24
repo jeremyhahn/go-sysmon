@@ -3,7 +3,8 @@ package collector
 import (
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
 // logPage assembles a SCSI log page around one parameter, so a decoder can be
@@ -257,9 +258,5 @@ func TestLogPageParameter_AZeroLengthParameterTerminates(t *testing.T) {
 			t.Error("logPageParameter() found a parameter that is not in the page")
 		}
 	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("logPageParameter() did not terminate on a page of zero-length parameters")
-	}
+	await.Recv(t, "logPageParameter() to terminate on a page of zero-length parameters", done)
 }

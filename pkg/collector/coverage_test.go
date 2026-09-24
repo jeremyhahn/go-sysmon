@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -287,13 +287,8 @@ func TestWaitForRuntimeDiskUsage_ReturnsWhenNoRuntime(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.WaitForRuntimeDiskUsage(context.Background()) }()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("WaitForRuntimeDiskUsage() = %v, want nil with no runtime", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Error("WaitForRuntimeDiskUsage hung with no runtime present")
+	if err := await.Recv(t, "WaitForRuntimeDiskUsage to return with no runtime present", done); err != nil {
+		t.Errorf("WaitForRuntimeDiskUsage() = %v, want nil with no runtime", err)
 	}
 }
 
@@ -306,7 +301,10 @@ func TestWaitForRuntimeDiskUsage_HonoursContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := s.WaitForRuntimeDiskUsage(ctx)
+	done := make(chan error, 1)
+	go func() { done <- s.WaitForRuntimeDiskUsage(ctx) }()
+
+	err := await.Recv(t, "WaitForRuntimeDiskUsage to return on a cancelled context", done)
 	var collErr *types.CollectorError
 	if !errors.As(err, &collErr) || !errors.Is(err, context.Canceled) {
 		t.Errorf("WaitForRuntimeDiskUsage() = %v, want a CollectorError wrapping context.Canceled", err)
@@ -591,7 +589,7 @@ func TestCollectDIMMs_UnreadableTableFallsBack(t *testing.T) {
 			t.Fatalf("collectDIMMs panicked with no SMBIOS table: %v", r)
 		}
 	}()
-	_ = c.collectDIMMs()
+	c.collectDIMMs()
 }
 
 // ---- runtime API error paths ----------------------------------------------

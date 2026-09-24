@@ -285,27 +285,26 @@ func TestCollectContainers_CPURateBetweenSamples(t *testing.T) {
 		"cpu.stat":     "usage_usec 0\n",
 	})
 
+	// The sample times are given rather than taken, so the interval is exactly
+	// 50ms and the rate exactly known: 25ms of CPU over it is 50%.
 	c := NewVirtCollector(slog.Default())
-	if err := c.Collect(); err != nil {
-		t.Fatalf("first Collect: %v", err)
+	t0 := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	first := c.collectContainers(t0)
+	if len(first) != 1 {
+		t.Fatalf("first sample found %d containers, want 1", len(first))
 	}
-	if got := c.Info().Containers[0].CPUPercent; got != 0 {
+	if got := first[0].CPUPercent; got != 0 {
 		t.Errorf("first sample CPUPercent = %f, want 0 with no baseline", got)
 	}
 
-	// Burn a known amount of CPU time between samples.
-	time.Sleep(50 * time.Millisecond)
 	writeSysfsFile(t, filepath.Join(dir, "cpu.stat"), "usage_usec 25000\n")
 
-	if err := c.Collect(); err != nil {
-		t.Fatalf("second Collect: %v", err)
+	second := c.collectContainers(t0.Add(50 * time.Millisecond))
+	if len(second) != 1 {
+		t.Fatalf("second sample found %d containers, want 1", len(second))
 	}
-	got := c.Info().Containers[0].CPUPercent
-	if got <= 0 {
-		t.Errorf("second sample CPUPercent = %f, want > 0 after usage increased", got)
-	}
-	if got > 100 {
-		t.Errorf("CPUPercent = %f, implausible for 25ms of CPU over ~50ms", got)
+	if got := second[0].CPUPercent; math.Abs(got-50) > 1e-9 {
+		t.Errorf("second sample CPUPercent = %f, want 50: 25ms of CPU over a 50ms interval", got)
 	}
 }
 

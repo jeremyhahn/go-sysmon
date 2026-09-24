@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
 // event is a single decoded server-sent event.
@@ -31,6 +33,8 @@ type sseClient struct {
 	body   io.ReadCloser
 	reader *bufio.Reader
 	cancel context.CancelFunc
+	// t reports a failure to close the stream.
+	t *testing.T
 }
 
 // dialEvents opens an event stream at url over the default transport.
@@ -72,7 +76,7 @@ func dialEventsVia(t *testing.T, rt http.RoundTripper, url string, acceptGzip bo
 		t.Fatalf("GET %s: %v", url, err)
 	}
 
-	c := &sseClient{resp: resp, body: resp.Body, cancel: cancel}
+	c := &sseClient{resp: resp, body: resp.Body, cancel: cancel, t: t}
 
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		gz, err := gzip.NewReader(resp.Body)
@@ -89,9 +93,12 @@ func dialEventsVia(t *testing.T, rt http.RoundTripper, url string, acceptGzip bo
 }
 
 // Close tears down the stream and the underlying request.
+// It is safe to call more than once.
 func (c *sseClient) Close() {
 	c.cancel()
-	c.resp.Body.Close() //nolint:errcheck
+	if err := c.resp.Body.Close(); err != nil {
+		c.t.Errorf("closing the event stream: %v", err)
+	}
 }
 
 // next reads the next complete event, blocking until one arrives or the read
@@ -144,8 +151,24 @@ func (c *sseClient) next() (event, error) {
 }
 
 // nextNamed reads events until one with the given name arrives, skipping
-// comments and other event types. It fails the test on timeout.
-func (c *sseClient) nextNamed(t *testing.T, name string, timeout time.Duration) event {
+// comments and other event types. It fails the test if the stream ends first
+// or no such event arrives within await.Timeout.
+func (c *sseClient) nextNamed(t *testing.T, name string) event {
+	t.Helper()
+	return c.awaitEvent(t, "a "+strconv.Quote(name)+" event", func(ev event) bool { return ev.Name == name })
+}
+
+// nextEvent reads the next event of any kind, comments included. It fails the
+// test if the stream ends or nothing arrives within await.Timeout.
+func (c *sseClient) nextEvent(t *testing.T) event {
+	t.Helper()
+	return c.awaitEvent(t, "the next event", func(event) bool { return true })
+}
+
+// awaitEvent reads events until match accepts one and returns it. The read
+// runs on its own goroutine because it blocks, so the wait can be bounded;
+// what names the awaited event in a failure.
+func (c *sseClient) awaitEvent(t *testing.T, what string, match func(event) bool) event {
 	t.Helper()
 
 	type result struct {
@@ -161,23 +184,18 @@ func (c *sseClient) nextNamed(t *testing.T, name string, timeout time.Duration) 
 				ch <- result{err: err}
 				return
 			}
-			if ev.Name == name {
+			if match(ev) {
 				ch <- result{ev: ev}
 				return
 			}
 		}
 	}()
 
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			t.Fatalf("waiting for %q event: %v", name, r.err)
-		}
-		return r.ev
-	case <-time.After(timeout):
-		t.Fatalf("timed out after %v waiting for a %q event", timeout, name)
-		return event{}
+	r := await.Recv(t, what, ch)
+	if r.err != nil {
+		t.Fatalf("waiting for %s: %v", what, r.err)
 	}
+	return r.ev
 }
 
 // decodeSnapshot unmarshals an event's data payload into v.

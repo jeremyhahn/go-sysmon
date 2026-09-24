@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -10,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
+	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -77,7 +80,9 @@ func TestHandleFleetSnapshot_StaleDataIsNotServedAsCurrent(t *testing.T) {
 		return got
 	}
 
-	waitUntil(t, func() bool {
+	// The poller gives no signal when it has polled a peer, so wait on what
+	// the handler serves, re-checked each pass.
+	await.Until(t, "the peer's first snapshot to be served", func(context.Context) bool {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/fleet/fs/snapshot", nil))
 		return rec.Code == http.StatusOK
@@ -93,7 +98,7 @@ func TestHandleFleetSnapshot_StaleDataIsNotServedAsCurrent(t *testing.T) {
 
 	// The peer goes away.
 	down.Store(true)
-	waitUntil(t, func() bool { return !get(t).Reachable })
+	await.Until(t, "the peer to be reported unreachable", func(context.Context) bool { return !get(t).Reachable })
 
 	stale := get(t)
 	if stale.Snapshot == nil {
@@ -107,15 +112,15 @@ func TestHandleFleetSnapshot_StaleDataIsNotServedAsCurrent(t *testing.T) {
 	}
 }
 
-// waitUntil polls cond so the test does not depend on the poller's scheduling.
-func waitUntil(t *testing.T, cond func() bool) {
+// awaitPublications returns once m has published n more snapshots. The
+// monitor stores a reading before it broadcasts it, so once a subscriber has
+// received one, Snapshot and Consecutive answer with it; the nth received is
+// at least the nth of its run, so for n >= 2 it has a previous reading too.
+func awaitPublications(t *testing.T, m *monitor.Monitor, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
+	for range n {
+		await.Recv(t, "a published snapshot", sub.Ch)
 	}
-	t.Fatal("condition not met within the timeout")
 }

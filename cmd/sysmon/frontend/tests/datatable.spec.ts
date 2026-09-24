@@ -152,8 +152,9 @@ test.describe('SMART attributes table', () => {
     await page.waitForSelector('.loading.loading-spinner', { state: 'detached', timeout: 15000 });
 
     await page.getByRole('button', { name: /SMART Attributes/ }).first().click();
-    await page.waitForTimeout(500);
 
+    // The table's own controls are waited for below; they render in the same
+    // update as its rows, so there is nothing further to wait out.
     await expect(page.getByPlaceholder(/Search attribute or ID/).first()).toBeVisible();
     await expect(page.getByRole('columnheader', { name: /^Worst/ }).first()).toBeVisible();
     // Page size for SMART is 10, so a drive with more attributes paginates.

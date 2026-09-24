@@ -70,7 +70,11 @@ func TestCheckRuntimeSocket_ReachableSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil {
+			t.Errorf("closing the socket listener: %v", err)
+		}
+	})
 
 	orig := doctorRuntimeSockets
 	doctorRuntimeSockets = []string{filepath.Join(t.TempDir(), "absent.sock"), sock}
@@ -642,7 +646,11 @@ func TestRunStartupChecks_SkipsGUIOnServerBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
+	t.Cleanup(func() {
+		if err := ln.Close(); err != nil {
+			t.Errorf("closing the socket listener: %v", err)
+		}
+	})
 	origSocks := doctorRuntimeSockets
 	doctorRuntimeSockets = []string{sock}
 	t.Cleanup(func() { doctorRuntimeSockets = origSocks })

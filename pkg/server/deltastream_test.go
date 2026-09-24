@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/delta"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
@@ -42,7 +43,7 @@ func streamingServer(t *testing.T) *httptest.Server {
 	if err := m.Start(); err != nil {
 		t.Fatalf("monitor.Start: %v", err)
 	}
-	t.Cleanup(func() { _ = m.Stop() })
+	stopMonitorAtCleanup(t, m)
 	waitForSnapshot(t, m)
 
 	srv := httptest.NewServer(server.New(m, "", nil))
@@ -71,7 +72,7 @@ func TestEvents_LegacyStreamIsUnchanged(t *testing.T) {
 	srv := streamingServer(t)
 	c := dialEvents(t, srv.URL+"/api/events", false)
 
-	ev := c.nextNamed(t, "snapshot", 3*time.Second)
+	ev := c.nextNamed(t, "snapshot")
 
 	var snap types.Snapshot
 	decodeSnapshot(t, ev, &snap)
@@ -97,7 +98,7 @@ func TestEvents_DeltaStreamReconstructsTheSnapshot(t *testing.T) {
 	srv := streamingServer(t)
 	c := dialEvents(t, srv.URL+"/api/events?deltas=1", false)
 
-	first := c.nextNamed(t, "full", 3*time.Second)
+	first := c.nextNamed(t, "full")
 	var full fullFrame
 	decodeSnapshot(t, first, &full)
 	if full.Seq == 0 {
@@ -110,15 +111,22 @@ func TestEvents_DeltaStreamReconstructsTheSnapshot(t *testing.T) {
 	}
 	last := full.Seq
 
-	// Apply everything that arrives for a while, then compare against a full
-	// snapshot the server produces independently.
+	// Apply the next five deltas, and whatever resyncs arrive among them,
+	// then check the state they build.
+	// Each frame arrives within the bound, so the loop needs one of its own: a
+	// stream that sent nothing but full frames would otherwise run forever.
+	const want = 5
+	bound := time.NewTimer(await.Timeout)
+	defer bound.Stop()
 	applied := 0
-	deadline := time.Now().Add(3 * time.Second)
-	for applied < 5 && time.Now().Before(deadline) {
-		ev, err := c.next()
-		if err != nil {
-			t.Fatalf("reading the stream: %v", err)
+	for applied < want {
+		select {
+		case <-bound.C:
+			t.Fatalf("%d of %d delta frames arrived within %v; the stream is sending whole snapshots",
+				applied, want, await.Timeout)
+		default:
 		}
+		ev := c.nextEvent(t)
 		switch ev.Name {
 		case "delta":
 			var frame deltaFrame
@@ -143,10 +151,6 @@ func TestEvents_DeltaStreamReconstructsTheSnapshot(t *testing.T) {
 			last = frame.Seq
 		}
 	}
-	if applied == 0 {
-		t.Fatal("no delta frames arrived; the stream is sending whole snapshots")
-	}
-
 	// The applied state has to be a well-formed snapshot, not merely a tree
 	// that survived the arithmetic.
 	raw, err := json.Marshal(state)
@@ -177,7 +181,7 @@ func TestEvents_DeltaStreamStartsEveryClientWithASnapshot(t *testing.T) {
 	srv := streamingServer(t)
 
 	first := dialEvents(t, srv.URL+"/api/events?deltas=1", false)
-	first.nextNamed(t, "delta", 3*time.Second) // the stream is well underway
+	first.nextNamed(t, "delta") // the stream is well underway
 
 	second := dialEvents(t, srv.URL+"/api/events?deltas=1", false)
 	ev, err := second.next()
@@ -212,8 +216,8 @@ func TestEvents_DeltaStreamCompresses(t *testing.T) {
 	}
 	// The client transparently inflates, so reading a frame back proves the
 	// stream is both compressed and readable.
-	c.nextNamed(t, "full", 3*time.Second)
-	c.nextNamed(t, "delta", 3*time.Second)
+	c.nextNamed(t, "full")
+	c.nextNamed(t, "delta")
 }
 
 // TestEvents_DeltaOptInSpellings. The parameter is the only way a client asks
@@ -223,10 +227,10 @@ func TestEvents_DeltaOptInSpellings(t *testing.T) {
 
 	for _, query := range []string{"?deltas=1", "?deltas=true", "?deltas=yes"} {
 		c := dialEvents(t, srv.URL+"/api/events"+query, false)
-		c.nextNamed(t, "full", 3*time.Second)
+		c.nextNamed(t, "full")
 	}
 	for _, query := range []string{"", "?deltas=0", "?deltas=", "?deltas=no", "?delta=1"} {
 		c := dialEvents(t, srv.URL+"/api/events"+query, false)
-		c.nextNamed(t, "snapshot", 3*time.Second)
+		c.nextNamed(t, "snapshot")
 	}
 }

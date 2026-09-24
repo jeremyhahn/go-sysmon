@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -110,19 +111,8 @@ func TestMonitorBinding_StartupShutdown(t *testing.T) {
 
 	b.startup(context.Background())
 
-	// A started monitor eventually serves a snapshot.
-	deadline := time.Now().Add(3 * time.Second)
-	started := false
-	for time.Now().Before(deadline) {
-		if _, snapErr := mon.Snapshot(); snapErr == nil {
-			started = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !started {
-		t.Fatal("startup() did not start the monitor")
-	}
+	// A started monitor serves a snapshot; a stopped one never would.
+	waitSnapshot(t, mon)
 
 	b.shutdown(context.Background())
 
@@ -213,25 +203,16 @@ func TestRunWithRefresh_LoopsUntilInterrupt(t *testing.T) {
 	}()
 
 	// Wait for at least two frames so the loop, not just the first pass, ran.
-	for i := 0; i < 2; i++ {
-		select {
-		case <-renders:
-		case <-time.After(10 * time.Second):
-			t.Fatal("refresh loop did not render repeatedly")
-		}
+	for range 2 {
+		await.Recv(t, "the refresh loop to render", renders)
 	}
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatalf("send SIGINT: %v", err)
 	}
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("runWithRefresh() = %v, want nil after an interrupt", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("refresh loop did not exit after SIGINT")
+	if err := await.Recv(t, "the refresh loop to exit after SIGINT", done); err != nil {
+		t.Errorf("runWithRefresh() = %v, want nil after an interrupt", err)
 	}
 }
 
@@ -280,30 +261,31 @@ func TestMonitorBinding_StreamToFrontendIsSingleFlight(t *testing.T) {
 
 	b := NewMonitorBinding(mon)
 	b.ctx = context.Background()
+	// A stream emits only after claiming the flag, so its first frame is the
+	// proof that it is running.
+	framed := make(chan struct{}, 1)
+	b.emit = func(context.Context, string, []byte) {
+		select {
+		case framed <- struct{}{}:
+		default:
+		}
+	}
 
 	go b.streamToFrontend(context.Background())
-
-	// Wait for the first goroutine to claim the flag.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && !b.running.Load() {
-		time.Sleep(5 * time.Millisecond)
-	}
+	await.Recv(t, "the first stream to emit a frame", framed)
 	if !b.running.Load() {
-		t.Fatal("streamToFrontend never marked itself running")
+		t.Fatal("a stream is emitting without having marked itself running")
 	}
 
-	// A second call must return immediately rather than double-subscribing.
+	// A second call must return rather than double-subscribing. Nothing
+	// would end a second stream -- its context is never cancelled and the
+	// monitor is stopped only below -- so returning at all is the guard.
 	returned := make(chan struct{})
 	go func() {
 		b.streamToFrontend(context.Background())
 		close(returned)
 	}()
-
-	select {
-	case <-returned:
-	case <-time.After(3 * time.Second):
-		t.Error("a second streamToFrontend did not return immediately")
-	}
+	await.Recv(t, "a second streamToFrontend to return", returned)
 
 	if err := mon.Stop(); err != nil {
 		t.Errorf("monitor.Stop: %v", err)

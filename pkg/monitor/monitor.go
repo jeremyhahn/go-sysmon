@@ -22,6 +22,34 @@ const (
 	subscriberBufSize = 4
 )
 
+// ticker paces the poll loop. Production uses a *time.Ticker; a test
+// substitutes one it advances by hand, so it can state exactly how many
+// collections have happened rather than estimate it from elapsed time, which
+// a loaded machine makes unreliable.
+type ticker interface {
+	// Chan delivers the ticks.
+	Chan() <-chan time.Time
+	// Reset changes the period, as time.Ticker.Reset does.
+	Reset(d time.Duration)
+	// Stop ends the ticks, as time.Ticker.Stop does.
+	Stop()
+}
+
+// clockTicker is the production ticker: a *time.Ticker.
+type clockTicker struct {
+	*time.Ticker
+}
+
+// Chan returns the ticker's channel.
+func (c clockTicker) Chan() <-chan time.Time {
+	return c.C
+}
+
+// newClockTicker starts a clockTicker with period d.
+func newClockTicker(d time.Duration) ticker {
+	return clockTicker{time.NewTicker(d)}
+}
+
 // Snapshotter is implemented by any type that can produce a system snapshot.
 type Snapshotter interface {
 	Snapshot() (*types.Snapshot, error)
@@ -131,6 +159,10 @@ type Monitor struct {
 	// snapshot matched with a previous one from a different tick.
 	latest atomic.Pointer[reading]
 
+	// newTicker starts the ticker that paces each run of the poll loop.
+	// Always newClockTicker outside tests.
+	newTicker func(time.Duration) ticker
+
 	// intervalCh delivers a new interval to the running poll loop.
 	// Buffered with capacity 1 so SetInterval never blocks the caller.
 	intervalCh chan time.Duration
@@ -200,6 +232,7 @@ func New(s Snapshotter, interval time.Duration) (*Monitor, error) {
 	}
 	m := &Monitor{
 		snapshotter: s,
+		newTicker:   newClockTicker,
 		intervalCh:  make(chan time.Duration, 1),
 	}
 	m.settled = sync.NewCond(&m.mu)
@@ -581,7 +614,7 @@ func (m *Monitor) publish(prev, snap *types.Snapshot) {
 func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 	defer close(stopped)
 
-	ticker := time.NewTicker(m.Interval())
+	ticker := m.newTicker(m.Interval())
 	defer ticker.Stop()
 
 	// prev is this run's previous reading, as a baseline. Held here rather
@@ -596,7 +629,7 @@ func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 			return
 		case d := <-m.intervalCh:
 			ticker.Reset(d)
-		case <-ticker.C:
+		case <-ticker.Chan():
 			snap, err := m.snapshotter.Snapshot()
 			if err != nil {
 				// A collection error is non-fatal; the loop continues on the next tick.

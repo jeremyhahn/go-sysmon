@@ -19,10 +19,7 @@ import (
 // different file in each.
 func TestEndpoints_NoListIsEverNull(t *testing.T) {
 	mon := startedMonitor(t, idleSnapshotter{}, 10*time.Millisecond)
-	waitUntil(t, func() bool {
-		snap, err := mon.Snapshot()
-		return err == nil && snap != nil
-	})
+	awaitPublications(t, mon, 1)
 	srv, err := NewWithConfig(Config{Monitor: mon, Addr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)

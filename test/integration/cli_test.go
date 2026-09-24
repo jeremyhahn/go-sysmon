@@ -8,7 +8,9 @@ package integration
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -20,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
 // binaryPath is the path to the sysmon binary built once in TestMain.
@@ -100,37 +104,54 @@ func mustParseJSON(t *testing.T, src string, dst any) {
 	}
 }
 
-// waitForPort polls addr (e.g. "localhost:18080") until a TCP connection
-// succeeds or the deadline is reached. It returns true when the port opens.
-func waitForPort(addr string, deadline time.Duration) bool {
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return true
+// closeOnCleanup closes c when the test ends, failing the test if the close
+// does. what names c in the failure.
+func closeOnCleanup(t *testing.T, what string, c io.Closer) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("closing %s: %v", what, err)
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
+	})
+}
+
+// waitForPort polls addr (e.g. "localhost:18080") until a TCP connection
+// succeeds, failing the test if it has not within await.Timeout. The listener
+// belongs to another process, so polling it is the only way to observe it.
+func waitForPort(t *testing.T, addr string) {
+	t.Helper()
+	var dialer net.Dialer
+	await.Until(t, "sysmon serve to accept connections on "+addr, func(ctx context.Context) bool {
+		conn, err := dialer.DialContext(ctx, "tcp", addr)
+		if err != nil {
+			return false
+		}
+		if err := conn.Close(); err != nil {
+			t.Errorf("closing the probe connection to %s: %v", addr, err)
+		}
+		return true
+	})
 }
 
 // waitForSnapshot polls GET /api/snapshot until the server responds with HTTP
-// 200, indicating the monitor has completed its first collection cycle. It
-// returns true once a 200 is received before the deadline.
-func waitForSnapshot(url string, deadline time.Duration) bool {
-	end := time.Now().Add(deadline)
-	for time.Now().Before(end) {
-		resp, err := http.Get(url) //nolint:noctx
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return true
-			}
+// 200, indicating the monitor has completed its first collection cycle, and
+// fails the test if it has not within await.Timeout.
+func waitForSnapshot(t *testing.T, url string) {
+	t.Helper()
+	await.Until(t, "GET "+url+" to answer 200", func(ctx context.Context) bool {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("building the request for %s: %v", url, err)
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return false
+		}
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("closing the %s response: %v", url, err)
+		}
+		return resp.StatusCode == http.StatusOK
+	})
 }
 
 // ── Overview ─────────────────────────────────────────────────────────────────
@@ -557,36 +578,48 @@ func startServer(t *testing.T) string {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("failed to start sysmon serve: %v", err)
 	}
+	found, drained := watchLogs(logs)
 	t.Cleanup(func() {
-		cmd.Process.Kill() //nolint:errcheck
-		cmd.Wait()         //nolint:errcheck
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Errorf("killing sysmon serve: %v", err)
+		}
+		// The log reader finishes before Wait, which closes the pipe: reading
+		// from it after that is the misuse os/exec documents. The process is
+		// dead, so its end of the pipe is closed and the reader meets EOF,
+		// which io.Copy reports as success -- any error here is a real one.
+		if err := await.Recv(t, "the sysmon serve log reader to finish", drained); err != nil {
+			t.Errorf("reading the sysmon serve logs: %v", err)
+		}
+		// Killed, it exits on the signal, which Wait reports as an ExitError;
+		// anything else is a failure to reap it.
+		var exited *exec.ExitError
+		if err := cmd.Wait(); err != nil && !errors.As(err, &exited) {
+			t.Errorf("reaping sysmon serve: %v", err)
+		}
 	})
 
-	addr, ok := boundAddr(logs, 10*time.Second)
-	if !ok {
-		t.Fatalf("sysmon serve did not report %q within 10s", serverListeningMsg)
+	addr := await.Recv(t, fmt.Sprintf("sysmon serve to report %q", serverListeningMsg), found)
+	if addr == "" {
+		t.Fatalf("sysmon serve's log ended without reporting %q", serverListeningMsg)
 	}
-	if !waitForPort(addr, 10*time.Second) {
-		t.Fatalf("sysmon serve did not open %s within 10s", addr)
-	}
+	waitForPort(t, addr)
 	// Wait for the monitor to complete its first collection cycle so that
 	// /api/snapshot returns 200 rather than 503.
-	if !waitForSnapshot("http://"+addr+"/api/snapshot", 15*time.Second) {
-		t.Fatalf("sysmon serve /api/snapshot not ready within 15s")
-	}
+	waitForSnapshot(t, "http://"+addr+"/api/snapshot")
 	return addr
 }
 
-// boundAddr reads the server's JSON log stream until it reports the address its
-// listener bound, and returns it. It reports false if the deadline passes
-// first. The stream is drained afterwards either way, so a server that logs
-// steadily is never blocked by a full pipe.
-func boundAddr(logs io.Reader, deadline time.Duration) (string, bool) {
-	found := make(chan string, 1)
+// watchLogs reads the server's JSON log stream in the background. found
+// delivers the address its listener bound, once reported, and is closed empty
+// if the stream ends without it. The stream is then
+// drained to its end, so a server that logs steadily is never blocked by a
+// full pipe, and drained delivers how reading it ended: nil at end of stream,
+// otherwise the error that stopped it.
+func watchLogs(logs io.Reader) (found <-chan string, drained <-chan error) {
+	addr := make(chan string, 1)
+	done := make(chan error, 1)
 
 	go func() {
-		defer io.Copy(io.Discard, logs) //nolint:errcheck
-
 		scanner := bufio.NewScanner(logs)
 		for scanner.Scan() {
 			var entry struct {
@@ -597,18 +630,19 @@ func boundAddr(logs io.Reader, deadline time.Duration) (string, bool) {
 				continue
 			}
 			if entry.Msg == serverListeningMsg && entry.Addr != "" {
-				found <- entry.Addr
+				addr <- entry.Addr
+				_, err := io.Copy(io.Discard, logs)
+				done <- err
 				return
 			}
 		}
+		// The stream ended without the address: closing found says so at
+		// once, rather than leaving the test to wait out its bound.
+		close(addr)
+		done <- scanner.Err()
 	}()
 
-	select {
-	case addr := <-found:
-		return addr, true
-	case <-time.After(deadline):
-		return "", false
-	}
+	return addr, done
 }
 
 func TestCLI_Serve_StartsAndStops(t *testing.T) {
@@ -618,7 +652,7 @@ func TestCLI_Serve_StartsAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
-	defer resp.Body.Close()
+	closeOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /api/snapshot: expected 200, got %d", resp.StatusCode)
@@ -636,7 +670,7 @@ func TestCLI_Serve_APIReturnsSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
-	defer resp.Body.Close()
+	closeOnCleanup(t, "the response body", resp.Body)
 
 	var snap struct {
 		Timestamp time.Time `json:"timestamp"`
@@ -671,7 +705,7 @@ func TestCLI_Serve_EventStream(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/event-stream", ct)
 	}
 
-	ev := stream.nextNamed(t, "snapshot", 10*time.Second)
+	ev := stream.nextNamed(t, "snapshot")
 
 	var snap struct {
 		Timestamp time.Time `json:"timestamp"`
@@ -703,7 +737,7 @@ func TestCLI_Serve_EventStream_Gzip(t *testing.T) {
 		t.Fatalf("Content-Encoding = %q, want gzip", stream.encoding)
 	}
 
-	ev := stream.nextNamed(t, "snapshot", 10*time.Second)
+	ev := stream.nextNamed(t, "snapshot")
 
 	var snap map[string]any
 	if err := json.Unmarshal([]byte(ev.data), &snap); err != nil {
@@ -813,14 +847,14 @@ func TestServer_SetInterval(t *testing.T) {
 
 	// A stream opened first must keep working across the rate change.
 	stream := dialEventStream(t, "http://"+addr+"/api/events", false)
-	stream.nextNamed(t, "snapshot", 10*time.Second)
+	stream.nextNamed(t, "snapshot")
 
 	resp, err := http.Post("http://"+addr+"/api/interval", "application/json",
 		strings.NewReader(`{"interval_ms":1000}`)) //nolint:noctx
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	closeOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /api/interval status = %d, want 200", resp.StatusCode)
@@ -837,7 +871,7 @@ func TestServer_SetInterval(t *testing.T) {
 	}
 
 	// The already-open stream must still deliver after the change.
-	ev := stream.nextNamed(t, "snapshot", 10*time.Second)
+	ev := stream.nextNamed(t, "snapshot")
 	var snap map[string]any
 	if err := json.Unmarshal([]byte(ev.data), &snap); err != nil {
 		t.Fatalf("parse snapshot after interval change: %v", err)
@@ -855,7 +889,7 @@ func TestServer_SetInterval_Disallowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	closeOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for a disallowed interval", resp.StatusCode)
@@ -863,7 +897,7 @@ func TestServer_SetInterval_Disallowed(t *testing.T) {
 
 	// The server must still be serving normally afterwards.
 	stream := dialEventStream(t, "http://"+addr+"/api/events", false)
-	stream.nextNamed(t, "snapshot", 10*time.Second)
+	stream.nextNamed(t, "snapshot")
 }
 
 func TestServer_GetInterval(t *testing.T) {
@@ -873,7 +907,7 @@ func TestServer_GetInterval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/interval: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	closeOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -899,7 +933,7 @@ func TestServer_WebSocketRouteRetired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /ws: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
+	closeOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		t.Error("GET /ws upgraded a connection; the WebSocket route should be gone")

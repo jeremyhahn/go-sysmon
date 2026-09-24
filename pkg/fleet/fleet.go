@@ -138,6 +138,13 @@ type Poller struct {
 	logger      *slog.Logger
 	client      *http.Client
 
+	// now is the Poller's clock: every time it records or compares -- when a
+	// peer was polled and its data fetched, how long a refresh took, how old
+	// a drill-in is -- is read from it, so all of them agree. Always
+	// time.Now outside tests, which substitute a clock they advance by hand
+	// to state an age or a duration exactly instead of waiting for one.
+	now func() time.Time
+
 	// observer is read on every poll and written at most once, at wiring
 	// time. An atomic pointer rather than a mutex: the poll goroutines only
 	// ever load it.
@@ -251,6 +258,7 @@ func New(cfgFn ConfigFunc, localFn LocalFunc, localNameFn func() string, logger 
 		localNameFn: localNameFn,
 		logger:      logger,
 		client:      pooled(outbound.NewClient(0)),
+		now:         time.Now,
 		peers:       make(map[string]*peerState),
 	}
 	p.history = newRecorder(p)
@@ -424,8 +432,8 @@ const maxDrainBytes = 64 << 10
 // refresh polls all peers concurrently. One slow peer must not delay the rest,
 // so each has its own timeout and they run in parallel.
 func (p *Poller) refresh(cfg config.Fleet) {
-	started := time.Now()
-	defer func() { p.lastRefreshNs.Store(int64(time.Since(started))) }()
+	started := p.now()
+	defer func() { p.lastRefreshNs.Store(int64(p.now().Sub(started))) }()
 
 	recording := p.historyCadence() > 0
 
@@ -541,7 +549,7 @@ func (p *Poller) pollFailedSince(peer config.Peer, t time.Time) bool {
 // "snapshot") rather than hidden -- it costs the aggregator what #76 set out
 // to remove, and an operator should be able to see which peers still do.
 func (p *Poller) poll(peer config.Peer, cfg config.Fleet, prev *peerState, recording bool) *peerState {
-	now := time.Now()
+	now := p.now()
 	st := &peerState{url: peer.URL, polledAt: now, fetchedAt: now}
 
 	var summary types.NodeSummary
@@ -577,7 +585,7 @@ func (p *Poller) poll(peer config.Peer, cfg config.Fleet, prev *peerState, recor
 	}
 	// Dated when the poll finished, not when it began: a failure that lands
 	// after a drill-in succeeded must end that drill-in's reuse.
-	st.polledAt = time.Now()
+	st.polledAt = p.now()
 	return st
 }
 
@@ -776,16 +784,16 @@ func (d *detailState) tryAcquire() bool {
 // release gives d's lock back.
 func (d *detailState) release() { <-d.lock }
 
-// answer is what d says now: its snapshot, marked stale when the latest
+// answer is what d says at now: its snapshot, marked stale when the latest
 // attempt failed, or that attempt's error when there is no snapshot at all.
-func (d *detailState) answer() (types.PeerSnapshot, error) {
+func (d *detailState) answer(now time.Time) (types.PeerSnapshot, error) {
 	if d.snap == nil {
 		return types.PeerSnapshot{}, d.err
 	}
 	env := types.PeerSnapshot{
 		Snapshot:   d.snap,
 		Reachable:  d.err == nil,
-		AgeSeconds: time.Since(d.fetchedAt).Seconds(),
+		AgeSeconds: now.Sub(d.fetchedAt).Seconds(),
 	}
 	if d.err != nil {
 		env.Error = d.err.Error()
@@ -852,9 +860,9 @@ func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Dura
 		return types.PeerSnapshot{}, &ErrUnknownPeer{Peer: name}
 	}
 	d.repoint(peer.URL)
-	if !d.triedAt.IsZero() && time.Since(d.triedAt) < p.detailReuse(cfg) &&
+	if !d.triedAt.IsZero() && p.now().Sub(d.triedAt) < p.detailReuse(cfg) &&
 		!p.pollFailedSince(peer, d.triedAt) {
-		return d.answer()
+		return d.answer(p.now())
 	}
 
 	var snap types.Snapshot
@@ -873,11 +881,11 @@ func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Dura
 	if now, _, ok := p.resolvePeer(name); !ok || now.URL != peer.URL {
 		return types.PeerSnapshot{}, &ErrPeerMoved{Peer: name}
 	}
-	d.err, d.triedAt = err, time.Now()
+	d.err, d.triedAt = err, p.now()
 	if d.err == nil {
 		d.snap, d.fetchedAt = &snap, d.triedAt
 	}
-	return d.answer()
+	return d.answer(p.now())
 }
 
 // View builds the fleet view: the page of nodes q selects, in name order, and
@@ -962,7 +970,7 @@ func (p *Poller) nodes() (nodes []types.FleetNode, ok bool) {
 	}
 	nodes = append(nodes, self)
 
-	now := time.Now()
+	now := p.now()
 	p.mu.RLock()
 	for _, peer := range cfg.Peers {
 		// The peer's URL stays here, in the poller that dials it. The view is

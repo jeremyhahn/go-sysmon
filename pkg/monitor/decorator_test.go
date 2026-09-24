@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -47,18 +48,15 @@ func (d *countingDecorator) Evaluate(snap *types.Snapshot) {
 // awaitPublished waits until the published snapshot satisfies ok.
 func awaitPublished(t *testing.T, m *monitor.Monitor, ok func(*types.Snapshot) bool) *types.Snapshot {
 	t.Helper()
-	deadline := time.After(3 * time.Second)
-	tick := time.NewTicker(time.Millisecond)
-	defer tick.Stop()
+	// Subscribed before the first look, so a publication landing between the
+	// look and the wait still wakes it: every publication is broadcast.
+	sub := m.Subscribe()
+	defer m.Unsubscribe(sub.ID)
 	for {
 		if snap, err := m.Snapshot(); err == nil && ok(snap) {
 			return snap
 		}
-		select {
-		case <-deadline:
-			t.Fatal("the published snapshot never reached the expected state")
-		case <-tick.C:
-		}
+		await.Recv(t, "a publication reaching the expected state", sub.Ch)
 	}
 }
 
@@ -138,15 +136,9 @@ func TestDecorator_InstalledLateDecoratesThePublishedSnapshot(t *testing.T) {
 		t.Errorf("alerts = %v, want the published snapshot evaluated too", snap.Alerts)
 	}
 	// Subscribers are told, so a stream does not keep the undecorated one.
-	deadline := time.After(3 * time.Second)
 	for {
-		select {
-		case got := <-sub.Ch:
-			if got.NodeName == "db-01" {
-				return
-			}
-		case <-deadline:
-			t.Fatal("no decorated snapshot was broadcast")
+		if got := await.Recv(t, "a decorated snapshot to be broadcast", sub.Ch); got.NodeName == "db-01" {
+			return
 		}
 	}
 }

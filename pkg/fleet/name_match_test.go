@@ -1,9 +1,11 @@
 package fleet_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -111,7 +113,7 @@ func TestView_AnUnreachableNodeHasNoNameAgreement(t *testing.T) {
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool {
+	await.Until(t, "the dead peer to be polled as unreachable", func(context.Context) bool {
 		return node(t, p.View(fleet.Query{}), "dead").Status == fleet.StatusUnreachable
 	})
 	close(done)
@@ -128,37 +130,30 @@ func TestView_AnUnreachableNodeHasNoNameAgreement(t *testing.T) {
 func TestView_AStalePeerLosesItsNameAgreement(t *testing.T) {
 	srv := peerServer(t, namedSnapshot("db-01", "db-01"))
 	cfg := config.Fleet{
-		Peers: []config.Peer{{Name: "db-01", URL: srv.URL}},
-		// The floor, so the poll after the peer goes away comes within the
-		// wait below.
-		PollIntervalMs: int(fleet.MinPollInterval.Milliseconds()), TimeoutMs: 500,
+		Peers:          []config.Peer{{Name: "db-01", URL: srv.URL}},
+		PollIntervalMs: 10000, TimeoutMs: 500,
 	}
 	local := namedSnapshot("local", "local")
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
-	// One Run throughout: the poller runs a single loop at a time.
-	done := make(chan struct{})
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		p.Run(done)
-	}()
-	defer func() {
-		close(done)
-		<-stopped
-	}()
-
-	waitFor(t, func() bool { return node(t, p.View(fleet.Query{}), "db-01").Reachable })
-	if got := node(t, p.View(fleet.Query{}), "db-01").NameMatch; got != types.NameSame {
-		t.Fatalf("NameMatch = %q, want %q before the peer goes away", got, types.NameSame)
+	// Cycles stepped by hand: one that reaches the peer, and one after it is
+	// gone.
+	fleet.Refresh(p)
+	if n := node(t, p.View(fleet.Query{}), "db-01"); !n.Reachable || n.NameMatch != types.NameSame {
+		t.Fatalf("reachable %v, NameMatch = %q; want the peer reached and %q before it goes away",
+			n.Reachable, n.NameMatch, types.NameSame)
 	}
 
 	srv.Close()
-	waitFor(t, func() bool { return !node(t, p.View(fleet.Query{}), "db-01").Reachable })
+	fleet.Refresh(p)
 
-	if got := node(t, p.View(fleet.Query{}), "db-01").NameMatch; got != types.NameUnknown {
-		t.Errorf("stale NameMatch = %q, want %q", got, types.NameUnknown)
+	n := node(t, p.View(fleet.Query{}), "db-01")
+	if n.Reachable {
+		t.Fatal("the peer is still reachable after its server closed, so this proves nothing")
+	}
+	if n.NameMatch != types.NameUnknown {
+		t.Errorf("stale NameMatch = %q, want %q", n.NameMatch, types.NameUnknown)
 	}
 }
 

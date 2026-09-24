@@ -40,10 +40,7 @@ func (p *pagingSnapshotter) Snapshot() (*types.Snapshot, error) {
 func pagingMonitor(t *testing.T, s monitor.Snapshotter) *monitor.Monitor {
 	t.Helper()
 	mon := startedMonitor(t, s, 5*time.Millisecond)
-	waitUntil(t, func() bool {
-		prev, _, err := mon.Consecutive()
-		return err == nil && prev != nil
-	})
+	awaitPublications(t, mon, 2)
 	return mon
 }
 

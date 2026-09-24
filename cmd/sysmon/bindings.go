@@ -35,6 +35,10 @@ type MonitorBinding struct {
 	// it: a restarted stream begins with a whole snapshot, which is the only
 	// way back for a frontend that lost its place.
 	streamCancel context.CancelFunc
+	// streamDone is closed when the stream streamCancel belongs to has exited
+	// and released running, so Resync can wait for it instead of guessing how
+	// long it takes. Guarded by mu, and set together with streamCancel.
+	streamDone chan struct{}
 
 	running atomic.Bool
 
@@ -180,12 +184,18 @@ func (b *MonitorBinding) streamToFrontend(parent context.Context) {
 	if !b.running.CompareAndSwap(false, true) {
 		return
 	}
-	defer b.running.Store(false)
 
 	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
 	b.mu.Lock()
-	b.streamCancel = cancel
+	b.streamCancel, b.streamDone = cancel, done
 	b.mu.Unlock()
+	// running is released before done is closed, so whoever waited on done
+	// finds the flag free and can start the next stream.
+	defer func() {
+		b.running.Store(false)
+		close(done)
+	}()
 	defer cancel()
 
 	stream := server.NewDeltaStream(b.monitor(), slog.Default())
@@ -208,15 +218,20 @@ func (b *MonitorBinding) streamToFrontend(parent context.Context) {
 // was computed from.
 func (b *MonitorBinding) Resync() {
 	b.mu.RLock()
-	cancel := b.streamCancel
+	cancel, done := b.streamCancel, b.streamDone
 	b.mu.RUnlock()
-	if cancel != nil {
-		cancel()
-	}
-	// Wait for the previous loop to release the flag before starting another,
-	// so a resync cannot leave the window with no stream at all.
-	for i := 0; i < 100 && b.running.Load(); i++ {
-		time.Sleep(time.Millisecond)
-	}
-	go b.streamToFrontend(b.emitContext())
+	ctx := b.emitContext()
+	// The new stream starts only once the previous one has exited: started
+	// while the old still held the flag, it would find it taken and return,
+	// leaving the window with no stream at all. The wait happens off the
+	// caller's goroutine, because the old stream may be inside an emit that
+	// cancellation cannot interrupt, and the frontend's call must not hang
+	// behind it.
+	go func() {
+		if cancel != nil {
+			cancel()
+			<-done
+		}
+		b.streamToFrontend(ctx)
+	}()
 }

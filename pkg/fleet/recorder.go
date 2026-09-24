@@ -44,6 +44,35 @@ type recorder struct {
 	// reload that changes it restarts them, so none is left waiting out a
 	// timer armed for the old interval.
 	cadence time.Duration
+	// newTimer starts the timer that paces a worker. Always newClockTimer
+	// outside tests, which fire one by hand to state exactly when a worker
+	// turns rather than wait out a real interval.
+	newTimer func(time.Duration) timer
+}
+
+// timer paces a history worker. Production uses a *time.Timer.
+type timer interface {
+	// Chan delivers the expiry.
+	Chan() <-chan time.Time
+	// Reset rearms the timer, as time.Timer.Reset does.
+	Reset(d time.Duration) bool
+	// Stop disarms the timer, as time.Timer.Stop does.
+	Stop() bool
+}
+
+// clockTimer is the production timer: a *time.Timer.
+type clockTimer struct {
+	*time.Timer
+}
+
+// Chan returns the timer's channel.
+func (c clockTimer) Chan() <-chan time.Time {
+	return c.C
+}
+
+// newClockTimer starts a clockTimer that expires after d.
+func newClockTimer(d time.Duration) timer {
+	return clockTimer{time.NewTimer(d)}
 }
 
 // historyWorker is one running worker: the URL it was started for and how to
@@ -55,9 +84,10 @@ type historyWorker struct {
 
 func newRecorder(p *Poller) *recorder {
 	return &recorder{
-		p:       p,
-		sem:     make(chan struct{}, maxHistoryFetches),
-		workers: make(map[string]*historyWorker),
+		p:        p,
+		sem:      make(chan struct{}, maxHistoryFetches),
+		workers:  make(map[string]*historyWorker),
+		newTimer: newClockTimer,
 	}
 }
 
@@ -104,19 +134,20 @@ func (r *recorder) stop() {
 // cancelled.
 func (r *recorder) run(ctx context.Context, peer config.Peer) {
 	defer r.wg.Done()
-	timer := time.NewTimer(0)
+	timer := r.newTimer(0)
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-timer.Chan():
 		}
 		// Timed from the start of the turn, not its end, so the time spent
 		// queued and fetching is not added to every interval: a 15 s sample
 		// interval with a 3 s fetch still samples every 15 s.
-		started := time.Now()
-		timer.Reset(max(r.tick(ctx, peer)-time.Since(started), 0))
+		started := r.p.now()
+		next := r.tick(ctx, peer)
+		timer.Reset(max(next-r.p.now().Sub(started), 0))
 	}
 }
 

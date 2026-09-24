@@ -222,6 +222,45 @@ check_eval() {
     pass "$name"
 }
 
+# WAIT_MIN_POLLS is the fewest times wait_until checks its condition before it
+# gives up, however little of the timeout is left. The timeout alone decided it
+# before, and on a starved host the whole budget could pass between two checks:
+# a session one poll from ready was reported as never starting (a CI flake of
+# desktop-runner.test.js). A verdict of "never" now always rests on this many
+# observations, and the extra wall time is at most this many polls.
+readonly WAIT_MIN_POLLS=3
+
+# wait_until runs a command once a second until it succeeds, and fails once the
+# timeout (in seconds) has passed AND the command has been tried at least
+# WAIT_MIN_POLLS times.
+wait_until() {
+    local timeout="$1"
+    shift
+    local deadline=$((SECONDS + timeout))
+    local polls=0
+
+    while true; do
+        if "$@"; then
+            return 0
+        fi
+        polls=$((polls + 1))
+        if (( SECONDS >= deadline && polls >= WAIT_MIN_POLLS )); then
+            return 1
+        fi
+        sleep 1
+    done
+}
+
+# eval_contains reports whether an expression's value contains the expected
+# text.
+# shellcheck disable=SC2317 # invoked through wait_until
+eval_contains() {
+    local js="$1" expected="$2"
+    local value
+
+    value="$(eval_value "$(cinnamon_eval "$js")")" && [[ "$value" == *"$expected"* ]]
+}
+
 # wait_for_eval polls an expression until it contains the expected text.
 #
 # It waits for a state Cinnamon is known to reach on its own, never for an
@@ -229,16 +268,8 @@ check_eval() {
 # out and fails.
 wait_for_eval() {
     local js="$1" expected="$2" timeout="$3"
-    local deadline=$((SECONDS + timeout))
-    local value
 
-    while (( SECONDS < deadline )); do
-        if value="$(eval_value "$(cinnamon_eval "$js")")" && [[ "$value" == *"$expected"* ]]; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
+    wait_until "$timeout" eval_contains "$js" "$expected"
 }
 
 # ---- the session gate ---------------------------------------------------------
@@ -317,11 +348,14 @@ echo "== starting sysmon server =="
 sysmon-server serve --addr "$SERVER_ADDR" --interval 500 &
 SERVER_PID=$!
 
-server_deadline=$((SECONDS + STARTUP_TIMEOUT))
-until curl -sf "http://${SERVER_ADDR}/api/snapshot" >/dev/null 2>&1; do
-    (( SECONDS < server_deadline )) || abort "the sysmon server never answered /api/snapshot"
-    sleep 1
-done
+# server_answers reports whether the sysmon server serves a snapshot.
+# shellcheck disable=SC2317 # invoked through wait_until
+server_answers() {
+    curl -sf "http://${SERVER_ADDR}/api/snapshot" >/dev/null 2>&1
+}
+
+wait_until "$STARTUP_TIMEOUT" server_answers ||
+    abort "the sysmon server never answered /api/snapshot"
 
 # A runtime directory has to exist and be private before anything GTK starts.
 mkdir -p "${XDG_RUNTIME_DIR:-/run/user/0}"
@@ -384,6 +418,7 @@ SYSTEM_BUS_PID="$(dbus-daemon --system --fork --print-pid 2>"${SCRATCH}/system-b
 UDISKSD_PID=$!
 
 # system_bus_has_owner reports whether a name is owned on the system bus.
+# shellcheck disable=SC2317 # invoked through wait_until
 system_bus_has_owner() {
     gdbus call --system \
         --dest org.freedesktop.DBus \
@@ -392,11 +427,8 @@ system_bus_has_owner() {
         "$1" 2>/dev/null | grep -q "^(true,)$"
 }
 
-udisks_deadline=$((SECONDS + STARTUP_TIMEOUT))
-until system_bus_has_owner org.freedesktop.UDisks2; do
-    (( SECONDS < udisks_deadline )) || abort "org.freedesktop.UDisks2 never appeared on the system bus"
-    sleep 1
-done
+wait_until "$STARTUP_TIMEOUT" system_bus_has_owner org.freedesktop.UDisks2 ||
+    abort "org.freedesktop.UDisks2 never appeared on the system bus"
 
 # XApp's exempt fallback line is only the right line if switcheroo-control is
 # really absent. If something owns its name, XApp takes a different path,

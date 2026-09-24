@@ -1,12 +1,14 @@
 package monitor_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/await"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 	"github.com/jeremyhahn/go-sysmon/pkg/types/typestest"
@@ -41,6 +43,43 @@ func newStub(hostname string) *stubSnapshotter {
 		snapshot: &types.Snapshot{
 			Host: types.HostInfo{Hostname: hostname},
 		},
+	}
+}
+
+// newMonitor returns a monitor over s polling every interval.
+func newMonitor(t *testing.T, s monitor.Snapshotter, interval time.Duration) *monitor.Monitor {
+	t.Helper()
+	m, err := monitor.New(s, interval)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	return m
+}
+
+// startMonitor starts m and stops it when the test ends. A test that stops
+// the monitor itself is fine: the cleanup accepts a monitor already stopped.
+func startMonitor(t *testing.T, m *monitor.Monitor) {
+	t.Helper()
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		var notRunning *types.MonitorNotRunningError
+		if err := m.Stop(); err != nil && !errors.As(err, &notRunning) {
+			t.Errorf("Stop: %v", err)
+		}
+	})
+}
+
+// stopMonitor stops m, failing the test if Stop fails or does not return. It
+// runs Stop on its own goroutine so a poll loop wedged in a broadcast fails
+// the test instead of hanging it.
+func stopMonitor(t *testing.T, m *monitor.Monitor) {
+	t.Helper()
+	result := make(chan error, 1)
+	go func() { result <- m.Stop() }()
+	if err := await.Recv(t, "Stop to return", result); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }
 
@@ -82,29 +121,23 @@ func TestNew_NegativeInterval(t *testing.T) {
 
 func TestStart_BecomesRunning(t *testing.T) {
 	stub := newStub("host")
-	m, _ := monitor.New(stub, 50*time.Millisecond)
+	m := newMonitor(t, stub, time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
 
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	// The loop taking a tick proves it is running; stopping it then lets the
+	// collection that tick started finish, so the count below is final.
+	ticker.tick(t)
+	stopMonitor(t, m)
 
-	// Wait for at least one poll to happen.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if stub.callCount() > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	if got := stub.callCount(); got != 1 {
+		t.Fatalf("snapshotter called %d times for one tick, want 1", got)
 	}
-	t.Fatal("snapshotter was never called after Start")
 }
 
 func TestStart_AlreadyRunning(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, 50*time.Millisecond)
-	_ = m.Start()
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	m := newMonitor(t, newStub("host"), time.Hour)
+	startMonitor(t, m)
 
 	err := m.Start()
 	if err == nil {
@@ -118,26 +151,31 @@ func TestStart_AlreadyRunning(t *testing.T) {
 
 func TestStop_WhenRunning(t *testing.T) {
 	stub := newStub("host")
-	m, _ := monitor.New(stub, 20*time.Millisecond)
-	_ = m.Start()
+	m := newMonitor(t, stub, time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
 
+	// The second tick is taken only once the first collection has finished,
+	// and the loop runs the collection the second tick starts before it can
+	// notice Stop: two collections, exactly.
+	ticker.tick(t)
+	ticker.tick(t)
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	// Record calls immediately after stop.
-	before := stub.callCount()
-	time.Sleep(60 * time.Millisecond)
-	after := stub.callCount()
-
-	if after > before+1 {
-		t.Errorf("poll loop still running after Stop: calls jumped from %d to %d", before, after)
+	// The loop stops its ticker only on its way out, so this proves it has
+	// exited -- nothing is left that could collect again.
+	if !ticker.isStopped() {
+		t.Fatal("Stop returned while the poll loop was still running")
+	}
+	if got := stub.callCount(); got != 2 {
+		t.Errorf("snapshotter called %d times, want the 2 the ticks started", got)
 	}
 }
 
 func TestStop_WhenNotRunning(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Second)
+	m := newMonitor(t, newStub("host"), time.Second)
 
 	err := m.Stop()
 	if err == nil {
@@ -154,8 +192,7 @@ func TestStop_WhenNotRunning(t *testing.T) {
 // TestSnapshot_NeverStarted covers the first of Snapshot's three answers:
 // nothing is collecting and nothing has been collected.
 func TestSnapshot_NeverStarted(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Hour) // long interval – won't tick in test
+	m := newMonitor(t, newStub("host"), time.Hour)
 
 	_, err := m.Snapshot()
 	if err == nil {
@@ -172,20 +209,14 @@ func TestSnapshot_NeverStarted(t *testing.T) {
 }
 
 // TestSnapshot_StartedAndAwaitingFirstCollection covers the second answer, and
-// is the case #33 exists for: the loop is running, the interval is long enough
-// that no tick has fired, and the honest report is "not yet", not "not
-// running". Deterministic without sleeping, because the loop collects on a
-// tick rather than on Start.
+// is the case #33 exists for: the loop is running, no tick has fired, and the
+// honest report is "not yet", not "not running". Deterministic, because the
+// loop collects on a tick rather than on Start and this test delivers none.
 func TestSnapshot_StartedAndAwaitingFirstCollection(t *testing.T) {
-	stub := newStub("host")
-	m, err := monitor.New(stub, time.Hour)
-	if err != nil {
-		t.Fatalf("monitor.New: %v", err)
-	}
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = m.Stop() })
+	m := newMonitor(t, newStub("host"), time.Hour)
+	// No tick is ever delivered, so no collection can have happened.
+	useManualTicker(m)
+	startMonitor(t, m)
 
 	snap, err := m.Snapshot()
 	if snap != nil {
@@ -204,24 +235,20 @@ func TestSnapshot_StartedAndAwaitingFirstCollection(t *testing.T) {
 }
 
 func TestSnapshot_AfterPoll(t *testing.T) {
-	stub := newStub("expected-host")
-	m, _ := monitor.New(stub, 20*time.Millisecond)
-	_ = m.Start()
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	m := newMonitor(t, newStub("expected-host"), time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
+	sub := m.Subscribe()
+	t.Cleanup(func() { m.Unsubscribe(sub.ID) })
 
-	var snap *types.Snapshot
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		s, err := m.Snapshot()
-		if err == nil {
-			snap = s
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	// The reading is stored before it is broadcast, so once a subscriber has
+	// it Snapshot must answer with it.
+	ticker.tick(t)
+	await.Recv(t, "the first snapshot", sub.Ch)
 
-	if snap == nil {
-		t.Fatal("snapshot never became available")
+	snap, err := m.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() after a collection: %v", err)
 	}
 	if snap.Host.Hostname != "expected-host" {
 		t.Errorf("hostname = %q, want %q", snap.Host.Hostname, "expected-host")
@@ -231,28 +258,20 @@ func TestSnapshot_AfterPoll(t *testing.T) {
 // ---- Subscribe / Unsubscribe --------------------------------------------
 
 func TestSubscribe_ReceivesSnapshots(t *testing.T) {
-	stub := newStub("streamed")
-	m, _ := monitor.New(stub, 20*time.Millisecond)
-	_ = m.Start()
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	// A real ticker: this is the path production runs.
+	m := newMonitor(t, newStub("streamed"), 20*time.Millisecond)
+	startMonitor(t, m)
 
 	sub := m.Subscribe()
 	defer m.Unsubscribe(sub.ID)
 
-	select {
-	case snap := <-sub.Ch:
-		if snap == nil {
-			t.Fatal("received nil snapshot")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("timed out waiting for snapshot")
+	if snap := await.Recv(t, "a snapshot", sub.Ch); snap == nil {
+		t.Fatal("received nil snapshot")
 	}
 }
 
 func TestSubscribe_UniqueIDs(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Hour)
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	m := newMonitor(t, newStub("host"), time.Hour)
 
 	a := m.Subscribe()
 	b := m.Subscribe()
@@ -265,23 +284,21 @@ func TestSubscribe_UniqueIDs(t *testing.T) {
 }
 
 func TestUnsubscribe_ClosesDone(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Hour)
+	m := newMonitor(t, newStub("host"), time.Hour)
 
 	sub := m.Subscribe()
 	m.Unsubscribe(sub.ID)
 
+	// Unsubscribe closes Done before it returns.
 	select {
 	case <-sub.Done:
-		// expected
-	case <-time.After(100 * time.Millisecond):
+	default:
 		t.Fatal("Done channel not closed after Unsubscribe")
 	}
 }
 
 func TestUnsubscribe_Idempotent(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Hour)
+	m := newMonitor(t, newStub("host"), time.Hour)
 
 	sub := m.Subscribe()
 	m.Unsubscribe(sub.ID)
@@ -291,9 +308,10 @@ func TestUnsubscribe_Idempotent(t *testing.T) {
 }
 
 func TestStop_ClosesSubscriberDone(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, 20*time.Millisecond)
-	_ = m.Start()
+	m := newMonitor(t, newStub("host"), 20*time.Millisecond)
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
 	sub := m.Subscribe()
 
@@ -301,10 +319,10 @@ func TestStop_ClosesSubscriberDone(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
+	// Stop closes its run's subscribers before it returns.
 	select {
 	case <-sub.Done:
-		// expected
-	case <-time.After(500 * time.Millisecond):
+	default:
 		t.Fatal("Done channel not closed after Stop")
 	}
 }
@@ -312,10 +330,8 @@ func TestStop_ClosesSubscriberDone(t *testing.T) {
 // ---- Multiple subscribers -----------------------------------------------
 
 func TestBroadcast_AllSubscribersReceive(t *testing.T) {
-	stub := newStub("broadcast")
-	m, _ := monitor.New(stub, 20*time.Millisecond)
-	_ = m.Start()
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	m := newMonitor(t, newStub("broadcast"), 20*time.Millisecond)
+	startMonitor(t, m)
 
 	const count = 5
 	subs := make([]*monitor.Subscriber, count)
@@ -325,13 +341,8 @@ func TestBroadcast_AllSubscribersReceive(t *testing.T) {
 	}
 
 	for i, sub := range subs {
-		select {
-		case snap := <-sub.Ch:
-			if snap == nil {
-				t.Errorf("subscriber %d received nil snapshot", i)
-			}
-		case <-time.After(500 * time.Millisecond):
-			t.Errorf("subscriber %d timed out", i)
+		if snap := await.Recv(t, "a snapshot for every subscriber", sub.Ch); snap == nil {
+			t.Errorf("subscriber %d received nil snapshot", i)
 		}
 	}
 }
@@ -340,30 +351,38 @@ func TestBroadcast_AllSubscribersReceive(t *testing.T) {
 
 func TestBroadcast_SlowSubscriberDoesNotBlock(t *testing.T) {
 	stub := newStub("slow")
-	// Fast interval to fill up the subscriber's buffer quickly.
-	m, _ := monitor.New(stub, 5*time.Millisecond)
-	_ = m.Start()
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	m := newMonitor(t, stub, time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
 
 	// Register a subscriber but never read from it.
-	_ = m.Subscribe()
+	sub := m.Subscribe()
+	t.Cleanup(func() { m.Unsubscribe(sub.ID) })
 
-	// The monitor should continue polling without deadlocking.
-	deadline := time.Now().Add(200 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	// Twice the buffer and then some: a broadcast that blocked on the full
+	// channel would stall the loop at the buffer size, and the next tick would
+	// never be taken. Each tick is taken only once the previous collection's
+	// broadcast has returned.
+	const collections = 2*monitor.SubscriberBufSize + 1
+	for range collections {
+		ticker.tick(t)
 	}
+	stopMonitor(t, m)
 
-	if stub.callCount() < 5 {
-		t.Errorf("expected monitor to keep polling with slow subscriber, got %d calls", stub.callCount())
+	if got := stub.callCount(); got != collections {
+		t.Errorf("snapshotter called %d times, want %d", got, collections)
+	}
+	// Dropped rather than queued: the buffer holds the most recent readings.
+	if got := len(sub.Ch); got != monitor.SubscriberBufSize {
+		t.Errorf("slow subscriber holds %d snapshots, want a full buffer of %d",
+			got, monitor.SubscriberBufSize)
 	}
 }
 
 // ---- SetInterval --------------------------------------------------------
 
 func TestSetInterval_Valid(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Second)
+	m := newMonitor(t, newStub("host"), time.Second)
 
 	if err := m.SetInterval(5 * time.Second); err != nil {
 		t.Fatalf("SetInterval: unexpected error: %v", err)
@@ -371,8 +390,7 @@ func TestSetInterval_Valid(t *testing.T) {
 }
 
 func TestSetInterval_InvalidZero(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Second)
+	m := newMonitor(t, newStub("host"), time.Second)
 
 	err := m.SetInterval(0)
 	if err == nil {
@@ -385,8 +403,7 @@ func TestSetInterval_InvalidZero(t *testing.T) {
 }
 
 func TestSetInterval_InvalidNegative(t *testing.T) {
-	stub := newStub("host")
-	m, _ := monitor.New(stub, time.Second)
+	m := newMonitor(t, newStub("host"), time.Second)
 
 	err := m.SetInterval(-time.Second)
 	if err == nil {
@@ -399,40 +416,58 @@ func TestSetInterval_InvalidNegative(t *testing.T) {
 }
 
 func TestSetInterval_WhileRunning(t *testing.T) {
-	stub := newStub("host")
-	// Start with a slow interval so the initial tick doesn't fire during setup.
-	m, _ := monitor.New(stub, time.Hour)
-	_ = m.Start()
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	// A real ticker, an hour long: nothing is collected unless the running
+	// loop applies the new interval. Were it ignored, the wait below would
+	// reach its failure bound, not an hour.
+	m := newMonitor(t, newStub("host"), time.Hour)
+	startMonitor(t, m)
+	sub := m.Subscribe()
+	t.Cleanup(func() { m.Unsubscribe(sub.ID) })
 
-	// Switch to a fast interval; the monitor should start polling.
 	if err := m.SetInterval(20 * time.Millisecond); err != nil {
 		t.Fatalf("SetInterval: %v", err)
 	}
 
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if stub.callCount() > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	await.Recv(t, "a collection at the new interval", sub.Ch)
+}
+
+// TestSetInterval_ResetsTheRunningTicker pins the mechanism behind the test
+// above exactly: the running loop resets its ticker to the new interval.
+func TestSetInterval_ResetsTheRunningTicker(t *testing.T) {
+	m := newMonitor(t, newStub("host"), time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
+
+	if err := m.SetInterval(20 * time.Millisecond); err != nil {
+		t.Fatalf("SetInterval: %v", err)
 	}
-	t.Fatal("monitor did not poll after SetInterval while running")
+	if got := await.Recv(t, "the ticker to be reset", ticker.resets); got != 20*time.Millisecond {
+		t.Errorf("ticker reset to %v, want 20ms", got)
+	}
 }
 
 // ---- Collection error tolerance -----------------------------------------
 
 func TestStart_CollectionErrorDoesNotStop(t *testing.T) {
 	stub := &stubSnapshotter{err: errors.New("disk unavailable")}
-	m, _ := monitor.New(stub, 20*time.Millisecond)
-	_ = m.Start()
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	m := newMonitor(t, stub, time.Hour)
+	ticker := useManualTicker(m)
+	startMonitor(t, m)
 
-	time.Sleep(100 * time.Millisecond)
+	// Every tick after the first is taken only if the loop survived the
+	// failed collection before it.
+	const collections = 3
+	for range collections {
+		ticker.tick(t)
+	}
+	if !m.Running() {
+		t.Error("Running() is false after failed collections")
+	}
+	stopMonitor(t, m)
 
-	// Monitor should still be running and calling the snapshotter.
-	if stub.callCount() < 2 {
-		t.Errorf("expected repeated calls on error, got %d", stub.callCount())
+	if got := stub.callCount(); got != collections {
+		t.Errorf("snapshotter called %d times, want %d: one per tick despite the errors",
+			got, collections)
 	}
 }
 
@@ -471,24 +506,15 @@ func TestRunning_FollowsTheLifecycle(t *testing.T) {
 // published it labelled a measurement from before the service stopped as
 // current, indefinitely.
 func TestRunning_IsFalseWhileSnapshotStillAnswers(t *testing.T) {
-	m, err := monitor.New(newStub("host"), 10*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	m := newMonitor(t, newStub("host"), time.Hour)
+	ticker := useManualTicker(m)
 	if err := m.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := m.Snapshot(); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the monitor never collected a snapshot")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// The second tick is taken only once the first collection is published.
+	ticker.tick(t)
+	ticker.tick(t)
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -502,13 +528,14 @@ func TestRunning_IsFalseWhileSnapshotStillAnswers(t *testing.T) {
 	}
 
 	// And a subscription taken now is never written to and never closed, which
-	// is the other half of the trap.
+	// is the other half of the trap. Stop has returned and no loop is running,
+	// so nothing is left that could close it: checking now is conclusive.
 	sub := m.Subscribe()
 	defer m.Unsubscribe(sub.ID)
 	select {
 	case <-sub.Done:
 		t.Error("a subscription taken after Stop was closed; Running() would then be unnecessary")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 }
 
@@ -550,41 +577,40 @@ func (b *blockingSnapshotter) Snapshot() (*types.Snapshot, error) {
 // called, which is exactly the window.
 func TestStop_IsAtomicAgainstAConcurrentStart(t *testing.T) {
 	blocking := newBlockingSnapshotter()
-	m, err := monitor.New(blocking, time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	m := newMonitor(t, blocking, time.Hour)
+	ticker := useManualTicker(m)
 	if err := m.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
 	// The poll loop is now inside a collection and cannot exit.
-	select {
-	case <-blocking.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the poll loop never collected")
-	}
+	ticker.tick(t)
+	await.Recv(t, "the poll loop to enter a collection", blocking.entered)
 
 	stopped := make(chan error, 1)
 	go func() { stopped <- m.Stop() }()
+	// Running turns false in the same step that marks the stop in progress,
+	// so from here Stop is committed and waiting on the held collection.
+	await.Until(t, "Stop to begin", func(context.Context) bool { return !m.Running() })
 
-	// Stop has taken the lock and is waiting for the loop. A Start now must
-	// not be able to slip in front of the sweep that is still to come.
+	// A Start now must not be able to slip in front of the sweep that is
+	// still to come: it has to wait for the stop to finish.
 	started := make(chan error, 1)
-	go func() {
-		// Give Stop time to reach its wait; it cannot proceed past it.
-		time.Sleep(50 * time.Millisecond)
-		started <- m.Start()
-	}()
-
+	go func() { started <- m.Start() }()
+	await.Until(t, "Start to return or to wait for the stop", func(context.Context) bool {
+		return len(started) > 0 || await.Parked("sync.(*Cond).Wait(", "monitor.(*Monitor).Start(") > 0
+	})
 	select {
 	case err := <-started:
 		t.Fatalf("Start returned (%v) while Stop was still closing subscribers; "+
 			"a subscription taken now would be swept by the outgoing stop", err)
+	default:
+	}
+	// The collection is still held, so Stop cannot have finished either.
+	select {
 	case <-stopped:
 		t.Fatal("Stop finished while the poll loop was still held inside a collection")
-	case <-time.After(200 * time.Millisecond):
-		// Both are blocked, which is the invariant.
+	default:
 	}
 
 	// And the rest of the API is NOT blocked behind it. The wait above is for
@@ -595,21 +621,16 @@ func TestStop_IsAtomicAgainstAConcurrentStart(t *testing.T) {
 	// answer it gives is also the true one: the monitor is not collecting.
 	answered := make(chan bool, 1)
 	go func() { answered <- m.Running() }()
-	select {
-	case running := <-answered:
-		if running {
-			t.Error("Running() reports true while a stop is in progress")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Running() blocked behind a stop that is waiting on a hung collector")
+	if running := await.Recv(t, "Running() to answer during a stop", answered); running {
+		t.Error("Running() reports true while a stop is in progress")
 	}
 
 	close(blocking.release)
 
-	if err := <-stopped; err != nil {
+	if err := await.Recv(t, "Stop to return", stopped); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := <-started; err != nil {
+	if err := await.Recv(t, "the waiting Start to return", started); err != nil {
 		t.Fatalf("Start after Stop completed: %v", err)
 	}
 	if !m.Running() {
@@ -617,17 +638,16 @@ func TestStop_IsAtomicAgainstAConcurrentStart(t *testing.T) {
 	}
 
 	// And the generation that is now running is intact: a subscription taken
-	// against it was not closed by the stop that preceded it.
+	// against it was not closed by the stop that preceded it. That stop has
+	// returned, so its sweep is over and checking now is conclusive.
 	sub := m.Subscribe()
 	defer m.Unsubscribe(sub.ID)
 	select {
 	case <-sub.Done:
 		t.Fatal("a subscription against the running monitor was closed by the previous stop")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
-	if err := m.Stop(); err != nil {
-		t.Fatalf("final Stop: %v", err)
-	}
+	stopMonitor(t, m)
 }
 
 // TestGeneration_AdvancesOnEveryStart. The number itself means nothing; what
@@ -680,10 +700,7 @@ func TestGeneration_DoesNotAdvanceOnARefusedStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = m.Stop() }()
+	startMonitor(t, m)
 
 	before := m.Generation()
 	var already *types.MonitorAlreadyRunningError
@@ -709,24 +726,15 @@ func TestGeneration_DoesNotAdvanceOnARefusedStart(t *testing.T) {
 // measurement as the first frame, stamped with the new generation and marked
 // current.
 func TestStart_DiscardsThePreviousRunsSnapshot(t *testing.T) {
-	m, err := monitor.New(newStub("host"), 20*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	m := newMonitor(t, newStub("host"), time.Hour)
+	ticker := useManualTicker(m)
 	if err := m.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := m.Snapshot(); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the monitor never collected a snapshot")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	// The second tick is taken only once the first collection is published.
+	ticker.tick(t)
+	ticker.tick(t)
 	if err := m.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -736,15 +744,9 @@ func TestStart_DiscardsThePreviousRunsSnapshot(t *testing.T) {
 		t.Fatalf("Snapshot() after Stop = %v; the final reading is meant to survive", err)
 	}
 
-	// Long enough that the restarted loop cannot have collected before the
-	// check below, so this is the clearing rather than a race won.
-	if err := m.SetInterval(10 * time.Second); err != nil {
-		t.Fatalf("SetInterval: %v", err)
-	}
-	if err := m.Start(); err != nil {
-		t.Fatalf("second Start: %v", err)
-	}
-	defer func() { _ = m.Stop() }()
+	// The restarted loop is given no tick, so it cannot have collected before
+	// the check below: this is the clearing rather than a race won.
+	startMonitor(t, m)
 
 	// NoSnapshotYet, not NotRunning: the loop is collecting, it simply has not
 	// finished. Calling that "not running" is what #33 was about.
@@ -766,24 +768,13 @@ func TestPublish_FillsNilListsBeforeAnyoneSeesTheSnapshot(t *testing.T) {
 	stub := &stubSnapshotter{snapshot: &types.Snapshot{
 		NPUs: []types.NPUInfo{{Name: "accel0"}}, // no engines, no clients
 	}}
-	m, err := monitor.New(stub, 20*time.Millisecond)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := m.Start(); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { m.Stop() }) //nolint:errcheck
+	m := newMonitor(t, stub, 20*time.Millisecond)
+	startMonitor(t, m)
 
 	sub := m.Subscribe()
 	defer m.Unsubscribe(sub.ID)
 
-	var received *types.Snapshot
-	select {
-	case received = <-sub.Ch:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for a snapshot")
-	}
+	received := await.Recv(t, "a snapshot", sub.Ch)
 	latest, err := m.Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
