@@ -42,4 +42,6 @@ export type ChartOption = ComposeOption<
 // The chart surface colours live in palette.ts and are re-exported here, so a
 // chart component has one import for everything it draws with.
 export { chartPalette } from "./palette";
+export { tooltipContent } from "./tooltip";
+export type { TooltipRow } from "./tooltip";
 export type { ChartPalette, ThemeName } from "./palette";

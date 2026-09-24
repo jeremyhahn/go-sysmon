@@ -20,8 +20,8 @@ import { readStored, writeStored } from "$lib/storage";
 /**
  * THEME_KEY is the localStorage key holding the chosen theme.
  *
- * index.html contains a pre-paint bootstrap that reads this same key by its
- * literal name. It has to: a module script runs after first paint, so applying
+ * public/theme-init.js, loaded from the <head> of index.html, is a pre-paint
+ * bootstrap that reads this same key by its literal name. It has to: a module script runs after first paint, so applying
  * the theme from here alone would render one frame of the wrong theme on every
  * load. The two must be changed together; tests/theme.spec.ts covers the
  * bootstrap by asserting the theme is already correct on the first frame.

@@ -181,6 +181,14 @@ type Config struct {
 	// node's behaviour.
 	History HistoryQuerier
 
+	// SecurityHeaders is optional. Every response carries the browser
+	// security headers DefaultSecurityHeaders returns; each header named here
+	// replaces the default of the same name, or is added when there is none,
+	// and a header named with no values is removed. An embedder that frames
+	// the dashboard in its own UI, for example, replaces the
+	// Content-Security-Policy with one whose frame-ancestors names its origin.
+	SecurityHeaders http.Header
+
 	// Version, GitCommit and BuildDate are the build metadata reported at
 	// GET /api/version. Empty values render as "dev"/"unknown" downstream.
 	Version   string
@@ -235,11 +243,12 @@ func New(mon *monitor.Monitor, addr string, assets fs.FS) *Server {
 }
 
 // NewWithConfig creates a Server from cfg. It returns a TLSConfigError when
-// cfg.TLS is present but cannot be resolved into a usable configuration, and a
-// DecoratorInstalledError when cfg.Monitor is already decorated by a server
-// describing it differently: one monitor's snapshots describe one node. A
-// second server with the same build, configuration and fleet shares the
-// first's decoration.
+// cfg.TLS is present but cannot be resolved into a usable configuration, a
+// SecurityHeaderError when cfg.SecurityHeaders names a header that cannot be
+// sent, and a DecoratorInstalledError when cfg.Monitor is already decorated by
+// a server describing it differently: one monitor's snapshots describe one
+// node. A second server with the same build, configuration and fleet shares
+// the first's decoration.
 func NewWithConfig(cfg Config) (*Server, error) {
 	var tlsConfig *tls.Config
 	if cfg.TLS != nil {
@@ -248,6 +257,9 @@ func NewWithConfig(cfg Config) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if err := validateSecurityHeaders(cfg.SecurityHeaders); err != nil {
+		return nil, err
 	}
 	s := newServer(cfg, tlsConfig)
 	if err := s.decorate(); err != nil {
@@ -275,31 +287,15 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	s.deltas = newDeltaHub(cfg.Monitor, slog.Default())
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/snapshot", s.handleSnapshot)
-	mux.HandleFunc("GET /api/snapshot/history", s.handleHistorySnapshot)
-	mux.HandleFunc("GET /api/summary", s.handleSummary)
-	mux.HandleFunc("GET /api/events", s.handleEvents)
-	mux.HandleFunc("GET /api/interval", s.handleGetInterval)
-	mux.HandleFunc("POST /api/interval", s.handleSetInterval)
-	mux.HandleFunc("GET /api/fleet", s.handleFleet)
-	mux.HandleFunc("GET /api/fleet/rollup", s.handleFleetRollup)
-	mux.HandleFunc("GET /api/fleet/{name}/snapshot", s.handleFleetSnapshot)
-	mux.HandleFunc("GET /api/fleet/{name}/config", s.handleFleetConfig)
-	mux.HandleFunc("GET /api/config", s.handleConfig)
-	mux.HandleFunc("GET /api/history", s.handleHistory)
-	mux.HandleFunc("GET /api/history/metrics", s.handleHistoryMetrics)
-	mux.HandleFunc("GET /api/version", s.handleVersion)
-	mux.HandleFunc("GET /metrics", s.handleMetrics)
-
-	if cfg.Assets != nil {
-		mux.Handle("GET /", assetHeaders(assetETags(cfg.Assets), http.FileServerFS(cfg.Assets)))
-	} else {
-		mux.HandleFunc("GET /", s.handleStatus)
+	for pattern, handler := range s.routes() {
+		mux.Handle(pattern, handler)
 	}
 
 	s.server = &http.Server{
-		Addr:      cfg.Addr,
-		Handler:   mux,
+		Addr: cfg.Addr,
+		// Every response passes through the security headers, whichever
+		// route -- or none -- answers it.
+		Handler:   securityHeaders(mergeSecurityHeaders(cfg.SecurityHeaders), mux),
 		TLSConfig: s.tlsConfig,
 
 		// ReadHeaderTimeout bounds how long a client may take to send its
@@ -335,6 +331,34 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	}
 
 	return s
+}
+
+// routes returns every route the server serves, keyed by its ServeMux
+// pattern. It is the single table newServer registers from, so a test that
+// walks it walks exactly what the server answers.
+func (s *Server) routes() map[string]http.Handler {
+	root := http.Handler(http.HandlerFunc(s.handleStatus))
+	if s.assets != nil {
+		root = assetHeaders(assetETags(s.assets), http.FileServerFS(s.assets))
+	}
+	return map[string]http.Handler{
+		"GET /api/snapshot":              http.HandlerFunc(s.handleSnapshot),
+		"GET /api/snapshot/history":      http.HandlerFunc(s.handleHistorySnapshot),
+		"GET /api/summary":               http.HandlerFunc(s.handleSummary),
+		"GET /api/events":                http.HandlerFunc(s.handleEvents),
+		"GET /api/interval":              http.HandlerFunc(s.handleGetInterval),
+		"POST /api/interval":             http.HandlerFunc(s.handleSetInterval),
+		"GET /api/fleet":                 http.HandlerFunc(s.handleFleet),
+		"GET /api/fleet/rollup":          http.HandlerFunc(s.handleFleetRollup),
+		"GET /api/fleet/{name}/snapshot": http.HandlerFunc(s.handleFleetSnapshot),
+		"GET /api/fleet/{name}/config":   http.HandlerFunc(s.handleFleetConfig),
+		"GET /api/config":                http.HandlerFunc(s.handleConfig),
+		"GET /api/history":               http.HandlerFunc(s.handleHistory),
+		"GET /api/history/metrics":       http.HandlerFunc(s.handleHistoryMetrics),
+		"GET /api/version":               http.HandlerFunc(s.handleVersion),
+		"GET /metrics":                   http.HandlerFunc(s.handleMetrics),
+		"GET /":                          root,
+	}
 }
 
 // ServeHTTP implements http.Handler, allowing the server's mux to be used

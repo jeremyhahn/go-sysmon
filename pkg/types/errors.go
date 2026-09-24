@@ -88,6 +88,19 @@ func (e *TLSConfigError) Unwrap() error {
 	return e.Cause
 }
 
+// SecurityHeaderError indicates that a security header supplied by an
+// embedding application cannot be sent: its name is not a valid HTTP field
+// name, a value carries a control character, or the same header is named twice
+// under different spellings, which would leave the value sent to chance.
+type SecurityHeaderError struct {
+	Name   string
+	Reason string
+}
+
+func (e *SecurityHeaderError) Error() string {
+	return "security header " + strconv.Quote(e.Name) + ": " + e.Reason
+}
+
 // InvalidIntervalError indicates an invalid polling interval.
 type InvalidIntervalError struct {
 	Message string

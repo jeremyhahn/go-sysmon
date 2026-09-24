@@ -294,9 +294,11 @@ One icon for two states says nothing about which is active.
 load.** A module script runs after first paint, so a user who chose dark gets a
 white frame every time.
 
-The theme is therefore set by a small inline script in `<head>`, before `<body>`
-is parsed. It necessarily duplicates the storage key and the resolution rule;
-that duplication is the price and the two must be changed together.
+The theme is therefore set by a small classic script in `<head>`,
+`public/theme-init.js`, before `<body>` is parsed. It is a file, not inline,
+because the server's Content-Security-Policy allows no inline script. It
+necessarily duplicates the storage key and the resolution rule; that
+duplication is the price and the two must be changed together.
 
 Its `try`/`catch` wraps **the storage read alone**. `localStorage` throws
 outright in a sandboxed frame or with cookies blocked, and a catch around the
@@ -391,7 +393,7 @@ wrong.
 |---|---|
 | light palette and dark `primary` overrides | `src/app.css` |
 | chart palette, both themes | `src/lib/palette.ts` |
-| theme state and bootstrap | `src/lib/theme.svelte.ts`, `index.html` |
+| theme state and bootstrap | `src/lib/theme.svelte.ts`, `public/theme-init.js` |
 | the control | `src/components/ThemeToggle.svelte` |
 | composition unit | `src/components/StatCard.svelte` |
 | contrast tests | `tests/contrast.spec.ts` |

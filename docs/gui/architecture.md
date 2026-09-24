@@ -170,6 +170,13 @@ it rather than spelling hex codes inline. Series colours are not in the palette:
 they encode meaning (green healthy, red saturated) and are legible on either
 surface.
 
+A tooltip formatter returns `tooltipContent(rows, title)` from the same module,
+an element, never an HTML string. ECharts assigns a string to `innerHTML`, so a
+`style="…"` swatch in it is refused by the server's Content-Security-Policy and
+a series name in it is parsed as markup. The element sets its swatch colour
+through `element.style` and every name as text. `tests/csp.spec.ts` fails if a
+string formatter with inline style comes back.
+
 ## Theming
 
 `src/lib/theme.svelte.ts` owns the choice; the control is the `Theme` select in
@@ -182,8 +189,10 @@ flips the dashboard with it.
 Two things about it are easy to break:
 
 - **It is applied before first paint.** The bootstrap that sets `data-theme`
-  is an inline script in the `<head>` of `index.html`, because a module script
-  runs after first paint and would flash the wrong theme on every load. That
+  is `public/theme-init.js`, a classic script loaded from the `<head>` of
+  `index.html`, because a module script runs after first paint and would flash
+  the wrong theme on every load. It is a file rather than inline because the
+  server's Content-Security-Policy allows no inline script. That
   script duplicates the storage key and the resolution rule from
   `theme.svelte.ts`; the two have to change together.
 - **Canvases inherit nothing from the stylesheet.** A theme switch repaints

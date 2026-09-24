@@ -186,6 +186,29 @@ func TestTLSConfigError_As(t *testing.T) {
 	}
 }
 
+// ---- SecurityHeaderError --------------------------------------------------
+
+func TestSecurityHeaderError_Error(t *testing.T) {
+	e := &types.SecurityHeaderError{Name: "X-Bad\r\n", Reason: "invalid header name"}
+	// The name is quoted so a control character in it is visible in a log
+	// line rather than splitting it.
+	want := `security header "X-Bad\r\n": invalid header name`
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestSecurityHeaderError_As(t *testing.T) {
+	var err error = &types.SecurityHeaderError{Name: "X-Foo", Reason: "named twice"}
+	var target *types.SecurityHeaderError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As failed for SecurityHeaderError")
+	}
+	if target.Name != "X-Foo" || target.Reason != "named twice" {
+		t.Errorf("target = %+v, want Name X-Foo and Reason %q", target, "named twice")
+	}
+}
+
 // ---- InvalidIntervalError -------------------------------------------------
 
 func TestInvalidIntervalError_Error(t *testing.T) {

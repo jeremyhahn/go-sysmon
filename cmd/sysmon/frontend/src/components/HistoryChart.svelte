@@ -11,6 +11,7 @@
   import {
     chartPalette,
     init,
+    tooltipContent,
     type ChartOption,
     type ChartPalette,
     type ECharts,
@@ -63,12 +64,14 @@
           }>;
           if (items.length === 0) return "";
           const when = new Date(items[0].value[0]).toLocaleString();
-          const lines = items.map(
-            (i) =>
-              `<span style="color:${i.color}">●</span> ${i.seriesName}: ` +
-              `<b>${formatValue(i.value[1], unit)}</b>`
+          return tooltipContent(
+            items.map((i) => ({
+              color: i.color,
+              name: i.seriesName,
+              value: formatValue(i.value[1], unit),
+            })),
+            when
           );
-          return [when, ...lines].join("<br/>");
         },
       },
       xAxis: {

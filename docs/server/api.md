@@ -453,6 +453,37 @@ That is not authentication. Anything that can route to the port and is not a
 browser can still read everything. See the note on access control in
 [server/architecture.md](architecture.md).
 
+## Security headers
+
+Every response carries the same browser security headers, whatever answers
+it: JSON, the event stream, `/metrics`, the dashboard's files, the status page,
+and the server's own 404 and 405 answers.
+
+| Header | Value |
+|--------|-------|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `no-referrer` |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Cross-Origin-Resource-Policy` | `same-origin` |
+| `Permissions-Policy` | every powerful feature denied, for example `camera=(), microphone=(), geolocation=()` |
+| `Strict-Transport-Security` | `max-age=63072000`, **only on a request that arrived over TLS** |
+
+`nosniff` means a browser takes each response as the type it declares and never
+guesses, so a JSON body can never be run as a script or rendered as a page. The
+policy allows no inline script or inline style, and `frame-ancestors 'none'`
+stops any other page from framing the dashboard.
+
+HSTS is sent when the connection is TLS, whether `--tls-cert`/`--tls-key`,
+a `GetConfigForClient` hook, or an embedding application terminated it. It is
+not sent over plain HTTP, because browsers ignore it there (RFC 6797 §8.1).
+Behind a reverse proxy that terminates TLS, the proxy has to send it: the
+request reaching go-sysmon is plain HTTP.
+
+A dashboard framed inside another application, or served under a different
+policy, changes these through `Config.SecurityHeaders`; see
+[server/architecture.md](architecture.md#security-headers).
+
 ## TLS
 
 The server speaks plain HTTP by default. Supply a certificate to serve HTTPS:

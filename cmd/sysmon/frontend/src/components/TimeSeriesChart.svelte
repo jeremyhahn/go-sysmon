@@ -3,6 +3,7 @@
   import {
     chartPalette,
     init,
+    tooltipContent,
     graphic,
     type ChartOption,
     type ChartPalette,
@@ -63,13 +64,16 @@
             value: number;
             color: string;
           }>;
-          return items
-            .map((p) => {
+          return tooltipContent(
+            items.map((p) => {
               const fmt = s.find((x) => x.label === p.seriesName)?.formatter;
-              const val = fmt ? fmt(p.value) : p.value.toFixed(1);
-              return `<span style="color:${p.color}">●</span> ${p.seriesName}: <b>${val}</b>`;
+              return {
+                color: p.color,
+                name: p.seriesName,
+                value: fmt ? fmt(p.value) : p.value.toFixed(1),
+              };
             })
-            .join("<br/>");
+          );
         },
       },
       xAxis: {

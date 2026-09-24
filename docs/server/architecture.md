@@ -257,6 +257,71 @@ reload would re-download the whole bundle. `assetETags` therefore hashes every
 embedded file once at construction and the middleware sets a strong `ETag`,
 which `http.ServeContent` reads back to answer `If-None-Match` with a 304.
 
+## Security headers
+
+`securityHeaders` in `pkg/server/headers.go` wraps the whole mux, so every
+response gets the browser security headers listed in
+[the API reference](api.md#security-headers). It sits outside the mux on
+purpose: a route added later, the mux's own 404 and 405 answers, the static
+files and the event stream all pass through it without having to remember
+anything. It sets headers before the handler runs, so a handler still sets its
+own `Content-Type` and `Cache-Control`, and it does not wrap the
+`ResponseWriter`, so the event stream keeps its flushing and per-event write
+deadlines.
+
+`Strict-Transport-Security` follows the request, not the configuration: it is
+sent when `r.TLS` is set. That covers both of the server's own TLS modes and an
+embedding application that terminates TLS and mounts the server as an
+`http.Handler`, and it is correct behind a TLS-terminating proxy, where the
+request really is plain HTTP and the proxy owns HSTS.
+
+### The policy and the dashboard
+
+The Content-Security-Policy allows no inline script or style, and the dashboard
+works under it with nothing hashed or exempted:
+
+- The pre-paint theme bootstrap is `public/theme-init.js`, loaded as a classic
+  script from `<head>`. Vite copies files in `public/` verbatim; a bundled
+  module would run after first paint, which is the flash it exists to prevent.
+- Chart tooltips are built as DOM nodes (`src/lib/tooltip.ts`) and returned to
+  ECharts as an element, not as an HTML string. `style-src` governs style
+  attributes parsed from markup, so a `<span style="color:…">` swatch would be
+  refused; a colour set through the CSSOM (`element.style.color`) is not
+  governed by it. Series names are set as text, never parsed as markup.
+- Svelte applies dynamic `style` bindings through `element.style.cssText`, and
+  ECharts sizes its canvas and tooltip the same way — both CSSOM writes.
+- `img-src` allows `data:` because daisyUI draws its select arrows and checkbox
+  marks as `data:` SVG images from the stylesheet. An image cannot run script.
+
+`tests/csp.spec.ts` opens every tab, hovers every chart, opens the date range,
+settings and alert surfaces, and fails on any `securitypolicyviolation` event
+or any Chromium console warning about the policy headers.
+
+### Changing them
+
+An embedder changes the set through `Config.SecurityHeaders`. Each header named
+there replaces the default of the same name (names are matched canonically) or
+is added; a header named with no values is removed. `DefaultSecurityHeaders`
+returns a fresh copy to start from.
+
+```go
+headers := server.DefaultSecurityHeaders()
+// Frame the dashboard inside the platform's own UI.
+headers.Set("Content-Security-Policy", strings.Replace(
+    headers.Get("Content-Security-Policy"),
+    "frame-ancestors 'none'", "frame-ancestors https://platform.example", 1))
+
+srv, err := server.NewWithConfig(server.Config{
+    Monitor:         mon,
+    Assets:          assets,
+    SecurityHeaders: headers,
+})
+```
+
+A name that is not a valid field name, a value with a control character, or one
+header named twice under two spellings fails construction with a
+`types.SecurityHeaderError` rather than being rewritten on the wire.
+
 ## Constructing one
 
 ```go
@@ -267,7 +332,8 @@ func New(mon *monitor.Monitor, addr string, assets fs.FS) *Server
 func NewWithConfig(cfg Config) (*Server, error)
 ```
 
-Pass `nil` for `assets` to run API-only. The server implements `http.Handler`,
+Pass `nil` for `assets` to run API-only. Both constructors install the
+[security headers](#security-headers). The server implements `http.Handler`,
 so it drops straight into `httptest.Server` — and an application embedding
 go-sysmon can mount it on its own router and terminate TLS itself, ignoring
 `Start` entirely.
@@ -283,3 +349,7 @@ hostnames, the full process list, disk serial numbers, network configuration.
 
 Bind it to an interface you trust, or put an authenticating proxy in front of
 it. Do not expose it to a network you do not control.
+
+The [security headers](#security-headers) protect a browser viewing the
+dashboard -- against framing, content sniffing and injected script. They do not
+restrict who can read the API.

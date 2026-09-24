@@ -203,3 +203,9 @@ The dashboard has no authentication, and
 It publishes hostnames, the full process list, disk serial numbers and network
 configuration. Bind it to a private interface (`--addr 10.0.0.5:8080`) or put
 an authenticating proxy in front of it.
+
+Every response carries a strict Content-Security-Policy, `nosniff` and the
+other browser security headers; see
+[the API reference](api.md#security-headers). A proxy that terminates TLS in
+front of the container should send `Strict-Transport-Security` itself, since
+the request go-sysmon receives from it is plain HTTP.
