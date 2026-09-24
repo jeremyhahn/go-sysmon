@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { openTab } from './fixtures/tabs';
 import { fleetNode, serveFleet } from './fixtures/fleet';
+import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 
 /**
  * The fleet view over a tree of aggregators (#190).
@@ -61,11 +62,32 @@ test('a subtree node says which aggregator it is reached through', async ({ page
   await expect(card(page, 'root').getByTestId('node-aggregates')).toHaveText('aggregates 6');
 });
 
+// The drill-in is answered here as the root answers it once it has routed the
+// request to mid-a: a1's reading in the usual envelope. It must be mocked. The
+// suite's server is a standalone node that knows no a1, and answers 404 --
+// which the dashboard rightly reads as "the node has left the fleet" and
+// returns to this node's view (fleet-paging.spec.ts). Left to the real server,
+// this test raced that 404 against its own assertion (#223). The routing
+// itself is the server's, tested in pkg/server over a tree of real servers.
 test('opening a subtree node asks the root, which routes it', async ({ page }) => {
   await open(page);
-  const asked = page.waitForRequest((r) => r.url().endsWith('/api/fleet/a1/snapshot'));
+  await page.route(/\/api\/fleet\/a1\/snapshot$/, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        snapshot: { ...snapshot, node_name: 'a1', host: { ...snapshot.host, hostname: 'a1.lan' } },
+        reachable: true,
+        age_seconds: 1,
+      }),
+    })
+  );
+  const answered = page.waitForResponse((r) => r.url().endsWith('/api/fleet/a1/snapshot'));
   await card(page, 'a1').click();
-  await asked;
+  await answered;
+  // Asserted after the answer has arrived, so the view is judged on what the
+  // root said rather than on the moment before it said it.
+  await expect(page.getByRole('heading', { name: 'a1.lan', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Return to fleet dashboard' })).toBeVisible();
 });
 
