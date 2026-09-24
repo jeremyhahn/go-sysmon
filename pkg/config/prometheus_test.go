@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // TestPrometheus_AbsentIsOff is the property everything else rests on: a config
@@ -29,7 +30,7 @@ func TestPrometheus_AbsentIsOff(t *testing.T) {
 		cfg.Prometheus.Timeout() != 10*time.Second {
 		t.Fatalf("Prometheus defaults = %+v", cfg.Prometheus)
 	}
-	if sources["prometheus.remote_write_url"] != config.SourceDefault {
+	if sources["prometheus.remote_write_url"] != types.ConfigSourceDefault {
 		t.Errorf("remote_write_url source = %q, want default", sources["prometheus.remote_write_url"])
 	}
 }
@@ -59,7 +60,7 @@ prometheus:
 	if cfg.Prometheus.ExternalLabels["site"] != "rack-3" {
 		t.Errorf("ExternalLabels = %v", cfg.Prometheus.ExternalLabels)
 	}
-	if sources["prometheus.remote_write_url"] != config.SourceFile {
+	if sources["prometheus.remote_write_url"] != types.ConfigSourceFile {
 		t.Errorf("remote_write_url source = %q, want the file", sources["prometheus.remote_write_url"])
 	}
 }
@@ -93,7 +94,7 @@ prometheus:
 		"prometheus.batch_size",
 		"prometheus.timeout_ms",
 	} {
-		if sources[key] != config.SourceDefault {
+		if sources[key] != types.ConfigSourceDefault {
 			t.Errorf("%s source = %q; a value the file asked for and did not get "+
 				"must not be attributed to the file", key, sources[key])
 		}
@@ -333,7 +334,7 @@ prometheus:
 	if !cfg.Prometheus.QueryEnabled() {
 		t.Error("a node-local store cannot be read back: QueryEnabled() is false")
 	}
-	if sources["prometheus.query_url"] != config.SourceFile {
+	if sources["prometheus.query_url"] != types.ConfigSourceFile {
 		t.Errorf("query_url source = %q, want the file", sources["prometheus.query_url"])
 	}
 }

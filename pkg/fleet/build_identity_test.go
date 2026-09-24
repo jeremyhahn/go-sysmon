@@ -83,18 +83,18 @@ func TestView_CarriesPeerBuildIdentity(t *testing.T) {
 		t.Errorf("Version = %q, want the release string %q still carried",
 			peer.Version, remote.Version)
 	}
-	if peer.BuildMatch != fleet.BuildDifferent {
+	if peer.BuildMatch != types.BuildDifferent {
 		t.Errorf("BuildMatch = %q, want %q for a peer on another commit",
-			peer.BuildMatch, fleet.BuildDifferent)
+			peer.BuildMatch, types.BuildDifferent)
 	}
 
 	self := node(t, view, "local")
 	if self.GitCommit != "a46f6cf" {
 		t.Errorf("self GitCommit = %q, want the aggregator's own commit", self.GitCommit)
 	}
-	if self.BuildMatch != fleet.BuildSame {
+	if self.BuildMatch != types.BuildSame {
 		t.Errorf("self BuildMatch = %q, want %q -- a node always matches itself",
-			self.BuildMatch, fleet.BuildSame)
+			self.BuildMatch, types.BuildSame)
 	}
 }
 
@@ -112,9 +112,9 @@ func TestView_MatchingCommitIsNotDivergent(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	peer := node(t, pollUntilReachable(t, p, "omega"), "omega")
-	if peer.BuildMatch != fleet.BuildSame {
+	if peer.BuildMatch != types.BuildSame {
 		t.Errorf("BuildMatch = %q, want %q for a peer on the aggregator's commit",
-			peer.BuildMatch, fleet.BuildSame)
+			peer.BuildMatch, types.BuildSame)
 	}
 }
 
@@ -135,11 +135,11 @@ func TestView_DivergenceIsNotAFault(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	peer := node(t, pollUntilReachable(t, p, "omega"), "omega")
-	if peer.BuildMatch != fleet.BuildDifferent {
+	if peer.BuildMatch != types.BuildDifferent {
 		t.Fatalf("BuildMatch = %q, want the divergence this test is about",
 			peer.BuildMatch)
 	}
-	if peer.Status != fleet.StatusHealthy {
+	if peer.Status != types.NodeStatusHealthy {
 		t.Errorf("status = %q, want healthy -- an old build is not a fault", peer.Status)
 	}
 	if peer.WarningCount != 0 || peer.CriticalCount != 0 {
@@ -172,9 +172,9 @@ func TestView_UnstatedBuildIsUnknownNotAgreement(t *testing.T) {
 
 	view := pollUntilReachable(t, p, "silent", "placeholder")
 	for _, name := range []string{"silent", "placeholder"} {
-		if got := node(t, view, name).BuildMatch; got != fleet.BuildUnknown {
+		if got := node(t, view, name).BuildMatch; got != types.BuildUnknown {
 			t.Errorf("%s BuildMatch = %q, want %q -- a node that did not state "+
-				"its build has not agreed with anything", name, got, fleet.BuildUnknown)
+				"its build has not agreed with anything", name, got, types.BuildUnknown)
 		}
 	}
 }
@@ -195,13 +195,13 @@ func TestView_AnUnstatedAggregatorKnowsNothing(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	view := pollUntilReachable(t, p, "omega")
-	if got := node(t, view, "omega").BuildMatch; got != fleet.BuildUnknown {
+	if got := node(t, view, "omega").BuildMatch; got != types.BuildUnknown {
 		t.Errorf("BuildMatch = %q, want %q when the aggregator cannot name its own build",
-			got, fleet.BuildUnknown)
+			got, types.BuildUnknown)
 	}
-	if got := node(t, view, "local").BuildMatch; got != fleet.BuildUnknown {
+	if got := node(t, view, "local").BuildMatch; got != types.BuildUnknown {
 		t.Errorf("self BuildMatch = %q, want %q -- it cannot name its own build either",
-			got, fleet.BuildUnknown)
+			got, types.BuildUnknown)
 	}
 }
 
@@ -221,20 +221,20 @@ func TestView_ASilentNodeHasNoBuildAgreement(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	// Before any poll has run at all.
-	if got := node(t, p.View(fleet.Query{}), "dead").BuildMatch; got != fleet.BuildUnknown {
-		t.Errorf("never-polled BuildMatch = %q, want %q", got, fleet.BuildUnknown)
+	if got := node(t, p.View(fleet.Query{}), "dead").BuildMatch; got != types.BuildUnknown {
+		t.Errorf("never-polled BuildMatch = %q, want %q", got, types.BuildUnknown)
 	}
 
 	done := make(chan struct{})
 	go p.Run(done)
 	await.Until(t, "the dead peer to be polled as unreachable", func(context.Context) bool {
-		return node(t, p.View(fleet.Query{}), "dead").Status == fleet.StatusUnreachable
+		return node(t, p.View(fleet.Query{}), "dead").Status == types.NodeStatusUnreachable
 	})
 	close(done)
 
 	dead := node(t, p.View(fleet.Query{}), "dead")
-	if dead.BuildMatch != fleet.BuildUnknown {
-		t.Errorf("unreachable BuildMatch = %q, want %q", dead.BuildMatch, fleet.BuildUnknown)
+	if dead.BuildMatch != types.BuildUnknown {
+		t.Errorf("unreachable BuildMatch = %q, want %q", dead.BuildMatch, types.BuildUnknown)
 	}
 	if dead.GitCommit != "" {
 		t.Errorf("GitCommit = %q, want empty for a node that never answered", dead.GitCommit)

@@ -115,7 +115,6 @@ frame is checked against, are **generated** from `pkg/types/types.go`:
 | `src/lib/types.generated.ts` | The interfaces. DO NOT EDIT. |
 | `src/lib/schema.generated.ts` | The runtime schema. DO NOT EDIT. |
 | `src/lib/types.ts` | A barrel over both, so `$lib/types` keeps working |
-| `src/lib/unions.ts` | The four string unions the Go side does not name |
 | `src/lib/schema.ts` | The walk over the schema, and how strict it is |
 
 `make generate` rewrites the generated pair; `make lint` generates into a

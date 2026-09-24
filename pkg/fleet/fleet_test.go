@@ -126,7 +126,7 @@ func TestView_SummarizesLocalAndPeer(t *testing.T) {
 	if peer.LoadPerCore != 0.5 {
 		t.Errorf("LoadPerCore = %v, want load 2 over 4 threads", peer.LoadPerCore)
 	}
-	if peer.Status != fleet.StatusHealthy {
+	if peer.Status != types.NodeStatusHealthy {
 		t.Errorf("status = %q, want healthy", peer.Status)
 	}
 }
@@ -146,7 +146,7 @@ func TestView_UnreachablePeerIsNotHealthy(t *testing.T) {
 	go p.Run(done)
 	await.Until(t, "the dead peer to be polled as unreachable", func(context.Context) bool {
 		for _, n := range p.View(fleet.Query{}).Nodes {
-			if n.Name == "dead" && n.Status == fleet.StatusUnreachable {
+			if n.Name == "dead" && n.Status == types.NodeStatusUnreachable {
 				return true
 			}
 		}
@@ -184,7 +184,7 @@ func TestView_AlertsDriveStatus(t *testing.T) {
 		if n.CriticalCount != 1 || n.WarningCount != 1 {
 			t.Errorf("counts = %d critical, %d warning; want 1 and 1", n.CriticalCount, n.WarningCount)
 		}
-		if n.Status != fleet.StatusCritical {
+		if n.Status != types.NodeStatusCritical {
 			t.Errorf("status = %q, want critical to win", n.Status)
 		}
 	}
@@ -340,7 +340,7 @@ func TestPeerConfig_FetchesFromThePeer(t *testing.T) {
 		view := types.ConfigView{
 			ConfigFile: "/etc/go-sysmon/sysmon.yaml",
 			Entries: []types.ConfigEntry{
-				{Section: "alerts", Key: "alerts.disk_full_pct", Value: "96", Source: "config file"},
+				{Section: "alerts", Key: "alerts.disk_full_pct", Value: "96", Source: types.ConfigSourceFile},
 			},
 		}
 		if err := json.NewEncoder(w).Encode(view); err != nil {

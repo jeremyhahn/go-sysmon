@@ -59,17 +59,17 @@ func TestRedactPeerView_WithholdsWhatAnOlderPeerSendsVerbatim(t *testing.T) {
 	old := types.ConfigView{
 		ConfigFile: "/etc/go-sysmon/sysmon.yaml",
 		Entries: []types.ConfigEntry{
-			{Section: "server", Key: "server.addr", Value: ":8081", Source: "config file"},
-			{Section: "server", Key: "server.tls_cert", Value: "/etc/go-sysmon/tls/node.pem", Source: "config file"},
-			{Section: "server", Key: "server.tls_key", Value: "", Source: "default"},
-			{Section: "alerts", Key: "alerts.cpu_pct", Value: "90", Source: "default"},
-			{Section: "fleet", Key: "fleet.tls.key_file", Value: "/etc/go-sysmon/tls/client-key.pem", Source: "config file"},
-			{Section: "fleet", Key: "fleet.tls.insecure_skip_verify", Value: "true", Source: "config file"},
-			{Section: "prometheus", Key: "prometheus.query_url", Value: "http://10.0.0.9:9090", Source: "config file"},
-			{Section: "prometheus", Key: "prometheus.remote_write_url", Value: config.ValueNotSet, Source: "default"},
-			{Section: "fleet", Key: "fleet.peers.db", Value: "http://10.0.0.2:8081", Source: "config file"},
-			{Section: "fleet", Key: "fleet.peers.http://10.0.0.3:8081", Value: "http://10.0.0.3:8081", Source: "config file"},
-			{Section: "fleet", Key: "fleet.peers.https://10.0.0.4:8443/", Value: "https://10.0.0.4:8443/", Source: "config file"},
+			{Section: "server", Key: "server.addr", Value: ":8081", Source: types.ConfigSourceFile},
+			{Section: "server", Key: "server.tls_cert", Value: "/etc/go-sysmon/tls/node.pem", Source: types.ConfigSourceFile},
+			{Section: "server", Key: "server.tls_key", Value: "", Source: types.ConfigSourceDefault},
+			{Section: "alerts", Key: "alerts.cpu_pct", Value: "90", Source: types.ConfigSourceDefault},
+			{Section: "fleet", Key: "fleet.tls.key_file", Value: "/etc/go-sysmon/tls/client-key.pem", Source: types.ConfigSourceFile},
+			{Section: "fleet", Key: "fleet.tls.insecure_skip_verify", Value: "true", Source: types.ConfigSourceFile},
+			{Section: "prometheus", Key: "prometheus.query_url", Value: "http://10.0.0.9:9090", Source: types.ConfigSourceFile},
+			{Section: "prometheus", Key: "prometheus.remote_write_url", Value: config.ValueNotSet, Source: types.ConfigSourceDefault},
+			{Section: "fleet", Key: "fleet.peers.db", Value: "http://10.0.0.2:8081", Source: types.ConfigSourceFile},
+			{Section: "fleet", Key: "fleet.peers.http://10.0.0.3:8081", Value: "http://10.0.0.3:8081", Source: types.ConfigSourceFile},
+			{Section: "fleet", Key: "fleet.peers.https://10.0.0.4:8443/", Value: "https://10.0.0.4:8443/", Source: types.ConfigSourceFile},
 		},
 	}
 

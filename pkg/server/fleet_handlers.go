@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -140,7 +139,7 @@ func withRunningInterval(view types.ConfigView, running time.Duration) types.Con
 		// provenance is the more informative answer.
 		if e.Value != ms {
 			view.Entries[i].Value = ms
-			view.Entries[i].Source = config.SourceRuntime
+			view.Entries[i].Source = types.ConfigSourceRuntime
 		}
 		break
 	}

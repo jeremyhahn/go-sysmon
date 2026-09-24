@@ -173,7 +173,7 @@ type builder struct {
 
 // add records a firing rule. Message is the sentence the dashboard shows, so it
 // is written for a reader, not a log parser.
-func (b *builder) add(rule, severity, category, resource, message string, value, threshold float64) {
+func (b *builder) add(rule string, severity types.Severity, category, resource, message string, value, threshold float64) {
 	id := rule
 	if resource != "" {
 		id = rule + ":" + resource
@@ -280,7 +280,7 @@ func (e *Evaluator) Evaluate(cfg config.Alerts, snap *types.Snapshot, now time.T
 }
 
 // severityRank orders critical before warning before info.
-func severityRank(s string) int {
+func severityRank(s types.Severity) int {
 	switch s {
 	case types.SeverityCritical:
 		return 0

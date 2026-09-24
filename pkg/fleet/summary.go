@@ -290,15 +290,15 @@ func swapBaseline(s *types.Snapshot) *types.Snapshot {
 
 // nodeStatus is a node's single health state. Unreachable wins over any alert:
 // an alert on a node we cannot currently see is last known, not current.
-func nodeStatus(reachable bool, s *types.NodeSummary) string {
+func nodeStatus(reachable bool, s *types.NodeSummary) types.NodeStatus {
 	switch {
 	case !reachable:
-		return StatusUnreachable
+		return types.NodeStatusUnreachable
 	case s.CriticalCount > 0:
-		return StatusCritical
+		return types.NodeStatusCritical
 	case s.WarningCount > 0:
-		return StatusWarning
+		return types.NodeStatusWarning
 	default:
-		return StatusHealthy
+		return types.NodeStatusHealthy
 	}
 }

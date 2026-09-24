@@ -390,16 +390,16 @@ func Write(m Sink, snap *types.Snapshot) {
 	sort.SliceStable(alerts, func(i, j int) bool { return alerts[i].ID < alerts[j].ID })
 	for _, a := range alerts {
 		m.Gauge("sysmon_alert", "1 for each firing alert rule.", 1,
-			"rule", a.Rule, "severity", a.Severity, "resource", a.Resource, "category", a.Category)
+			"rule", a.Rule, "severity", string(a.Severity), "resource", a.Resource, "category", a.Category)
 	}
 	m.Gauge("sysmon_alerts_firing", "Number of alerts currently firing, by severity.",
-		countSeverity(snap.Alerts, types.SeverityCritical), "severity", types.SeverityCritical)
+		countSeverity(snap.Alerts, types.SeverityCritical), "severity", string(types.SeverityCritical))
 	m.Gauge("sysmon_alerts_firing", "Number of alerts currently firing, by severity.",
-		countSeverity(snap.Alerts, types.SeverityWarning), "severity", types.SeverityWarning)
+		countSeverity(snap.Alerts, types.SeverityWarning), "severity", string(types.SeverityWarning))
 }
 
 // countSeverity counts alerts at one severity.
-func countSeverity(alerts []types.Alert, severity string) float64 {
+func countSeverity(alerts []types.Alert, severity types.Severity) float64 {
 	var n float64
 	for _, a := range alerts {
 		if a.Severity == severity {

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // The history catalog.
@@ -32,9 +33,8 @@ type Metric struct {
 	Matchers []string
 	// Label is the series title shown in the UI.
 	Label string
-	// Unit is how the values are formatted: "percent", "bytes_per_second",
-	// "celsius", "watts", "count".
-	Unit string
+	// Unit is how the values are formatted, which also picks the chart's axis.
+	Unit types.HistoryUnit
 	// SplitBy is the label that distinguishes one returned series from another
 	// -- device, interface, gpu. Empty when a node yields a single series.
 	SplitBy string
@@ -57,47 +57,47 @@ type Metric struct {
 // catalog is ordered so the UI's metric picker reads top-down in the order a
 // person looks at a machine: load first, then what it is doing to the hardware.
 var catalog = []Metric{
-	{Key: "cpu", Name: "sysmon_cpu_usage_percent", Label: "CPU", Unit: "percent"},
-	{Key: "load1", Name: "sysmon_load1", Label: "Load (1m)", Unit: "count"},
-	{Key: "memory", Name: "sysmon_memory_used_percent", Label: "Memory", Unit: "percent"},
-	{Key: "swap", Name: "sysmon_swap_used_percent", Label: "Swap", Unit: "percent"},
+	{Key: "cpu", Name: "sysmon_cpu_usage_percent", Label: "CPU", Unit: types.HistoryUnitPercent},
+	{Key: "load1", Name: "sysmon_load1", Label: "Load (1m)", Unit: types.HistoryUnitCount},
+	{Key: "memory", Name: "sysmon_memory_used_percent", Label: "Memory", Unit: types.HistoryUnitPercent},
+	{Key: "swap", Name: "sysmon_swap_used_percent", Label: "Swap", Unit: types.HistoryUnitPercent},
 	// Both halves of the pressure signal. "full" is the one worth alerting on,
 	// and "some" is the one the live dashboard already plots -- a range picker
 	// that could not draw the chart the operator was just looking at would be
 	// the obvious gap.
 	{
 		Key: "psi_cpu_some", Name: "sysmon_psi_some_avg10", Matchers: []string{`resource="cpu"`},
-		Label: "CPU pressure (some)", Unit: "percent",
+		Label: "CPU pressure (some)", Unit: types.HistoryUnitPercent,
 	},
 	{
 		Key: "psi_memory_some", Name: "sysmon_psi_some_avg10", Matchers: []string{`resource="memory"`},
-		Label: "Memory pressure (some)", Unit: "percent",
+		Label: "Memory pressure (some)", Unit: types.HistoryUnitPercent,
 	},
 	{
 		Key: "psi_io_some", Name: "sysmon_psi_some_avg10", Matchers: []string{`resource="io"`},
-		Label: "IO pressure (some)", Unit: "percent",
+		Label: "IO pressure (some)", Unit: types.HistoryUnitPercent,
 	},
 	{
 		Key: "psi_cpu", Name: "sysmon_psi_full_avg10", Matchers: []string{`resource="cpu"`},
-		Label: "CPU pressure (full)", Unit: "percent",
+		Label: "CPU pressure (full)", Unit: types.HistoryUnitPercent,
 	},
 	{
 		Key: "psi_memory", Name: "sysmon_psi_full_avg10", Matchers: []string{`resource="memory"`},
-		Label: "Memory pressure (full)", Unit: "percent",
+		Label: "Memory pressure (full)", Unit: types.HistoryUnitPercent,
 	},
 	{
 		Key: "psi_io", Name: "sysmon_psi_full_avg10", Matchers: []string{`resource="io"`},
-		Label: "IO pressure (full)", Unit: "percent",
+		Label: "IO pressure (full)", Unit: types.HistoryUnitPercent,
 	},
-	{Key: "disk_used", Name: "sysmon_disk_used_percent", Label: "Filesystem used", Unit: "percent", SplitBy: "device"},
-	{Key: "disk_util", Name: "sysmon_disk_util_percent", Label: "Disk busy", Unit: "percent", SplitBy: "device"},
-	{Key: "disk_read", Name: "sysmon_disk_read_bytes_rate", Label: "Disk read", Unit: "bytes_per_second", SplitBy: "device"},
-	{Key: "disk_write", Name: "sysmon_disk_write_bytes_rate", Label: "Disk write", Unit: "bytes_per_second", SplitBy: "device"},
-	{Key: "disk_temperature", Name: "sysmon_disk_temperature_celsius", Label: "Drive temperature", Unit: "celsius", SplitBy: "device"},
-	{Key: "net_rx", Name: "sysmon_network_receive_bytes_rate", Label: "Network in", Unit: "bytes_per_second", SplitBy: "interface"},
-	{Key: "net_tx", Name: "sysmon_network_transmit_bytes_rate", Label: "Network out", Unit: "bytes_per_second", SplitBy: "interface"},
-	{Key: "cpu_temperature", Name: "sysmon_cpu_temperature_celsius", Label: "CPU temperature", Unit: "celsius", SplitBy: "core"},
-	{Key: "power", Name: "sysmon_power_watts", Label: "Power draw", Unit: "watts", SplitBy: "source"},
+	{Key: "disk_used", Name: "sysmon_disk_used_percent", Label: "Filesystem used", Unit: types.HistoryUnitPercent, SplitBy: "device"},
+	{Key: "disk_util", Name: "sysmon_disk_util_percent", Label: "Disk busy", Unit: types.HistoryUnitPercent, SplitBy: "device"},
+	{Key: "disk_read", Name: "sysmon_disk_read_bytes_rate", Label: "Disk read", Unit: types.HistoryUnitBytesPerSecond, SplitBy: "device"},
+	{Key: "disk_write", Name: "sysmon_disk_write_bytes_rate", Label: "Disk write", Unit: types.HistoryUnitBytesPerSecond, SplitBy: "device"},
+	{Key: "disk_temperature", Name: "sysmon_disk_temperature_celsius", Label: "Drive temperature", Unit: types.HistoryUnitCelsius, SplitBy: "device"},
+	{Key: "net_rx", Name: "sysmon_network_receive_bytes_rate", Label: "Network in", Unit: types.HistoryUnitBytesPerSecond, SplitBy: "interface"},
+	{Key: "net_tx", Name: "sysmon_network_transmit_bytes_rate", Label: "Network out", Unit: types.HistoryUnitBytesPerSecond, SplitBy: "interface"},
+	{Key: "cpu_temperature", Name: "sysmon_cpu_temperature_celsius", Label: "CPU temperature", Unit: types.HistoryUnitCelsius, SplitBy: "core"},
+	{Key: "power", Name: "sysmon_power_watts", Label: "Power draw", Unit: types.HistoryUnitWatts, SplitBy: "source"},
 	// The same series, split the two ways the panels draw them. The regular
 	// expressions are literals from this file and never from a request, which
 	// is what makes them safe here -- see Expr.
@@ -107,18 +107,18 @@ var catalog = []Metric{
 		// one line per package here would mean something different from the
 		// same chart a moment earlier, on any host with more than one socket.
 		Key: "cpu_power", Name: "sysmon_power_watts", Matchers: []string{`source=~"cpu:.*"`},
-		Label: "CPU package power", Unit: "watts", Aggregate: "sum",
+		Label: "CPU package power", Unit: types.HistoryUnitWatts, Aggregate: "sum",
 	},
 	{
 		Key: "gpu_power", Name: "sysmon_power_watts", Matchers: []string{`source=~"gpu:.*"`},
-		Label: "GPU power", Unit: "watts", SplitBy: "source",
+		Label: "GPU power", Unit: types.HistoryUnitWatts, SplitBy: "source",
 	},
-	{Key: "gpu_util", Name: "sysmon_gpu_utilization_percent", Label: "GPU utilisation", Unit: "percent", SplitBy: "gpu"},
-	{Key: "gpu_memory", Name: "sysmon_gpu_memory_percent", Label: "GPU memory", Unit: "percent", SplitBy: "gpu"},
-	{Key: "gpu_temperature", Name: "sysmon_gpu_temperature_celsius", Label: "GPU temperature", Unit: "celsius", SplitBy: "gpu"},
+	{Key: "gpu_util", Name: "sysmon_gpu_utilization_percent", Label: "GPU utilisation", Unit: types.HistoryUnitPercent, SplitBy: "gpu"},
+	{Key: "gpu_memory", Name: "sysmon_gpu_memory_percent", Label: "GPU memory", Unit: types.HistoryUnitPercent, SplitBy: "gpu"},
+	{Key: "gpu_temperature", Name: "sysmon_gpu_temperature_celsius", Label: "GPU temperature", Unit: types.HistoryUnitCelsius, SplitBy: "gpu"},
 	{
 		Key: "npu_power", Name: "sysmon_power_watts", Matchers: []string{`source=~"npu:.*"`},
-		Label: "NPU power", Unit: "watts", SplitBy: "source",
+		Label: "NPU power", Unit: types.HistoryUnitWatts, SplitBy: "source",
 	},
 	// Two charts, because an accelerator has two different numbers that look
 	// like one. The label of each says which: "powered up" is runtime-PM
@@ -127,27 +127,27 @@ var catalog = []Metric{
 	// NPU the two disagree by ~100 points.
 	{
 		Key: "npu_residency", Name: "sysmon_npu_residency_percent",
-		Label: "NPU powered up", Unit: "percent", SplitBy: "npu",
+		Label: "NPU powered up", Unit: types.HistoryUnitPercent, SplitBy: "npu",
 	},
 	{
 		Key: "npu_util", Name: "sysmon_npu_utilization_percent",
-		Label: "NPU utilisation", Unit: "percent", SplitBy: "npu",
+		Label: "NPU utilisation", Unit: types.HistoryUnitPercent, SplitBy: "npu",
 	},
 	{
 		Key: "npu_temperature", Name: "sysmon_npu_temperature_celsius",
-		Label: "NPU temperature", Unit: "celsius", SplitBy: "npu",
+		Label: "NPU temperature", Unit: types.HistoryUnitCelsius, SplitBy: "npu",
 	},
 	{
 		Key: "npu_clients", Name: "sysmon_npu_clients",
-		Label: "NPU clients", Unit: "count", SplitBy: "npu",
+		Label: "NPU clients", Unit: types.HistoryUnitCount, SplitBy: "npu",
 	},
 	{
 		Key: "alerts_critical", Name: "sysmon_alerts_firing", Matchers: []string{`severity="critical"`},
-		Label: "Critical alerts", Unit: "count",
+		Label: "Critical alerts", Unit: types.HistoryUnitCount,
 	},
 	{
 		Key: "alerts_warning", Name: "sysmon_alerts_firing", Matchers: []string{`severity="warning"`},
-		Label: "Warning alerts", Unit: "count",
+		Label: "Warning alerts", Unit: types.HistoryUnitCount,
 	},
 }
 

@@ -31,21 +31,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/nodename"
-)
-
-// Source describes where an effective value came from.
-const (
-	SourceDefault = "default"
-	SourceFile    = "config file"
-	SourceEnv     = "env"
-	SourceFlag    = "flag"
-	// SourceRuntime marks a value changed on the running service rather than in
-	// any configured layer -- today only the polling interval, which the
-	// dashboard's refresh-rate selector sets through POST /api/interval. It
-	// outranks every other source for as long as it lasts, because it is what
-	// the service is actually doing, and a reload replaces it with the
-	// configured value again.
-	SourceRuntime = "runtime"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // EnvPrefix is the prefix for environment overrides: alerts.disk_full_pct is
@@ -348,7 +334,7 @@ func (l *Loader) SetFlag(key, value string) {
 }
 
 // Load produces the effective configuration and a per-key source map.
-func (l *Loader) Load() (*Config, map[string]string, error) {
+func (l *Loader) Load() (*Config, map[string]types.ConfigSource, error) {
 	v := viper.New()
 	v.SetConfigFile(l.path)
 	v.SetConfigType("yaml")
@@ -358,7 +344,7 @@ func (l *Loader) Load() (*Config, map[string]string, error) {
 		v.SetDefault(key, val)
 	}
 
-	sources := make(map[string]string)
+	sources := make(map[string]types.ConfigSource)
 
 	// Only "the file is not there" is benign; that host is meant to run on
 	// defaults. Every other stat failure -- a path component that is not a
@@ -415,19 +401,19 @@ func (l *Loader) Load() (*Config, map[string]string, error) {
 	for _, key := range scalarKeys() {
 		switch {
 		case l.flags[key] != "":
-			sources[key] = SourceFlag
+			sources[key] = types.ConfigSourceFlag
 		case os.Getenv(envKey(key)) != "":
-			sources[key] = SourceEnv
+			sources[key] = types.ConfigSourceEnv
 		case fileLoaded && v.InConfig(key):
-			sources[key] = SourceFile
+			sources[key] = types.ConfigSourceFile
 		default:
-			sources[key] = SourceDefault
+			sources[key] = types.ConfigSourceDefault
 		}
 	}
 	if len(cfg.Fleet.Peers) > 0 {
-		sources["fleet.peers"] = SourceFile
+		sources["fleet.peers"] = types.ConfigSourceFile
 		if os.Getenv(envKey("fleet.peers")) != "" {
-			sources["fleet.peers"] = SourceEnv
+			sources["fleet.peers"] = types.ConfigSourceEnv
 		}
 	}
 
@@ -452,7 +438,7 @@ func (l *Loader) FileLoaded() bool { return l.fileLoaded }
 // Each repair rewrites the key's source as well. A value the file asked for and
 // did not get must not be attributed to the file: the effective value came from
 // the built-in defaults, and that is what the settings view has to say.
-func (c *Config) normalize(sources map[string]string) error {
+func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 	d := Defaults()
 	if c.Server.IntervalMs <= 0 {
 		c.Server.IntervalMs = d.Server.IntervalMs
@@ -787,9 +773,9 @@ func urlParseReason(err error) string {
 
 // repairedToDefault records that a key's effective value came from the built-in
 // defaults after normalize rejected what a higher-precedence layer supplied.
-func repairedToDefault(sources map[string]string, key string) {
+func repairedToDefault(sources map[string]types.ConfigSource, key string) {
 	if sources != nil {
-		sources[key] = SourceDefault
+		sources[key] = types.ConfigSourceDefault
 	}
 }
 
@@ -816,7 +802,7 @@ type Validator func(*Config) error
 // after it is stored, so readers need no lock.
 type snapshot struct {
 	cfg *Config
-	src map[string]string
+	src map[string]types.ConfigSource
 	// fileLoaded is captured with the values it describes rather than read from
 	// the loader on demand: the loader is mutated by the next reload, and a
 	// settings view that read it directly would race that reload.
@@ -853,7 +839,7 @@ type Manager struct {
 	// pinned with the value it describes: reporting the boot value under the
 	// new file's source would produce a value/source pair that contradicts
 	// itself, pointing an operator at a file that says something else.
-	bootSources map[string]string
+	bootSources map[string]types.ConfigSource
 	// appliers push reloadable settings into the components that own them.
 	appliers []Applier
 	// validators reject an unusable configuration before it is published.
@@ -885,7 +871,7 @@ func NewManager(l *Loader) (*Manager, error) {
 	m.live.Store(&snapshot{cfg: cfg, src: src, fileLoaded: l.FileLoaded()})
 	m.boot = cfg.Server
 	m.bootFleetTLS = cfg.Fleet.TLS
-	m.bootSources = make(map[string]string, len(bootOnlyKeys()))
+	m.bootSources = make(map[string]types.ConfigSource, len(bootOnlyKeys()))
 	for _, key := range bootOnlyKeys() {
 		m.bootSources[key] = src[key]
 	}
@@ -944,7 +930,7 @@ func (m *Manager) Current() *Config {
 // Sources returns the per-key origin map for the active configuration. The
 // returned map is a copy: the published one is shared by every reader and must
 // stay immutable for them to remain lock-free.
-func (m *Manager) Sources() map[string]string {
+func (m *Manager) Sources() map[string]types.ConfigSource {
 	if s := m.live.Load(); s != nil {
 		return maps.Clone(s.src)
 	}

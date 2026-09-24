@@ -43,8 +43,8 @@ func TestLoad_MissingFileUsesDefaults(t *testing.T) {
 	if cfg.Alerts.DiskFullPct != config.Defaults().Alerts.DiskFullPct {
 		t.Errorf("disk_full_pct = %v, want the default", cfg.Alerts.DiskFullPct)
 	}
-	if sources["alerts.disk_full_pct"] != config.SourceDefault {
-		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], config.SourceDefault)
+	if sources["alerts.disk_full_pct"] != types.ConfigSourceDefault {
+		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], types.ConfigSourceDefault)
 	}
 }
 
@@ -66,8 +66,8 @@ fleet:
 	if cfg.Alerts.DiskFullPct != 75 {
 		t.Errorf("disk_full_pct = %v, want 75", cfg.Alerts.DiskFullPct)
 	}
-	if sources["alerts.disk_full_pct"] != config.SourceFile {
-		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], config.SourceFile)
+	if sources["alerts.disk_full_pct"] != types.ConfigSourceFile {
+		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], types.ConfigSourceFile)
 	}
 	if len(cfg.Fleet.Peers) != 1 || cfg.Fleet.Peers[0].Name != "fs" {
 		t.Fatalf("peers = %+v, want one named fs", cfg.Fleet.Peers)
@@ -87,8 +87,8 @@ func TestLoad_EnvOutranksFile(t *testing.T) {
 	if cfg.Alerts.DiskFullPct != 60 {
 		t.Errorf("disk_full_pct = %v, want 60 from the environment", cfg.Alerts.DiskFullPct)
 	}
-	if sources["alerts.disk_full_pct"] != config.SourceEnv {
-		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], config.SourceEnv)
+	if sources["alerts.disk_full_pct"] != types.ConfigSourceEnv {
+		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], types.ConfigSourceEnv)
 	}
 }
 
@@ -106,8 +106,8 @@ func TestLoad_FlagOutranksEnv(t *testing.T) {
 	if cfg.Alerts.DiskFullPct != 50 {
 		t.Errorf("disk_full_pct = %v, want 50 from the flag", cfg.Alerts.DiskFullPct)
 	}
-	if sources["alerts.disk_full_pct"] != config.SourceFlag {
-		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], config.SourceFlag)
+	if sources["alerts.disk_full_pct"] != types.ConfigSourceFlag {
+		t.Errorf("source = %q, want %q", sources["alerts.disk_full_pct"], types.ConfigSourceFlag)
 	}
 }
 
@@ -132,8 +132,8 @@ func TestLoad_ServerAddrClimbsEveryLayer(t *testing.T) {
 	if want := config.Defaults().Server.Addr; cfg.Server.Addr != want {
 		t.Errorf("server.addr = %q, want the default %q", cfg.Server.Addr, want)
 	}
-	if got := sources["server.addr"]; got != config.SourceDefault {
-		t.Errorf("source = %q, want %q", got, config.SourceDefault)
+	if got := sources["server.addr"]; got != types.ConfigSourceDefault {
+		t.Errorf("source = %q, want %q", got, types.ConfigSourceDefault)
 	}
 
 	// The config file outranks the default.
@@ -145,8 +145,8 @@ func TestLoad_ServerAddrClimbsEveryLayer(t *testing.T) {
 	if cfg.Server.Addr != ":8081" {
 		t.Errorf("server.addr = %q, want %q from the file", cfg.Server.Addr, ":8081")
 	}
-	if got := sources["server.addr"]; got != config.SourceFile {
-		t.Errorf("source = %q, want %q", got, config.SourceFile)
+	if got := sources["server.addr"]; got != types.ConfigSourceFile {
+		t.Errorf("source = %q, want %q", got, types.ConfigSourceFile)
 	}
 
 	// The environment outranks the file.
@@ -158,8 +158,8 @@ func TestLoad_ServerAddrClimbsEveryLayer(t *testing.T) {
 	if cfg.Server.Addr != "127.0.0.1:9090" {
 		t.Errorf("server.addr = %q, want %q from the environment", cfg.Server.Addr, "127.0.0.1:9090")
 	}
-	if got := sources["server.addr"]; got != config.SourceEnv {
-		t.Errorf("source = %q, want %q", got, config.SourceEnv)
+	if got := sources["server.addr"]; got != types.ConfigSourceEnv {
+		t.Errorf("source = %q, want %q", got, types.ConfigSourceEnv)
 	}
 
 	// The flag outranks everything.
@@ -172,8 +172,8 @@ func TestLoad_ServerAddrClimbsEveryLayer(t *testing.T) {
 	if cfg.Server.Addr != "10.0.0.5:8443" {
 		t.Errorf("server.addr = %q, want %q from the flag", cfg.Server.Addr, "10.0.0.5:8443")
 	}
-	if got := sources["server.addr"]; got != config.SourceFlag {
-		t.Errorf("source = %q, want %q", got, config.SourceFlag)
+	if got := sources["server.addr"]; got != types.ConfigSourceFlag {
+		t.Errorf("source = %q, want %q", got, types.ConfigSourceFlag)
 	}
 }
 
@@ -191,8 +191,8 @@ func TestLoad_EmptyServerAddrIsRepairedToTheDefault(t *testing.T) {
 	if want := config.Defaults().Server.Addr; cfg.Server.Addr != want {
 		t.Errorf("server.addr = %q, want the default %q", cfg.Server.Addr, want)
 	}
-	if got := sources["server.addr"]; got != config.SourceDefault {
-		t.Errorf("source = %q, want %q -- the file did not supply the effective value", got, config.SourceDefault)
+	if got := sources["server.addr"]; got != types.ConfigSourceDefault {
+		t.Errorf("source = %q, want %q -- the file did not supply the effective value", got, types.ConfigSourceDefault)
 	}
 }
 
@@ -287,7 +287,7 @@ func TestView_ReportsEveryKeyWithSource(t *testing.T) {
 	for _, e := range view.Entries {
 		if e.Key == "alerts.temp_crit_c" {
 			sawTemp = true
-			if e.Value != "88" || e.Source != config.SourceFile {
+			if e.Value != "88" || e.Source != types.ConfigSourceFile {
 				t.Errorf("temp_crit_c entry = %+v, want value 88 from the config file", e)
 			}
 		}
@@ -1053,8 +1053,8 @@ func TestManagerReload_BootOnlyKeepsBootSourceWithBootValue(t *testing.T) {
 		t.Fatalf("NewManager(): %v", err)
 	}
 	bootAddr := mgr.Current().Server.Addr
-	if got := viewEntry(t, mgr, "server.addr").Source; got != config.SourceDefault {
-		t.Fatalf("addr source at boot = %q, want %q", got, config.SourceDefault)
+	if got := viewEntry(t, mgr, "server.addr").Source; got != types.ConfigSourceDefault {
+		t.Fatalf("addr source at boot = %q, want %q", got, types.ConfigSourceDefault)
 	}
 
 	// Now the file sets it: the value changes AND the source would change.
@@ -1076,9 +1076,9 @@ func TestManagerReload_BootOnlyKeepsBootSourceWithBootValue(t *testing.T) {
 	if entry.Value != bootAddr {
 		t.Errorf("view value = %q, want the bound %q", entry.Value, bootAddr)
 	}
-	if entry.Source != config.SourceDefault {
+	if entry.Source != types.ConfigSourceDefault {
 		t.Errorf("view source = %q, want %q -- the file's value was not applied, so the file did not supply it",
-			entry.Source, config.SourceDefault)
+			entry.Source, types.ConfigSourceDefault)
 	}
 }
 
@@ -1091,8 +1091,8 @@ func TestManagerReload_ReloadableKeyUpdatesValueAndSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager(): %v", err)
 	}
-	if got := viewEntry(t, mgr, "alerts.disk_full_pct").Source; got != config.SourceDefault {
-		t.Fatalf("disk_full_pct source at boot = %q, want %q", got, config.SourceDefault)
+	if got := viewEntry(t, mgr, "alerts.disk_full_pct").Source; got != types.ConfigSourceDefault {
+		t.Fatalf("disk_full_pct source at boot = %q, want %q", got, types.ConfigSourceDefault)
 	}
 
 	if err := os.WriteFile(path, []byte("alerts:\n  disk_full_pct: 55\n"), 0o644); err != nil {
@@ -1106,8 +1106,8 @@ func TestManagerReload_ReloadableKeyUpdatesValueAndSource(t *testing.T) {
 	if entry.Value != "55" {
 		t.Errorf("view value = %q, want 55", entry.Value)
 	}
-	if entry.Source != config.SourceFile {
-		t.Errorf("view source = %q, want %q", entry.Source, config.SourceFile)
+	if entry.Source != types.ConfigSourceFile {
+		t.Errorf("view source = %q, want %q", entry.Source, types.ConfigSourceFile)
 	}
 }
 
@@ -1125,9 +1125,9 @@ func TestLoad_RepairedValueIsAttributedToTheDefaults(t *testing.T) {
 
 	for _, key := range []string{"server.interval_ms", "fleet.timeout_ms"} {
 		entry := viewEntry(t, mgr, key)
-		if entry.Source != config.SourceDefault {
+		if entry.Source != types.ConfigSourceDefault {
 			t.Errorf("%s source = %q, want %q -- the configured value was rejected",
-				key, entry.Source, config.SourceDefault)
+				key, entry.Source, types.ConfigSourceDefault)
 		}
 	}
 	if got := mgr.Current().Server.IntervalMs; got != config.Defaults().Server.IntervalMs {
@@ -1194,8 +1194,8 @@ func TestView_NeverPairsValuesFromDifferentGenerations(t *testing.T) {
 					if e.Key != "alerts.disk_full_pct" {
 						continue
 					}
-					fileGen := e.Value == "55" && e.Source == config.SourceFile
-					defaultGen := e.Value == defaultValue && e.Source == config.SourceDefault
+					fileGen := e.Value == "55" && e.Source == types.ConfigSourceFile
+					defaultGen := e.Value == defaultValue && e.Source == types.ConfigSourceDefault
 					if !fileGen && !defaultGen {
 						t.Errorf("torn read: value %q with source %q -- the pair is from two different generations",
 							e.Value, e.Source)

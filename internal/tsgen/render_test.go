@@ -4,13 +4,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 func renderedTypes(t *testing.T) string {
 	t.Helper()
-	return RenderTypes(parseSample(t), UnionsModule)
+	return RenderTypes(parseSample(t))
 }
 
 func TestRenderTypes(t *testing.T) {
@@ -48,26 +49,6 @@ func TestRenderTypes(t *testing.T) {
 	// sites do not each grow a guard for a state none of them can be handed.
 	if strings.Contains(out, "items: Item[] | null") {
 		t.Error("array fields must keep their optimistic spelling in the interface")
-	}
-}
-
-// TestRenderTypes_NothingToImport covers the branch where no field is narrowed
-// to a hand-written union: the file must not emit a dangling empty import,
-// which does not compile.
-func TestRenderTypes_NothingToImport(t *testing.T) {
-	const src = `package types
-
-type Root struct {
-	Name string ` + "`json:\"name\"`" + `
-}
-`
-	model, err := ParseSource("plain.go", src, []string{"Root"})
-	if err != nil {
-		t.Fatalf("ParseSource: %v", err)
-	}
-	out := RenderTypes(model, UnionsModule)
-	if strings.Contains(out, "import") {
-		t.Errorf("output imports something with no union to import:\n%s", out)
 	}
 }
 
@@ -151,6 +132,52 @@ func TestGenerate(t *testing.T) {
 	}
 	if !strings.Contains(string(schema), `{ key: "networks", type: { kind: "array", elem: { kind: "object", ref: "NetworkInfo" }, nullable: true } }`) {
 		t.Errorf("%s does not describe the element type of networks, which is what makes element-level validation possible", SchemaFile)
+	}
+}
+
+// TestGenerate_EveryUnionIsGenerated holds the wire types to one source. The
+// dashboard once imported five string unions from a hand-written module, named
+// field by field in an override table here, because the Go side spelled those
+// sets as untyped constants (#202). They are named Go types now, so the emitted
+// file must be self-contained: an import would mean something on the wire is
+// again typed by hand, where it can drift from Go without the generator seeing.
+func TestGenerate_EveryUnionIsGenerated(t *testing.T) {
+	model, err := Parse(filepath.Join("..", "..", "pkg", "types", "types.go"), Roots)
+	if err != nil {
+		t.Fatalf("Parse the real wire types: %v", err)
+	}
+	out := RenderTypes(model)
+
+	if strings.Contains(out, "import ") {
+		t.Errorf("the generated types import something; every wire union must be generated from a named Go type:\n%s", out[:strings.Index(out, "import ")+80])
+	}
+
+	// Each union the dashboard used to import, with the values Go declares
+	// for it, and the field that carries it.
+	unions := map[string]struct {
+		values []string
+		fields []string
+	}{
+		"Severity":     {[]string{"info", "warning", "critical"}, []string{"  severity: Severity;"}},
+		"NodeStatus":   {[]string{"healthy", "warning", "critical", "unreachable"}, []string{"  status: NodeStatus;"}},
+		"ConfigSource": {[]string{"default", "config file", "env", "flag", "runtime"}, []string{"  source: ConfigSource;"}},
+		"HistoryUnit":  {[]string{"percent", "bytes_per_second", "celsius", "watts", "count"}, []string{"  unit: HistoryUnit;"}},
+		"BuildMatch":   {[]string{"same", "different", "unknown"}, []string{"  build_match: BuildMatch;"}},
+	}
+	for name, want := range unions {
+		decl := "export type " + name + " ="
+		for _, v := range want.values {
+			decl += "\n  | " + strconv.Quote(v)
+		}
+		decl += ";"
+		if !strings.Contains(out, decl) {
+			t.Errorf("%s is not generated as\n%s", name, decl)
+		}
+		for _, field := range want.fields {
+			if !strings.Contains(out, field) {
+				t.Errorf("no field is typed %q", field)
+			}
+		}
 	}
 }
 
@@ -385,7 +412,7 @@ type Root struct {
 	if err != nil {
 		t.Fatalf("ParseSource: %v", err)
 	}
-	if out := RenderTypes(model, "./unions"); !strings.Contains(out, "  kids: (Child | null)[];") {
+	if out := RenderTypes(model); !strings.Contains(out, "  kids: (Child | null)[];") {
 		t.Errorf("RenderTypes did not spell nullable elements:\n%s", out)
 	}
 }
@@ -406,7 +433,7 @@ type Root struct {
 	if err != nil {
 		t.Fatalf("ParseSource: %v", err)
 	}
-	out := RenderTypes(model, "./unions")
+	out := RenderTypes(model)
 	for _, want := range []string{`  "display-name": string;`, `  "may.be"?: string;`, "  plain_name: string;"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("RenderTypes is missing %q:\n%s", want, out)

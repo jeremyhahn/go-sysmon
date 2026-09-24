@@ -33,26 +33,6 @@ import (
 // cannot exhaust memory on the aggregator.
 const maxSnapshotBytes = 8 << 20 // 8 MiB
 
-// Node status values reported to the UI.
-const (
-	StatusHealthy     = "healthy"
-	StatusWarning     = "warning"
-	StatusCritical    = "critical"
-	StatusUnreachable = "unreachable"
-)
-
-// Build agreement values, reported per node as FleetNode.BuildMatch.
-//
-// These describe BUILD IDENTITY, not health. They are kept apart from the
-// Status values above and from the alert counts on purpose: during a rollout
-// every node disagrees with the aggregator until it is restarted, and a fleet
-// that turned amber on every deploy would train operators to ignore the colour.
-const (
-	BuildSame      = "same"
-	BuildDifferent = "different"
-	BuildUnknown   = "unknown"
-)
-
 // unstatedCommit is what a binary built without the -ldflags reports for its
 // commit: main.gitCommit defaults to it, and GET /api/version renders an empty
 // value the same way. It says "this build does not know what it is", which is
@@ -61,20 +41,20 @@ const unstatedCommit = "unknown"
 
 // compareBuild reports whether a node's commit is the aggregator's own.
 //
-// A missing commit on either side yields BuildUnknown rather than agreement.
+// A missing commit on either side yields types.BuildUnknown rather than agreement.
 // Two nodes that both declined to say what they are running have not been shown
 // to match -- and a peer whose build predates the field is precisely the stale
 // node this comparison exists to find, so reading its silence as "same" would
 // reintroduce the defect in a new field.
-func compareBuild(local, node string) string {
+func compareBuild(local, node string) types.BuildMatch {
 	if local == "" || local == unstatedCommit ||
 		node == "" || node == unstatedCommit {
-		return BuildUnknown
+		return types.BuildUnknown
 	}
 	if local == node {
-		return BuildSame
+		return types.BuildSame
 	}
-	return BuildDifferent
+	return types.BuildDifferent
 }
 
 // peerState is the last result of polling one peer.

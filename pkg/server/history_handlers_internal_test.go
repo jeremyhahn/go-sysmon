@@ -144,7 +144,7 @@ func TestHandleHistory_ServesARange(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Enabled || got.Node != "mon0" || got.Metric != "disk_used" || got.Unit != "percent" {
+	if !got.Enabled || got.Node != "mon0" || got.Metric != "disk_used" || got.Unit != types.HistoryUnitPercent {
 		t.Fatalf("history envelope = %+v", got)
 	}
 	if got.StepMs != 15000 || got.StartMs != 1788300000000 || got.EndMs != 1788300600000 {

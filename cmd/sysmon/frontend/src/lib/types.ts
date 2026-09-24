@@ -15,7 +15,8 @@
 // visible to the page or to svelte-check, because a mirror that omits a field
 // omits the evidence with it (#38).
 //
-// The unions in ./unions are the exception, and say there why they are one.
+// That includes every string union: each is a named Go type with typed
+// constants, so a closed set of values on the wire is generated like the rest
+// (#202).
 
 export * from "./types.generated";
-export * from "./unions";

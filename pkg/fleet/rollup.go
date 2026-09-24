@@ -11,18 +11,18 @@ import (
 // only warnings. Unreachable sits between them because its state is unknown --
 // it may be fine or it may be the worst node in the fleet -- while a warning is
 // known to be a warning.
-var attentionRank = map[string]int{
-	StatusCritical:    0,
-	StatusUnreachable: 1,
-	StatusWarning:     2,
+var attentionRank = map[types.NodeStatus]int{
+	types.NodeStatusCritical:    0,
+	types.NodeStatusUnreachable: 1,
+	types.NodeStatusWarning:     2,
 }
 
 // statusCounters routes a node to the count its status belongs in.
-var statusCounters = map[string]func(*types.FleetRollup){
-	StatusHealthy:     func(r *types.FleetRollup) { r.Healthy++ },
-	StatusWarning:     func(r *types.FleetRollup) { r.Warning++ },
-	StatusCritical:    func(r *types.FleetRollup) { r.Critical++ },
-	StatusUnreachable: func(r *types.FleetRollup) { r.Unreachable++ },
+var statusCounters = map[types.NodeStatus]func(*types.FleetRollup){
+	types.NodeStatusHealthy:     func(r *types.FleetRollup) { r.Healthy++ },
+	types.NodeStatusWarning:     func(r *types.FleetRollup) { r.Warning++ },
+	types.NodeStatusCritical:    func(r *types.FleetRollup) { r.Critical++ },
+	types.NodeStatusUnreachable: func(r *types.FleetRollup) { r.Unreachable++ },
 }
 
 // rollup builds the fleet-level statement from the per-node view. nodes must
@@ -193,14 +193,14 @@ func addDevices(h *types.FleetHealth, devices, unhealthy int) *types.FleetHealth
 // first, or for a node that cannot be seen, the reason the poll gave.
 func attention(n *types.FleetNode) types.NodeAttention {
 	a := types.NodeAttention{Name: n.Name, Status: n.Status, Reasons: []string{}}
-	if n.Status == StatusUnreachable {
+	if n.Status == types.NodeStatusUnreachable {
 		a.AgeSeconds = n.AgeSeconds
 		if n.Error != "" {
 			a.Reasons = append(a.Reasons, n.Error)
 		}
 		return a
 	}
-	for _, severity := range []string{types.SeverityCritical, types.SeverityWarning} {
+	for _, severity := range []types.Severity{types.SeverityCritical, types.SeverityWarning} {
 		for _, al := range n.Alerts {
 			if al.Severity == severity {
 				a.Reasons = append(a.Reasons, al.Message)

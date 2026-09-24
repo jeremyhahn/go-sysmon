@@ -4,7 +4,7 @@
   // not a place you spend time. There is deliberately no input and no save
   // button — configuration is edited on disk and reloaded, and a form here
   // would imply otherwise.
-  import type { ConfigEntry, ConfigView } from "$lib/types";
+  import type { ConfigEntry, ConfigSource, ConfigView } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
   interface Props {
@@ -68,7 +68,7 @@
    * The badge answers "how surprising is this line": a default is unremarkable,
    * a flag or env var is something someone deliberately did.
    */
-  function sourceBadge(source: string): string {
+  function sourceBadge(source: ConfigSource): string {
     switch (source) {
       case "config file":
         return "badge-info";

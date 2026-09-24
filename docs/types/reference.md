@@ -21,6 +21,15 @@ whole interface that the server was sending and the dashboard did not
 declare. See [../gui/architecture.md](../gui/architecture.md) for how the
 schema is used and how strict it is.
 
+A field whose legal values are a closed set of strings is a **named Go type
+with typed constants** — `Severity`, `NodeStatus`, `BuildMatch`, `NameMatch`,
+`ConfigSource`, `HistoryUnit`, `SummarySource`, `TempSource`, `Presence` and
+`SMARTStatus` — and its TypeScript union is generated from those constants.
+Never declare such a field as a plain `string` with loose constants beside it:
+the generator cannot see a set no type names, and there is no hand-written
+union for the page to fall back on (#202). Producers use the typed constants,
+so a value outside the set has to be spelled as a deliberate conversion.
+
 ## Lists are never null
 
 Every slice in these types reaches the wire as a JSON array, never as `null`: a

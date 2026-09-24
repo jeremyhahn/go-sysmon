@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // withServeConfig points the serve command at a temporary config file and
@@ -54,8 +55,8 @@ func TestLoadServeConfig_UnsuppliedAddrLeavesTheFileInCharge(t *testing.T) {
 	if got := mgr.Current().Server.Addr; got != ":8081" {
 		t.Errorf("server.addr = %q, want %q from the config file", got, ":8081")
 	}
-	if got := mgr.Sources()["server.addr"]; got != config.SourceFile {
-		t.Errorf("source = %q, want %q", got, config.SourceFile)
+	if got := mgr.Sources()["server.addr"]; got != types.ConfigSourceFile {
+		t.Errorf("source = %q, want %q", got, types.ConfigSourceFile)
 	}
 }
 
@@ -72,8 +73,8 @@ func TestLoadServeConfig_SuppliedAddrOutranksTheFile(t *testing.T) {
 	if got := mgr.Current().Server.Addr; got != "127.0.0.1:9099" {
 		t.Errorf("server.addr = %q, want %q from the flag", got, "127.0.0.1:9099")
 	}
-	if got := mgr.Sources()["server.addr"]; got != config.SourceFlag {
-		t.Errorf("source = %q, want %q", got, config.SourceFlag)
+	if got := mgr.Sources()["server.addr"]; got != types.ConfigSourceFlag {
+		t.Errorf("source = %q, want %q", got, types.ConfigSourceFlag)
 	}
 }
 

@@ -300,7 +300,7 @@ func (m *Manager) View() types.ConfigView {
 	for _, key := range scalarKeys() {
 		s := src[key]
 		if s == "" {
-			s = SourceDefault
+			s = types.ConfigSourceDefault
 		}
 		entries = append(entries, types.ConfigEntry{
 			Section: section(key),
@@ -312,7 +312,7 @@ func (m *Manager) View() types.ConfigView {
 
 	peerSource := src["fleet.peers"]
 	if peerSource == "" {
-		peerSource = SourceDefault
+		peerSource = types.ConfigSourceDefault
 	}
 	peers := make([]Peer, len(cfg.Fleet.Peers))
 	copy(peers, cfg.Fleet.Peers)

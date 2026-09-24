@@ -61,18 +61,14 @@ type Type struct {
 type Field struct {
 	// JSONName is the key the server actually sends, from the json tag.
 	JSONName string
-	// GoName is the Go field name, used for the union override lookup and for
-	// error messages that have to be traced back to the source.
+	// GoName is the Go field name, used for error messages that have to be
+	// traced back to the source.
 	GoName string
 	Doc    string
 	Type   Type
 	// Optional marks a field the server may omit entirely: json:",omitempty"
 	// on a value that can be empty.
 	Optional bool
-	// TSType, when set, overrides the TypeScript spelling of the field in the
-	// emitted interface. It never changes what the schema validates; it only
-	// narrows `string` to a union the Go side expresses as loose constants.
-	TSType string
 }
 
 // Struct is one Go struct, in declaration order.
@@ -95,47 +91,6 @@ type Enum struct {
 type Model struct {
 	Structs []Struct
 	Enums   []Enum
-}
-
-// unionOverrides narrows fields the Go side declares as a plain string but
-// whose values are a closed set, spelled as untyped constants that no Go type
-// names. The key is "<Struct>.<GoField>".
-//
-// This is the one hand-maintained table in the generator, and it is bounded:
-// seven entries, each naming a union that must exist in unions.ts or the
-// emitted TypeScript does not compile. The alternative is naming these on the
-// Go side, which changes an exported package's types and is not this change's
-// to make.
-var unionOverrides = map[string]string{
-	"Alert.Severity":       "Severity",
-	"FleetNode.Status":     "NodeStatus",
-	"NodeAttention.Status": "NodeStatus",
-	"ConfigEntry.Source":   "ConfigSource | string",
-	"HistoryMetric.Unit":   "HistoryUnit",
-	"History.Unit":         "HistoryUnit",
-	"FleetNode.BuildMatch": "BuildMatch",
-}
-
-// unionOverride returns the TypeScript spelling unionOverrides gives a field,
-// or "" when it has none.
-//
-// An override is only valid on the plain string it was written for. If the Go
-// field changes shape, the override would go on re-typing the interface while
-// the schema followed the new Go type, and both would still compile, so the
-// mismatch stops the build.
-func unionOverride(structName, goName string, t Type) (string, error) {
-	union, ok := unionOverrides[structName+"."+goName]
-	if !ok {
-		return "", nil
-	}
-	if t.Kind != KindString || t.Ref != "" || t.Nullable {
-		return "", &UnsupportedDeclError{
-			Struct: structName,
-			Field:  goName,
-			Reason: "unionOverrides narrows this field to " + union + ", which is only valid on a plain, non-pointer Go string",
-		}
-	}
-	return union, nil
 }
 
 // Parse reads path and returns the types reachable from roots.
@@ -441,7 +396,7 @@ func convertStruct(
 	structs map[string]*ast.StructType,
 	enums map[string]*Enum,
 ) (Struct, []string, error) {
-	candidates, err := collectFields(name, name, decl, 0, false, map[string]bool{name: true}, structs, enums)
+	candidates, err := collectFields(name, decl, 0, false, map[string]bool{name: true}, structs, enums)
 	if err != nil {
 		return Struct{}, nil, err
 	}
@@ -472,12 +427,11 @@ type candidate struct {
 // collectFields gathers every field decl contributes to the wire, in
 // declaration order, descending into untagged embedded structs.
 //
-// root names the struct being converted, for errors; owner names the struct
-// that declares these fields, for the union override lookup. optional marks
-// fields reached through an embedded pointer, which encoding/json omits
-// entirely when the pointer is nil.
+// root names the struct being converted, for errors. optional marks fields
+// reached through an embedded pointer, which encoding/json omits entirely when
+// the pointer is nil.
 func collectFields(
-	root, owner string,
+	root string,
 	decl *ast.StructType,
 	depth int,
 	optional bool,
@@ -488,7 +442,7 @@ func collectFields(
 	var out []candidate
 	for _, field := range decl.Fields.List {
 		if len(field.Names) == 0 {
-			embedded, err := collectEmbedded(root, owner, field, depth, optional, visiting, structs, enums)
+			embedded, err := collectEmbedded(root, field, depth, optional, visiting, structs, enums)
 			if err != nil {
 				return nil, err
 			}
@@ -512,7 +466,7 @@ func collectFields(
 			if !ast.IsExported(ident.Name) {
 				continue
 			}
-			c, keep, err := namedCandidate(root, owner, field, ident.Name, depth, optional, structs, enums)
+			c, keep, err := namedCandidate(root, field, ident.Name, depth, optional, structs, enums)
 			if err != nil {
 				return nil, err
 			}
@@ -528,7 +482,7 @@ func collectFields(
 // encoding/json treats as a named field) into a candidate. keep is false for a
 // field tagged "-".
 func namedCandidate(
-	root, owner string,
+	root string,
 	field *ast.Field,
 	goName string,
 	depth int,
@@ -552,10 +506,6 @@ func namedCandidate(
 	if err != nil {
 		return candidate{}, false, err
 	}
-	override, err := unionOverride(owner, goName, converted)
-	if err != nil {
-		return candidate{}, false, err
-	}
 
 	return candidate{
 		field: Field{
@@ -564,7 +514,6 @@ func namedCandidate(
 			Doc:      docText(field.Doc),
 			Type:     converted,
 			Optional: optional || viaPointer,
-			TSType:   override,
 		},
 		depth:  depth,
 		tagged: tagNamesField(field.Tag),
@@ -582,7 +531,7 @@ func namedCandidate(
 // non-struct or qualified type (time.Time would promote its MarshalJSON and
 // replace the whole object), an unexported type, and a cycle.
 func collectEmbedded(
-	root, owner string,
+	root string,
 	field *ast.Field,
 	depth int,
 	optional bool,
@@ -605,7 +554,7 @@ func collectEmbedded(
 	}
 
 	if tagNamesField(field.Tag) {
-		c, keep, err := namedCandidate(root, owner, field, ident.Name, depth, optional, structs, enums)
+		c, keep, err := namedCandidate(root, field, ident.Name, depth, optional, structs, enums)
 		if err != nil || !keep {
 			return nil, err
 		}
@@ -633,7 +582,7 @@ func collectEmbedded(
 
 	visiting[ident.Name] = true
 	defer delete(visiting, ident.Name)
-	return collectFields(root, ident.Name, inner, depth+1, optional || viaPointer, visiting, structs, enums)
+	return collectFields(root, inner, depth+1, optional || viaPointer, visiting, structs, enums)
 }
 
 // resolveFields keeps one field per JSON key by encoding/json's dominance

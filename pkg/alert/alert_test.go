@@ -878,7 +878,7 @@ func TestEvaluate_MemberTemperatureUsesTheMembersOwnOverride(t *testing.T) {
 	// decision to fire. Both branches read a threshold, and a fixture where
 	// the warning branch always decides cannot tell whether the critical one
 	// was fixed -- which is what the first version of this test did.
-	severity := func(cfg config.Alerts) string {
+	severity := func(cfg config.Alerts) types.Severity {
 		for _, a := range alert.New().Evaluate(cfg, snap, time.Now()) {
 			if a.Rule == alert.RuleDiskTemp {
 				return a.Severity

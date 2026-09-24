@@ -93,9 +93,9 @@ func TestConfigView_ReportsRuntimeInterval(t *testing.T) {
 	if entry.Value != "5000" {
 		t.Errorf("view value = %q, want the running 5000", entry.Value)
 	}
-	if entry.Source != config.SourceRuntime {
+	if entry.Source != types.ConfigSourceRuntime {
 		t.Errorf("view source = %q, want %q -- the number came from the dashboard, not the file",
-			entry.Source, config.SourceRuntime)
+			entry.Source, types.ConfigSourceRuntime)
 	}
 	if running := s.mon.Interval(); running != 5*time.Second {
 		t.Errorf("monitor interval = %v, want 5s", running)
@@ -112,7 +112,7 @@ func TestConfigView_ReloadReclaimsTheInterval(t *testing.T) {
 	})
 
 	setInterval(t, s, 5000)
-	if entry := configEntry(t, s, "server.interval_ms"); entry.Source != config.SourceRuntime {
+	if entry := configEntry(t, s, "server.interval_ms"); entry.Source != types.ConfigSourceRuntime {
 		t.Fatalf("override did not take: source = %q", entry.Source)
 	}
 
@@ -124,7 +124,7 @@ func TestConfigView_ReloadReclaimsTheInterval(t *testing.T) {
 	if entry.Value != "1000" {
 		t.Errorf("after reload view value = %q, want the configured 1000", entry.Value)
 	}
-	if entry.Source == config.SourceRuntime {
+	if entry.Source == types.ConfigSourceRuntime {
 		t.Error("after reload source is still runtime; the configured value is in force and should say so")
 	}
 	if running := s.mon.Interval(); running != time.Second {
@@ -142,15 +142,15 @@ func TestConfigView_NoRuntimeOverrideKeepsConfiguredSource(t *testing.T) {
 	if entry.Value != "1000" {
 		t.Errorf("view value = %q, want 1000", entry.Value)
 	}
-	if entry.Source != config.SourceFile {
+	if entry.Source != types.ConfigSourceFile {
 		t.Errorf("view source = %q, want %q -- the file set this value and nothing overrode it",
-			entry.Source, config.SourceFile)
+			entry.Source, types.ConfigSourceFile)
 	}
 
 	// Setting the same value the file already has is not an override either.
 	setInterval(t, s, 1000)
-	if got := configEntry(t, s, "server.interval_ms").Source; got != config.SourceFile {
-		t.Errorf("source = %q after setting the configured value, want %q", got, config.SourceFile)
+	if got := configEntry(t, s, "server.interval_ms").Source; got != types.ConfigSourceFile {
+		t.Errorf("source = %q after setting the configured value, want %q", got, types.ConfigSourceFile)
 	}
 }
 

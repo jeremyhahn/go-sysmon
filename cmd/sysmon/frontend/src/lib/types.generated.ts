@@ -3,7 +3,45 @@
 // The Go structs in pkg/types/types.go are the single source for everything in
 // this file. To change a shape, change it there and run "make generate".
 
-import type { BuildMatch, ConfigSource, HistoryUnit, NodeStatus, Severity } from "./unions";
+/**
+ * BuildMatch says whether a node runs the same build as the aggregator serving
+ * the view. It is a named type so the dashboard's union of legal values is
+ * generated from these constants.
+ *
+ * These describe BUILD IDENTITY, not health. They are kept apart from the
+ * NodeStatus values and from the alert counts on purpose: during a rollout
+ * every node disagrees with the aggregator until it is restarted, and a fleet
+ * that turned amber on every deploy would train operators to ignore the colour.
+ */
+export type BuildMatch =
+  | "same"
+  | "different"
+  | "unknown";
+
+/**
+ * ConfigSource says which layer supplied an effective setting. It is a named
+ * type so the dashboard's union of legal values is generated from these
+ * constants, and so every producer is held to them: a source the server can
+ * name is a source the page can type.
+ */
+export type ConfigSource =
+  | "default"
+  | "config file"
+  | "env"
+  | "flag"
+  | "runtime";
+
+/**
+ * HistoryUnit is the unit a history series is measured in, which is what
+ * picks its axis and its value formatting. It is a named type so the
+ * dashboard's union of legal values is generated from these constants.
+ */
+export type HistoryUnit =
+  | "percent"
+  | "bytes_per_second"
+  | "celsius"
+  | "watts"
+  | "count";
 
 /**
  * NameMatch says whether the name the aggregator holds for a node is the name
@@ -15,6 +53,17 @@ export type NameMatch =
   | "same"
   | "different"
   | "unknown";
+
+/**
+ * NodeStatus is a node's rolled-up health, as the aggregator last saw it. It
+ * is a named type so the dashboard's union of legal values is generated from
+ * these constants.
+ */
+export type NodeStatus =
+  | "healthy"
+  | "warning"
+  | "critical"
+  | "unreachable";
 
 /**
  * Presence is whether a node has a class of software. It is a tri-state
@@ -49,6 +98,15 @@ export type SMARTStatus =
   | "unreadable"
   | "ok"
   | "failing";
+
+/**
+ * Severity is how urgent an alert is. It is a named type so the dashboard's
+ * union of legal values is generated from these constants.
+ */
+export type Severity =
+  | "info"
+  | "warning"
+  | "critical";
 
 /**
  * SummarySource says how the aggregator got a node's figures, reported per
@@ -128,7 +186,7 @@ export interface ConfigEntry {
   section: string;
   key: string;
   value: string;
-  source: ConfigSource | string;
+  source: ConfigSource;
 }
 
 /** ConfigView is the effective configuration served at /api/config. */

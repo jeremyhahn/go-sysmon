@@ -600,57 +600,6 @@ const (
 	}
 }
 
-// TestParse_UnionOverrideMustTargetAPlainString keeps a hand-written override
-// from silently outliving the Go field it narrows: if the field stops being a
-// plain string, the override would re-type it in the interface while the
-// schema followed the new Go type.
-func TestParse_UnionOverrideMustTargetAPlainString(t *testing.T) {
-	cases := map[string]string{
-		"boolean":           "bool",
-		"named string type": "State",
-		"array of strings":  "[]string",
-	}
-	for name, goType := range cases {
-		t.Run(name, func(t *testing.T) {
-			src := `package types
-
-type State string
-
-type Alert struct {
-	Severity ` + goType + " `json:\"severity\"`" + `
-}
-`
-			_, err := ParseSource("override.go", src, []string{"Alert"})
-			if err == nil {
-				t.Fatalf("an override on a %s field was accepted; it should stop the build", goType)
-			}
-			var decl *UnsupportedDeclError
-			if !errors.As(err, &decl) {
-				t.Fatalf("error = %T (%v), want *UnsupportedDeclError", err, err)
-			}
-			if decl.Struct != "Alert" || decl.Field != "Severity" {
-				t.Errorf("error = %+v, want it to name Alert.Severity", decl)
-			}
-		})
-	}
-}
-
-func TestParse_UnionOverrideOnAPlainStringApplies(t *testing.T) {
-	const src = `package types
-
-type Alert struct {
-	Severity string ` + "`json:\"severity\"`" + `
-}
-`
-	model, err := ParseSource("override.go", src, []string{"Alert"})
-	if err != nil {
-		t.Fatalf("ParseSource: %v", err)
-	}
-	if got := fieldNamed(t, structNamed(t, model, "Alert"), "severity").TSType; got != "Severity" {
-		t.Errorf("TSType = %q, want the Severity union", got)
-	}
-}
-
 // TestParse_InterpretedStructTagIsRead covers a tag written as an ordinary
 // double-quoted string, which Go accepts and encoding/json reads exactly like
 // a backquoted one. Reading it as raw text would emit the Go name while the
@@ -739,22 +688,5 @@ type Root struct {
 				t.Errorf("error = %+v, want it to name Blob", unsupported)
 			}
 		})
-	}
-}
-
-// TestParse_UnionOverrideRefusesANullableString covers an overridden field
-// that becomes *string: the schema then accepts null, which the union alias
-// alone would hide.
-func TestParse_UnionOverrideRefusesANullableString(t *testing.T) {
-	const src = `package types
-
-type Alert struct {
-	Severity *string ` + "`json:\"severity\"`" + `
-}
-`
-	_, err := ParseSource("override.go", src, []string{"Alert"})
-	var decl *UnsupportedDeclError
-	if !errors.As(err, &decl) {
-		t.Fatalf("error = %T (%v), want *UnsupportedDeclError", err, err)
 	}
 }

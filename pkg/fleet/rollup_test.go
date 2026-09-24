@@ -22,7 +22,7 @@ func up(name string, s types.NodeSummary) types.FleetNode {
 // never answered), carrying last known figures that must not be counted.
 func down(name string, age float64, last types.NodeSummary) types.FleetNode {
 	return types.FleetNode{
-		Name: name, Status: StatusUnreachable, AgeSeconds: age,
+		Name: name, Status: types.NodeStatusUnreachable, AgeSeconds: age,
 		Error: "connection refused", NodeSummary: last,
 	}
 }

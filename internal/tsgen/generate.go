@@ -29,9 +29,6 @@ var Roots = []string{
 const (
 	TypesFile  = "types.generated.ts"
 	SchemaFile = "schema.generated.ts"
-	// UnionsModule is the specifier the generated types import their
-	// hand-written union aliases from.
-	UnionsModule = "./unions"
 )
 
 // Generate parses source and writes both emitted files into libDir.
@@ -48,7 +45,7 @@ func Generate(source, libDir string) (err error) {
 	}
 
 	outputs := []struct{ path, content string }{
-		{filepath.Join(libDir, TypesFile), RenderTypes(model, UnionsModule)},
+		{filepath.Join(libDir, TypesFile), RenderTypes(model)},
 		{filepath.Join(libDir, SchemaFile), RenderSchema(model)},
 	}
 

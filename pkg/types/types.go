@@ -59,11 +59,15 @@ type Snapshot struct {
 	Alerts []Alert `json:"alerts"`
 }
 
+// Severity is how urgent an alert is. It is a named type so the dashboard's
+// union of legal values is generated from these constants.
+type Severity string
+
 // Alert severities, ordered by urgency.
 const (
-	SeverityInfo     = "info"
-	SeverityWarning  = "warning"
-	SeverityCritical = "critical"
+	SeverityInfo     Severity = "info"
+	SeverityWarning  Severity = "warning"
+	SeverityCritical Severity = "critical"
 )
 
 // Alert is one firing threshold rule. ID is stable across snapshots for the
@@ -72,7 +76,7 @@ const (
 type Alert struct {
 	ID        string    `json:"id"`
 	Rule      string    `json:"rule"`
-	Severity  string    `json:"severity"`
+	Severity  Severity  `json:"severity"`
 	Category  string    `json:"category"`
 	Resource  string    `json:"resource"`
 	Message   string    `json:"message"`
@@ -238,6 +242,39 @@ const (
 	SummarySourceSnapshot SummarySource = "snapshot"
 )
 
+// NodeStatus is a node's rolled-up health, as the aggregator last saw it. It
+// is a named type so the dashboard's union of legal values is generated from
+// these constants.
+type NodeStatus string
+
+// Node status values, reported per node as FleetNode.Status and
+// NodeAttention.Status.
+const (
+	NodeStatusHealthy     NodeStatus = "healthy"
+	NodeStatusWarning     NodeStatus = "warning"
+	NodeStatusCritical    NodeStatus = "critical"
+	NodeStatusUnreachable NodeStatus = "unreachable"
+)
+
+// BuildMatch says whether a node runs the same build as the aggregator serving
+// the view. It is a named type so the dashboard's union of legal values is
+// generated from these constants.
+//
+// These describe BUILD IDENTITY, not health. They are kept apart from the
+// NodeStatus values and from the alert counts on purpose: during a rollout
+// every node disagrees with the aggregator until it is restarted, and a fleet
+// that turned amber on every deploy would train operators to ignore the colour.
+type BuildMatch string
+
+// Build agreement values, reported per node as FleetNode.BuildMatch.
+const (
+	BuildSame      BuildMatch = "same"
+	BuildDifferent BuildMatch = "different"
+	// BuildUnknown is its own answer and never collapses into BuildSame: a
+	// node that did not state its build has not agreed with anything.
+	BuildUnknown BuildMatch = "unknown"
+)
+
 // FleetNode is one node's summary in the fleet view: enough to judge health at
 // a glance without opening the node. The node's own figures come from its
 // NodeSummary, embedded so they encode at the top level as they always have;
@@ -262,8 +299,8 @@ type FleetNode struct {
 	// distinction matters because the only other thing a consumer knows about
 	// an unreachable node is how long it has been that way, and a node that
 	// never answered would otherwise report a two-second gap forever.
-	AgeSeconds float64 `json:"age_seconds"`
-	Status     string  `json:"status"`
+	AgeSeconds float64    `json:"age_seconds"`
+	Status     NodeStatus `json:"status"`
 
 	// Source says how the aggregator got this node's figures: "local",
 	// "summary", or "snapshot" for a peer too old to serve a summary. Empty
@@ -285,7 +322,7 @@ type FleetNode struct {
 	// "unknown" is its own answer and never collapses into "same". A node that
 	// did not state its build has not agreed with anything, and reporting the
 	// silence as agreement is the exact failure this field was added to end.
-	BuildMatch string `json:"build_match"`
+	BuildMatch BuildMatch `json:"build_match"`
 
 	// NameMatch says whether Name -- the name this aggregator holds for the
 	// node, and queries its history by -- is the name the node reports as its
@@ -431,8 +468,8 @@ const RollupNames = 5
 
 // NodeAttention is one node that is not healthy, and why.
 type NodeAttention struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name   string     `json:"name"`
+	Status NodeStatus `json:"status"`
 	// AgeSeconds is how old the node's last reading is, for an unreachable
 	// node; zero when it never answered, and for any other status.
 	AgeSeconds float64 `json:"age_seconds"`
@@ -517,13 +554,35 @@ type FleetBuild struct {
 	Nodes []string `json:"nodes"`
 }
 
+// ConfigSource says which layer supplied an effective setting. It is a named
+// type so the dashboard's union of legal values is generated from these
+// constants, and so every producer is held to them: a source the server can
+// name is a source the page can type.
+type ConfigSource string
+
+// Configuration layers, in ascending precedence: default < config file < env <
+// flag, with runtime outranking all of them.
+const (
+	ConfigSourceDefault ConfigSource = "default"
+	ConfigSourceFile    ConfigSource = "config file"
+	ConfigSourceEnv     ConfigSource = "env"
+	ConfigSourceFlag    ConfigSource = "flag"
+	// ConfigSourceRuntime marks a value changed on the running service rather
+	// than in any configured layer -- today only the polling interval, which
+	// the dashboard's refresh-rate selector sets through POST /api/interval.
+	// It outranks every other source for as long as it lasts, because it is
+	// what the service is actually doing, and a reload replaces it with the
+	// configured value again.
+	ConfigSourceRuntime ConfigSource = "runtime"
+)
+
 // ConfigEntry is one effective setting and where its value came from, for the
 // read-only settings view.
 type ConfigEntry struct {
-	Section string `json:"section"`
-	Key     string `json:"key"`
-	Value   string `json:"value"`
-	Source  string `json:"source"`
+	Section string       `json:"section"`
+	Key     string       `json:"key"`
+	Value   string       `json:"value"`
+	Source  ConfigSource `json:"source"`
 }
 
 // ConfigView is the effective configuration served at /api/config.
@@ -536,13 +595,27 @@ type ConfigView struct {
 	Entries    []ConfigEntry `json:"entries"`
 }
 
+// HistoryUnit is the unit a history series is measured in, which is what
+// picks its axis and its value formatting. It is a named type so the
+// dashboard's union of legal values is generated from these constants.
+type HistoryUnit string
+
+// History units, one per axis the dashboard knows how to draw.
+const (
+	HistoryUnitPercent        HistoryUnit = "percent"
+	HistoryUnitBytesPerSecond HistoryUnit = "bytes_per_second"
+	HistoryUnitCelsius        HistoryUnit = "celsius"
+	HistoryUnitWatts          HistoryUnit = "watts"
+	HistoryUnitCount          HistoryUnit = "count"
+)
+
 // HistoryMetric is one series the history API can draw, as advertised by
 // GET /api/history/metrics.
 type HistoryMetric struct {
-	Key     string `json:"key"`
-	Label   string `json:"label"`
-	Unit    string `json:"unit"`
-	SplitBy string `json:"split_by"`
+	Key     string      `json:"key"`
+	Label   string      `json:"label"`
+	Unit    HistoryUnit `json:"unit"`
+	SplitBy string      `json:"split_by"`
 }
 
 // HistoryCatalog lists what history is available. Enabled is false on a node
@@ -580,7 +653,7 @@ type History struct {
 	Node    string          `json:"node"`
 	Metric  string          `json:"metric"`
 	Label   string          `json:"label"`
-	Unit    string          `json:"unit"`
+	Unit    HistoryUnit     `json:"unit"`
 	StartMs int64           `json:"start_ms"`
 	EndMs   int64           `json:"end_ms"`
 	StepMs  int64           `json:"step_ms"`

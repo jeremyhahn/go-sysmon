@@ -97,7 +97,7 @@ func TestView_MixedVersionFleet(t *testing.T) {
 		if n.Source != want {
 			t.Errorf("%s: Source = %q, want %q", name, n.Source, want)
 		}
-		if n.Hostname != name || n.CPUPercent != 20 || n.Status != fleet.StatusHealthy {
+		if n.Hostname != name || n.CPUPercent != 20 || n.Status != types.NodeStatusHealthy {
 			t.Errorf("%s: summary = host %q cpu %v status %q; want the same figures whichever way it was read",
 				name, n.Hostname, n.CPUPercent, n.Status)
 		}

@@ -71,7 +71,7 @@ func TestView_AnAliasTheNodeDoesNotAnswerToIsDifferent(t *testing.T) {
 		t.Errorf("NodeName = %q, want db-01 -- the warning has to name it", peer.NodeName)
 	}
 	// A naming mistake is a configuration fact, not a fault on the node.
-	if peer.Status != fleet.StatusHealthy {
+	if peer.Status != types.NodeStatusHealthy {
 		t.Errorf("status = %q, want healthy -- a wrong alias is not a node fault", peer.Status)
 	}
 }
@@ -114,7 +114,7 @@ func TestView_AnUnreachableNodeHasNoNameAgreement(t *testing.T) {
 	done := make(chan struct{})
 	go p.Run(done)
 	await.Until(t, "the dead peer to be polled as unreachable", func(context.Context) bool {
-		return node(t, p.View(fleet.Query{}), "dead").Status == fleet.StatusUnreachable
+		return node(t, p.View(fleet.Query{}), "dead").Status == types.NodeStatusUnreachable
 	})
 	close(done)
 
