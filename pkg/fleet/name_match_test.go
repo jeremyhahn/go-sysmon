@@ -40,15 +40,15 @@ func TestView_ANodeThatAgreesWithItsAliasIsSame(t *testing.T) {
 	view := pollUntilReachable(t, p, "db-01")
 
 	peer := node(t, view, "db-01")
-	if peer.NameMatch != fleet.NameSame {
-		t.Errorf("NameMatch = %q, want %q", peer.NameMatch, fleet.NameSame)
+	if peer.NameMatch != types.NameSame {
+		t.Errorf("NameMatch = %q, want %q", peer.NameMatch, types.NameSame)
 	}
 	if peer.NodeName != "db-01" {
 		t.Errorf("NodeName = %q, want db-01", peer.NodeName)
 	}
-	if self := node(t, view, "local"); self.NameMatch != fleet.NameSame {
+	if self := node(t, view, "local"); self.NameMatch != types.NameSame {
 		t.Errorf("self NameMatch = %q, want %q -- a node always agrees with itself",
-			self.NameMatch, fleet.NameSame)
+			self.NameMatch, types.NameSame)
 	}
 }
 
@@ -62,8 +62,8 @@ func TestView_AnAliasTheNodeDoesNotAnswerToIsDifferent(t *testing.T) {
 	view := pollUntilReachable(t, p, "database")
 
 	peer := node(t, view, "database")
-	if peer.NameMatch != fleet.NameDifferent {
-		t.Errorf("NameMatch = %q, want %q", peer.NameMatch, fleet.NameDifferent)
+	if peer.NameMatch != types.NameDifferent {
+		t.Errorf("NameMatch = %q, want %q", peer.NameMatch, types.NameDifferent)
 	}
 	if peer.NodeName != "db-01" {
 		t.Errorf("NodeName = %q, want db-01 -- the warning has to name it", peer.NodeName)
@@ -83,9 +83,9 @@ func TestView_ANodeThatDoesNotStateItsNameIsUnknown(t *testing.T) {
 	view := pollUntilReachable(t, p, "db-01")
 
 	peer := node(t, view, "db-01")
-	if peer.NameMatch != fleet.NameUnknown {
+	if peer.NameMatch != types.NameUnknown {
 		t.Errorf("NameMatch = %q, want %q for a peer that did not state its name",
-			peer.NameMatch, fleet.NameUnknown)
+			peer.NameMatch, types.NameUnknown)
 	}
 	if peer.NodeName != "" {
 		t.Errorf("NodeName = %q, want empty", peer.NodeName)
@@ -105,8 +105,8 @@ func TestView_AnUnreachableNodeHasNoNameAgreement(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
-	if got := node(t, p.View(fleet.Query{}), "dead").NameMatch; got != fleet.NameUnknown {
-		t.Errorf("never-polled NameMatch = %q, want %q", got, fleet.NameUnknown)
+	if got := node(t, p.View(fleet.Query{}), "dead").NameMatch; got != types.NameUnknown {
+		t.Errorf("never-polled NameMatch = %q, want %q", got, types.NameUnknown)
 	}
 
 	done := make(chan struct{})
@@ -116,8 +116,8 @@ func TestView_AnUnreachableNodeHasNoNameAgreement(t *testing.T) {
 	})
 	close(done)
 
-	if got := node(t, p.View(fleet.Query{}), "dead").NameMatch; got != fleet.NameUnknown {
-		t.Errorf("unreachable NameMatch = %q, want %q", got, fleet.NameUnknown)
+	if got := node(t, p.View(fleet.Query{}), "dead").NameMatch; got != types.NameUnknown {
+		t.Errorf("unreachable NameMatch = %q, want %q", got, types.NameUnknown)
 	}
 }
 
@@ -150,15 +150,15 @@ func TestView_AStalePeerLosesItsNameAgreement(t *testing.T) {
 	}()
 
 	waitFor(t, func() bool { return node(t, p.View(fleet.Query{}), "db-01").Reachable })
-	if got := node(t, p.View(fleet.Query{}), "db-01").NameMatch; got != fleet.NameSame {
-		t.Fatalf("NameMatch = %q, want %q before the peer goes away", got, fleet.NameSame)
+	if got := node(t, p.View(fleet.Query{}), "db-01").NameMatch; got != types.NameSame {
+		t.Fatalf("NameMatch = %q, want %q before the peer goes away", got, types.NameSame)
 	}
 
 	srv.Close()
 	waitFor(t, func() bool { return !node(t, p.View(fleet.Query{}), "db-01").Reachable })
 
-	if got := node(t, p.View(fleet.Query{}), "db-01").NameMatch; got != fleet.NameUnknown {
-		t.Errorf("stale NameMatch = %q, want %q", got, fleet.NameUnknown)
+	if got := node(t, p.View(fleet.Query{}), "db-01").NameMatch; got != types.NameUnknown {
+		t.Errorf("stale NameMatch = %q, want %q", got, types.NameUnknown)
 	}
 }
 
@@ -177,8 +177,8 @@ func TestView_ThisNodeAgreesWithItselfAcrossARename(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, stale, 0 }, func() string { return "new-name" }, quiet())
 
 	self := node(t, p.View(fleet.Query{}), "new-name")
-	if self.NameMatch != fleet.NameSame {
-		t.Errorf("self NameMatch = %q, want %q", self.NameMatch, fleet.NameSame)
+	if self.NameMatch != types.NameSame {
+		t.Errorf("self NameMatch = %q, want %q", self.NameMatch, types.NameSame)
 	}
 	if self.NodeName != "new-name" {
 		t.Errorf("self NodeName = %q, want new-name", self.NodeName)
@@ -196,8 +196,8 @@ func TestView_ThisNodeWithNoSnapshotIsUnknown(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
 
-	if got := node(t, p.View(fleet.Query{}), "local").NameMatch; got != fleet.NameUnknown {
-		t.Errorf("self NameMatch = %q, want %q with no snapshot", got, fleet.NameUnknown)
+	if got := node(t, p.View(fleet.Query{}), "local").NameMatch; got != types.NameUnknown {
+		t.Errorf("self NameMatch = %q, want %q with no snapshot", got, types.NameUnknown)
 	}
 }
 
@@ -227,9 +227,9 @@ func TestView_NameComesFromTheSummaryAndTheLegacyFallback(t *testing.T) {
 	if viaSummary.Source != types.SummarySourceSummary {
 		t.Fatalf("database Source = %q, want it read by its summary", viaSummary.Source)
 	}
-	if viaSummary.NodeName != "db-01" || viaSummary.NameMatch != fleet.NameDifferent {
+	if viaSummary.NodeName != "db-01" || viaSummary.NameMatch != types.NameDifferent {
 		t.Errorf("via summary: NodeName %q NameMatch %q, want db-01 / %q",
-			viaSummary.NodeName, viaSummary.NameMatch, fleet.NameDifferent)
+			viaSummary.NodeName, viaSummary.NameMatch, types.NameDifferent)
 	}
 	if n := modern.count("/api/snapshot"); n != 0 {
 		t.Errorf("the summary-serving peer was asked for its snapshot %d times to learn its name", n)
@@ -239,9 +239,9 @@ func TestView_NameComesFromTheSummaryAndTheLegacyFallback(t *testing.T) {
 	if viaSnapshot.Source != types.SummarySourceSnapshot {
 		t.Fatalf("db-02 Source = %q, want the legacy snapshot fallback", viaSnapshot.Source)
 	}
-	if viaSnapshot.NodeName != "db-02" || viaSnapshot.NameMatch != fleet.NameSame {
+	if viaSnapshot.NodeName != "db-02" || viaSnapshot.NameMatch != types.NameSame {
 		t.Errorf("via snapshot: NodeName %q NameMatch %q, want db-02 / %q",
-			viaSnapshot.NodeName, viaSnapshot.NameMatch, fleet.NameSame)
+			viaSnapshot.NodeName, viaSnapshot.NameMatch, types.NameSame)
 	}
 }
 

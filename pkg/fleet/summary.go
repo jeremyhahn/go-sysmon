@@ -49,16 +49,16 @@ func Summarize(prev, cur *types.Snapshot) types.NodeSummary {
 	summarizeDisks(&n, cur.Disks)
 
 	for _, c := range cur.Sensors.CoreTemps {
-		hotter(&n, TempCPU, c.TempCelsius)
+		hotter(&n, types.TempCPU, c.TempCelsius)
 	}
 	// Accelerators count as components like any other: a GPU at 90 °C is the
 	// hottest thing in the machine whether or not its cores are.
 	for i := range cur.GPUs {
-		hotter(&n, TempGPU, cur.GPUs[i].TemperatureGPU)
-		hotter(&n, TempGPU, cur.GPUs[i].TemperatureMemory)
+		hotter(&n, types.TempGPU, cur.GPUs[i].TemperatureGPU)
+		hotter(&n, types.TempGPU, cur.GPUs[i].TemperatureMemory)
 	}
 	for i := range cur.NPUs {
-		hotter(&n, TempNPU, cur.NPUs[i].TemperatureC)
+		hotter(&n, types.TempNPU, cur.NPUs[i].TemperatureC)
 	}
 	// Power is reported only when there is a sensor to report it. A node with
 	// none sends zero, and a fleet total that counted that zero would read a
@@ -142,7 +142,7 @@ func summarizeDisks(n *types.NodeSummary, disks []types.DiskInfo) {
 				n.SMARTUnhealthy++
 			}
 		}
-		hotter(n, TempDrive, d.Temperature)
+		hotter(n, types.TempDrive, d.Temperature)
 		// The drives behind a hardware RAID controller count too. They are not
 		// block devices and never appear in the disk list, so a denominator
 		// summed over that list alone would report ci-node-1 as having three
@@ -152,7 +152,7 @@ func summarizeDisks(n *types.NodeSummary, disks []types.DiskInfo) {
 		// and on a host whose only spinning disks are behind a controller it is
 		// the only disk temperature there is.
 		for _, m := range d.Members {
-			hotter(n, TempDrive, m.Temperature)
+			hotter(n, types.TempDrive, m.Temperature)
 			if !m.SMARTEnabled {
 				continue
 			}
@@ -170,19 +170,10 @@ func summarizeDisks(n *types.NodeSummary, disks []types.DiskInfo) {
 	}
 }
 
-// Component kinds a node's hottest reading can come from, reported as
-// NodeSummary.MaxTempSource.
-const (
-	TempCPU   = "cpu"
-	TempDrive = "drive"
-	TempGPU   = "gpu"
-	TempNPU   = "npu"
-)
-
 // hotter records c as the node's hottest reading if it is. A sensor that did
 // not report reads zero, and zero is never hotter than anything: an absent
 // reading contributes nothing.
-func hotter(n *types.NodeSummary, kind string, c float64) {
+func hotter(n *types.NodeSummary, kind types.TempSource, c float64) {
 	if c > n.MaxTempC {
 		n.MaxTempC, n.MaxTempSource = c, kind
 	}

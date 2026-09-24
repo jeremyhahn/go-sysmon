@@ -105,6 +105,49 @@ already caused bugs:
   Two builds of an unchanged tree are byte-identical, so a rebuild you did not
   need produces no diff at all.
 
+## Wire types and frame validation
+
+The interfaces the page reads a snapshot with, and the schema each arriving
+frame is checked against, are **generated** from `pkg/types/types.go`:
+
+| File | |
+|---|---|
+| `src/lib/types.generated.ts` | The interfaces. DO NOT EDIT. |
+| `src/lib/schema.generated.ts` | The runtime schema. DO NOT EDIT. |
+| `src/lib/types.ts` | A barrel over both, so `$lib/types` keeps working |
+| `src/lib/unions.ts` | The four string unions the Go side does not name |
+| `src/lib/schema.ts` | The walk over the schema, and how strict it is |
+
+`make generate` rewrites the generated pair; `make lint` generates into a
+temporary directory and diffs, so the committed copies cannot drift. The
+generator is Go only -- no npm, no node -- so it runs in the same builds the
+embedded bundle exists to serve.
+
+They were hand-mirrored until #38, and a hand mirror drifts silently: the first
+regeneration turned up ten fields and one whole interface the server had been
+sending that the dashboard never declared, invisible to the page and to
+`svelte-check` alike.
+
+**How strict the validation is, and why it stops there.** Presence is required
+only for the snapshot's own sections and lists, which the store walks with no
+guard -- that is the old validator's list, unchanged. Everywhere below that a
+value is checked only if it is present, all the way into array *elements*,
+which the old check never descended into.
+
+That asymmetry is the design. A field added on the Go side is an unknown key
+and is ignored; a field renamed is simply absent and one cell renders
+`undefined`. Neither refuses the frame -- because a validator that refuses every
+frame blanks the whole dashboard and looks exactly like a connection that will
+not stay up. What is refused is a value of the wrong *kind*: `flags: "x"` where
+a list belongs, or `bytes_sent_rate: "x"`, which used to coerce through
+arithmetic and render as a plausible number while the page reported itself
+connected and current.
+
+Every refusal names its path (`networks[3].flags: expected array, got string`),
+and `$lib/transport` escalates a systematically refused shape to an error that
+says the page and its server are out of step -- rather than logging another
+reconnect and sending the investigation to the network.
+
 ## Charts
 
 `src/lib/echarts.ts` is the only module that imports ECharts. It pulls from

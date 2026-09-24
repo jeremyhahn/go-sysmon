@@ -226,17 +226,17 @@ func TestSummarize_HottestComponentIncludesAccelerators(t *testing.T) {
 	cases := map[string]struct {
 		edit func(*types.Snapshot)
 		temp float64
-		kind string
+		kind types.TempSource
 	}{
-		"cpu hottest":        {func(*types.Snapshot) {}, 62, fleet.TempCPU},
-		"gpu core hottest":   {func(s *types.Snapshot) { s.GPUs = []types.GPUInfo{{TemperatureGPU: 88}} }, 88, fleet.TempGPU},
-		"gpu memory hottest": {func(s *types.Snapshot) { s.GPUs = []types.GPUInfo{{TemperatureGPU: 70, TemperatureMemory: 94}} }, 94, fleet.TempGPU},
-		"npu hottest":        {func(s *types.Snapshot) { s.NPUs = []types.NPUInfo{{TemperatureC: 75}} }, 75, fleet.TempNPU},
-		"drive hottest":      {func(s *types.Snapshot) { s.Disks[0].Temperature = 66 }, 66, fleet.TempDrive},
+		"cpu hottest":        {func(*types.Snapshot) {}, 62, types.TempCPU},
+		"gpu core hottest":   {func(s *types.Snapshot) { s.GPUs = []types.GPUInfo{{TemperatureGPU: 88}} }, 88, types.TempGPU},
+		"gpu memory hottest": {func(s *types.Snapshot) { s.GPUs = []types.GPUInfo{{TemperatureGPU: 70, TemperatureMemory: 94}} }, 94, types.TempGPU},
+		"npu hottest":        {func(s *types.Snapshot) { s.NPUs = []types.NPUInfo{{TemperatureC: 75}} }, 75, types.TempNPU},
+		"drive hottest":      {func(s *types.Snapshot) { s.Disks[0].Temperature = 66 }, 66, types.TempDrive},
 		"accelerators report nothing": {func(s *types.Snapshot) {
 			s.GPUs = []types.GPUInfo{{}}
 			s.NPUs = []types.NPUInfo{{}}
-		}, 62, fleet.TempCPU},
+		}, 62, types.TempCPU},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

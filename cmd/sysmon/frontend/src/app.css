@@ -16,6 +16,24 @@
    a class must not thereby ship it. */
 @source not "../tests";
 
+/* The wire types and the validation schema are not UI source either, and they
+   are the third time this has bitten. Tailwind scans prose exactly as it scans
+   code, so the word "invisible" in a sentence about a field the dashboard could
+   not see emitted a real `.invisible{visibility:hidden}` into the stylesheet --
+   29 bytes of dead CSS from an English comment. The generated files carry Go
+   doc comments across verbatim, so the next such word arrives with the next
+   struct anyone documents.
+
+   These four are interfaces, unions and schema data. None of them can
+   legitimately contain a class name: a class belongs to a component, or to a
+   helper like usageColor() that returns one, and both are still scanned. Same
+   rule as the two above -- a comment that mentions a class must not thereby
+   ship it. */
+@source not "./lib/types.ts";
+@source not "./lib/types.generated.ts";
+@source not "./lib/schema.ts";
+@source not "./lib/schema.generated.ts";
+
 @plugin "daisyui";
 
 /* The light theme's semantic colours, darkened until they are readable.

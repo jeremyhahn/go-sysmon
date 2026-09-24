@@ -90,7 +90,7 @@ func TestView_MixedVersionFleet(t *testing.T) {
 		func() string { return "local" }, quiet())
 	view := pollUntilReachable(t, p, "modern", "old")
 
-	sources := map[string]string{"local": types.SummarySourceLocal, "modern": types.SummarySourceSummary, "old": types.SummarySourceSnapshot}
+	sources := map[string]types.SummarySource{"local": types.SummarySourceLocal, "modern": types.SummarySourceSummary, "old": types.SummarySourceSnapshot}
 	for name, want := range sources {
 		n := node(t, view, name)
 		if n.Source != want {

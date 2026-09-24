@@ -87,7 +87,7 @@ type peerState struct {
 	// dates the data and survives a failed poll; this dates the attempt.
 	polledAt  time.Time
 	summary   *types.NodeSummary
-	source    string
+	source    types.SummarySource
 	err       string
 	fetchedAt time.Time
 	// swapBase is the timestamp and memory of the last whole snapshot, kept
@@ -510,7 +510,7 @@ func (p *Poller) historyCadence() time.Duration {
 // peerSource reports how the latest poll of peer at its configured URL read
 // it, or "" when no poll has read it at that URL -- a state left from an
 // address a reload has replaced says nothing about the new one.
-func (p *Poller) peerSource(peer config.Peer) string {
+func (p *Poller) peerSource(peer config.Peer) types.SummarySource {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if st := p.peers[peer.Name]; st != nil && st.url == peer.URL {

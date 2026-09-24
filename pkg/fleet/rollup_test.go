@@ -170,7 +170,7 @@ func TestRollup_DeviceHealthCountsDevicesNotNodes(t *testing.T) {
 // last values are not candidates; ties keep the first node by name.
 func TestRollup_ExtremesNameTheNode(t *testing.T) {
 	r := boundedRollup([]types.FleetNode{
-		up("alpha", types.NodeSummary{CPUPercent: 44.9, MemoryPercent: 83.3, LoadPerCore: 1.69, WorstDiskPercent: 70, MaxTempC: 83, MaxTempSource: TempGPU}),
+		up("alpha", types.NodeSummary{CPUPercent: 44.9, MemoryPercent: 83.3, LoadPerCore: 1.69, WorstDiskPercent: 70, MaxTempC: 83, MaxTempSource: types.TempGPU}),
 		up("bravo", types.NodeSummary{CPUPercent: 44.9, MemoryPercent: 10, LoadPerCore: 0.2, WorstDiskPercent: 92.1}),
 		down("charlie", 30, types.NodeSummary{CPUPercent: 100, MemoryPercent: 100, WorstDiskPercent: 100, MaxTempC: 120}),
 	})
@@ -182,7 +182,7 @@ func TestRollup_ExtremesNameTheNode(t *testing.T) {
 		"memory":                  {r.Memory, types.FleetExtreme{Node: "alpha", Value: 83.3}},
 		"load per core":           {r.LoadPerCore, types.FleetExtreme{Node: "alpha", Value: 1.69}},
 		"disk":                    {r.Disk, types.FleetExtreme{Node: "bravo", Value: 92.1}},
-		"temperature":             {r.Temperature, types.FleetExtreme{Node: "alpha", Value: 83, Kind: TempGPU}},
+		"temperature":             {r.Temperature, types.FleetExtreme{Node: "alpha", Value: 83, Kind: types.TempGPU}},
 	}
 	for name, c := range checks {
 		if c.got == nil || *c.got != c.want {

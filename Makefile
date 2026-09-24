@@ -32,6 +32,7 @@ PKG_METRICS := ./pkg/metrics/...
 PKG_MONITOR := ./pkg/monitor/...
 PKG_SERVER := ./pkg/server/...
 PKG_TYPES := ./pkg/types/...
+PKG_TSGEN := ./internal/tsgen/...
 PKG_CMD := ./cmd/sysmon/...
 
 FRONTEND_DIR := cmd/sysmon/frontend
@@ -98,7 +99,8 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
+        build-both generate check-generated test-tsgen coverage-tsgen \
+        tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
 
@@ -152,16 +154,64 @@ build-desktop: build-frontend
 build-server: build-frontend
 	CGO_ENABLED=1 go build -tags "$(SERVER_TAGS)" -ldflags "$(LDFLAGS)" -o bin/sysmon-server ./cmd/sysmon
 
-# svelte-check runs before the bundle: the TypeScript interfaces in
-# frontend/src/lib/types.ts mirror the Go types by hand, and drift between them
-# is otherwise invisible until a panel renders "undefined" at runtime.
+# svelte-check runs before the bundle: it is what catches a call site left
+# behind by a regenerated interface, and it needs the generated files to be
+# current -- which is why this VERIFIES them and does not rewrite them.
+#
+# check-generated, NOT generate, and that distinction is the whole point: the
+# build must not mutate a checked-in source file. `ci` runs lint (which contains
+# check-generated) and build in one target, so under `make -j` a generate here
+# would race that check -- and if the generate won, check-generated would compare
+# files it had just rewritten and pass over generated output that was never
+# committed, which is precisely the drift the gate exists to catch. Vite could
+# equally read a half-rewritten source. Verifying is idempotent and safe to run
+# concurrently with anything; regenerating is not. Change a Go wire type and the
+# build tells you to run `make generate` and commit the result.
+#
 # Depends on the shared install rather than running its own `npm install`: under
 # `make -j` that raced check-bundle-current's `npm ci` in the same directory, and
 # because npm ci deletes and recreates node_modules either build could observe a
 # half-replaced dependency tree. One install target, keyed to the lockfile, is
 # also what makes a local build match the hosted one.
-build-frontend: $(FRONTEND_STAMP)
+build-frontend: check-generated $(FRONTEND_STAMP)
 	cd $(FRONTEND_DIR) && npm run check && npm run build
+
+# generate rewrites the dashboard's wire types and runtime schema from
+# pkg/types/types.go.
+#
+# It is Go only -- no npm, no node -- so it runs in the same builds that must
+# work without a JavaScript toolchain at all.
+generate:
+	go run ./cmd/tsgen
+
+# check-generated fails when the committed TypeScript does not match what the
+# current pkg/types produces.
+#
+# The whole value of generating these is that they cannot drift from the Go
+# types, and that only holds if something checks. A regenerated file that was
+# never committed is the hand-mirror problem back again, with the added
+# confusion of a file that says DO NOT EDIT and is wrong.
+#
+# It generates into a temporary directory and diffs, rather than regenerating in
+# place and asking git: a working tree with legitimate uncommitted work in it
+# must not fail this, and a `git diff` check cannot tell the two apart.
+#
+# EVERY step is joined with `&&`, the closing echo included. With a `;` before
+# it, a failing mktemp or a generator that does not compile skipped the
+# comparison and then ran the echo, whose zero status became the recipe's --
+# so the gate announced "current" without having compared anything, and
+# build-frontend depends on it.
+check-generated:
+	@tmp=$$(mktemp -d) && trap 'rm -rf "$$tmp"' EXIT && \
+	go run ./cmd/tsgen -out "$$tmp" && \
+	for f in types.generated.ts schema.generated.ts; do \
+		if ! diff -u "$(FRONTEND_DIR)/src/lib/$$f" "$$tmp/$$f"; then \
+			echo ""; \
+			echo "$$f is out of date. Run 'make generate' and commit the result."; \
+			exit 1; \
+		fi; \
+	done && \
+	echo "Generated TypeScript is current."
 
 dev:
 	cd cmd/sysmon && wails dev
@@ -204,6 +254,9 @@ test-metrics:
 test-cmd:
 	go test $(PKG_CMD) -v -count=1
 
+test-tsgen:
+	go test $(PKG_TSGEN) -v -count=1
+
 ## Coverage targets
 
 coverage-cli:
@@ -225,6 +278,10 @@ coverage-server:
 coverage-types:
 	go test $(PKG_TYPES) -coverprofile=/tmp/coverage-types.out -count=1
 	go tool cover -func=/tmp/coverage-types.out
+
+coverage-tsgen:
+	go test $(PKG_TSGEN) -coverprofile=/tmp/coverage-tsgen.out -count=1
+	go tool cover -func=/tmp/coverage-tsgen.out
 
 coverage-metrics:
 	go test $(PKG_METRICS) -coverprofile=/tmp/coverage-metrics.out -count=1
@@ -315,8 +372,9 @@ uninstall-extension-cinnamon:
 
 # lint fails the build on any finding. gofmt and vet always run; golangci-lint
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
-# installs it.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean
+# installs it. check-generated keeps the dashboard's TypeScript in step with
+# pkg/types.
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated
 	@$(TOOL) check "$(GOLANGCI_LINT)" $(GOLANGCI_LINT_PKG) $(GOLANGCI_LINT_VERSION)
 	$(GOLANGCI_LINT) run $(PKG_ALL)
 

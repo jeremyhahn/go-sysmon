@@ -1,6 +1,13 @@
 // Package types defines shared data structures for system monitoring.
 package types
 
+// The dashboard's TypeScript interfaces and its runtime validation schema are
+// generated from the declarations below. Use "make generate" rather than this
+// directive: it is the one CI checks against, and it does not depend on being
+// run from this directory.
+//
+//go:generate go run ../../cmd/tsgen -source types.go -out ../../cmd/sysmon/frontend/src/lib
+
 import "time"
 
 // Snapshot contains a complete system state at a point in time.
@@ -194,8 +201,8 @@ type NodeSummary struct {
 	// which kind of component it came from. Zero means the node has no
 	// thermometer to read, not that it is at freezing point; a sensor that
 	// reports nothing contributes nothing.
-	MaxTempC      float64 `json:"max_temp_c"`
-	MaxTempSource string  `json:"max_temp_source,omitempty"`
+	MaxTempC      float64    `json:"max_temp_c"`
+	MaxTempSource TempSource `json:"max_temp_source,omitempty"`
 	// PowerW is the node's measured draw: CPU packages, GPUs and NPUs. It means
 	// nothing without PowerReported, because a node with no power sensor
 	// reports zero -- which a fleet sum would count as a machine drawing
@@ -213,17 +220,22 @@ type NodeSummary struct {
 	NetReported bool    `json:"net_reported"`
 }
 
-// Summary sources, reported per node as FleetNode.Source.
+// SummarySource says how the aggregator got a node's figures, reported per
+// node as FleetNode.Source. It is a named type so the dashboard's union of
+// legal values is generated from these constants.
+type SummarySource string
+
+// Summary sources.
 const (
 	// SummarySourceLocal is the aggregator itself, summarised in process.
-	SummarySourceLocal = "local"
+	SummarySourceLocal SummarySource = "local"
 	// SummarySourceSummary is a peer that served GET /api/summary.
-	SummarySourceSummary = "summary"
+	SummarySourceSummary SummarySource = "summary"
 	// SummarySourceSnapshot is a peer whose build predates GET /api/summary,
 	// so the aggregator fetched its whole snapshot and summarised it itself.
 	// The figures are the same; the cost is not, and a fleet mid-rollout should
 	// be able to see which peers are still costing it.
-	SummarySourceSnapshot = "snapshot"
+	SummarySourceSnapshot SummarySource = "snapshot"
 )
 
 // FleetNode is one node's summary in the fleet view: enough to judge health at
@@ -256,7 +268,7 @@ type FleetNode struct {
 	// Source says how the aggregator got this node's figures: "local",
 	// "summary", or "snapshot" for a peer too old to serve a summary. Empty
 	// when there are no figures at all. It is not a health signal.
-	Source string `json:"source,omitempty"`
+	Source SummarySource `json:"source,omitempty"`
 
 	// BuildMatch says whether this node runs the same build as the aggregator
 	// serving the view: "same", "different" or "unknown". The aggregator knows
@@ -289,7 +301,7 @@ type FleetNode struct {
 	// rule build_match set in #68: a node that did not state its name (an
 	// older build) or did not answer the latest poll has not agreed with
 	// anything. Like BuildMatch, it is not a health signal.
-	NameMatch string `json:"name_match"`
+	NameMatch NameMatch `json:"name_match"`
 
 	NodeSummary
 }
@@ -435,9 +447,37 @@ type FleetExtreme struct {
 	Node  string  `json:"node"`
 	Value float64 `json:"value"`
 	// Kind names the component the value came from, where the metric spans
-	// several: for Temperature, "cpu", "drive", "gpu" or "npu".
-	Kind string `json:"kind,omitempty"`
+	// several; for Temperature it is a TempSource.
+	Kind TempSource `json:"kind,omitempty"`
 }
+
+// NameMatch says whether the name the aggregator holds for a node is the name
+// the node reports writing its history under (#162). It is a named type so
+// the dashboard's union of legal values is generated from these constants.
+// Like the build agreement values it describes configuration, not health.
+type NameMatch string
+
+// Name agreement values, reported per node as FleetNode.NameMatch.
+const (
+	NameSame      NameMatch = "same"
+	NameDifferent NameMatch = "different"
+	// NameUnknown is its own answer and never collapses into NameSame: a node
+	// that did not state its name, or did not answer, has not agreed.
+	NameUnknown NameMatch = "unknown"
+)
+
+// TempSource names the kind of component a temperature reading came from.
+// It is a named type so the dashboard's union of legal values is generated
+// from these constants rather than kept by hand beside them.
+type TempSource string
+
+// The component kinds a node's hottest reading can come from.
+const (
+	TempCPU   TempSource = "cpu"
+	TempDrive TempSource = "drive"
+	TempGPU   TempSource = "gpu"
+	TempNPU   TempSource = "npu"
+)
 
 // FleetSum is a total and the nodes it was summed over. Nodes is how many
 // contributed a reading; Of is how many could have (FleetRollup.Reporting).

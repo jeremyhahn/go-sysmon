@@ -7,6 +7,20 @@ and the frontend decodes them — so this file is the contract between all four.
 It imports nothing from the other packages, which is what stops the dependency
 graph from becoming a circle.
 
+**The dashboard's TypeScript is generated from these declarations.** Change a
+struct here, run `make generate`, and commit the result — `make lint` fails
+otherwise. Two files come out, both marked DO NOT EDIT:
+
+| File | What it is |
+|---|---|
+| `cmd/sysmon/frontend/src/lib/types.generated.ts` | The interfaces the page reads snapshots with |
+| `cmd/sysmon/frontend/src/lib/schema.generated.ts` | The runtime schema each arriving frame is validated against |
+
+They were hand-mirrored until #38, and the mirror had drifted: ten fields and a
+whole interface that the server was sending and the dashboard did not
+declare. See [../gui/architecture.md](../gui/architecture.md) for how the
+schema is used and how strict it is.
+
 ## Lists are never null
 
 Every slice in these types reaches the wire as a JSON array, never as `null`: a
