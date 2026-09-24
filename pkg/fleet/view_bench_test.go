@@ -3,6 +3,7 @@
 package fleet
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -41,7 +42,7 @@ func BenchmarkPoller_View(b *testing.B) {
 				start := processCPU(b)
 				b.ResetTimer()
 				for b.Loop() {
-					body, err := json.Marshal(p.View(shape.q))
+					body, err := json.Marshal(p.View(context.Background(), shape.q))
 					if err != nil {
 						b.Fatalf("encode: %v", err)
 					}

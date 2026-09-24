@@ -126,6 +126,7 @@ export type Severity =
 export type SummarySource =
   | "local"
   | "summary"
+  | "index"
   | "snapshot";
 
 /**
@@ -686,6 +687,27 @@ export interface FleetNode {
    * invisible: the node looks healthy and its charts are simply empty.
    */
   history?: PeerHistory | null;
+  /**
+   * Via names the child aggregator this node is reached through, when it is
+   * not this aggregator's own peer (#190): the node is in that child's
+   * subtree, and drill-in, configuration and history for it are routed
+   * there. Empty for this node and for its direct peers.
+   */
+  via?: string;
+  /**
+   * NameConflict says another node in the tree carries the same name.
+   * Names are fleet-wide identities (#37), so two machines sharing one is a
+   * configuration fault: both are listed and flagged, neither is routed to,
+   * and nothing is merged.
+   */
+  name_conflict?: boolean;
+  /**
+   * SubtreeError says why this child aggregator's subtree is not part of
+   * the view -- the fleet loops back through it, or it is deeper than the
+   * tree allows -- or why its subtree could not be read. Empty for a leaf
+   * and for a child whose subtree is composed.
+   */
+  subtree_error?: string;
   hostname: string;
   version: string;
   uptime_seconds: number;
@@ -696,6 +718,22 @@ export interface FleetNode {
    * Empty means the node did not say -- a build predating the field.
    */
   node_name?: string;
+  /**
+   * Aggregates is how many nodes this node's own fleet view covers besides
+   * itself: its whole subtree when it is an aggregator (#190). An aggregator
+   * that polls it reads this to know it is a child aggregator and to fetch
+   * its subtree. ZERO MEANS A LEAF -- no peers, or a build that predates
+   * hierarchical fleets, which is then shown as the single node it says it
+   * is.
+   */
+  aggregates?: number;
+  /**
+   * InstanceID is the aggregator process's random identity in a fleet tree
+   * (#190), taken at start and never configured. A parent that finds its
+   * own among its peers' has a peer that is itself under another name.
+   * Empty on a node that aggregates nothing.
+   */
+  instance_id?: string;
   /**
    * CollectionIntervalMs is the interval the node's monitor actually
    * collects at -- the cadence its snapshot timestamps advance by, whatever
@@ -883,6 +921,17 @@ export interface FleetRollup {
    * have no absence to measure.
    */
   never_answered: number;
+  /**
+   * SubtreeErrors counts the child aggregators whose subtrees are not in
+   * the view because they could not be composed (a loop, or too deep). Their
+   * nodes are neither counted nor named; this says they exist.
+   */
+  subtree_errors?: number;
+  /**
+   * NameConflicts counts the nodes whose name another node in the tree
+   * also carries.
+   */
+  name_conflicts?: number;
   /**
    * Attention names the worst of the nodes that are not healthy --
    * critical, then unreachable, then warning, by name within each -- with
@@ -1344,6 +1393,17 @@ export interface NodeAttention {
    * for an unreachable node.
    */
   reasons: string[];
+  /**
+   * Subtree is, for an unreachable child aggregator, how many nodes below
+   * it are unknown with it: the size of its subtree when it last answered.
+   * Zero for any other node, and for a child that never answered.
+   */
+  subtree?: number;
+  /**
+   * Via names the child aggregator the node is reached through, as on
+   * FleetNode.
+   */
+  via?: string;
 }
 
 /**

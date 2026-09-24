@@ -577,7 +577,15 @@ const serverListeningMsg = "server listening"
 // the host.
 func startServer(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command(binaryPath, "serve", "--addr", "127.0.0.1:0", "--interval", "200", "--log-format", "json")
+	return startServe(t)
+}
+
+// startServe is startServer with extra arguments to `sysmon serve`, such as a
+// configuration file.
+func startServe(t *testing.T, extra ...string) string {
+	t.Helper()
+	args := append([]string{"serve", "--addr", "127.0.0.1:0", "--interval", "200", "--log-format", "json"}, extra...)
+	cmd := exec.Command(binaryPath, args...)
 	cmd.Env = append(os.Environ(), "DISPLAY=", "WAYLAND_DISPLAY=")
 
 	logs, err := cmd.StderrPipe()

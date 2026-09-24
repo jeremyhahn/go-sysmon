@@ -72,6 +72,25 @@ export function absenceNote(r: FleetRollup): string {
   return parts.join("; ");
 }
 
+/**
+ * What the fleet tree could not compose (#190): subtrees left out entirely,
+ * and nodes sharing a name. "" when there is nothing to say.
+ */
+export function treeNotes(r: FleetRollup): string[] {
+  const notes: string[] = [];
+  const refused = r.subtree_errors ?? 0;
+  if (refused > 0) {
+    notes.push(
+      `${plural(refused, "aggregator's fleet is", "aggregators' fleets are")} not shown: see ${refused === 1 ? "its card" : "their cards"}`
+    );
+  }
+  const shared = r.name_conflicts ?? 0;
+  if (shared > 0) {
+    notes.push(`${plural(shared, "node shares", "nodes share")} a name with another node and cannot be opened`);
+  }
+  return notes;
+}
+
 /** "of 9 reachable nodes", or "of 10 nodes" when every node answered. */
 export function coverage(of: number, r: FleetRollup): string {
   return r.unreachable > 0
@@ -103,7 +122,15 @@ export function attentionReason(a: NodeAttention): string {
       a.age_seconds > 0
         ? `no reading for ${formatAge(a.age_seconds)}`
         : "never answered";
-    return a.reasons.length > 0 ? `${since} — ${a.reasons[0]}` : since;
+    // A child aggregator takes its whole subtree with it (#190): those nodes
+    // are unknown too, and saying how many is what makes one line honest.
+    const below =
+      (a.subtree ?? 0) > 0
+        ? `; ${plural(a.subtree ?? 0, "node", "nodes")} below it unknown`
+        : "";
+    return a.reasons.length > 0
+      ? `${since}${below} — ${a.reasons[0]}`
+      : `${since}${below}`;
   }
   return a.reasons.length > 0 ? a.reasons.join("; ") : a.status;
 }

@@ -92,12 +92,16 @@ func TestFleetEndpoints_PublishNoPeerAddress(t *testing.T) {
 		"/api/fleet?offset=0&limit=1": http.StatusOK,
 		"/api/fleet?q=dead&limit=25":  http.StatusOK,
 		"/api/fleet/rollup":           http.StatusOK,
-		"/api/fleet/live/config":      http.StatusOK,
-		"/api/fleet/live/snapshot":    http.StatusOK,
-		"/api/fleet/dead/config":      http.StatusBadGateway,
-		"/api/fleet/dead/snapshot":    http.StatusBadGateway,
-		"/api/summary":                http.StatusOK,
-		"/api/config":                 http.StatusOK,
+		// And what a parent aggregator reads from this one (#190).
+		"/api/fleet/subtree":         http.StatusOK,
+		"/api/fleet/nodes?name=live": http.StatusOK,
+		"/api/fleet/nodes?name=dead": http.StatusOK,
+		"/api/fleet/live/config":     http.StatusOK,
+		"/api/fleet/live/snapshot":   http.StatusOK,
+		"/api/fleet/dead/config":     http.StatusBadGateway,
+		"/api/fleet/dead/snapshot":   http.StatusBadGateway,
+		"/api/summary":               http.StatusOK,
+		"/api/config":                http.StatusOK,
 	}
 	for path, wantCode := range responses {
 		rec := httptest.NewRecorder()

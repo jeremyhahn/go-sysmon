@@ -90,7 +90,7 @@ func TestParseQuery_RejectsAStringThatDoesNotParse(t *testing.T) {
 	}
 }
 
-func namedNodes(names []string, hosts map[string]string) []types.FleetNode {
+func namedNodes(names []string, hosts map[string]string) []row {
 	nodes := make([]types.FleetNode, 0, len(names))
 	for _, name := range names {
 		host, ok := hosts[name]
@@ -100,7 +100,20 @@ func namedNodes(names []string, hosts map[string]string) []types.FleetNode {
 		nodes = append(nodes, types.FleetNode{Name: name, NodeSummary: types.NodeSummary{Hostname: host}})
 	}
 	sortByName(nodes)
-	return nodes
+	rows := make([]row, len(nodes))
+	for i := range nodes {
+		rows[i] = row{name: nodes[i].Name, hostname: nodes[i].Hostname, direct: &nodes[i]}
+	}
+	return rows
+}
+
+// rowNames is the names of rows, in order.
+func rowNames(rows []row) []string {
+	out := []string{}
+	for _, r := range rows {
+		out = append(out, r.name)
+	}
+	return out
 }
 
 func names(nodes []types.FleetNode) []string {
@@ -131,9 +144,9 @@ func TestPage_Bounds(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, matched, _ := page(nodes, tt.q)
-			if !reflect.DeepEqual(names(got), tt.want) {
-				t.Errorf("page(%+v) = %v, want %v", tt.q, names(got), tt.want)
+			got, matched, _ := page(nodes, rowKey, tt.q)
+			if !reflect.DeepEqual(rowNames(got), tt.want) {
+				t.Errorf("page(%+v) = %v, want %v", tt.q, rowNames(got), tt.want)
 			}
 			if matched != 5 {
 				t.Errorf("matched = %d, want all 5 whatever the page", matched)
@@ -167,9 +180,9 @@ func TestPage_SearchMatchesNameOrHostnameIgnoringCase(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.search, func(t *testing.T) {
 			// Query.Search arrives trimmed but not folded; page folds it.
-			got, matched, _ := page(nodes, Query{Search: tt.search})
-			if !reflect.DeepEqual(names(got), tt.want) {
-				t.Errorf("search %q = %v, want %v", tt.search, names(got), tt.want)
+			got, matched, _ := page(nodes, rowKey, Query{Search: tt.search})
+			if !reflect.DeepEqual(rowNames(got), tt.want) {
+				t.Errorf("search %q = %v, want %v", tt.search, rowNames(got), tt.want)
 			}
 			if matched != len(tt.want) {
 				t.Errorf("search %q matched %d, want %d", tt.search, matched, len(tt.want))
@@ -187,18 +200,18 @@ func TestPage_PagesPartitionTheMatches(t *testing.T) {
 		all = append(all, string(rune('a'+i%26))+"-node-"+string(rune('A'+i/26)))
 	}
 	nodes := namedNodes(all, nil)
-	whole, matched, _ := page(nodes, Query{Search: "NODE"})
+	whole, matched, _ := page(nodes, rowKey, Query{Search: "NODE"})
 
 	for _, limit := range []int{1, 7, 25, 250} {
 		var walked []string
 		for offset := 0; offset < matched; offset += limit {
-			got, m, _ := page(nodes, Query{Search: "NODE", Offset: offset, Limit: limit})
+			got, m, _ := page(nodes, rowKey, Query{Search: "NODE", Offset: offset, Limit: limit})
 			if m != matched {
 				t.Fatalf("limit %d offset %d: matched %d, want %d on every page", limit, offset, m, matched)
 			}
-			walked = append(walked, names(got)...)
+			walked = append(walked, rowNames(got)...)
 		}
-		if !reflect.DeepEqual(walked, names(whole)) {
+		if !reflect.DeepEqual(walked, rowNames(whole)) {
 			t.Errorf("limit %d: pages concatenate to %d nodes differing from the %d-node list", limit, len(walked), len(whole))
 		}
 	}
@@ -238,21 +251,21 @@ func TestPage_AnchorOpensThePageHoldingTheNode(t *testing.T) {
 	all = append(all, "db", "db-01")
 	nodes := namedNodes(all, hosts)
 
-	got, matched, offset := page(nodes, Query{Search: "db", Limit: 25, Anchor: "db"})
-	if matched != 32 || offset != 25 || !slices.Contains(names(got), "db") {
-		t.Errorf("anchored page = %v at offset %d of %d; want the page at 25, holding db", names(got), offset, matched)
+	got, matched, offset := page(nodes, rowKey, Query{Search: "db", Limit: 25, Anchor: "db"})
+	if matched != 32 || offset != 25 || !slices.Contains(rowNames(got), "db") {
+		t.Errorf("anchored page = %v at offset %d of %d; want the page at 25, holding db", rowNames(got), offset, matched)
 	}
 	// Page one, which is where a search alone lands, does not hold it.
-	if first, _, _ := page(nodes, Query{Search: "db", Limit: 25}); slices.Contains(names(first), "db") {
+	if first, _, _ := page(nodes, rowKey, Query{Search: "db", Limit: 25}); slices.Contains(rowNames(first), "db") {
 		t.Fatal("fixture does not reproduce the problem: db is already on page one")
 	}
 
 	// An anchor that is not among the matches leaves the offset as asked.
-	if _, _, offset := page(nodes, Query{Search: "db", Limit: 25, Offset: 25, Anchor: "gone"}); offset != 25 {
+	if _, _, offset := page(nodes, rowKey, Query{Search: "db", Limit: 25, Offset: 25, Anchor: "gone"}); offset != 25 {
 		t.Errorf("unmatched anchor moved the offset to %d; want 25", offset)
 	}
 	// Without a limit there are no pages to anchor to.
-	if _, _, offset := page(nodes, Query{Search: "db", Anchor: "db"}); offset != 0 {
+	if _, _, offset := page(nodes, rowKey, Query{Search: "db", Anchor: "db"}); offset != 0 {
 		t.Errorf("anchor without a limit set offset %d; want 0", offset)
 	}
 }
@@ -263,9 +276,9 @@ func TestPage_AnchorOpensThePageHoldingTheNode(t *testing.T) {
 func TestPage_NegativeBoundsFromADirectCaller(t *testing.T) {
 	nodes := namedNodes([]string{"a", "b", "c"}, nil)
 	for _, q := range []Query{{Offset: -1}, {Limit: -5}, {Offset: -2, Limit: -2, Search: "b"}} {
-		got, _, offset := page(nodes, q)
+		got, _, offset := page(nodes, rowKey, q)
 		if offset != 0 || len(got) == 0 {
-			t.Errorf("page(%+v) = %v at %d; want from the start, no limit", q, names(got), offset)
+			t.Errorf("page(%+v) = %v at %d; want from the start, no limit", q, rowNames(got), offset)
 		}
 	}
 }

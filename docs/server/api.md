@@ -240,11 +240,57 @@ request with no parameters is already the size of the fleet and gets the
 lists whole, which is also what a consumer written before paging reads. Every field is described in
 [the fleet section](alerting-fleet-config.md#fleet).
 
+On an aggregator with child aggregators (#190) the view is the whole tree. A
+node of a child's subtree carries `via`, the child it is reached through; the
+roll-up adds `subtree_errors` (children whose subtrees are not composed) and
+`name_conflicts` (nodes sharing a name with another), and a node may carry
+`name_conflict`, `subtree_error` and `aggregates`. Search, order, counts and
+paging run over the index each child is polled for, and only a page's subtree
+nodes are fetched from their children on request, reused for the poll
+interval. A request with no parameters fetches nothing from the children: its
+subtree nodes, and any beyond the 250 a view fetches, carry `source: "index"`,
+with their state known and their figures absent. See
+[Hierarchical aggregation](alerting-fleet-config.md#hierarchical-aggregation).
+
 ## GET /api/fleet/rollup
 
 The same whole-fleet roll-up alone, bounded as a page's is, for a consumer that wants the fleet's
 state and none of its nodes. `404` on a node with no peers: there is no fleet
 to roll up.
+
+## GET /api/fleet/subtree
+
+What a parent aggregator polls from this one each cycle (#190):
+`{nodes, rollup}`. `nodes` is an index of every node in this fleet, this node
+included: `{name, hostname, status, reachable, age_seconds, depth,
+name_conflict, reasons, commit}`, with `depth` 0 for this node and 1 for its
+own peers. `rollup`
+is the roll-up in the form a parent composes: every build group is kept, each
+naming at most five nodes, so groups sum exactly across children. `404` on a
+node with no peers: it is a leaf, and its summary's `aggregates` is 0.
+
+## GET /api/fleet/nodes
+
+`?name=a&name=b…`: the named nodes of this fleet, whole, as `{nodes}` — what a
+parent aggregator fetches to fill a page with nodes of this one's subtree. A
+name not in the fleet, or in conflict, is omitted. Each name must be a valid
+node name, one to 1000 of them; anything else is `400`. `404` with no fleet.
+
+### Between aggregators
+
+Every request one aggregator makes of another carries
+`X-Sysmon-Fleet-Ancestry` (the instance IDs of the aggregators it has passed
+through) and `X-Sysmon-Fleet-Budget-Ms` (the time the sender will still wait).
+`/api/fleet`, `/api/fleet/subtree`, `/api/fleet/nodes`,
+`/api/fleet/{name}/snapshot`, `/api/fleet/{name}/config` and a relayed
+`/api/history` all read them. A chain containing this aggregator's own ID is
+refused with `508 Loop Detected` and `X-Sysmon-Fleet-Refusal: loop`. A chain
+longer than four is refused with `508` and `depth`. A malformed chain is
+`400`. The budget only ever shortens this node's own, and is honoured only
+with a valid chain; a browser's is ignored. A relayed history range is
+decoded and re-served as this node's JSON; a child's error comes back as its
+status (400, 404 or 409, otherwise 502) and never its body. See
+[Hierarchical aggregation](alerting-fleet-config.md#hierarchical-aggregation).
 
 ## GET /api/fleet/{name}/snapshot
 
@@ -255,7 +301,10 @@ client must show it as stale. `404` means an unknown node, or this node before
 its first collection. `502` means a peer that cannot be read and never has
 been, or that did not answer within the response's write budget. `503` means
 a reload moved the node while its snapshot was being fetched; ask again. An
-error body names the node, never its address, as in `GET /api/fleet`.
+error body names the node, never its address, as in `GET /api/fleet`. For a
+node of a child aggregator's subtree (#190) the drill-in is routed to that
+child, and its envelope comes back as the child built it. `409` means two
+nodes in the fleet tree carry the name, and neither is routed to.
 
 ## GET /api/fleet/{name}/config
 
@@ -269,6 +318,8 @@ peer URLs. A peer entry keyed by a URL (a build older than #37) is re-keyed
 `fleet.peers.(unnamed N)`. See
 [What the settings view withholds](alerting-fleet-config.md#what-the-settings-view-withholds).
 `502` means the peer could not be read; the body names it without its address.
+A subtree node's settings are routed to its child aggregator and withheld again
+here; `404` is a name not in the fleet, `409` a name in conflict.
 
 ## GET /
 

@@ -171,6 +171,13 @@
     monitor.setFleetRequest({ search: a.name, page: 0, anchor: a.name });
   }
 
+  /** A card's key: its route and name, and its position when its name is in
+   * conflict, since then route and name need not be unique. */
+  function cardKey(node: FleetNode, i: number): string {
+    const key = `${node.via ?? ""}/${node.name}`;
+    return node.name_conflict ? `${key}#${i}` : key;
+  }
+
   // Selection is reported upward rather than applied here: the parent both
   // switches the store and moves the user off this tab, and one owner for
   // that pair keeps the two from drifting apart.
@@ -268,7 +275,10 @@
       </div>
     {:else}
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        {#each nodes as node (node.name)}
+        <!-- Keyed by route and name: a name is unique in a healthy fleet, but
+             a name conflict (#190) lists two nodes under one name, and each
+             must keep its own card. -->
+        {#each nodes as node, i (cardKey(node, i))}
           {@const isSelected = selectedNode === node.name}
           {@const drift = hasBuildDrift(node)}
           {@const build = buildLabel(node)}
@@ -278,7 +288,7 @@
               {nodeStatusBorderClass(node.status)}
               {isSelected ? 'ring-2 ring-primary' : ''}
               {node.reachable ? 'hover:bg-base-100 cursor-pointer' : 'opacity-70 cursor-not-allowed'}"
-            disabled={!node.reachable}
+            disabled={!node.reachable || node.name_conflict === true}
             onclick={() => select(node)}
           >
             <div class="card-body p-4 gap-2">
@@ -289,6 +299,26 @@
                     <h3 class="font-semibold truncate">{node.name}</h3>
                     {#if node.self}
                       <span class="badge badge-outline badge-xs">this node</span>
+                    {/if}
+                    {#if node.via}
+                      <!-- A node of a child aggregator's subtree: opened,
+                           configured and charted through that child. -->
+                      <span
+                        class="badge badge-ghost badge-xs"
+                        data-testid="node-via"
+                        title="Reached through the aggregator {node.via}, which polls it and records its history"
+                      >
+                        via {node.via}
+                      </span>
+                    {/if}
+                    {#if (node.aggregates ?? 0) > 0}
+                      <span
+                        class="badge badge-outline badge-xs"
+                        data-testid="node-aggregates"
+                        title="This node is an aggregator; its fleet is part of this view"
+                      >
+                        aggregates {node.aggregates}
+                      </span>
                     {/if}
                     {#if showsStatusBadge(node)}
                       <span class="badge {nodeStatusBadgeClass(node.status)} badge-sm">
@@ -383,6 +413,27 @@
                 </div>
               </div>
 
+              {#if node.name_conflict}
+                <!-- Names are fleet-wide identities (#37): two machines under
+                     one name cannot both be addressed by it, so neither is. -->
+                <div class="alert alert-warning alert-soft py-2 text-sm" data-testid="name-conflict">
+                  <span>
+                    Another node in the fleet is also named
+                    <span class="font-mono font-semibold">{node.name}</span>, so
+                    neither can be opened. Give every node a unique
+                    <span class="font-mono">fleet.local_name</span> and peer name.
+                  </span>
+                </div>
+              {/if}
+              {#if node.subtree_error}
+                <div class="alert alert-warning alert-soft py-2 text-sm" data-testid="subtree-error">
+                  <span>
+                    <span class="font-semibold">Its fleet is not shown as current:</span>
+                    {node.subtree_error}
+                  </span>
+                </div>
+              {/if}
+
               {#if !node.reachable}
                 <!-- An unreachable node has no metrics worth showing; say why
                      instead of drawing a row of zeroes. -->
@@ -402,6 +453,13 @@
                     {node.error || "no response from this node"}
                   </span>
                 </div>
+              {:else if node.source === "index"}
+                <!-- A node of a child aggregator's subtree whose figures were not fetched
+                     for this view (#190): its state is its child's index entry, and its
+                     figures are absent, not zero. -->
+                <p class="text-xs text-base-content/60" data-testid="figures-not-loaded">
+                  Figures not loaded{node.error ? `: ${node.error}` : "; open the node to see them."}
+                </p>
               {:else}
                 {#if hasNameMismatch(node)}
                   <!-- A wrong alias loads cleanly and the node runs perfectly

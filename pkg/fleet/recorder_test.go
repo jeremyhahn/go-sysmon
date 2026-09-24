@@ -128,7 +128,7 @@ func TestRecorder_AStalledHistoryEndpointNeverDelaysTheSummary(t *testing.T) {
 	for i := range 5 {
 		p.refresh(*cfg.Load())
 		p.history.sync(*cfg.Load())
-		n := p.View(Query{}).Nodes[1]
+		n := p.View(context.Background(), Query{}).Nodes[1]
 		if !n.Reachable || n.Status != types.NodeStatusHealthy || n.AgeSeconds != 0 {
 			t.Fatalf("cycle %d with history stalled: reachable %v status %q age %.1fs; the card must stay current",
 				i, n.Reachable, n.Status, n.AgeSeconds)

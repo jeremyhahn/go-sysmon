@@ -230,15 +230,22 @@ func (s *Server) knownNode(name string) bool {
 	if name == s.localName() {
 		return true
 	}
+	// The fleet answers from its configuration -- an unreachable peer is still
+	// a node whose past this dashboard answers for -- and knows the nodes of
+	// child aggregators' subtrees too (#190), whose history is relayed to the
+	// child that records it. It also refuses a name two nodes in the tree
+	// carry: their series would be two machines under one instance label.
+	if s.fleet != nil {
+		return s.fleet.Has(name)
+	}
 	if s.cfg != nil {
 		for _, p := range s.cfg.Current().Fleet.Peers {
 			if p.Name == name {
 				return true
 			}
 		}
-		return false
 	}
-	return s.fleet != nil && s.fleet.Has(name)
+	return false
 }
 
 // historyEnabled reports whether this node can answer a range. It is checked

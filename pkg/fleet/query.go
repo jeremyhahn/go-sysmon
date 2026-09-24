@@ -136,16 +136,14 @@ func parseBound(values url.Values, param string, least int) (int, error) {
 	return n, nil
 }
 
-// matches reports whether a node answers a search: needle, already folded,
-// appears in its name or its hostname.
-//
-// The fold is the one the node order uses -- A-Z only -- so search and order
-// share one account of what "the same name" is, and neither depends on a
-// Unicode case table. Node names are ASCII by rule (pkg/nodename), and so are
-// hostnames in practice; anything else is matched exactly.
-func matches(n *types.FleetNode, needle string) bool {
-	return needle == "" || containsFolded(n.Name, needle) || containsFolded(n.Hostname, needle)
-}
+// keyOf is a listed node's name and host name: all paging needs of it. The
+// fleet view pages two kinds of list -- the whole tree's rows, and on a fleet
+// with no child aggregators, its nodes directly -- by one set of rules.
+type keyOf[T any] func(*T) (name, hostname string)
+
+// rowKey and nodeKey are the keys of the two lists.
+func rowKey(r *row) (string, string)              { return r.name, r.hostname }
+func nodeKey(n *types.FleetNode) (string, string) { return n.Name, n.Hostname }
 
 // containsFolded reports whether needle, already folded, appears in s once s
 // is folded. It folds as it compares rather than folding s first, because it
@@ -164,65 +162,80 @@ func containsFolded(s, needle string) bool {
 	return false
 }
 
-// page applies q to nodes, which must be in display order: the matching nodes
-// from the page's offset, at most q.Limit of them, how many matched in all,
-// and the offset the page starts at -- q.Offset, or the start of the anchor's
-// page.
+// pageIndexes applies q to a list of n nodes in display order, each known
+// by key: the positions of the matching nodes from the page's offset, at most
+// q.Limit of them, how many matched in all, and the offset the page starts at
+// -- q.Offset, or the start of the anchor's page.
+//
+// It works on positions rather than a slice so the list need not exist: a
+// flat fleet's view pages its cached peers with this node inserted among
+// them, without building the combined list per request.
 //
 // An offset past the last match is an empty page, not an error: a node leaving
 // the fleet can shrink the list under a page a client is already on, and the
 // client learns where the end now is from the count.
-func page(nodes []types.FleetNode, q Query) ([]types.FleetNode, int, int) {
+func pageIndexes(n int, key func(int) (name, hostname string), q Query) ([]int, int, int) {
 	q = q.bounded()
 	needle := foldASCII(q.Search)
+	// The fold is the one the node order uses -- A-Z only -- so search and
+	// order share one account of what "the same name" is, and neither depends
+	// on a Unicode case table. Node names are ASCII by rule (pkg/nodename),
+	// and so are hostnames in practice; anything else is matched exactly.
+	matches := func(i int) bool {
+		if needle == "" {
+			return true
+		}
+		name, hostname := key(i)
+		return containsFolded(name, needle) || containsFolded(hostname, needle)
+	}
 	if q.Anchor != "" && q.Limit > 0 {
-		if rank, ok := anchorRank(nodes, needle, q.Anchor); ok {
-			q.Offset = rank - rank%q.Limit
+		rank := 0
+		for i := 0; i < n; i++ {
+			if !matches(i) {
+				continue
+			}
+			if name, _ := key(i); name == q.Anchor {
+				q.Offset = rank - rank%q.Limit
+				break
+			}
+			rank++
 		}
 	}
-	shown, matched := slicePage(nodes, needle, q)
-	return shown, matched, q.Offset
-}
-
-// anchorRank is the position of the node named anchor among the nodes
-// matching needle, and whether it matches at all.
-func anchorRank(nodes []types.FleetNode, needle, anchor string) (int, bool) {
-	rank := 0
-	for i := range nodes {
-		if !matches(&nodes[i], needle) {
-			continue
-		}
-		if nodes[i].Name == anchor {
-			return rank, true
-		}
-		rank++
-	}
-	return 0, false
-}
-
-// slicePage is page's selection once the offset is settled.
-func slicePage(nodes []types.FleetNode, needle string, q Query) ([]types.FleetNode, int) {
 	if needle == "" {
 		// Every node matches, so the page is a run of the list itself.
-		start := min(q.Offset, len(nodes))
-		end := len(nodes)
+		start := min(q.Offset, n)
+		end := n
 		if q.Limit > 0 {
 			// Compared rather than added: limit is the client's, and
 			// start+limit can overflow to a negative bound.
 			end = start + min(q.Limit, end-start)
 		}
-		return nodes[start:end], len(nodes)
+		idx := make([]int, end-start)
+		for k := range idx {
+			idx[k] = start + k
+		}
+		return idx, n, q.Offset
 	}
-	out := []types.FleetNode{}
+	idx := []int{}
 	matched := 0
-	for i := range nodes {
-		if !matches(&nodes[i], needle) {
+	for i := 0; i < n; i++ {
+		if !matches(i) {
 			continue
 		}
-		if matched >= q.Offset && (q.Limit == 0 || len(out) < q.Limit) {
-			out = append(out, nodes[i])
+		if matched >= q.Offset && (q.Limit == 0 || len(idx) < q.Limit) {
+			idx = append(idx, i)
 		}
 		matched++
 	}
-	return out, matched
+	return idx, matched, q.Offset
+}
+
+// page applies q to items, which must be in display order; see pageIndexes.
+func page[T any](items []T, key keyOf[T], q Query) ([]T, int, int) {
+	idx, matched, offset := pageIndexes(len(items), func(i int) (string, string) { return key(&items[i]) }, q)
+	out := make([]T, len(idx))
+	for j, i := range idx {
+		out[j] = items[i]
+	}
+	return out, matched, offset
 }

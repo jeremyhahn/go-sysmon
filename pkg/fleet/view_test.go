@@ -1,10 +1,12 @@
 package fleet
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -14,7 +16,7 @@ import (
 // carries the same roll-up as the unpaged view.
 func TestView_RollupIsTheWholeFleetWhateverThePage(t *testing.T) {
 	p := largeFleet(t, 250)
-	whole := p.View(Query{Limit: 25})
+	whole := p.View(context.Background(), Query{Limit: 25})
 	if whole.Rollup == nil || whole.Rollup.Nodes != 251 {
 		t.Fatalf("roll-up = %+v; want 251 nodes (250 peers and this one)", whole.Rollup)
 	}
@@ -25,7 +27,7 @@ func TestView_RollupIsTheWholeFleetWhateverThePage(t *testing.T) {
 		{Search: "matches-nothing", Limit: 25},
 		{Offset: 10000, Limit: 25},
 	} {
-		v := p.View(q)
+		v := p.View(context.Background(), q)
 		// AgeSeconds is measured at request time, so the absence figures move
 		// between two calls; everything else must be identical.
 		got, want := *v.Rollup, *whole.Rollup
@@ -52,7 +54,7 @@ func withoutAges(in []types.NodeAttention) []types.NodeAttention {
 func TestView_DescribesItsPage(t *testing.T) {
 	p := largeFleet(t, 250)
 
-	v := p.View(Query{Search: "NODE-0001", Offset: 5, Limit: 3})
+	v := p.View(context.Background(), Query{Search: "NODE-0001", Offset: 5, Limit: 3})
 	want := types.FleetPage{Query: "NODE-0001", Offset: 5, Limit: 3, Matched: 10, Total: 251}
 	if v.Page == nil || *v.Page != want {
 		t.Fatalf("Page = %+v, want %+v", v.Page, want)
@@ -69,7 +71,7 @@ func TestView_DescribesItsPage(t *testing.T) {
 func TestView_SelfIsSentWhateverThePage(t *testing.T) {
 	p := largeFleet(t, 250)
 	for _, q := range []Query{{}, {Offset: 200, Limit: 25}, {Search: "matches-nothing"}} {
-		v := p.View(q)
+		v := p.View(context.Background(), q)
 		if v.Self == nil || v.Self.Name != "local" || !v.Self.Self || v.Self.GitCommit != "a46f6cf" {
 			t.Errorf("View(%+v).Self = %+v; want the local node with its build", q, v.Self)
 		}
@@ -80,7 +82,7 @@ func TestView_SelfIsSentWhateverThePage(t *testing.T) {
 // roll-up -- the standalone shape, whatever was asked.
 func TestView_NoFleetIsDisabled(t *testing.T) {
 	p := largeFleet(t, 0)
-	v := p.View(Query{Limit: 25})
+	v := p.View(context.Background(), Query{Limit: 25})
 	if v.Enabled || v.Page != nil || v.Self != nil || v.Rollup != nil || len(v.Nodes) != 0 {
 		t.Errorf("View with no peers = %+v; want the disabled view and nothing else", v)
 	}
@@ -93,7 +95,7 @@ func TestView_NoFleetIsDisabled(t *testing.T) {
 // one roll-up, not two computations that could drift.
 func TestRollup_MatchesTheView(t *testing.T) {
 	p := largeFleet(t, 40)
-	got, want := *p.Rollup(), *p.View(Query{Limit: 1}).Rollup
+	got, want := *p.Rollup(), *p.View(context.Background(), Query{Limit: 1}).Rollup
 	got.LongestAbsenceSeconds, want.LongestAbsenceSeconds = 0, 0
 	got.Attention, want.Attention = withoutAges(got.Attention), withoutAges(want.Attention)
 	if !reflect.DeepEqual(got, want) {
@@ -125,7 +127,7 @@ func TestHas(t *testing.T) {
 // dashboard left open across an upgrade included. The counts are the same.
 func TestView_UnpagedRollupNamesEveryNode(t *testing.T) {
 	p := largeFleet(t, 250)
-	whole, paged := p.View(Query{}).Rollup, p.View(Query{Limit: 25}).Rollup
+	whole, paged := p.View(context.Background(), Query{}).Rollup, p.View(context.Background(), Query{Limit: 25}).Rollup
 	needing := whole.Critical + whole.Unreachable + whole.Warning
 	if len(whole.Attention) != needing {
 		t.Errorf("unpaged attention names %d of %d nodes; want all", len(whole.Attention), needing)
@@ -135,7 +137,7 @@ func TestView_UnpagedRollupNamesEveryNode(t *testing.T) {
 	}
 	// Any parameter at all is a request for less than the fleet, and bounded.
 	for _, q := range []Query{{Search: "node-00001"}, {Offset: 3}} {
-		if got := len(p.View(q).Rollup.Attention); got != types.RollupNames {
+		if got := len(p.View(context.Background(), q).Rollup.Attention); got != types.RollupNames {
 			t.Errorf("View(%+v) attention names %d; want %d", q, got, types.RollupNames)
 		}
 	}
@@ -154,18 +156,74 @@ func TestView_UnpagedRollupNamesEveryNode(t *testing.T) {
 // agreement and name agreement (#162) -- exactly as the unpaged list does.
 func TestView_PageCarriesEveryStampedField(t *testing.T) {
 	p := largeFleet(t, 60)
-	whole := p.View(Query{})
+	whole := p.View(context.Background(), Query{})
 	byName := map[string]types.FleetNode{}
 	for _, n := range whole.Nodes {
 		byName[n.Name] = n
 	}
 	for _, q := range []Query{{Offset: 20, Limit: 10}, {Search: "node-0004", Limit: 5}} {
-		for _, n := range p.View(q).Nodes {
+		for _, n := range p.View(context.Background(), q).Nodes {
 			w := byName[n.Name]
 			if n.Status == "" || n.BuildMatch == "" || n.NameMatch == "" ||
 				n.Status != w.Status || n.BuildMatch != w.BuildMatch || n.NameMatch != w.NameMatch {
 				t.Errorf("View(%+v) node %s = status %q build %q name %q; unpaged has %q %q %q",
 					q, n.Name, n.Status, n.BuildMatch, n.NameMatch, w.Status, w.BuildMatch, w.NameMatch)
+			}
+		}
+	}
+}
+
+// withoutClock clears what View measures at the moment it is called -- ages,
+// and the absences built from them -- so two views of one state compare.
+func withoutClock(v types.Fleet) types.Fleet {
+	nodes := append([]types.FleetNode(nil), v.Nodes...)
+	for i := range nodes {
+		nodes[i].AgeSeconds = 0
+	}
+	v.Nodes = nodes
+	if v.Self != nil {
+		self := *v.Self
+		self.AgeSeconds = 0
+		v.Self = &self
+	}
+	if v.Rollup != nil {
+		r := *v.Rollup
+		r.LongestAbsenceSeconds = 0
+		r.Attention = withoutAges(r.Attention)
+		v.Rollup = &r
+	}
+	return v
+}
+
+// TestView_TheFlatPathIsTheTreePathOnAFlatFleet: a fleet with no child
+// aggregators is served by its own fast path, which pays nothing for tree
+// support. It must give exactly the answer the tree path gives the same fleet,
+// for every shape of request.
+func TestView_TheFlatPathIsTheTreePathOnAFlatFleet(t *testing.T) {
+	p := largeFleet(t, 250)
+	g := p.published()
+	if len(g.subtrees.childURL) != 0 {
+		t.Fatal("the fixture is not a flat fleet")
+	}
+	for _, q := range []Query{
+		{}, {Limit: 25}, {Offset: 225, Limit: 25}, {Search: "NODE-0001", Limit: 5},
+		{Search: "node-00", Offset: 10}, {Limit: 25, Anchor: "node-00200"}, {Offset: 9999, Limit: 25},
+	} {
+		cached, live := p.flatView(g, q), p.flatViewLive(g, q)
+		tree := p.treeView(context.Background(), g, q)
+		for name, v := range map[string]types.Fleet{"the cached flat path": cached, "the whole flat path": live} {
+			if !reflect.DeepEqual(withoutClock(v), withoutClock(tree)) {
+				t.Errorf("View(%+v): %s and the tree path disagree:\n%+v\n%+v", q, name, v.Rollup, tree.Rollup)
+			}
+			// And the ages it cleared agree too: the cache ages its readings
+			// by the time since the refresh.
+			for i := range v.Nodes {
+				if d := v.Nodes[i].AgeSeconds - tree.Nodes[i].AgeSeconds; d > 0.5 || d < -0.5 {
+					t.Errorf("View(%+v): %s ages %s at %v, the tree path at %v", q, name, v.Nodes[i].Name, v.Nodes[i].AgeSeconds, tree.Nodes[i].AgeSeconds)
+				}
+			}
+			if d := v.Rollup.LongestAbsenceSeconds - tree.Rollup.LongestAbsenceSeconds; d > 0.5 || d < -0.5 {
+				t.Errorf("View(%+v): %s's longest absence %v, the tree path's %v", q, name, v.Rollup.LongestAbsenceSeconds, tree.Rollup.LongestAbsenceSeconds)
 			}
 		}
 	}
@@ -185,13 +243,13 @@ func TestView_PageCarriesHistoryState(t *testing.T) {
 		}})
 	}
 
-	whole := p.View(Query{})
+	whole := p.View(context.Background(), Query{})
 	byName := map[string]types.FleetNode{}
 	for _, n := range whole.Nodes {
 		byName[n.Name] = n
 	}
 	for _, q := range []Query{{Offset: 20, Limit: 10}, {Search: "node-0004", Limit: 5}, {Anchor: "node-00031", Limit: 7}} {
-		page := p.View(q).Nodes
+		page := p.View(context.Background(), q).Nodes
 		if len(page) == 0 {
 			t.Fatalf("View(%+v) returned no nodes", q)
 		}
@@ -204,5 +262,57 @@ func TestView_PageCarriesHistoryState(t *testing.T) {
 				t.Errorf("View(%+v) node %s history = %+v; unpaged has %+v", q, n.Name, n.History, w.History)
 			}
 		}
+	}
+}
+
+// TestFlatView_FallsBackWhenTheCacheIsNotTheFleet: the refresh's cache is
+// used only while it still describes the fleet. A reload that replaced the
+// peer list, or a build of this node other than the one the peers were
+// compared with, is served the long way -- and correctly.
+func TestFlatView_FallsBackWhenTheCacheIsNotTheFleet(t *testing.T) {
+	p := largeFleet(t, 30)
+	g := p.published()
+	if g.flat == nil {
+		t.Fatal("a flat fleet was published with no cache")
+	}
+
+	cfg := p.cfgFn()
+	reloaded := cfg
+	reloaded.Peers = append([]config.Peer{{Name: "aaa", URL: "https://10.9.9.9:8081"}}, cfg.Peers...)
+	p.cfgFn = func() config.Fleet { return reloaded }
+	if v := p.View(context.Background(), Query{Limit: 5}); v.Page.Total != 32 || v.Nodes[0].Name != "aaa" {
+		t.Errorf("after a reload = %d nodes, first %q; want 32 from aaa", v.Page.Total, v.Nodes[0].Name)
+	}
+	p.cfgFn = func() config.Fleet { return cfg }
+
+	g.flat.selfCommit = "another-build"
+	v := p.View(context.Background(), Query{Limit: 5})
+	if want := compareBuild(v.Self.GitCommit, v.Nodes[0].GitCommit); v.Nodes[0].BuildMatch != want {
+		t.Errorf("after this node's build changed, build_match = %q, want %q against the running build", v.Nodes[0].BuildMatch, want)
+	}
+}
+
+// TestNodes_AReloadedPeerListIsInOrder: the name order is sorted once per
+// refresh, for the peer list the refresh published. A reload that replaces
+// the list before the next refresh is sorted then and there, so the view is in
+// order either way.
+func TestNodes_AReloadedPeerListIsInOrder(t *testing.T) {
+	p := largeFleet(t, 20)
+	cfg := p.cfgFn()
+	reloaded := cfg
+	reloaded.Peers = append([]config.Peer{{Name: "aaa", URL: "https://10.9.9.9:8081"}, {Name: "zzz", URL: "https://10.9.9.8:8081"}}, cfg.Peers...)
+	p.cfgFn = func() config.Fleet { return reloaded }
+
+	nodes, _ := p.nodes(p.published())
+	if len(nodes) != 23 || nodes[0].Name != "aaa" || nodes[len(nodes)-1].Name != "zzz" {
+		t.Fatalf("nodes after a reload = %d, first %q, last %q; want 23 from aaa to zzz", len(nodes), nodes[0].Name, nodes[len(nodes)-1].Name)
+	}
+	for i := 1; i < len(nodes); i++ {
+		if CompareNodeNames(nodes[i-1].Name, nodes[i].Name) >= 0 {
+			t.Fatalf("out of order at %d: %q before %q", i, nodes[i-1].Name, nodes[i].Name)
+		}
+	}
+	if find(t, nodes, "aaa").Error != "not polled yet" {
+		t.Error("a peer added by the reload is not shown as not yet polled")
 	}
 }

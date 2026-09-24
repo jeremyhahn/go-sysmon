@@ -38,6 +38,16 @@ var statusCounters = map[types.NodeStatus]func(*types.FleetRollup){
 // names in each -- at that many; zero leaves them whole. See View for which
 // requests get which.
 func rollup(nodes []types.FleetNode, names int) *types.FleetRollup {
+	r := collect(nodes, names)
+	trimBuilds(r, names)
+	return r
+}
+
+// collect is rollup without the last step: every build group is kept, each
+// naming at most names nodes. That is the form a child aggregator serves its
+// parent (#190), because groups can only be summed across children exactly if
+// none has been dropped; the parent bounds them once, after composing.
+func collect(nodes []types.FleetNode, names int) *types.FleetRollup {
 	within := func(n int) bool { return names == 0 || n < names }
 	r := &types.FleetRollup{
 		Nodes:     len(nodes),
@@ -151,8 +161,14 @@ func rollup(nodes []types.FleetNode, names int) *types.FleetRollup {
 	for _, b := range builds {
 		r.Builds = append(r.Builds, *b)
 	}
-	// The largest group first, so the common build leads and the stragglers
-	// follow; commit breaks ties so the order does not depend on map order.
+	sortBuilds(r)
+	return r
+}
+
+// sortBuilds puts the largest group first, so the common build leads and the
+// stragglers follow; commit breaks ties so the order does not depend on map
+// order.
+func sortBuilds(r *types.FleetRollup) {
 	sort.Slice(r.Builds, func(i, j int) bool {
 		a, b := r.Builds[i], r.Builds[j]
 		if a.Count != b.Count {
@@ -161,10 +177,14 @@ func rollup(nodes []types.FleetNode, names int) *types.FleetRollup {
 		return a.Commit < b.Commit
 	})
 	r.BuildGroups = len(r.Builds)
+}
+
+// trimBuilds bounds the build groups at names, the largest first; zero keeps
+// them all.
+func trimBuilds(r *types.FleetRollup, names int) {
 	if names > 0 {
 		r.Builds = r.Builds[:min(len(r.Builds), names)]
 	}
-	return r
 }
 
 // worst keeps the larger of the current extreme and name's value. Strictly
@@ -212,4 +232,159 @@ func attention(n *types.FleetNode) types.NodeAttention {
 		}
 	}
 	return a
+}
+
+// merge folds a child aggregator's roll-up into r (#190). It is exact, by the
+// same rule rollup follows (#46): counts, sums and denominators add, extremes
+// keep the larger value and name its node -- the earlier name on a tie, as a
+// single pass over the whole fleet would -- and nothing is averaged.
+//
+// The per-node lists compose exactly too. Each side's attention list is its
+// worst names nodes by (rank, name), so the worst names of the union are among
+// them; each build group names its first names nodes by name, so the merged
+// group's first names are among them. Build groups must all be present on both
+// sides (collect keeps them), or a group's count would be short.
+func merge(r, c *types.FleetRollup, names int) {
+	r.Nodes += c.Nodes
+	r.Healthy += c.Healthy
+	r.Warning += c.Warning
+	r.Critical += c.Critical
+	r.Unreachable += c.Unreachable
+	r.LongestAbsenceSeconds = max(r.LongestAbsenceSeconds, c.LongestAbsenceSeconds)
+	r.NeverAnswered += c.NeverAnswered
+	r.SubtreeErrors += c.SubtreeErrors
+	r.NameConflicts += c.NameConflicts
+	r.Reporting += c.Reporting
+	r.CPUUnknown += c.CPUUnknown
+	r.SwapUnknown += c.SwapUnknown
+
+	for _, e := range []struct{ dst, src **types.FleetExtreme }{
+		{&r.CPU, &c.CPU}, {&r.Memory, &c.Memory}, {&r.Disk, &c.Disk},
+		{&r.LoadPerCore, &c.LoadPerCore}, {&r.Temperature, &c.Temperature}, {&r.SwapOut, &c.SwapOut},
+	} {
+		mergeExtreme(e.dst, *e.src)
+	}
+
+	if c.Power != nil {
+		if r.Power == nil {
+			r.Power = &types.FleetSum{}
+		}
+		r.Power.Value += c.Power.Value
+		r.Power.Nodes += c.Power.Nodes
+	}
+	if c.Network != nil {
+		if r.Network == nil {
+			r.Network = &types.FleetNet{}
+		}
+		r.Network.RxRate += c.Network.RxRate
+		r.Network.TxRate += c.Network.TxRate
+		r.Network.Nodes += c.Network.Nodes
+	}
+	r.SMART = mergeHealth(r.SMART, c.SMART)
+	r.RAID = mergeHealth(r.RAID, c.RAID)
+	// Every denominator is the reachable nodes, summed above.
+	if r.Power != nil {
+		r.Power.Of = r.Reporting
+	}
+	if r.Network != nil {
+		r.Network.Of = r.Reporting
+	}
+	for _, h := range []*types.FleetHealth{r.SMART, r.RAID} {
+		if h != nil {
+			h.Of = r.Reporting
+		}
+	}
+
+	r.Attention = mergeAttention(r.Attention, c.Attention, names)
+	r.Builds = mergeBuilds(r.Builds, c.Builds, names)
+	sortBuilds(r)
+}
+
+// mergeExtreme keeps the worse of *dst and src. A tie keeps the node that
+// comes first by name, which is the node a single pass over the whole fleet
+// in name order would have kept.
+func mergeExtreme(dst **types.FleetExtreme, src *types.FleetExtreme) {
+	if src == nil {
+		return
+	}
+	cur := *dst
+	if cur == nil || src.Value > cur.Value ||
+		(src.Value == cur.Value && CompareNodeNames(src.Node, cur.Node) < 0) {
+		cp := *src
+		*dst = &cp
+	}
+}
+
+func mergeHealth(dst, src *types.FleetHealth) *types.FleetHealth {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		dst = &types.FleetHealth{}
+	}
+	dst.Devices += src.Devices
+	dst.Unhealthy += src.Unhealthy
+	dst.Nodes += src.Nodes
+	return dst
+}
+
+// mergeAttention is the worst names entries of a and b, by rank and then name.
+func mergeAttention(a, b []types.NodeAttention, names int) []types.NodeAttention {
+	out := make([]types.NodeAttention, 0, len(a)+len(b))
+	out = append(append(out, a...), b...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := attentionRank[out[i].Status], attentionRank[out[j].Status]
+		if ri != rj {
+			return ri < rj
+		}
+		return CompareNodeNames(out[i].Name, out[j].Name) < 0
+	})
+	if names > 0 && len(out) > names {
+		out = out[:names]
+	}
+	return out
+}
+
+// mergeBuilds adds b's groups into a's by commit: counts summed, and the first
+// names nodes of each by name.
+func mergeBuilds(a, b []types.FleetBuild, names int) []types.FleetBuild {
+	byCommit := make(map[string]int, len(a))
+	out := make([]types.FleetBuild, 0, len(a)+len(b))
+	for _, g := range a {
+		byCommit[g.Commit] = len(out)
+		out = append(out, types.FleetBuild{Commit: g.Commit, Count: g.Count, Nodes: append([]string{}, g.Nodes...)})
+	}
+	for _, g := range b {
+		i, ok := byCommit[g.Commit]
+		if !ok {
+			byCommit[g.Commit] = len(out)
+			out = append(out, types.FleetBuild{Commit: g.Commit, Count: g.Count, Nodes: append([]string{}, g.Nodes...)})
+			continue
+		}
+		out[i].Count += g.Count
+		merged := append(out[i].Nodes, g.Nodes...)
+		sort.Slice(merged, func(x, y int) bool { return CompareNodeNames(merged[x], merged[y]) < 0 })
+		if names > 0 && len(merged) > names {
+			merged = merged[:names]
+		}
+		out[i].Nodes = merged
+	}
+	return out
+}
+
+// addUnknown counts the nodes of a subtree that cannot be seen -- its child
+// aggregator is unreachable, or its subtree could not be read -- as #46 counts
+// any node that cannot be seen: unreachable, contributing to no figure, with
+// how long its last reading has been. They are not named one by one in the
+// attention list; the child's own entry carries how many there are.
+func addUnknown(r *types.FleetRollup, entries []types.FleetIndexEntry, since float64) {
+	for _, e := range entries {
+		r.Nodes++
+		r.Unreachable++
+		if e.AgeSeconds > 0 || (e.Reachable && since > 0) {
+			r.LongestAbsenceSeconds = max(r.LongestAbsenceSeconds, e.AgeSeconds+since)
+		} else {
+			r.NeverAnswered++
+		}
+	}
 }

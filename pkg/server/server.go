@@ -362,10 +362,12 @@ func (s *Server) routes() map[string]http.Handler {
 		"POST /api/interval":             http.HandlerFunc(s.handleSetInterval),
 		"GET /api/fleet":                 http.HandlerFunc(s.handleFleet),
 		"GET /api/fleet/rollup":          http.HandlerFunc(s.handleFleetRollup),
+		"GET /api/fleet/subtree":         http.HandlerFunc(s.handleFleetSubtree),
+		"GET /api/fleet/nodes":           http.HandlerFunc(s.handleFleetNodes),
 		"GET /api/fleet/{name}/snapshot": http.HandlerFunc(s.handleFleetSnapshot),
 		"GET /api/fleet/{name}/config":   http.HandlerFunc(s.handleFleetConfig),
 		"GET /api/config":                http.HandlerFunc(s.handleConfig),
-		"GET /api/history":               http.HandlerFunc(s.handleHistory),
+		"GET /api/history":               http.HandlerFunc(s.handleHistoryRequest),
 		"GET /api/history/metrics":       http.HandlerFunc(s.handleHistoryMetrics),
 		"GET /api/version":               http.HandlerFunc(s.handleVersion),
 		"GET /metrics":                   http.HandlerFunc(s.handleMetrics),
@@ -551,7 +553,18 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, fleet.LocalSummary(prev, cur, s.mon.Interval()))
+	summary := fleet.LocalSummary(prev, cur, s.mon.Interval())
+	if s.fleet != nil {
+		// How much of the fleet this node aggregates: the one thing a parent
+		// needs to know that this node is a child aggregator (#190).
+		summary.Aggregates = s.fleet.SubtreeSize()
+		if summary.Aggregates > 0 {
+			// Its identity in the tree, so a parent can tell a peer that is
+			// itself under another name.
+			summary.InstanceID = s.fleet.InstanceID()
+		}
+	}
+	writeJSON(w, summary)
 }
 
 // handleHistorySnapshot serves the snapshot an aggregator records into the

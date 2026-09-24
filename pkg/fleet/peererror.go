@@ -66,6 +66,17 @@ var failureRules = []failureRule{
 	socketError,
 	closedEarly,
 	malformedBody,
+	relayTooLarge,
+}
+
+// relayTooLarge is a relayed answer this node would not pass on; its words
+// are this package's own and carry no address.
+func relayTooLarge(err error) (string, bool) {
+	var large *ErrRelayTooLarge
+	if errors.As(err, &large) {
+		return large.Error(), true
+	}
+	return "", false
 }
 
 // peerFailure describes err in words that carry no address.

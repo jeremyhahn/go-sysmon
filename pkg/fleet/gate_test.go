@@ -91,7 +91,7 @@ func TestGateHistory_ARefusedPeerIsNotWrittenAndSaysWhy(t *testing.T) {
 		got[0].interval != (10*time.Minute).Milliseconds() {
 		t.Fatalf("gate calls = %+v, want one for peer-00 with its summary and reported interval", got)
 	}
-	n := p.View(Query{}).Nodes[1]
+	n := p.View(context.Background(), Query{}).Nodes[1]
 	if n.History == nil || *n.History != refused {
 		t.Fatalf("card history = %+v, want the refusal", n.History)
 	}
@@ -111,7 +111,7 @@ func TestGateHistory_ARecordedPeerIsWritten(t *testing.T) {
 	if n := readings.Load(); n != 1 {
 		t.Errorf("%d readings written, want 1", n)
 	}
-	if h := p.View(Query{}).Nodes[1].History; h == nil || h.State != types.PeerHistoryRecorded {
+	if h := p.View(context.Background(), Query{}).Nodes[1].History; h == nil || h.State != types.PeerHistoryRecorded {
 		t.Errorf("card history = %+v, want recorded", h)
 	}
 }
@@ -145,7 +145,7 @@ func TestGateHistory_AnOldPeerIsJudgedByItsSnapshot(t *testing.T) {
 	if readings.Load() != 1 {
 		t.Errorf("%d readings, want the unverified one written", readings.Load())
 	}
-	if h := p.View(Query{}).Nodes[1].History; h == nil || *h != unverified {
+	if h := p.View(context.Background(), Query{}).Nodes[1].History; h == nil || *h != unverified {
 		t.Errorf("card history = %+v, want unverified", h)
 	}
 }
@@ -164,7 +164,7 @@ func TestGateHistory_NoStatusWhileNotRecording(t *testing.T) {
 	p.history.record(context.Background(), cfg.Load().Peers[0])
 
 	cadence.Store(0)
-	if h := p.View(Query{}).Nodes[1].History; h != nil {
+	if h := p.View(context.Background(), Query{}).Nodes[1].History; h != nil {
 		t.Errorf("card history with recording off = %+v, want none", h)
 	}
 }
@@ -220,7 +220,7 @@ func TestGateHistory_ARefusedPeerIsNotFetched(t *testing.T) {
 	if n := fetched.Load(); n != 0 {
 		t.Errorf("the history payload of a refused peer was fetched %d times", n)
 	}
-	if h := p.View(Query{}).Nodes[1].History; h == nil || h.State != types.PeerHistoryRefused {
+	if h := p.View(context.Background(), Query{}).Nodes[1].History; h == nil || h.State != types.PeerHistoryRefused {
 		t.Errorf("card history = %+v, want the refusal recorded before any fetch", h)
 	}
 }
@@ -237,14 +237,14 @@ func TestGateHistory_ARepointedPeerDropsTheOldDecision(t *testing.T) {
 	p.GateHistory(gate)
 	p.refresh(*cfg.Load())
 	p.history.record(context.Background(), cfg.Load().Peers[0])
-	if h := p.View(Query{}).Nodes[1].History; h == nil {
+	if h := p.View(context.Background(), Query{}).Nodes[1].History; h == nil {
 		t.Fatal("no decision recorded for the first machine")
 	}
 
 	repointed := *cfg.Load()
 	repointed.Peers = []config.Peer{{Name: repointed.Peers[0].Name, URL: second.URL}}
 	cfg.Store(&repointed)
-	if h := p.View(Query{}).Nodes[1].History; h != nil {
+	if h := p.View(context.Background(), Query{}).Nodes[1].History; h != nil {
 		t.Errorf("card history after a repoint = %+v, want none until the new machine is judged", h)
 	}
 }

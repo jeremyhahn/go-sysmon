@@ -414,6 +414,16 @@ the same page.
 - Choosing an unreachable node from the attention list searches for its name
   and sends it as the `anchor`, so the view opens the page that holds its
   card: many nodes whose names or hostnames contain it can sort first.
+- **Over a tree of aggregators** (#190), a card for a node of a child's subtree
+  shows `via <child>`, and opening it asks this node, which routes the request.
+  An aggregator's card shows `aggregates N`. A child whose subtree is not
+  current, or is refused, says why on its card. A node whose name another node
+  in the tree also carries says so and cannot be opened. Below the headline,
+  the roll-up states how many subtrees are missing and how many nodes share a
+  name. An unreachable child's attention entry says how many nodes below it are
+  unknown. A node whose summary was not fetched for the view (`source:
+  "index"`) says its figures are not loaded, and why, rather than showing
+  zeros.
 - A selected peer whose drill-in answers `404` has left the fleet, and the
   dashboard returns to this node. The fleet poll used to catch that from the
   whole node list; a page cannot say whether a node is gone or elsewhere.

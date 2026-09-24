@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -26,9 +28,109 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	}
 	view := types.Fleet{Enabled: false}
 	if s.fleet != nil {
-		view = s.fleet.View(q)
+		// A page holding nodes of child aggregators' subtrees fetches their
+		// summaries from those children (#190), within the same write budget a
+		// drill-in has.
+		ctx, budget, ok := s.treeRequest(w, r)
+		if !ok {
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, budget)
+		defer cancel()
+		view = s.fleet.View(ctx, q)
 	}
 	writeJSON(w, view)
+}
+
+// treeRequest admits a request that may make this node ask its children
+// (#190). A request from another aggregator carries the chain of aggregators
+// it has passed through and the time its sender will still wait; one that has
+// already passed through this node, or through more aggregators than a tree
+// may have, is refused with 508. The rest get the request's context, carrying
+// the chain on, and a budget: the smaller of the sender's and this response's
+// own. The budget is returned apart from the context, because a drill-in
+// treats its budget running out -- the peer was too slow -- differently from
+// its asker going away. ok is false when the request has been answered.
+func (s *Server) treeRequest(w http.ResponseWriter, r *http.Request) (context.Context, time.Duration, bool) {
+	chain, err := fleet.ParseAncestry(r.Header.Get(fleet.HeaderAncestry))
+	if err == nil {
+		err = s.fleet.CheckAncestry(chain)
+	}
+	if err != nil {
+		writeFleetError(w, err)
+		return nil, 0, false
+	}
+	// Only another aggregator's budget is honoured -- one that says, with a
+	// valid chain, where the request has come from. A browser, or anything
+	// else, cannot shorten this node's budget and fail work it shares with
+	// other askers.
+	budget := drillInBudget()
+	if sent := fleet.ParseBudget(r.Header.Get(fleet.HeaderBudget)); sent > 0 && len(chain) > 0 {
+		budget = min(budget, sent)
+	}
+	ctx := r.Context()
+	if len(chain) > 0 {
+		ctx = fleet.WithAncestry(ctx, chain)
+	}
+	return ctx, budget, true
+}
+
+// writeFleetError answers err with its status, and for a refusal, the reason a
+// parent aggregator reads it by.
+func writeFleetError(w http.ResponseWriter, err error) {
+	var loop *fleet.ErrFleetLoop
+	var deep *fleet.ErrTreeTooDeep
+	var refused *fleet.ErrFleetRefused
+	switch {
+	case errors.As(err, &loop):
+		w.Header().Set(fleet.HeaderRefusal, fleet.RefusalLoop)
+	case errors.As(err, &deep):
+		w.Header().Set(fleet.HeaderRefusal, fleet.RefusalDepth)
+	case errors.As(err, &refused):
+		w.Header().Set(fleet.HeaderRefusal, refused.Reason)
+	}
+	http.Error(w, err.Error(), fleetSnapshotStatus(err))
+}
+
+// handleFleetSubtree serves what a parent aggregator polls from this one each
+// cycle (#190): the index of every node in this fleet and the roll-up in the
+// form a parent composes. 404 on a node with no fleet: it is a leaf, and says
+// so in its summary.
+func (s *Server) handleFleetSubtree(w http.ResponseWriter, r *http.Request) {
+	if s.fleet == nil {
+		http.Error(w, "fleet is not configured", http.StatusNotFound)
+		return
+	}
+	if _, _, ok := s.treeRequest(w, r); !ok {
+		return
+	}
+	sub, ok := s.fleet.Subtree()
+	if !ok {
+		http.Error(w, "fleet is not configured", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, sub)
+}
+
+// handleFleetNodes serves the named nodes of this fleet, whole: what a parent
+// aggregator fetches to fill a page with nodes of this one's subtree (#190).
+func (s *Server) handleFleetNodes(w http.ResponseWriter, r *http.Request) {
+	names, err := fleet.ParseNames(r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.fleet == nil {
+		http.Error(w, "fleet is not configured", http.StatusNotFound)
+		return
+	}
+	ctx, budget, ok := s.treeRequest(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	writeJSON(w, s.fleet.Nodes(ctx, names))
 }
 
 // handleFleetRollup serves the whole-fleet roll-up alone, for a consumer that
@@ -61,12 +163,17 @@ func (s *Server) handleFleetSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "fleet is not configured", http.StatusNotFound)
 		return
 	}
-	// Bounded by the response's write budget, so a peer slower than that is
-	// answered with its error rather than with a response the server can no
-	// longer write.
-	peer, err := s.fleet.PeerSnapshot(r.Context(), name, drillInBudget())
+	// Bounded by the response's write budget -- or the budget a parent
+	// relaying this drill-in sent, when that is shorter -- so a peer slower
+	// than that is answered with its error, or its last reading marked stale,
+	// rather than with a response nobody is waiting for any more.
+	ctx, budget, ok := s.treeRequest(w, r)
+	if !ok {
+		return
+	}
+	peer, err := s.fleet.PeerSnapshot(ctx, name, budget)
 	if err != nil {
-		http.Error(w, err.Error(), fleetSnapshotStatus(err))
+		writeFleetError(w, err)
 		return
 	}
 	// The envelope is served even when the peer is unreachable. Answering 5xx
@@ -90,9 +197,18 @@ func fleetSnapshotStatus(err error) int {
 	var unknown *fleet.ErrUnknownPeer
 	var noReading *fleet.ErrNoReading
 	var moved *fleet.ErrPeerMoved
+	var conflict *fleet.ErrNameConflict
 	switch {
 	case errors.As(err, &unknown), errors.As(err, &noReading):
 		return http.StatusNotFound
+	case errors.As(err, &conflict):
+		return http.StatusConflict
+	case isRefusal(err):
+		return http.StatusLoopDetected
+	case isInvalidAncestry(err):
+		return http.StatusBadRequest
+	case relayedStatus(err) != 0:
+		return relayedStatus(err)
 	case errors.As(err, &moved):
 		return http.StatusServiceUnavailable
 	default:
@@ -159,9 +275,15 @@ func (s *Server) handleFleetConfig(w http.ResponseWriter, r *http.Request) {
 		s.handleConfig(w, r)
 		return
 	}
-	view, err := s.fleet.PeerConfig(name)
+	ctx, budget, ok := s.treeRequest(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	view, err := s.fleet.PeerConfig(ctx, name)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeFleetError(w, err)
 		return
 	}
 	writeJSON(w, view)
@@ -173,3 +295,78 @@ func (s *Server) handleFleetConfig(w http.ResponseWriter, r *http.Request) {
 // and picked up by SIGHUP or the file watcher, which deliver everything a
 // reload endpoint would have. POST /api/interval remains the one runtime-state
 // endpoint, and it retunes a transient refresh rate rather than configuration.
+
+// isRefusal reports a request refused as a loop or as too deep, here or by a
+// child.
+func isRefusal(err error) bool {
+	var loop *fleet.ErrFleetLoop
+	var deep *fleet.ErrTreeTooDeep
+	var refused *fleet.ErrFleetRefused
+	return errors.As(err, &loop) || errors.As(err, &deep) || errors.As(err, &refused)
+}
+
+// isInvalidAncestry reports a malformed ancestry header.
+func isInvalidAncestry(err error) bool {
+	var invalid *fleet.ErrInvalidAncestry
+	return errors.As(err, &invalid)
+}
+
+// handleHistoryRequest routes GET /api/history before either build's handler
+// answers it. A node of a child aggregator's subtree is recorded by that child
+// (topology A at every level, #190), so its history is the child's answer,
+// relayed as it came -- whether or not this node keeps any history itself. A
+// name two nodes carry is refused: its series would be two machines under one
+// instance label. Everything else is this node's own to answer.
+func (s *Server) handleHistoryRequest(w http.ResponseWriter, r *http.Request) {
+	node := r.URL.Query().Get("node")
+	if s.fleet == nil || node == "" {
+		s.handleHistory(w, r)
+		return
+	}
+	route := s.fleet.Resolve(node)
+	switch route.Kind {
+	case fleet.RouteConflict:
+		http.Error(w, (&fleet.ErrNameConflict{Node: node}).Error(), http.StatusConflict)
+		return
+	case fleet.RouteSubtree:
+	default:
+		s.handleHistory(w, r)
+		return
+	}
+	ctx, budget, ok := s.treeRequest(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	h, err := s.fleet.RelayHistory(ctx, route, node, r.URL.RawQuery)
+	if err != nil {
+		slog.Warn("server: history relay failed", "node", node, "error", err)
+		writeFleetError(w, err)
+		return
+	}
+	// Served by this node, as JSON it wrote: never the child's headers or
+	// bytes.
+	writeJSON(w, h)
+}
+
+// relayedStatuses are the child statuses a relayed error keeps; any other is
+// this node's gateway failure.
+var relayedStatuses = map[int]bool{
+	http.StatusBadRequest: true,
+	http.StatusNotFound:   true,
+	http.StatusConflict:   true,
+}
+
+// relayedStatus is the status a child's relayed error keeps here, or 0 when
+// err is not a relayed status.
+func relayedStatus(err error) int {
+	var relayed *fleet.ErrRelayStatus
+	if !errors.As(err, &relayed) {
+		return 0
+	}
+	if relayedStatuses[relayed.Status] {
+		return relayed.Status
+	}
+	return http.StatusBadGateway
+}

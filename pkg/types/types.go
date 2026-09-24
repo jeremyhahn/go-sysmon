@@ -126,6 +126,19 @@ type NodeSummary struct {
 	// Empty means the node did not say -- a build predating the field.
 	NodeName string `json:"node_name,omitempty"`
 
+	// Aggregates is how many nodes this node's own fleet view covers besides
+	// itself: its whole subtree when it is an aggregator (#190). An aggregator
+	// that polls it reads this to know it is a child aggregator and to fetch
+	// its subtree. ZERO MEANS A LEAF -- no peers, or a build that predates
+	// hierarchical fleets, which is then shown as the single node it says it
+	// is.
+	Aggregates int `json:"aggregates,omitempty"`
+	// InstanceID is the aggregator process's random identity in a fleet tree
+	// (#190), taken at start and never configured. A parent that finds its
+	// own among its peers' has a peer that is itself under another name.
+	// Empty on a node that aggregates nothing.
+	InstanceID string `json:"instance_id,omitempty"`
+
 	// CollectionIntervalMs is the interval the node's monitor actually
 	// collects at -- the cadence its snapshot timestamps advance by, whatever
 	// the configuration or the dashboard last asked for. An aggregator uses it
@@ -241,6 +254,12 @@ const (
 	SummarySourceLocal SummarySource = "local"
 	// SummarySourceSummary is a peer that served GET /api/summary.
 	SummarySourceSummary SummarySource = "summary"
+	// SummarySourceIndex is a node of a child aggregator's subtree whose
+	// summary was not fetched for this response (#190): its status, age and
+	// host name are its child's index entry, and its figures are absent, not
+	// zero. A whole-fleet request on a tree is served this way rather than by
+	// fetching every node from the children.
+	SummarySourceIndex SummarySource = "index"
 	// SummarySourceSnapshot is a peer whose build predates GET /api/summary,
 	// so the aggregator fetched its whole snapshot and summarised it itself.
 	// The figures are the same; the cost is not, and a fleet mid-rollout should
@@ -352,6 +371,22 @@ type FleetNode struct {
 	// invisible: the node looks healthy and its charts are simply empty.
 	History *PeerHistory `json:"history,omitempty"`
 
+	// Via names the child aggregator this node is reached through, when it is
+	// not this aggregator's own peer (#190): the node is in that child's
+	// subtree, and drill-in, configuration and history for it are routed
+	// there. Empty for this node and for its direct peers.
+	Via string `json:"via,omitempty"`
+	// NameConflict says another node in the tree carries the same name.
+	// Names are fleet-wide identities (#37), so two machines sharing one is a
+	// configuration fault: both are listed and flagged, neither is routed to,
+	// and nothing is merged.
+	NameConflict bool `json:"name_conflict,omitempty"`
+	// SubtreeError says why this child aggregator's subtree is not part of
+	// the view -- the fleet loops back through it, or it is deeper than the
+	// tree allows -- or why its subtree could not be read. Empty for a leaf
+	// and for a child whose subtree is composed.
+	SubtreeError string `json:"subtree_error,omitempty"`
+
 	NodeSummary
 }
 
@@ -456,6 +491,13 @@ type FleetRollup struct {
 	// NeverAnswered counts unreachable nodes with no reading at all, which
 	// have no absence to measure.
 	NeverAnswered int `json:"never_answered"`
+	// SubtreeErrors counts the child aggregators whose subtrees are not in
+	// the view because they could not be composed (a loop, or too deep). Their
+	// nodes are neither counted nor named; this says they exist.
+	SubtreeErrors int `json:"subtree_errors,omitempty"`
+	// NameConflicts counts the nodes whose name another node in the tree
+	// also carries.
+	NameConflicts int `json:"name_conflicts,omitempty"`
 
 	// Attention names the worst of the nodes that are not healthy --
 	// critical, then unreachable, then warning, by name within each -- with
@@ -501,6 +543,57 @@ type FleetRollup struct {
 	BuildGroups int          `json:"build_groups"`
 }
 
+// FleetSubtree is what an aggregator serves its parent at GET
+// /api/fleet/subtree (#190): an index of every node in its fleet, itself
+// included, and the roll-up over them in the form a parent composes.
+//
+// The index is what the parent searches, orders, counts, pages and routes by,
+// polled each cycle -- a few dozen bytes a node, where a summary is a
+// kilobyte. The summaries of the nodes on a page are fetched on request
+// (GET /api/fleet/nodes).
+type FleetSubtree struct {
+	Nodes []FleetIndexEntry `json:"nodes"`
+	// Aggregators is the instance ID of the aggregator serving the subtree
+	// and of every aggregator below it -- children whose subtrees it refused
+	// included. A parent whose own ID is in it would be composing itself: the
+	// fleet's peer lists loop, and the parent refuses the subtree. Keeping
+	// refused children in the set is what keeps a loop refused once found.
+	Aggregators []string `json:"aggregators"`
+	// Rollup keeps every build group (with at most RollupNames names each),
+	// so the parent can sum groups across children exactly; the other lists
+	// are bounded as a page's are.
+	Rollup *FleetRollup `json:"rollup"`
+}
+
+// FleetIndexEntry is one node of a subtree, as much as a parent needs to
+// list, search and route to it.
+type FleetIndexEntry struct {
+	Name       string     `json:"name"`
+	Hostname   string     `json:"hostname"`
+	Status     NodeStatus `json:"status"`
+	Reachable  bool       `json:"reachable"`
+	AgeSeconds float64    `json:"age_seconds"`
+	// Depth is how many hops the node is below the aggregator serving the
+	// index: 0 for that aggregator, 1 for its peers.
+	Depth int `json:"depth"`
+	// NameConflict is FleetNode.NameConflict, carried up.
+	NameConflict bool `json:"name_conflict,omitempty"`
+	// Reasons are why the node needs attention, as NodeAttention.Reasons: its
+	// alert messages, critical first, or the error for an unreachable node.
+	// Empty for a healthy node. At most RollupNames.
+	Reasons []string `json:"reasons,omitempty"`
+	// Commit is the build the node runs, as FleetBuild.Commit groups it:
+	// empty when it did not say, or cannot be seen.
+	Commit string `json:"commit,omitempty"`
+}
+
+// FleetNodes is GET /api/fleet/nodes: the named nodes of a fleet, for a parent
+// aggregator filling a page from its children. A name not in the fleet is
+// omitted.
+type FleetNodes struct {
+	Nodes []FleetNode `json:"nodes"`
+}
+
 // RollupNames bounds every per-node list in a bounded roll-up -- the one on a
 // page of the fleet view, and GET /api/fleet/rollup: the attention list, the
 // build groups, and the nodes named in each group. A roll-up is served on every
@@ -520,6 +613,13 @@ type NodeAttention struct {
 	// Reasons are the node's alert messages, critical first, or the poll error
 	// for an unreachable node.
 	Reasons []string `json:"reasons"`
+	// Subtree is, for an unreachable child aggregator, how many nodes below
+	// it are unknown with it: the size of its subtree when it last answered.
+	// Zero for any other node, and for a child that never answered.
+	Subtree int `json:"subtree,omitempty"`
+	// Via names the child aggregator the node is reached through, as on
+	// FleetNode.
+	Via string `json:"via,omitempty"`
 }
 
 // FleetExtreme is the worst value of one metric across the fleet and the node

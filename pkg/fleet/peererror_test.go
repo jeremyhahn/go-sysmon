@@ -303,13 +303,13 @@ func TestPeerConfig_FailuresNameNoAddress(t *testing.T) {
 	}}
 	p := New(func() config.Fleet { return cfg }, nil, func() string { return "local" }, testPoller(t).logger)
 
-	_, err = p.PeerConfig("garbage")
+	_, err = p.PeerConfig(context.Background(), "garbage")
 	assertPeerFailure(t, err, garbage.URL, "malformed response")
 
-	_, err = p.PeerConfig("refused")
+	_, err = p.PeerConfig(context.Background(), "refused")
 	assertPeerFailure(t, err, refused, "connection refused")
 
-	_, err = p.PeerConfig("broken")
+	_, err = p.PeerConfig(context.Background(), "broken")
 	var bad *ErrPeerURL
 	if !errors.As(err, &bad) {
 		t.Fatalf("PeerConfig(broken) error = %T (%v), want *ErrPeerURL", err, err)

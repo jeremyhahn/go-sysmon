@@ -58,5 +58,7 @@ func largeFleet(tb testing.TB, n int) *Poller {
 		}
 		p.peers[peer.Name] = st
 	}
+	// Published as a refresh would, so every view reads this state.
+	p.publish(cfg)
 	return p
 }

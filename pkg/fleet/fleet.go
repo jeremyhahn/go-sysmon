@@ -75,6 +75,9 @@ type peerState struct {
 	// computes that peer's paging rate itself, by differencing its counters
 	// across two polls.
 	swapBase *types.Snapshot
+	// tree is the peer's subtree, when the peer is itself an aggregator
+	// (#190); nil for a leaf.
+	tree *childTree
 }
 
 // LocalFunc supplies this node's own latest snapshot, cur, the baseline of
@@ -161,6 +164,27 @@ type Poller struct {
 	// details holds each peer's last drill-in snapshot: peer name ->
 	// *detailState. See PeerSnapshot.
 	details sync.Map
+
+	// gen is what the last refresh published: every peer's state and the
+	// children's subtrees, from one and the same cycle, so no view mixes a
+	// child's new state with its old subtree (#190). nil before the first.
+	gen atomic.Pointer[generation]
+
+	// instanceID is this process's identity in a fleet tree; see ancestry.go.
+	instanceID string
+	// viewFetches, fillFetches and relays bound what this aggregator asks
+	// its children for on requests' behalf: views' page fetches, parents'
+	// page fills, and relayed drill-ins, settings and history. See flight.go
+	// and page.go.
+	viewFetches *flightGroup
+	fillFetches *flightGroup
+	relays      *flightGroup
+	// subtreeLimit bounds a child's subtree response; maxSubtreeBytes.
+	subtreeLimit int64
+
+	// pageCache holds the summaries of subtree nodes fetched for a page from
+	// their child aggregators: node name -> *cachedNode. See materialize.
+	pageCache sync.Map
 
 	// history runs the per-peer history workers; see recorder.
 	history *recorder
@@ -277,13 +301,18 @@ func (p *Poller) GateHistory(gate HistoryGate) {
 // change the name without restarting.
 func New(cfgFn ConfigFunc, localFn LocalFunc, localNameFn func() string, logger *slog.Logger) *Poller {
 	p := &Poller{
-		cfgFn:       cfgFn,
-		localFn:     localFn,
-		localNameFn: localNameFn,
-		logger:      logger,
-		client:      pooled(outbound.NewClient(0)),
-		now:         time.Now,
-		peers:       make(map[string]*peerState),
+		cfgFn:        cfgFn,
+		localFn:      localFn,
+		localNameFn:  localNameFn,
+		logger:       logger,
+		client:       pooled(outbound.NewClient(0)),
+		now:          time.Now,
+		peers:        make(map[string]*peerState),
+		instanceID:   newInstanceID(),
+		viewFetches:  newFlightGroup(maxConcurrentFetches, 0),
+		fillFetches:  newFlightGroup(maxConcurrentFetches, 0),
+		relays:       newFlightGroup(maxConcurrentFetches, relayReuse),
+		subtreeLimit: maxSubtreeBytes,
 	}
 	p.history = newRecorder(p)
 	return p
@@ -342,6 +371,8 @@ func (p *Poller) cycle(cfg config.Fleet) {
 	if len(cfg.Peers) == 0 {
 		p.bodies.forget(nil)
 		p.details.Clear()
+		p.pageCache.Clear()
+		p.gen.Store(nil)
 		// And the poll state, swap baselines with it: a peer added back
 		// later starts afresh rather than differencing against a reading
 		// from before it was removed.
@@ -490,7 +521,7 @@ func (p *Poller) refresh(cfg config.Fleet) {
 	buffers := make(map[string]bool, 3*len(cfg.Peers))
 	for _, peer := range cfg.Peers {
 		keep[peer.Name] = true
-		for _, endpoint := range []string{endpointSummary, endpointSnapshot, endpointHistory} {
+		for _, endpoint := range bufferClasses {
 			buffers[bufferKey(peer.Name, endpoint)] = true
 		}
 	}
@@ -539,6 +570,12 @@ func (p *Poller) refresh(cfg config.Fleet) {
 		return true
 	})
 	p.bodies.forget(buffers)
+	// Every peer's state and the children's subtrees, published together for
+	// every request until the next refresh.
+	p.publish(current)
+	// A page's subtree summaries go with their child, and with age: one
+	// fetched longer ago than two intervals will never be reused.
+	p.forgetPages(urls, 2*p.detailReuse(current))
 }
 
 // historyCadence is how often history wants a reading from each peer, or zero
@@ -598,6 +635,16 @@ func (p *Poller) poll(peer config.Peer, cfg config.Fleet, prev *peerState, recor
 		err = p.pollSnapshot(peer, cfg, prev, st, recording)
 	}
 
+	switch {
+	case err != nil:
+	case st.summary.InstanceID != "" && st.summary.InstanceID == p.instanceID:
+		// The peer is this aggregator, under another name: the shortest loop
+		// there is. Nothing below it is composed.
+		st.tree = &childTree{refused: "this peer is this aggregator itself, listed under another name"}
+	case st.summary.Aggregates > 0:
+		p.pollSubtree(peer, cfg, prev, st)
+	}
+
 	if err != nil {
 		st.summary = nil
 		st.err = err.Error()
@@ -617,6 +664,12 @@ func (p *Poller) poll(peer config.Peer, cfg config.Fleet, prev *peerState, recor
 			st.source = prev.source
 			st.fetchedAt = prev.fetchedAt
 			st.swapBase = prev.swapBase
+		}
+		// A child aggregator that stopped answering keeps its last subtree,
+		// so its nodes are shown as unknown with their last known ages
+		// rather than vanishing from the fleet.
+		if prev != nil {
+			st.tree = prev.tree
 		}
 	}
 	// Dated when the poll finished, not when it began: a failure that lands
@@ -716,6 +769,44 @@ func bufferKey(peer, endpoint string) string {
 	return peer + " " + endpoint
 }
 
+// Endpoint classes a peer's read buffers are kept by. A request carrying a
+// query or naming a node -- a page's names, a relayed drill-in -- reads into
+// its class's buffer, so the buffers kept stay one per peer per class rather
+// than one per distinct request (#190).
+const (
+	classForwardSnapshot = "/api/fleet/*/snapshot"
+	classForwardConfig   = "/api/fleet/*/config"
+)
+
+// bufferClasses is every class a peer may keep a buffer for between cycles.
+var bufferClasses = []string{
+	endpointSummary, endpointSnapshot, endpointHistory,
+	endpointSubtree, endpointNodes, classForwardSnapshot, classForwardConfig,
+}
+
+// bufferClass is the class of an endpoint: its path without the query, and a
+// node's forwarded drill-in or settings under one class each.
+func bufferClass(endpoint string) string {
+	path, _, _ := strings.Cut(endpoint, "?")
+	if rest, ok := strings.CutPrefix(path, "/api/fleet/"); ok && strings.Contains(rest, "/") {
+		switch {
+		case strings.HasSuffix(rest, "/snapshot"):
+			return classForwardSnapshot
+		case strings.HasSuffix(rest, "/config"):
+			return classForwardConfig
+		}
+	}
+	return path
+}
+
+// drain reads what is left of a short error body before it is closed, so the
+// connection goes back to the pool.
+func drain(p *Poller, peer config.Peer, resp *http.Response) {
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes)); err != nil {
+		p.logger.Debug("fleet: draining peer error body", "peer", peer.Name, "error", err)
+	}
+}
+
 // get fetches one peer endpoint and decodes it into v, bounded by limit.
 //
 // It takes the whole fleet config rather than just the timeout because the
@@ -723,42 +814,21 @@ func bufferKey(peer, endpoint string) string {
 // here -- once, per peer, per request -- is what lets a reload move a peer from
 // http to https without restarting.
 func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet, endpoint string, limit int64, v any) error {
-	target := strings.TrimRight(peer.URL, "/") + endpoint
-
-	parsed, err := url.Parse(target)
+	resp, cancel, err := p.do(parent, peer, cfg, endpoint)
 	if err != nil {
-		return &ErrPeerURL{Peer: peer.Name, Cause: err}
+		return err
 	}
-	// The scheme is checked before the request is built, so a peer that should
-	// not be spoken to in the clear is refused here rather than after the
-	// connection has already been made.
-	switch parsed.Scheme {
-	case "https":
-	case "http":
-		if cfg.TLS.RequireTLS {
-			return &ErrPlaintextPeer{Peer: peer.Name}
-		}
-	default:
-		return &ErrPeerScheme{Peer: peer.Name, Scheme: parsed.Scheme}
-	}
-
-	ctx, cancel := context.WithTimeout(parent, cfg.Timeout())
 	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return &ErrPeerURL{Peer: peer.Name, Cause: err}
-	}
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return &PeerRequestError{Peer: peer.Name, Cause: err}
-	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			p.logger.Debug("fleet: closing peer body", "peer", peer.Name, "error", err)
 		}
 	}()
 
+	if resp.StatusCode == http.StatusLoopDetected {
+		drain(p, peer, resp)
+		return &ErrFleetRefused{Peer: peer.Name, Reason: resp.Header.Get(HeaderRefusal)}
+	}
 	if resp.StatusCode != http.StatusOK {
 		// Read what is left of a short error body before it is closed, so the
 		// connection goes back to the pool. A peer too old to serve a summary
@@ -770,7 +840,7 @@ func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet,
 		}
 		return &ErrPeerStatus{Peer: peer.Name, Endpoint: endpoint, Status: resp.StatusCode}
 	}
-	if err := p.bodies.decode(bufferKey(peer.Name, endpoint), resp.Body, limit, v); err != nil {
+	if err := p.bodies.decode(bufferKey(peer.Name, bufferClass(endpoint)), resp.Body, limit, v); err != nil {
 		return &PeerRequestError{Peer: peer.Name, Cause: err}
 	}
 	// A peer on an older build sends null for a list it has none of, and this
@@ -778,6 +848,44 @@ func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet,
 	// cached and shared, so this node's wire never carries null (#151).
 	types.ReplaceNilSlices(v)
 	return nil
+}
+
+// do sends one GET for endpoint to peer, over the transport the fleet's TLS
+// policy allows, bounded by the fleet timeout. The caller closes the body and
+// then calls cancel.
+func (p *Poller) do(parent context.Context, peer config.Peer, cfg config.Fleet, endpoint string) (*http.Response, context.CancelFunc, error) {
+	target := strings.TrimRight(peer.URL, "/") + endpoint
+
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return nil, nil, &ErrPeerURL{Peer: peer.Name, Cause: err}
+	}
+	// The scheme is checked before the request is built, so a peer that should
+	// not be spoken to in the clear is refused here rather than after the
+	// connection has already been made.
+	switch parsed.Scheme {
+	case "https":
+	case "http":
+		if cfg.TLS.RequireTLS {
+			return nil, nil, &ErrPlaintextPeer{Peer: peer.Name}
+		}
+	default:
+		return nil, nil, &ErrPeerScheme{Peer: peer.Name, Scheme: parsed.Scheme}
+	}
+
+	ctx, cancel := context.WithTimeout(parent, cfg.Timeout())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		cancel()
+		return nil, nil, &ErrPeerURL{Peer: peer.Name, Cause: err}
+	}
+	p.stampRequest(ctx, req)
+	resp, err := p.client.Do(req)
+	if err != nil {
+		cancel()
+		return nil, nil, &PeerRequestError{Peer: peer.Name, Cause: err}
+	}
+	return resp, cancel, nil
 }
 
 // detailReuse is how long a peer's drill-in snapshot, or failed attempt, is
@@ -886,17 +994,21 @@ func (d *detailState) repoint(url string) {
 // when there is nothing to serve, and otherwise the reason the peer could not
 // be read.
 func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Duration) (types.PeerSnapshot, error) {
-	if name == p.localNameFn() {
+	switch route := p.Resolve(name); route.Kind {
+	case RouteLocal:
 		if _, snap, _ := p.localFn(); snap != nil {
 			// The local node is collected on demand, so it is current by
 			// construction.
 			return types.PeerSnapshot{Snapshot: snap, Reachable: true}, nil
 		}
 		return types.PeerSnapshot{}, &ErrNoReading{Node: name}
-	}
-
-	if _, _, ok := p.resolvePeer(name); !ok {
-		return types.PeerSnapshot{}, &ErrUnknownPeer{Peer: name}
+	case RouteSubtree:
+		// A node of a child's subtree, whose drill-in the child serves
+		// (#190).
+		return p.forwardSnapshot(ctx, name, route, budget)
+	case RoutePeer:
+	default:
+		return types.PeerSnapshot{}, route.err(name)
 	}
 
 	// budget bounds the whole drill-in on the peer's behalf -- waiting for
@@ -951,32 +1063,54 @@ func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Dura
 
 // View builds the fleet view: the page of nodes q selects, in name order, and
 // the fleet-level roll-up over EVERY node -- never over the page.
-func (p *Poller) View(q Query) types.Fleet {
-	nodes, ok := p.nodes()
+//
+// On an aggregator with child aggregators (#190) the page may hold nodes of
+// their subtrees; those are fetched from their children now, bounded by ctx,
+// unless a fetch within the poll interval already has them.
+func (p *Poller) View(ctx context.Context, q Query) types.Fleet {
+	g := p.published()
+	if len(g.subtrees.childURL) == 0 {
+		return p.flatView(g, q)
+	}
+	return p.treeView(ctx, g, q)
+}
+
+// treeView is the view of a fleet with child aggregators; see View.
+func (p *Poller) treeView(ctx context.Context, g *generation, q Query) types.Fleet {
+	t, ok := p.treeOf(g)
 	if !ok {
 		return types.Fleet{Enabled: false}
 	}
 	var self *types.FleetNode
-	for i := range nodes {
-		if nodes[i].Self {
-			n := nodes[i]
+	for i := range t.direct {
+		if t.direct[i].Self {
+			n := t.direct[i]
 			self = &n
 			break
 		}
 	}
-	shown, matched, offset := page(nodes, q)
+	shown, matched, offset := page(t.rows, rowKey, q)
+	// A whole-fleet request on a tree fetches nothing from the children: its
+	// subtree nodes are served from the cache or their index entries, so an
+	// unauthenticated request cannot make this node ask its children for
+	// every node of the tree (#190).
+	nodes := p.materialize(ctx, t, shown, q.bounded() != Query{})
+
+	names := rollupNames(q)
+	r := t.rollup(names)
+	trimBuilds(r, names)
 	return types.Fleet{
 		Enabled: true,
-		Nodes:   shown,
+		Nodes:   nodes,
 		Page: &types.FleetPage{
 			Query:   q.Search,
 			Offset:  offset,
 			Limit:   max(q.Limit, 0),
 			Matched: matched,
-			Total:   len(nodes),
+			Total:   len(t.rows),
 		},
 		Self:   self,
-		Rollup: rollup(nodes, rollupNames(q)),
+		Rollup: r,
 	}
 }
 
@@ -998,102 +1132,25 @@ func rollupNames(q Query) int {
 // /api/fleet/rollup serves to a consumer that wants the fleet's state and none
 // of its nodes. It is nil when no peers are configured.
 func (p *Poller) Rollup() *types.FleetRollup {
-	nodes, ok := p.nodes()
+	t, ok := p.tree()
 	if !ok {
 		return nil
 	}
-	return rollup(nodes, types.RollupNames)
+	r := t.rollup(types.RollupNames)
+	trimBuilds(r, types.RollupNames)
+	return r
 }
 
 // nodes is every node in the fleet, this one included, in name order, with
-// its status and build agreement stamped. ok is false when no peers are
-// configured and there is no fleet to describe.
-func (p *Poller) nodes() (nodes []types.FleetNode, ok bool) {
+// the peers' states as generation g published them and each node's status
+// and build agreement stamped. ok is false when no peers are configured and
+// there is no fleet to describe.
+func (p *Poller) nodes(g *generation) (nodes []types.FleetNode, ok bool) {
 	cfg := p.cfgFn()
 	if len(cfg.Peers) == 0 {
 		return nil, false
 	}
-
-	nodes = make([]types.FleetNode, 0, len(cfg.Peers)+1)
-
-	self := types.FleetNode{Name: p.localNameFn(), Self: true}
-	if prev, cur, interval := p.localFn(); cur != nil {
-		self.Reachable = true
-		self.Source = types.SummarySourceLocal
-		self.NodeSummary = LocalSummary(prev, cur, interval)
-		// This node's name and the name it writes under are one function,
-		// resolved now. Its snapshot's copy is restamped on a reload of
-		// fleet.local_name, but after the new configuration is live, and a
-		// view built in between would flag the node against itself.
-		self.NodeName = self.Name
-	} else {
-		self.Error = "no data"
-	}
-	nodes = append(nodes, self)
-
-	now := p.now()
-	recording := p.historyCadence() > 0
-	p.mu.RLock()
-	for _, peer := range cfg.Peers {
-		// The peer's URL stays here, in the poller that dials it. The view is
-		// served without authentication, and a URL is the peer's scheme,
-		// address and port on the internal network (#120); the dashboard
-		// addresses every node by name.
-		n := types.FleetNode{Name: peer.Name}
-		st := p.peers[peer.Name]
-		if st != nil && st.url != peer.URL {
-			// Polled at an address a reload has since replaced: that reading
-			// is another machine's, and this one has not been polled yet.
-			st = nil
-		}
-		switch {
-		case st == nil:
-			n.Error = "not polled yet"
-		case st.summary == nil:
-			// No summary means no reading to be old, so the age stays zero
-			// rather than describing the last ATTEMPT. For a peer that has
-			// NEVER answered there is no date to report, and the moment of the
-			// last try -- about two seconds ago, always -- would render as
-			// "unreachable for 2s" for a total absence, which is #69's defect
-			// in the field meant to distinguish them.
-			n.Error = st.err
-			if n.Error == "" {
-				n.Error = "no data"
-			}
-		default:
-			n.Reachable = st.err == ""
-			n.Error = st.err
-			n.Source = st.source
-			n.AgeSeconds = now.Sub(st.fetchedAt).Seconds()
-			n.NodeSummary = *st.summary
-		}
-		// Only while history is being recorded: a decision made while it was
-		// is no statement about a fleet that records nothing.
-		if recording {
-			if d, ok := p.historyStatus.Load(peer.Name); ok && d.(historyDecision).url == peer.URL {
-				h := d.(historyDecision).status
-				n.History = &h
-			}
-		}
-		nodes = append(nodes, n)
-	}
-	p.mu.RUnlock()
-
-	// Build agreement and status are stamped in one pass over every node,
-	// which also covers the two paths that carry no summary -- the peer that
-	// has not been polled yet and the peer that answered nothing -- so no node
-	// leaves the view with either field unset. Build agreement is the one
-	// field that is not a property of a node on its own: it is that node's
-	// commit held against THIS node's.
-	selfCommit := self.GitCommit
-	for i := range nodes {
-		nodes[i].BuildMatch = compareBuild(selfCommit, nodes[i].GitCommit)
-		nodes[i].NameMatch = compareName(nodes[i].Name, nodes[i].NodeName, nodes[i].Reachable)
-		nodes[i].Status = nodeStatus(nodes[i].Reachable, &nodes[i].NodeSummary)
-		if nodes[i].Alerts == nil {
-			nodes[i].Alerts = []types.Alert{}
-		}
-	}
+	self := p.selfNode()
 
 	// Alphabetical by name (owner ruling 2026-09-01). Names are unique within a
 	// fleet, so this is a total order and the list cannot reshuffle between
@@ -1108,10 +1165,147 @@ func (p *Poller) nodes() (nodes []types.FleetNode, ok bool) {
 	//
 	// Search and paging are applied to this order (see View), so a page is a
 	// contiguous run of it and the same node can never appear on two pages.
-	sort.SliceStable(nodes, func(i, j int) bool {
-		return CompareNodeNames(nodes[i].Name, nodes[j].Name) < 0
+	//
+	// The peers' order and states come from the generation, which sorted them
+	// once at publish; every request then builds the list in place, in order,
+	// with no sort and no lookup by name. A reload that has replaced the peer
+	// list since is sorted here, as the list always used to be.
+	order, states := g.order, g.states
+	if !samePeers(g.cfgPeers, cfg.Peers) {
+		order, states = sortedPeers(cfg.Peers, g.peers)
+	}
+	nodes = make([]types.FleetNode, len(cfg.Peers)+1)
+	at := sort.Search(len(order), func(i int) bool {
+		return CompareNodeNames(cfg.Peers[order[i]].Name, self.Name) > 0
 	})
+	nodes[at] = self
+
+	now := p.now()
+	recording := p.historyCadence() > 0
+	for k, i := range order {
+		slot := k
+		if k >= at {
+			slot = k + 1
+		}
+		peerNode(&nodes[slot], cfg.Peers[i], states[k], now)
+		nodes[slot].History = p.peerHistory(cfg.Peers[i], recording)
+	}
+
+	// Build agreement and status are stamped in one pass over every node,
+	// which also covers the two paths that carry no summary -- the peer that
+	// has not been polled yet and the peer that answered nothing -- so no node
+	// leaves the view with either field unset.
+	for i := range nodes {
+		stamp(&nodes[i], self.GitCommit)
+	}
 	return nodes, true
+}
+
+// selfNode is this node as the fleet view lists it, from its latest two
+// collections.
+func (p *Poller) selfNode() types.FleetNode {
+	self := types.FleetNode{Name: p.localNameFn(), Self: true}
+	if prev, cur, interval := p.localFn(); cur != nil {
+		self.Reachable = true
+		self.Source = types.SummarySourceLocal
+		self.NodeSummary = LocalSummary(prev, cur, interval)
+		// This node's name and the name it writes under are one function,
+		// resolved now. Its snapshot's copy is restamped on a reload of
+		// fleet.local_name, but after the new configuration is live, and a
+		// view built in between would flag the node against itself.
+		self.NodeName = self.Name
+	} else {
+		self.Error = "no data"
+	}
+	return self
+}
+
+// peerHistory is the history decision a peer's card shows: the gate's latest
+// for the peer at its configured address, while history is being recorded,
+// and nil otherwise. Only while recording: a decision made while it was is no
+// statement about a fleet that records nothing. It is read per request, not
+// cached with the peer's node, because the history workers decide between
+// polls.
+func (p *Poller) peerHistory(peer config.Peer, recording bool) *types.PeerHistory {
+	if !recording {
+		return nil
+	}
+	d, ok := p.historyStatus.Load(peer.Name)
+	if !ok || d.(historyDecision).url != peer.URL {
+		return nil
+	}
+	h := d.(historyDecision).status
+	return &h
+}
+
+// peerNode fills n with a peer as its latest poll left it.
+func peerNode(n *types.FleetNode, peer config.Peer, st *peerState, now time.Time) {
+	// The peer's URL stays here, in the poller that dials it. The view is
+	// served without authentication, and a URL is the peer's scheme, address
+	// and port on the internal network (#120); the dashboard addresses every
+	// node by name.
+	n.Name = peer.Name
+	if st != nil && st.url != peer.URL {
+		// Polled at an address a reload has since replaced: that reading is
+		// another machine's, and this one has not been polled yet.
+		st = nil
+	}
+	switch {
+	case st == nil:
+		n.Error = "not polled yet"
+	case st.summary == nil:
+		// No summary means no reading to be old, so the age stays zero rather
+		// than describing the last ATTEMPT. For a peer that has NEVER answered
+		// there is no date to report, and the moment of the last try -- about
+		// two seconds ago, always -- would render as "unreachable for 2s" for a
+		// total absence, which is #69's defect in the field meant to
+		// distinguish them.
+		n.Error = st.err
+		if n.Error == "" {
+			n.Error = "no data"
+		}
+	default:
+		n.Reachable = st.err == ""
+		n.Error = st.err
+		n.Source = st.source
+		n.AgeSeconds = now.Sub(st.fetchedAt).Seconds()
+		n.NodeSummary = *st.summary
+	}
+}
+
+// stamp sets the fields of n that the view derives rather than polls. Build
+// agreement is the one that is not a property of a node on its own: it is that
+// node's commit held against THIS node's.
+func stamp(n *types.FleetNode, selfCommit string) {
+	n.BuildMatch = compareBuild(selfCommit, n.GitCommit)
+	n.NameMatch = compareName(n.Name, n.NodeName, n.Reachable)
+	n.Status = nodeStatus(n.Reachable, &n.NodeSummary)
+	if n.Alerts == nil {
+		n.Alerts = []types.Alert{}
+	}
+}
+
+// samePeers reports whether a and b are one peer list: the same slice, which
+// a configuration reload replaces rather than edits.
+func samePeers(a, b []config.Peer) bool {
+	return len(a) == len(b) && (len(a) == 0 || &a[0] == &b[0])
+}
+
+// sortedPeers is the indexes of peers in name order, and each one's state from
+// states, aligned with the order.
+func sortedPeers(peers []config.Peer, states map[string]*peerState) ([]int, []*peerState) {
+	order := make([]int, len(peers))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return CompareNodeNames(peers[order[i]].Name, peers[order[j]].Name) < 0
+	})
+	aligned := make([]*peerState, len(order))
+	for k, i := range order {
+		aligned[k] = states[peers[i].Name]
+	}
+	return order, aligned
 }
 
 // ErrPlaintextPeer reports a peer configured with an http URL on a fleet that
@@ -1232,7 +1426,14 @@ func (p *Poller) LocalName() string { return p.localNameFn() }
 // truthful than a copy that could be minutes stale. Showing the aggregator's
 // own settings while a peer is selected would be actively misleading, which is
 // why this exists rather than the view falling back to local config.
-func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
+func (p *Poller) PeerConfig(ctx context.Context, name string) (*types.ConfigView, error) {
+	switch route := p.Resolve(name); route.Kind {
+	case RoutePeer:
+	case RouteSubtree:
+		return p.forwardConfig(ctx, name, route)
+	default:
+		return nil, route.err(name)
+	}
 	cfg := p.cfgFn()
 	var url string
 	for _, peer := range cfg.Peers {
@@ -1245,7 +1446,7 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 		return nil, &ErrUnknownPeer{Peer: name}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout())
+	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout())
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -1277,16 +1478,6 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 	// are: its bind address, and anything an older build still sends verbatim.
 	view = config.RedactPeerView(view)
 	return &view, nil
-}
-
-// Has reports whether name is a node of this fleet: this node, or a configured
-// peer. It answers from the configuration, without building the view.
-func (p *Poller) Has(name string) bool {
-	if name == p.localNameFn() {
-		return true
-	}
-	_, _, ok := p.resolvePeer(name)
-	return ok
 }
 
 // resolvePeer finds name in the current configuration, and returns that

@@ -107,18 +107,18 @@ func TestView_AnUnreachableNodeHasNoNameAgreement(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
-	if got := node(t, p.View(fleet.Query{}), "dead").NameMatch; got != types.NameUnknown {
+	if got := node(t, p.View(context.Background(), fleet.Query{}), "dead").NameMatch; got != types.NameUnknown {
 		t.Errorf("never-polled NameMatch = %q, want %q", got, types.NameUnknown)
 	}
 
 	done := make(chan struct{})
 	go p.Run(done)
 	await.Until(t, "the dead peer to be polled as unreachable", func(context.Context) bool {
-		return node(t, p.View(fleet.Query{}), "dead").Status == types.NodeStatusUnreachable
+		return node(t, p.View(context.Background(), fleet.Query{}), "dead").Status == types.NodeStatusUnreachable
 	})
 	close(done)
 
-	if got := node(t, p.View(fleet.Query{}), "dead").NameMatch; got != types.NameUnknown {
+	if got := node(t, p.View(context.Background(), fleet.Query{}), "dead").NameMatch; got != types.NameUnknown {
 		t.Errorf("unreachable NameMatch = %q, want %q", got, types.NameUnknown)
 	}
 }
@@ -140,7 +140,7 @@ func TestView_AStalePeerLosesItsNameAgreement(t *testing.T) {
 	// Cycles stepped by hand: one that reaches the peer, and one after it is
 	// gone.
 	fleet.Refresh(p)
-	if n := node(t, p.View(fleet.Query{}), "db-01"); !n.Reachable || n.NameMatch != types.NameSame {
+	if n := node(t, p.View(context.Background(), fleet.Query{}), "db-01"); !n.Reachable || n.NameMatch != types.NameSame {
 		t.Fatalf("reachable %v, NameMatch = %q; want the peer reached and %q before it goes away",
 			n.Reachable, n.NameMatch, types.NameSame)
 	}
@@ -148,7 +148,7 @@ func TestView_AStalePeerLosesItsNameAgreement(t *testing.T) {
 	srv.Close()
 	fleet.Refresh(p)
 
-	n := node(t, p.View(fleet.Query{}), "db-01")
+	n := node(t, p.View(context.Background(), fleet.Query{}), "db-01")
 	if n.Reachable {
 		t.Fatal("the peer is still reachable after its server closed, so this proves nothing")
 	}
@@ -171,7 +171,7 @@ func TestView_ThisNodeAgreesWithItselfAcrossARename(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, stale, 0 }, func() string { return "new-name" }, quiet())
 
-	self := node(t, p.View(fleet.Query{}), "new-name")
+	self := node(t, p.View(context.Background(), fleet.Query{}), "new-name")
 	if self.NameMatch != types.NameSame {
 		t.Errorf("self NameMatch = %q, want %q", self.NameMatch, types.NameSame)
 	}
@@ -191,7 +191,7 @@ func TestView_ThisNodeWithNoSnapshotIsUnknown(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
 
-	if got := node(t, p.View(fleet.Query{}), "local").NameMatch; got != types.NameUnknown {
+	if got := node(t, p.View(context.Background(), fleet.Query{}), "local").NameMatch; got != types.NameUnknown {
 		t.Errorf("self NameMatch = %q, want %q with no snapshot", got, types.NameUnknown)
 	}
 }

@@ -12,6 +12,8 @@ response comes from the monitor.
 | GET    | `/api/summary`  | This node's fleet summary, from its two latest snapshots |
 | GET    | `/api/snapshot/history` | The latest snapshot without process list or CPU flags, for fleet history |
 | GET    | `/api/events`   | A server-sent events stream of snapshots            |
+| GET    | `/api/fleet/subtree` | This aggregator's node index and composable roll-up, for its parent |
+| GET    | `/api/fleet/nodes` | Named nodes of this fleet, for a parent filling a page |
 | GET    | `/api/interval` | The monitor's current polling interval              |
 | POST   | `/api/interval` | Changes the polling interval                        |
 
@@ -30,6 +32,11 @@ collection before it. `/api/fleet` serves a page of the fleet poller's cached
 peer summaries, and `/api/fleet/rollup` the whole-fleet roll-up over them, and `/api/fleet/{name}/snapshot` fetches a peer's published snapshot
 from that peer when someone drills in (#76), which is the peer's own last poll
 and not fresh host state; `/api/history` queries storage, which is not host state.
+On a tree of aggregators (#190), a parent serves ordering, search, counts and
+routing from the child indexes it polled. The second sanctioned exception, of the
+same kind as drill-in (owner ruling 2026-09-23), is that only a page's subtree
+summaries are fetched from their children on request, and reused for the poll
+interval. History for a subtree node is relayed to the child that records it.
 **`pkg/server` does not import a collector at all.**
 
 The cost of getting this wrong is not abstract: two clients would measure the

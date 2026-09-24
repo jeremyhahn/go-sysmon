@@ -18,6 +18,7 @@
     coverage,
     rollupHeadline,
     tempSourceLabel,
+    treeNotes,
     visibleAttention,
   } from "$lib/rollup";
   import type {
@@ -53,6 +54,9 @@
   <!-- The state count. Unreachable is its own term, never folded into the
        healthy count or a fraction: the node is unknown, not fine. -->
   <p class="text-sm font-semibold" data-testid="fleet-headline">{headline}</p>
+  {#each treeNotes(rollup) as note (note)}
+    <p class="text-xs text-warning" data-testid="fleet-tree-note">{note}</p>
+  {/each}
 
   {#if attention.shown.length > 0}
     <ul class="text-xs space-y-1" aria-label="Nodes needing attention">

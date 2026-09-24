@@ -820,6 +820,148 @@ cannot delay the refresh. A peer that stops answering keeps its last good
 summary alongside the error, so a brief blip reads as stale data rather than an
 empty card, and an unreachable node is never rendered as a healthy one.
 
+### Hierarchical aggregation
+
+One aggregator polling every node has a limit (#190). Polling costs about
+0.08 ms of CPU per peer per cycle, and recording history costs about 103 KB
+per peer per sample, which is about 1 GB per sample at ten thousand peers. So
+aggregators form a tree: **a peer can itself be an aggregator**, and each
+aggregator polls and records only its own direct peers (topology A at every
+level). Nothing is configured to make this happen. A node whose summary
+reports `aggregates` greater than 0 is a child aggregator, and its parent also
+polls its `GET /api/fleet/subtree` each cycle.
+
+- **Names are unique across the whole tree** (#37): a node's name is its
+  Prometheus `instance` label, so it is never qualified by path. If two nodes
+  carry the same name, both are listed with `name_conflict`, neither can be
+  drilled into, configured or charted (`409`), and the roll-up counts them in
+  `name_conflicts`. This applies to the aggregator's own name too: a node
+  elsewhere in the tree called the same is a conflict, not a loop.
+- **Loops are found by identity, not by name.** Each aggregator process has a
+  random 128-bit instance ID, created at start and never configured.
+  `/api/summary` carries it as `instance_id`, and every request one aggregator
+  makes of another carries `X-Sysmon-Fleet-Ancestry`: the IDs of the
+  aggregators the request has passed through. A poll carries the chain the
+  aggregator learned from its own parent's latest poll; a relayed drill-in,
+  settings request, history range or page fill carries the chain of the
+  request it relays, and a poll carries the poller's own ID. An aggregator
+  refuses with `508` (`X-Sysmon-Fleet-Refusal: loop`) a request carrying its
+  own ID, and (`depth`) one that has passed through more than `MaxTreeDepth`
+  (4) aggregators, so no relay can go round a loop.
+- **Loops among polls are found from the subtrees.** Every subtree lists, in
+  `aggregators`, the instance IDs of every aggregator at or below it,
+  including children it refused. A parent that finds its own ID there refuses
+  the subtree. Every edge of a loop is cut, and because refused children stay
+  in the list, the evidence survives the cut: the same edges are cut on every
+  cycle until the loop is removed. A child's IDs carried past failed reads
+  expire after three poll intervals. A child listing more than 1024 is
+  refused outright, and none of its IDs are passed further up.
+- **What a child's report can do (by design).** A child's subtree is composed
+  or refused whole. A child whose list contains this aggregator's ID, whose
+  tree is too deep, whose data does not validate, or that refuses this
+  aggregator's poll takes its entire subtree out of this view. Nothing below
+  it is shown or counted, only the child itself with the reason. So one
+  misconfigured or misbehaving aggregator can hide everything beneath it from
+  every ancestor. That is deliberate: a subtree that cannot be trusted is not
+  composed in part, and the cause is stated on the child's card and counted
+  in `subtree_errors`. It cannot reach sideways: a sibling subtree, or this
+  aggregator's own peers, are unaffected.
+- A parent whose peer reports the parent's own instance ID, or whose child's
+  subtree is deeper than 4 levels, does not compose that subtree. It says why
+  in the child's `subtree_error`, counts it in `subtree_errors`, and keeps it
+  refused even if a later read fails.
+- **The view is served from polled state.** Search, order, counts, offsets and
+  routing come from each child's index: name, hostname, status, age, reasons
+  and build for each node. Only the summaries of the nodes on a page are
+  fetched from their children on request (`GET /api/fleet/nodes`), and they
+  are reused for the poll interval (owner ruling 2026-09-23). Page fetches are
+  bounded:
+  - a cached summary is keyed by the child and the child's address;
+  - concurrent requests for one batch share a single fetch;
+  - at most 8 fetches are in flight;
+  - at most 250 subtree summaries are fetched per view.
+
+  A request with no parameters fetches nothing from the children. Its subtree
+  nodes, like any beyond the per-view bound or any a child could not give in
+  time, carry `source: "index"`: their status and age are known, and their
+  figures are absent, not zero. A card's status, reachability and age are
+  always the index's, which is what the roll-up is counted from.
+- **Deadlines are passed down the tree.** A request carries
+  `X-Sysmon-Fleet-Budget-Ms`: the time its sender will still wait, less a
+  margin for each hop. A slow grandchild therefore fails only its own nodes,
+  and a node whose peer has become slow is answered with its last reading,
+  marked stale, rather than timing out at the root. The header is honoured
+  only on a request carrying a valid ancestry chain, i.e. from another
+  aggregator; from a browser it is ignored.
+- **Work done for requests is shared and bounded.** Page fills, relayed
+  drill-ins, settings and history ranges run as shared work:
+  - identical work runs once, and every asker waits for it;
+  - the work runs detached from whoever started it, so one asker leaving, or
+    arriving with a short budget, cannot fail the others. It runs to the
+    latest deadline any asker has, never past `fleet.timeout_ms`;
+  - an identical relay is reused for one second;
+  - at most 8 run at once. Views, parents' page fills and relays each have
+    their own bound, so none can starve another.
+- **The roll-up composes exactly.** Counts, sums and denominators add, and
+  extremes keep the worse value with its node named. A node whose CPU usage
+  was not measured is counted in `cpu_unknown` at every level, never read as
+  0%. On a tie the earlier name
+  wins, as a single pass over the whole fleet would pick it. The top five
+  attention entries (each carrying `via`) and every build group merge without
+  loss. An unbounded roll-up is the same composition with its lists taken
+  whole from the index. A test checks that composed roll-ups equal the
+  one-pass roll-up. Each view is built from one published refresh, so a child
+  whose poll has just failed is never shown beside its last subtree merged as
+  healthy.
+- **A child that stops answering takes its subtree with it.** Every node of its
+  last known subtree is unreachable, never healthy, with its age carried
+  forward. The child's attention entry carries `subtree`, the number of nodes
+  now unknown, and its card carries `subtree_error`.
+- **Drill-in, settings and history route to the owner.** Requests for a subtree
+  node go to the child that owns it, which may pass them to its own child in
+  turn. History is relayed whether or not the parent keeps any history of its
+  own.
+- **Nothing a child sends is passed through.** Every relayed answer is decoded
+  as the type asked for and served as JSON this node writes. A history answer
+  must be `application/json` and the range of the node asked about; anything
+  else is refused with `502`, as is an answer larger than 8 MiB. A child's
+  error comes back as its status, if that status is one of 400, 404 or 409
+  (otherwise `502`), and never with the child's body or headers.
+- **A child's data is validated.** A subtree must meet all of these:
+  - exactly one node at depth 0 (the child itself), and every depth between
+    0 and 4;
+  - usable names, and statuses that are node states;
+  - bounded host names, reasons and builds;
+  - roll-up counts that are counts, and sums that are finite and
+    non-negative;
+  - states that partition its nodes, as its index lists them;
+  - denominators equal to its reachable nodes;
+  - build groups that count no more than those nodes.
+
+  Its lists are clamped to their bounds, and the subtree response to 32 MiB.
+  An invalid or oversized subtree is a read failure: the last good one stays,
+  marked stale.
+- **Mixed versions.** A child running a build from before #190 does not report
+  `aggregates`, so it appears as the single node it says it is.
+- **Security.** Every endpoint is a `GET`. No level publishes an address, and
+  relayed settings are redacted again at each hop (#120).
+
+**A flat fleet pays nothing for any of this.** A fleet with no child
+aggregators is served by a path of its own. Each refresh builds the peers'
+nodes and roll-up once, and a request adds only this node's live reading (a
+merge, exact whatever the split), ages the readings by the time since the
+refresh, and copies out the page. A test holds this path to the tree path's
+answer. A 25-node page of a 10,000-node flat fleet costs about 0.08 ms of CPU,
+against 2.3 ms in #15.
+
+Measured on a tree of 10,000 nodes (a root with 100 child aggregators of 100
+nodes each, `BenchmarkTree_*`): a root cycle takes about 33 ms of CPU and
+1.35 MB of polling. The root records 10 MB of history per sample (100 peers),
+and so does each child. A 25-node page from the root takes about 1.0 ms of CPU
+from the cache, or about 1.6 ms with one fetch from a child. One flat
+aggregator of the same fleet takes about 0.77 s of CPU per cycle and records
+about 1 GB per sample.
+
 ### Peer transport: HTTPS and mTLS
 
 The aggregator treats a peer's answer as authoritative — it is what the fleet
