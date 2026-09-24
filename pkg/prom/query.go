@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -71,6 +72,9 @@ type Querier struct {
 	// lookbackTTL and lookbackRetry are how long a lookback answer, and a
 	// failure to get one, are cached; see WithLookbackCache.
 	lookbackTTL, lookbackRetry time.Duration
+	// log receives what cannot be returned: a response body that failed to
+	// drain after the answer was already decoded. See WithLogger.
+	log *slog.Logger
 }
 
 // QuerierOption adjusts a Querier as it is built.
@@ -85,6 +89,12 @@ func WithLookbackCache(ttl, retry time.Duration) QuerierOption {
 	}
 }
 
+// WithLogger sets where the querier logs what it cannot return. The default is
+// slog.Default() at the time the querier is built.
+func WithLogger(log *slog.Logger) QuerierOption {
+	return func(q *Querier) { q.log = log }
+}
+
 // NewQuerier returns a Querier reading its settings from opts on every query.
 func NewQuerier(opts func() QueryOptions, options ...QuerierOption) *Querier {
 	// Same policy as every other outbound client: a query API that redirects
@@ -92,7 +102,7 @@ func NewQuerier(opts func() QueryOptions, options ...QuerierOption) *Querier {
 	// deployment's history and labelling it as its own.
 	q := &Querier{
 		opts: opts, client: outbound.NewClient(0), lookbacks: &lookbackCache{}, now: time.Now,
-		lookbackTTL: lookbackTTL, lookbackRetry: lookbackRetry,
+		lookbackTTL: lookbackTTL, lookbackRetry: lookbackRetry, log: slog.Default(),
 	}
 	for _, option := range options {
 		option(q)
@@ -114,7 +124,7 @@ func (q *Querier) Pinned() *Querier {
 	o := q.opts()
 	return &Querier{
 		opts: func() QueryOptions { return o }, client: q.client, lookbacks: q.lookbacks, now: q.now,
-		lookbackTTL: q.lookbackTTL, lookbackRetry: q.lookbackRetry,
+		lookbackTTL: q.lookbackTTL, lookbackRetry: q.lookbackRetry, log: q.log,
 	}
 }
 
@@ -177,10 +187,7 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 	if err != nil {
 		return nil, &ErrRequest{URL: endpoint, Err: err}
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
+	defer releaseBody(resp.Body, endpoint, q.log)
 
 	// Prometheus reports a bad query as 400 with the same JSON envelope as a
 	// success, so the body is decoded before the status is judged: the envelope

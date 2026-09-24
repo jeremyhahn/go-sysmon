@@ -8,6 +8,7 @@ import type { IntervalScope, Transport } from "$lib/transport";
 import { sortBySeverity } from "$lib/alerts";
 import { liveReading } from "$lib/peer";
 import { isNewReading } from "$lib/reading";
+import { coreUsage, meanCpuUsage } from "$lib/cpu";
 import {
   fleetPageUrl,
   lastPageIfPast,
@@ -22,7 +23,6 @@ import {
 } from "$lib/storage";
 import type {
   Alert,
-  CPUInfo,
   DiskInfo,
   Fleet,
   NetworkInfo,
@@ -174,8 +174,11 @@ class MonitorStore {
   /** Alert ids already surfaced to the user, persisted across reloads. */
   seenAlertIds = $state<string[]>(loadSeenAlertIds());
 
-  cpuHistory = $state<number[][]>([]);
-  cpuOverallHistory = $state<number[]>(makeHistory(0));
+  // CPU histories hold null where usage was not measured -- before the first
+  // reading, and on the node's first collection -- so the chart draws a gap
+  // rather than a line at 0%.
+  cpuHistory = $state<(number | null)[][]>([]);
+  cpuOverallHistory = $state<(number | null)[]>(makeHistory(null));
   memHistory = $state<number[]>(makeHistory(0));
   networkHistory = $state<NetworkHistory[]>([]);
   diskHistory = $state<DiskHistory[]>([]);
@@ -207,19 +210,9 @@ class MonitorStore {
   psiIOHistory = $state<number[]>(makeHistory(0));
 
   // Derived values live inside the class so they can read $state fields.
+  /** The mean over the measured cores; null when none was measured. */
   readonly overallCpuPercent = $derived(
-    this.snapshot != null
-      ? this.snapshot.cpus.reduce((sum, c) => sum + c.usage_percent, 0) /
-          Math.max(this.snapshot.cpus.length, 1)
-      : 0
-  );
-
-  readonly topCpuCores = $derived(
-    this.snapshot != null
-      ? [...this.snapshot.cpus]
-          .sort((a, b) => b.usage_percent - a.usage_percent)
-          .slice(0, 5)
-      : ([] as CPUInfo[])
+    this.snapshot != null ? meanCpuUsage(this.snapshot.cpus) : null
   );
 
   readonly topNetworkByTraffic = $derived(
@@ -655,7 +648,7 @@ class MonitorStore {
   #resetSeries(): void {
     this.snapshot = null;
     this.cpuHistory = [];
-    this.cpuOverallHistory = makeHistory(0);
+    this.cpuOverallHistory = makeHistory(null);
     this.memHistory = makeHistory(0);
     this.networkHistory = [];
     this.diskHistory = [];
@@ -701,16 +694,18 @@ class MonitorStore {
     // CPU history
     const cores = snap.cpus.length;
     if (this.cpuHistory.length !== cores) {
-      this.cpuHistory = Array.from({ length: cores }, () => makeHistory(0));
+      this.cpuHistory = Array.from({ length: cores }, () =>
+        makeHistory<number | null>(null)
+      );
     }
-    this.cpuHistory = this.cpuHistory.map((hist, i) =>
-      pushHistory(hist, snap.cpus[i]?.usage_percent ?? 0)
+    this.cpuHistory = this.cpuHistory.map((hist, i) => {
+      const cpu = snap.cpus[i];
+      return pushHistory(hist, cpu == null ? null : coreUsage(cpu));
+    });
+    this.cpuOverallHistory = pushHistory(
+      this.cpuOverallHistory,
+      meanCpuUsage(snap.cpus)
     );
-
-    const overallPct =
-      snap.cpus.reduce((s, c) => s + c.usage_percent, 0) /
-      Math.max(cores, 1);
-    this.cpuOverallHistory = pushHistory(this.cpuOverallHistory, overallPct);
 
     // Memory history
     this.memHistory = pushHistory(this.memHistory, snap.memory.used_percent);

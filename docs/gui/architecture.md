@@ -320,6 +320,13 @@ break on both sides — or the only one in the range — is drawn as a dot, sinc
 line needs two points and the chart draws no markers, and the axis tooltip
 leaves a line out at a break rather than formatting a null as a value.
 
+The live 60-sample charts (`TimeSeriesChart`) follow the same rules. Their
+breaks are the samples that were not measured: CPU usage before the monitor's
+second collection, or for a core whose `/proc/stat` line could not be read
+(`usage_available` false), is pushed into the store's history as null, never
+0. A lone measured sample between breaks is drawn as a dot by the same
+`isLone`, and the tooltip leaves an unmeasured line out.
+
 Charts ask for what they need through `history.need()` rather than fetching, so
 a metric wanted by nine disk cards is fetched once. `history.get()` returns what
 arrived. The store discards everything it holds whenever the window or the node

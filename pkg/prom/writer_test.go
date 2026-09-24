@@ -52,7 +52,7 @@ func receiver(t *testing.T, status int, message string) (*httptest.Server, *capt
 func TestWriter_Write_PostsSnappyProtobuf(t *testing.T) {
 	srv, got := receiver(t, http.StatusOK, "")
 
-	w := NewWriter(srv.URL, 5*time.Second)
+	w := NewWriter(srv.URL, 5*time.Second, discardLog)
 	if err := w.Write(context.Background(), goldenSeries()); err != nil {
 		t.Fatalf("Write() = %v, want nil", err)
 	}
@@ -85,7 +85,7 @@ func TestWriter_Write_PostsSnappyProtobuf(t *testing.T) {
 func TestWriter_Write_EmptyBatchMakesNoRequest(t *testing.T) {
 	srv, got := receiver(t, http.StatusOK, "")
 
-	w := NewWriter(srv.URL, time.Second)
+	w := NewWriter(srv.URL, time.Second, discardLog)
 	if err := w.Write(context.Background(), nil); err != nil {
 		t.Fatalf("Write(nil) = %v, want nil", err)
 	}
@@ -114,7 +114,7 @@ func TestWriter_Write_RejectionIsTyped(t *testing.T) {
 
 	for _, tt := range tests {
 		srv, _ := receiver(t, tt.status, "sample out of order")
-		w := NewWriter(srv.URL, time.Second)
+		w := NewWriter(srv.URL, time.Second, discardLog)
 
 		err := w.Write(context.Background(), goldenSeries())
 		var rw *ErrRemoteWrite
@@ -137,7 +137,7 @@ func TestWriter_Write_RejectionIsTyped(t *testing.T) {
 // all is a different error from one that answered no, and the exporter treats
 // it as retryable by default rather than dropping the batch.
 func TestWriter_Write_UnreachableEndpoint(t *testing.T) {
-	w := NewWriter("http://127.0.0.1:1/api/v1/write", 500*time.Millisecond)
+	w := NewWriter("http://127.0.0.1:1/api/v1/write", 500*time.Millisecond, discardLog)
 
 	err := w.Write(context.Background(), goldenSeries())
 	var reqErr *ErrRequest
@@ -151,7 +151,7 @@ func TestWriter_Write_UnreachableEndpoint(t *testing.T) {
 }
 
 func TestWriter_Write_MalformedURL(t *testing.T) {
-	w := NewWriter("http://\x7f/write", time.Second)
+	w := NewWriter("http://\x7f/write", time.Second, discardLog)
 	if err := w.Write(context.Background(), goldenSeries()); err == nil {
 		t.Fatal("Write() to a malformed URL = nil, want an error")
 	}

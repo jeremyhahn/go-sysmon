@@ -28,7 +28,7 @@ function bigFleet(size = FLEET_SIZE): FleetFixture {
       nodes: size, healthy: size - 1, warning: 1, critical: 0, unreachable: 0,
       longest_absence_seconds: 0, never_answered: 0, reporting: size,
       attention: [{ name: 'node-09999', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] }],
-      swap_unknown: 0, builds: [{ commit: 'a46f6cf', count: size, nodes: ['node-00000'] }], build_groups: 1,
+      swap_unknown: 0, cpu_unknown: 0, builds: [{ commit: 'a46f6cf', count: size, nodes: ['node-00000'] }], build_groups: 1,
     },
   };
 }
@@ -231,7 +231,7 @@ test('against a server from before paging, the view says what it cannot do', asy
         nodes,
         rollup: {
           nodes: 30, healthy: 22, warning: 8, critical: 0, unreachable: 0,
-          longest_absence_seconds: 0, never_answered: 0, reporting: 30, swap_unknown: 0,
+          longest_absence_seconds: 0, never_answered: 0, reporting: 30, swap_unknown: 0, cpu_unknown: 0,
           attention: Array.from({ length: 8 }, (_, i) => ({
             name: `old-${String(i).padStart(2, '0')}`, status: 'warning', age_seconds: 0, reasons: ['cpu sustained'],
           })),
@@ -322,7 +322,7 @@ test('choosing an unreachable node from a later page of its own search goes to p
     nodes,
     rollup: {
       nodes: 32, healthy: 31, warning: 0, critical: 0, unreachable: 1,
-      longest_absence_seconds: 600, never_answered: 0, reporting: 31, swap_unknown: 0,
+      longest_absence_seconds: 600, never_answered: 0, reporting: 31, swap_unknown: 0, cpu_unknown: 0,
       attention: [{ name: 'db', status: 'unreachable', age_seconds: 600, reasons: ['connection refused'] }],
       builds: [], build_groups: 0,
     },
@@ -350,7 +350,7 @@ test('choosing a node whose name many others contain opens the page that holds i
     nodes,
     rollup: {
       nodes: 32, healthy: 31, warning: 0, critical: 0, unreachable: 1,
-      longest_absence_seconds: 600, never_answered: 0, reporting: 31, swap_unknown: 0,
+      longest_absence_seconds: 600, never_answered: 0, reporting: 31, swap_unknown: 0, cpu_unknown: 0,
       attention: [{ name: 'db', status: 'unreachable', age_seconds: 600, reasons: ['connection refused'] }],
       builds: [], build_groups: 0,
     },

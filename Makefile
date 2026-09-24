@@ -135,7 +135,7 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both generate check-generated check-ts check-test-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
+        build-both generate check-generated check-ts check-errcheck-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
         check-build-tags test-fips \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
@@ -432,7 +432,7 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-test-nolint check-ts \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-errcheck-nolint check-ts \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
@@ -443,11 +443,12 @@ lint-shape-%:
 	@$(TOOL) check "$(GOLANGCI_LINT)" $(GOLANGCI_LINT_PKG) $(GOLANGCI_LINT_VERSION)
 	$(GOLANGCI_LINT) run --build-tags "$(SHAPE_$*)" $(PKG_ALL)
 
-# check-test-nolint fails when a Go test silences errcheck with //nolint. The
-# linter checks test code in full, and a directive is the one way around that
-# it cannot report (#196). See the script for what counts.
-check-test-nolint:
-	@./scripts/check-test-nolint.sh
+# check-errcheck-nolint fails when any Go file silences errcheck with //nolint.
+# The linter checks every file in full -- tests since #196, production since
+# #207 -- and a directive is the one way around that it cannot report. See the
+# script for what counts.
+check-errcheck-nolint:
+	@./scripts/check-errcheck-nolint.sh
 
 # check-ts type-checks the frontend TypeScript that svelte-check does not
 # cover: the Playwright specs and their fixtures (tests/tsconfig.json), and the

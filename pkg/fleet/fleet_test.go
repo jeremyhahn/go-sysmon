@@ -30,7 +30,7 @@ func healthySnapshot(host string) *types.Snapshot {
 	return &types.Snapshot{
 		Version:    "0.1.2",
 		Host:       types.HostInfo{Hostname: host, Uptime: 3600},
-		CPUs:       []types.CPUInfo{{UsagePercent: 10}, {UsagePercent: 30}},
+		CPUs:       []types.CPUInfo{{UsagePercent: 10, UsageAvailable: true}, {UsagePercent: 30, UsageAvailable: true}},
 		CPUSummary: types.CPUSummary{TotalThreads: 4},
 		LoadAvg:    types.LoadAverage{Load1: 2},
 		Memory:     types.MemoryInfo{UsedPercent: 40},

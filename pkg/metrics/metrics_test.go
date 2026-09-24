@@ -19,7 +19,7 @@ func render(snap *types.Snapshot) string {
 func TestWrite_CoreSeries(t *testing.T) {
 	snap := &types.Snapshot{
 		Host:       types.HostInfo{Uptime: 120},
-		CPUs:       []types.CPUInfo{{UsagePercent: 20}, {UsagePercent: 40}},
+		CPUs:       []types.CPUInfo{{UsagePercent: 20, UsageAvailable: true}, {UsagePercent: 40, UsageAvailable: true}},
 		CPUSummary: types.CPUSummary{TotalThreads: 2},
 		Memory:     types.MemoryInfo{TotalBytes: 100, UsedBytes: 50, UsedPercent: 50},
 		Disks: []types.DiskInfo{{
@@ -45,6 +45,21 @@ func TestWrite_CoreSeries(t *testing.T) {
 
 	if got := strings.Count(out, "# TYPE sysmon_disk_util_percent gauge"); got != 1 {
 		t.Errorf("TYPE for sysmon_disk_util_percent appeared %d times, want exactly 1", got)
+	}
+}
+
+// TestWrite_CPUGaugeOverMeasuredCoresOnly: the CPU gauge is the mean over the
+// measured cores, and is omitted -- not zero -- when none was measured, so the
+// collector's first interval never charts as an idle host.
+func TestWrite_CPUGaugeOverMeasuredCoresOnly(t *testing.T) {
+	partial := render(&types.Snapshot{CPUs: []types.CPUInfo{{UsagePercent: 50, UsageAvailable: true}, {}}})
+	if !strings.Contains(partial, "sysmon_cpu_usage_percent 50\n") {
+		t.Errorf("an unknown core dragged the mean; exposition:\n%s", partial)
+	}
+
+	unknown := render(&types.Snapshot{CPUs: []types.CPUInfo{{}, {}}})
+	if strings.Contains(unknown, "sysmon_cpu_usage_percent") {
+		t.Errorf("no core was measured, yet the gauge was published:\n%s", unknown)
 	}
 }
 

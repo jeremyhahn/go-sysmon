@@ -231,15 +231,39 @@ func TestEvaluate_CPUUsage(t *testing.T) {
 	cfg := defaults()
 	cfg.CPUPct = 90
 	snap := &types.Snapshot{CPUs: []types.CPUInfo{
-		{UsagePercent: 100}, {UsagePercent: 100}, {UsagePercent: 90}, {UsagePercent: 90},
+		{UsagePercent: 100, UsageAvailable: true}, {UsagePercent: 100, UsageAvailable: true}, {UsagePercent: 90, UsageAvailable: true}, {UsagePercent: 90, UsageAvailable: true},
 	}}
 	if a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleCPUHigh); a == nil {
 		t.Error("a host at 95% mean CPU should alert")
 	}
 
-	snap.CPUs = []types.CPUInfo{{UsagePercent: 100}, {UsagePercent: 10}, {UsagePercent: 10}, {UsagePercent: 10}}
+	snap.CPUs = []types.CPUInfo{{UsagePercent: 100, UsageAvailable: true}, {UsagePercent: 10, UsageAvailable: true}, {UsagePercent: 10, UsageAvailable: true}, {UsagePercent: 10, UsageAvailable: true}}
 	if a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleCPUHigh); a != nil {
 		t.Errorf("one busy thread out of four should not alert: %+v", a)
+	}
+}
+
+// TestEvaluate_CPUUsageOverMeasuredCoresOnly: cores whose usage is unknown are
+// left out of the mean rather than dragging it towards idle, and a host with no
+// measured core -- its first collection -- does not evaluate the rule at all.
+func TestEvaluate_CPUUsageOverMeasuredCoresOnly(t *testing.T) {
+	cfg := defaults()
+	cfg.CPUPct = 90
+	snap := &types.Snapshot{CPUs: []types.CPUInfo{
+		{UsagePercent: 96, UsageAvailable: true}, {}, {}, {UsagePercent: 94, UsageAvailable: true},
+	}}
+	a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleCPUHigh)
+	if a == nil {
+		t.Fatal("two measured cores at 95% should alert; the unknown two must not count as idle")
+	}
+	if !strings.Contains(a.Message, "across 2 threads") {
+		t.Errorf("message %q, want it to count only the 2 measured threads", a.Message)
+	}
+
+	cfg.CPUPct = 0.0001
+	snap.CPUs = []types.CPUInfo{{}, {}}
+	if a := find(alert.New().Evaluate(cfg, snap, time.Now()), alert.RuleCPUHigh); a != nil {
+		t.Errorf("no core measured, yet the rule fired: %+v", a)
 	}
 }
 

@@ -308,6 +308,11 @@ false), on the first evaluation of a run, and when the counter goes backwards
 across a reboot — in each case there is no rate to report, and reporting zero
 would be indistinguishable from a quiet host.
 
+`cpu_high` compares the mean over the cores whose usage was measured, and says
+how many threads that was. With no core measured — the monitor's first
+collection, or an unreadable `/proc/stat` — the rule does not evaluate: an
+unknown is neither over the threshold nor under it.
+
 The old `alerts.swap_pct` key is gone, and a configuration that still sets it
 **will not start**: the loader decodes strictly, so a key with no field behind it
 is an error rather than a comment. Rename it to `alerts.swap_out_pages_per_sec`
@@ -668,7 +673,10 @@ need two names.
     are `{node, value}`: the worst value and the node that holds it.
     `temperature` also carries `kind`, the component it came from. A zero
     that means "nothing to read" (no filesystem, no thermometer) is never the
-    worst. `swap_unknown` counts nodes whose paging could not be measured.
+    worst. `swap_unknown` counts nodes whose paging could not be measured,
+    and `cpu_unknown` nodes whose CPU usage could not be (`cpu_available`
+    false in their summary: a first collection, or an unreadable
+    `/proc/stat`); neither kind is a candidate for the worst.
   - `power` is `{value, nodes, of}`: watts summed over the `nodes` that have
     a sensor, of the `of` reachable nodes. It is omitted when no node has a
     sensor. `network` is `{rx_rate, tx_rate, nodes, of}`: throughput summed
@@ -912,7 +920,8 @@ the node that answered.
 deliberately **not** a label: Prometheus attaches `instance` at scrape time, and
 duplicating it would create two competing identities for the same machine.
 
-Series include `sysmon_cpu_usage_percent`, `sysmon_memory_used_percent`,
+Series include `sysmon_cpu_usage_percent` (the mean over the cores whose usage
+was measured; omitted, never zero, when none was), `sysmon_memory_used_percent`,
 `sysmon_load1`, `sysmon_psi_{some,full}_avg10{resource}`,
 `sysmon_power_watts{source}`, `sysmon_disk_{util_percent,queue_length,
 used_percent,temperature_celsius,smart_healthy,wear_percent}{device}`,

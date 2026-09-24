@@ -38,6 +38,7 @@ function fleetNode(name: string, status: string) {
     critical_count: 0,
     warning_count: status === 'warning' ? 1 : 0,
     cpu_percent: 5,
+    cpu_available: true,
     memory_percent: 20,
     swap_percent: 0,
     load_per_core: 0.1,
@@ -74,7 +75,7 @@ async function setup(page: Page) {
         { name: 'zulu', status: 'unreachable', age_seconds: 754, reasons: ['connection refused'] },
         { name: 'yankee', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
       ],
-      swap_unknown: 0, builds: [], build_groups: 0,
+      swap_unknown: 0, cpu_unknown: 0, builds: [], build_groups: 0,
     },
   });
 }
@@ -127,7 +128,7 @@ test('an unreachable node says how long, and the summary reports the worst', asy
     rollup: {
       nodes: 2, healthy: 0, warning: 0, critical: 0, unreachable: 2,
       longest_absence_seconds: 172800, never_answered: 0, reporting: 0,
-      attention: [], swap_unknown: 0, builds: [], build_groups: 0,
+      attention: [], swap_unknown: 0, cpu_unknown: 0, builds: [], build_groups: 0,
     },
   });
 
@@ -157,7 +158,7 @@ test('a node that never reported says so, rather than reporting a zero-second ga
     rollup: {
       nodes: 1, healthy: 0, warning: 0, critical: 0, unreachable: 1,
       longest_absence_seconds: 0, never_answered: 1, reporting: 0,
-      attention: [], swap_unknown: 0, builds: [], build_groups: 0,
+      attention: [], swap_unknown: 0, cpu_unknown: 0, builds: [], build_groups: 0,
     },
   });
 

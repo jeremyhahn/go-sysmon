@@ -18,7 +18,7 @@ import (
 func richSnapshot() *types.Snapshot {
 	return &types.Snapshot{
 		Host:       types.HostInfo{Uptime: 3600},
-		CPUs:       []types.CPUInfo{{UsagePercent: 10}, {UsagePercent: 30}},
+		CPUs:       []types.CPUInfo{{UsagePercent: 10, UsageAvailable: true}, {UsagePercent: 30, UsageAvailable: true}},
 		CPUSummary: types.CPUSummary{TotalThreads: 2},
 		LoadAvg:    types.LoadAverage{Load1: 1, Load5: 2, Load15: 3},
 		Memory: types.MemoryInfo{

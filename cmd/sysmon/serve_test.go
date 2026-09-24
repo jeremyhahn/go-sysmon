@@ -208,3 +208,49 @@ func TestRunServeCmd_ServesAndShutsDown(t *testing.T) {
 		t.Errorf("runServeCmd() = %v, want nil after a clean shutdown", err)
 	}
 }
+
+// ---- selfRequest ----------------------------------------------------------
+
+// TestSelfRequest_AnswersFromTheLiveListener verifies the watchdog probe
+// completes a whole request -- status, body and close -- against the server's
+// own listener.
+func TestSelfRequest_AnswersFromTheLiveListener(t *testing.T) {
+	mon := startedMonitor(t)
+	t.Cleanup(func() { stopMonitor(mon) })
+	srv := server.New(mon, "127.0.0.1:0", nil)
+	addr, err := srv.Listen()
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	started := make(chan error, 1)
+	go func() { started <- srv.Start() }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
+		defer cancel()
+		if err := srv.Stop(ctx); err != nil {
+			t.Errorf("Stop: %v", err)
+		}
+		if err := await.Recv(t, "Start to return after Stop", started); err != nil {
+			t.Errorf("Start: %v", err)
+		}
+	})
+	awaitListening(t, addr.String())
+
+	if err := selfRequest(srv)(context.Background()); err != nil {
+		t.Errorf("selfRequest probe = %v, want nil from a serving listener", err)
+	}
+}
+
+// TestSelfRequest_NoListener verifies the probe fails, typed, when nothing is
+// bound, rather than dialling the configured string.
+func TestSelfRequest_NoListener(t *testing.T) {
+	mon := startedMonitor(t)
+	t.Cleanup(func() { stopMonitor(mon) })
+	srv := server.New(mon, "127.0.0.1:0", nil)
+
+	err := selfRequest(srv)(context.Background())
+	var startErr *types.ServerStartError
+	if !errors.As(err, &startErr) {
+		t.Errorf("selfRequest probe = %v, want *types.ServerStartError", err)
+	}
+}

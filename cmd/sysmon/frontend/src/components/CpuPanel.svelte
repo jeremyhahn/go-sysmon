@@ -208,16 +208,31 @@
                       {formatTemp(cpu.temperature_celsius)}
                     </span>
                   {/if}
-                  <span class="{usageColor(cpu.usage_percent)} font-semibold">
-                    {formatPercent(cpu.usage_percent)}
-                  </span>
+                  {#if cpu.usage_available}
+                    <span class="{usageColor(cpu.usage_percent)} font-semibold">
+                      {formatPercent(cpu.usage_percent)}
+                    </span>
+                  {:else}
+                    <!-- Not measured: the first collection, or a core whose
+                         /proc/stat line could not be read. An empty bar
+                         would read as an idle core, so there is none. -->
+                    <span
+                      class="text-base-content/60 font-semibold"
+                      title="Usage not measured yet"
+                      data-testid="core-usage-unknown"
+                    >—</span>
+                  {/if}
                 </span>
               </div>
-              <progress
-                class="progress w-full h-2 {usageProgressColor(cpu.usage_percent)}"
-                value={cpu.usage_percent}
-                max="100"
-              ></progress>
+              {#if cpu.usage_available}
+                <progress
+                  class="progress w-full h-2 {usageProgressColor(cpu.usage_percent)}"
+                  value={cpu.usage_percent}
+                  max="100"
+                ></progress>
+              {:else}
+                <div class="w-full h-2" aria-hidden="true"></div>
+              {/if}
             </div>
           {/each}
         </div>

@@ -358,15 +358,18 @@ exist.** Both had happened here before #196: fifteen unchecked
 
 `make lint` now enforces both halves:
 
-- **errcheck runs over test code in full.** `.golangci.yml` does not use the
+- **errcheck runs over all code in full.** `.golangci.yml` does not use the
   `std-error-handling` preset, which exempted every `Close` in every file, and
-  sets `check-blank`, so `_ = f.Close()` is reported like `f.Close()`. The
-  exemptions that remain are scoped away from `_test.go` files.
+  sets `check-blank`, so `_ = f.Close()` is reported like `f.Close()`. There
+  are no exclusion rules: production code is held to the same bar as tests
+  (#207). The only excluded functions are the `fmt.Fprint` family, whose
+  errors `pkg/cli`'s `errWriter` records.
 - **Every test file is linted.** golangci-lint runs once untagged and once
   with `prometheus,nvml,integration`, since a file behind a tag is invisible to
   a run without it.
-- **`//nolint` cannot silence errcheck in a test.** `make check-test-nolint`
-  rejects a directive naming `errcheck` or `all`, or naming no linter at all.
+- **`//nolint` cannot silence errcheck anywhere.** `make check-errcheck-nolint`
+  rejects, in any Go file, a directive naming `errcheck` or `all`, or naming
+  no linter at all.
 - **Every frontend source file is type-checked.** `npm run check`
   (svelte-check, run by `make build-frontend`) covers `src/` and the
   verbatim scripts in `public/` through the application's `tsconfig.json`,

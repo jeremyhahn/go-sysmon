@@ -306,7 +306,7 @@ func (e *NPUIndexNotFoundError) Error() string {
 	return "NPU index " + strconv.Itoa(e.Index) + " not found; " + strconv.Itoa(e.Available) + " NPU(s) available"
 }
 
-// LogFileError indicates the log file could not be opened or created.
+// LogFileError indicates the log file could not be opened, created or closed.
 type LogFileError struct {
 	Path  string
 	Cause error
@@ -442,4 +442,35 @@ type ProcStatusFieldError struct {
 
 func (e *ProcStatusFieldError) Error() string {
 	return e.Path + ": no " + e.Field + " field"
+}
+
+// ListenerCloseError indicates the server's listener could not be released when
+// it stopped, so the address may still be bound.
+type ListenerCloseError struct {
+	Addr  string
+	Cause error
+}
+
+func (e *ListenerCloseError) Error() string {
+	return "close listener " + e.Addr + ": " + e.Cause.Error()
+}
+
+func (e *ListenerCloseError) Unwrap() error {
+	return e.Cause
+}
+
+// ProcStatLineError indicates a per-CPU line of /proc/stat that could not be
+// parsed. That CPU's usage is unknown for the interval, never zero.
+type ProcStatLineError struct {
+	Path  string
+	CPU   string
+	Cause error
+}
+
+func (e *ProcStatLineError) Error() string {
+	return e.Path + ": " + e.CPU + ": " + e.Cause.Error()
+}
+
+func (e *ProcStatLineError) Unwrap() error {
+	return e.Cause
 }

@@ -45,7 +45,7 @@ func TestWriter_RefusesRedirectOffTheConfiguredHost(t *testing.T) {
 
 	configured := redirectingTo(t, elsewhere.URL+"/api/v1/write")
 
-	w := NewWriter(configured.URL, 5*time.Second)
+	w := NewWriter(configured.URL, 5*time.Second, discardLog)
 	err := w.Write(context.Background(), goldenSeries())
 	if err == nil {
 		t.Fatal("Write() = nil; the samples were delivered to a host that was never configured")
@@ -155,7 +155,7 @@ func TestWriter_RefusesASameHostRedirectThatDropsTheBody(t *testing.T) {
 	}))
 	defer configured.Close()
 
-	w := NewWriter(configured.URL+"/api/v1/write", 5*time.Second)
+	w := NewWriter(configured.URL+"/api/v1/write", 5*time.Second, discardLog)
 	err := w.Write(context.Background(), goldenSeries())
 	if err == nil {
 		t.Fatalf("Write() = nil, but the samples were never posted anywhere: "+
@@ -198,7 +198,7 @@ func TestWriter_FollowsASameHostRedirectThatKeepsThePost(t *testing.T) {
 	}))
 	defer configured.Close()
 
-	w := NewWriter(configured.URL+"/api/v1/write", 5*time.Second)
+	w := NewWriter(configured.URL+"/api/v1/write", 5*time.Second, discardLog)
 	if err := w.Write(context.Background(), goldenSeries()); err != nil {
 		t.Fatalf("Write() = %v, want the 307 followed", err)
 	}

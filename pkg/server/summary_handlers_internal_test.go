@@ -27,7 +27,7 @@ func (p *pagingSnapshotter) Snapshot() (*types.Snapshot, error) {
 	return &types.Snapshot{
 		Timestamp: time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC).Add(time.Duration(n) * time.Second),
 		Host:      types.HostInfo{Hostname: "pager"},
-		CPUs:      []types.CPUInfo{{UsagePercent: 50, Flags: []string{"fpu", "avx2"}}},
+		CPUs:      []types.CPUInfo{{UsagePercent: 50, UsageAvailable: true, Flags: []string{"fpu", "avx2"}}},
 		Memory: types.MemoryInfo{
 			SwapPercent: 98.6, SwapOutPages: 256 * n, PageSizeBytes: 4096, SwapCountersAvailable: true,
 		},

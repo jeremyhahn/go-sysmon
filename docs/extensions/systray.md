@@ -62,8 +62,9 @@ encode failure never shows a blank or truncated icon, and it never happens
 silently.
 
 The menu text uses the CLI's own formatters (`cli.FormatBytes`,
-`cli.FormatPercent`, `cli.AverageCPUUsage`), so the tray and `sysmon memory`
-print the same value the same way.
+`cli.FormatPercent`, `cli.FormatMeanCPUUsage`), so the tray and `sysmon memory`
+print the same value the same way. CPU reads `-` until a core's usage has been
+measured, which takes the monitor's second collection.
 
 ## How it works
 

@@ -25,24 +25,12 @@ linters:
     presets:
       - comments
     # NOT the std-error-handling preset. It exempts every Close, Flush,
-    # os.Remove and Setenv from errcheck in every file, tests included, which is
-    # how fifteen unchecked `defer resp.Body.Close()` sat in the test suite
-    # unreported (#196).
-    #
-    # The two rules below keep NON-TEST code exactly where it was before #196:
-    # the preset's exemption, and no blank-identifier checking. They are scoped
-    # away from _test.go files by path-except, so a test gets errcheck in full.
-    # Production code still discards errors at the sites these rules hide;
-    # fixing them and deleting both rules is #207.
-    rules:
-      - path-except: '_test\.go$'
-        linters:
-          - errcheck
-        text: '(?i)Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*print(f|ln)?|os\.(Un)?Setenv). is not checked'
-      - path-except: '_test\.go$'
-        linters:
-          - errcheck
-        source: '(^|[^\w])_\s*(,\s*\w+\s*)*:?=[^=]|,\s*_\s*:?=[^=]'
+    # os.Remove and Setenv from errcheck in every file, which is how fifteen
+    # unchecked `defer resp.Body.Close()` sat in the test suite unreported
+    # (#196), and two dozen discarded errors in production code (#207).
+    # errcheck has no exclusion rules at all: production and test code are
+    # held to the same bar, and scripts/check-errcheck-nolint.sh rejects the
+    # //nolint directive that would be the way around it.
 
 issues:
   # golangci-lint caps its report by default: three findings of the same text,

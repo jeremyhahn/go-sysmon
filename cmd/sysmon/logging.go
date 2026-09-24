@@ -85,16 +85,22 @@ func logDestination() (io.Writer, error) {
 	return f, nil
 }
 
-// closeLogFile releases the log file if one was opened.
-func closeLogFile() {
+// closeLogFile releases the log file if one was opened. It is safe to call
+// more than once.
+//
+// The error is returned rather than logged: the log is the thing that failed,
+// and a close failure can mean its tail never reached the disk, so the caller
+// reports it somewhere else.
+func closeLogFile() error {
 	if logFileHandle == nil {
-		return
+		return nil
 	}
-	if err := logFileHandle.Close(); err != nil {
-		// The handler may already be writing here, so report to stderr.
-		os.Stderr.WriteString("closing log file: " + err.Error() + "\n") //nolint:errcheck
-	}
+	f := logFileHandle
 	logFileHandle = nil
+	if err := f.Close(); err != nil {
+		return &types.LogFileError{Path: f.Name(), Cause: err}
+	}
+	return nil
 }
 
 // parseLogLevel converts a level name to a slog level.

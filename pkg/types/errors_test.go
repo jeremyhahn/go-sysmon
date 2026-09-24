@@ -713,3 +713,31 @@ func TestProcStatusFieldError_As(t *testing.T) {
 		t.Errorf("errors.As did not find the field error in %v", wrapped)
 	}
 }
+
+func TestListenerCloseError_Error(t *testing.T) {
+	e := &types.ListenerCloseError{Addr: "127.0.0.1:8081", Cause: errSentinel}
+	if got, want := e.Error(), "close listener 127.0.0.1:8081: underlying cause"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestListenerCloseError_Unwrap(t *testing.T) {
+	var err error = &types.ListenerCloseError{Addr: "127.0.0.1:8081", Cause: errSentinel}
+	if !errors.Is(err, errSentinel) {
+		t.Error("errors.Is(ListenerCloseError, errSentinel) = false, want true")
+	}
+}
+
+func TestProcStatLineError_Error(t *testing.T) {
+	e := &types.ProcStatLineError{Path: "/proc/stat", CPU: "cpu3", Cause: errSentinel}
+	if got, want := e.Error(), "/proc/stat: cpu3: underlying cause"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestProcStatLineError_Unwrap(t *testing.T) {
+	var err error = &types.ProcStatLineError{Path: "/proc/stat", CPU: "cpu3", Cause: errSentinel}
+	if !errors.Is(err, errSentinel) {
+		t.Error("errors.Is(ProcStatLineError, errSentinel) = false, want true")
+	}
+}

@@ -1025,6 +1025,34 @@ func TestWatch_ApplierErrorStillReportsTheReload(t *testing.T) {
 	}
 }
 
+// TestWatch_UnwatchableDirectory verifies that a config file whose directory
+// does not exist fails Watch with a typed error naming that directory, rather
+// than starting a reload loop that can never fire.
+func TestWatch_UnwatchableDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "absent")
+	mgr, err := config.NewManager(l(filepath.Join(dir, "sysmon.yaml")))
+	if err != nil {
+		t.Fatalf("NewManager(): %v", err)
+	}
+	done := make(chan struct{})
+	defer close(done)
+
+	err = mgr.Watch(done, slog.New(slog.NewTextHandler(io.Discard, nil)), func([]string) {})
+	var watchErr *config.ConfigWatchError
+	if !errors.As(err, &watchErr) {
+		t.Fatalf("Watch(): error %v, want *config.ConfigWatchError", err)
+	}
+	if watchErr.Dir != dir {
+		t.Errorf("ConfigWatchError.Dir = %q, want %q", watchErr.Dir, dir)
+	}
+	if !strings.Contains(err.Error(), "cannot watch "+dir) {
+		t.Errorf("Error() = %q, want it to name the directory", err.Error())
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Watch(): error %v does not wrap the underlying os.ErrNotExist", err)
+	}
+}
+
 // viewEntry returns the settings-view entry for key, so a test can assert on
 // the value and the source an operator actually sees together.
 func viewEntry(t *testing.T, mgr *config.Manager, key string) types.ConfigEntry {

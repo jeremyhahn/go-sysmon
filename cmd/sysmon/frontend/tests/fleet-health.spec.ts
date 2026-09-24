@@ -34,6 +34,7 @@ function node(name: string, health: Partial<FleetNode>) {
     critical_count: 0,
     warning_count: 0,
     cpu_percent: 5,
+    cpu_available: true,
     memory_percent: 20,
     swap_percent: 0,
     load_per_core: 0.1,

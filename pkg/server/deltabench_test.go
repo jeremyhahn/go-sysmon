@@ -35,8 +35,8 @@ func benchSnapshotOrdered(uptime uint64, busy, processCount, rotate int) *types.
 	for i := range cpus {
 		cpus[i] = types.CPUInfo{
 			Index: i, CoreID: "0", ModelName: "AMD Ryzen 9 9950X 16-Core Processor",
-			UsagePercent: float64((int(uptime)*7 + i) % 100),
-			Flags:        []string{"fpu", "vme", "de", "pse", "tsc", "msr", "pae", "mce", "cx8", "apic"},
+			UsagePercent: float64((int(uptime)*7 + i) % 100), UsageAvailable: true,
+			Flags: []string{"fpu", "vme", "de", "pse", "tsc", "msr", "pae", "mce", "cx8", "apic"},
 		}
 	}
 	processes := make([]types.ProcessDetail, processCount)

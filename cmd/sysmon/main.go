@@ -62,12 +62,29 @@ func init() {
 }
 
 func main() {
-	defer closeLogFile()
-
-	if err := rootCmd.Execute(); err != nil {
-		reportError(os.Stderr, err)
-		os.Exit(1)
+	if status := run(os.Stderr); status != 0 {
+		os.Exit(status)
 	}
+}
+
+// run executes the root command, releases the log file, and returns the exit
+// status. It is separate from main so the log file is closed on every path:
+// os.Exit does not run deferred calls, so a deferred close in main was skipped
+// exactly when a command failed.
+func run(stderr io.Writer) int {
+	status := 0
+	if err := rootCmd.Execute(); err != nil {
+		reportError(stderr, err)
+		status = 1
+	}
+	// After Execute, so everything the run logged went to the file first. A
+	// close failure can mean the tail of that log never reached the disk,
+	// which a zero exit status would hide.
+	if err := closeLogFile(); err != nil {
+		reportError(stderr, err)
+		status = 1
+	}
+	return status
 }
 
 // reportError writes err to w. The root command sets SilenceErrors so that

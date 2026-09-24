@@ -2,6 +2,7 @@ package collector
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -54,8 +55,13 @@ func NewCPUCollector(logger *slog.Logger) *CPUCollector {
 }
 
 // Collect refreshes per-CPU info and usage percentages.
-// Usage is computed as the delta between consecutive /proc/stat reads,
-// with no blocking sleep. On the first call, usage reflects time since boot.
+//
+// Usage is the delta between consecutive /proc/stat reads, with no blocking
+// sleep, so the first call has no usage to report: every core is marked
+// UsageAvailable false until a second reading exists. A /proc/stat that cannot
+// be read, or a core whose line in it is malformed, leaves those cores' usage
+// unknown for this interval and the next; the CPU info is still published, and
+// the failure is returned as a *types.CollectorError.
 func (c *CPUCollector) Collect() error {
 	infos, err := pscpu.Info()
 	if err != nil {
@@ -64,105 +70,159 @@ func (c *CPUCollector) Collect() error {
 
 	summary := c.buildSummary()
 
-	// Read current /proc/stat and compute per-CPU usage from delta.
-	currentStat := readProcStat()
-	prevPtr := c.prevStat.Load()
-
-	usageByIndex := make(map[int]float64, len(currentStat))
-	if prevPtr != nil {
-		prev := *prevPtr
-		for idx, cur := range currentStat {
-			if old, ok := prev[idx]; ok {
-				deltaTotal := cur.total() - old.total()
-				deltaBusy := cur.busy() - old.busy()
-				if deltaTotal > 0 {
-					usageByIndex[idx] = float64(deltaBusy) / float64(deltaTotal) * 100.0
-				}
-			}
-		}
+	// A failed read yields no readings at all, and a partial one yields the
+	// cores it could parse. Either way the reading replaces the previous one,
+	// so a core absent from it has no baseline for the next interval either:
+	// its next delta would otherwise span two intervals and be reported as one.
+	currentStat, statErr := readProcStat()
+	var prev map[int]cpuTimes
+	if p := c.prevStat.Load(); p != nil {
+		prev = *p
 	}
+	usageByIndex := cpuUsage(prev, currentStat)
 	c.prevStat.Store(&currentStat)
 
 	result := make([]types.CPUInfo, 0, len(infos))
 	for _, stat := range infos {
 		idx := int(stat.CPU)
+		usage, measured := usageByIndex[idx]
 		info := types.CPUInfo{
-			Index:        idx,
-			ModelName:    stat.ModelName,
-			VendorID:     stat.VendorID,
-			Family:       stat.Family,
-			Model:        stat.Model,
-			Stepping:     stat.Stepping,
-			PhysicalID:   stat.PhysicalID,
-			CoreID:       stat.CoreID,
-			Cores:        int32(summary.TotalCores),
-			Threads:      int32(summary.TotalThreads),
-			Mhz:          stat.Mhz,
-			CacheSize:    stat.CacheSize,
-			Microcode:    stat.Microcode,
-			Flags:        stat.Flags,
-			UsagePercent: usageByIndex[idx],
+			Index:          idx,
+			ModelName:      stat.ModelName,
+			VendorID:       stat.VendorID,
+			Family:         stat.Family,
+			Model:          stat.Model,
+			Stepping:       stat.Stepping,
+			PhysicalID:     stat.PhysicalID,
+			CoreID:         stat.CoreID,
+			Cores:          int32(summary.TotalCores),
+			Threads:        int32(summary.TotalThreads),
+			Mhz:            stat.Mhz,
+			CacheSize:      stat.CacheSize,
+			Microcode:      stat.Microcode,
+			Flags:          stat.Flags,
+			UsagePercent:   usage,
+			UsageAvailable: measured,
 		}
 		result = append(result, info)
 	}
 
 	c.summary.Store(&summary)
 	c.cpus.Store(&result)
+	if statErr != nil {
+		return &types.CollectorError{Collector: "cpu", Cause: statErr}
+	}
 	return nil
 }
 
-// readProcStat parses /proc/stat and returns per-CPU jiffies keyed by CPU index.
-func readProcStat() map[int]cpuTimes {
-	f, err := os.Open("/proc/stat")
+// cpuUsage returns each core's busy percentage between two /proc/stat
+// readings, keyed by CPU index. A core is present in the result only when its
+// usage was measured: it has a line in both readings, and its counters moved
+// forward between them. A core whose total did not advance had no interval to
+// measure, and one whose counters went backwards was reset or replugged; for
+// either, any number would be invented. prev is nil on the first collection,
+// which therefore measures nothing.
+func cpuUsage(prev, cur map[int]cpuTimes) map[int]float64 {
+	usage := make(map[int]float64, len(cur))
+	for idx, now := range cur {
+		old, ok := prev[idx]
+		if !ok {
+			continue
+		}
+		if now.total() <= old.total() || now.busy() < old.busy() {
+			continue
+		}
+		deltaTotal := now.total() - old.total()
+		deltaBusy := now.busy() - old.busy()
+		usage[idx] = float64(deltaBusy) / float64(deltaTotal) * 100.0
+	}
+	return usage
+}
+
+// procStatPath is the source of per-CPU jiffies. It is a variable so tests can
+// point the reader at a synthetic file.
+var procStatPath = "/proc/stat"
+
+// procStatFields names the per-CPU counters of a /proc/stat line, in order.
+// The first seven have been there since Linux 2.6; steal, the eighth, since
+// 2.6.11, and a line without it is read with steal at zero, which is what the
+// kernel means by omitting it. The guest counters that follow are already
+// included in user and nice, and are not read.
+var procStatFields = []string{"user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"}
+
+// procStatRequired is how many of procStatFields every line must carry.
+const procStatRequired = 7
+
+// readProcStat parses procStatPath and returns per-CPU jiffies keyed by CPU
+// index.
+//
+// A cpuN line that cannot be parsed is left out of the result, so that core's
+// usage is unknown rather than computed from counters read as zero, and is
+// reported as a *types.ProcStatLineError; every such line is reported, joined.
+// The lines that did parse are still returned alongside the error. A file that
+// cannot be read at all returns no readings and the read error.
+func readProcStat() (map[int]cpuTimes, error) {
+	f, err := os.Open(procStatPath)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			slog.Debug("close /proc/stat", "err", err)
+			slog.Debug("close /proc/stat", "path", procStatPath, "err", err)
 		}
 	}()
 
 	result := make(map[int]cpuTimes)
+	var lineErrs []error
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
-		line := scanner.Text()
-		// Match "cpuN" lines (skip aggregate "cpu" line).
-		if !strings.HasPrefix(line, "cpu") {
+		fields := strings.Fields(scanner.Text())
+		// Only "cpuN" lines; the aggregate "cpu" line and every other
+		// statistic in the file are someone else's.
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "cpu") || fields[0] == "cpu" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 8 {
-			continue
-		}
-		name := fields[0]
-		if name == "cpu" {
-			continue // aggregate line
-		}
-		idx, err := strconv.Atoi(name[3:])
+		idx, t, err := parseProcStatLine(fields)
 		if err != nil {
+			lineErrs = append(lineErrs, &types.ProcStatLineError{Path: procStatPath, CPU: fields[0], Cause: err})
 			continue
-		}
-		var t cpuTimes
-		t.user, _ = strconv.ParseUint(fields[1], 10, 64)
-		t.nice, _ = strconv.ParseUint(fields[2], 10, 64)
-		t.system, _ = strconv.ParseUint(fields[3], 10, 64)
-		t.idle, _ = strconv.ParseUint(fields[4], 10, 64)
-		if len(fields) > 5 {
-			t.iowait, _ = strconv.ParseUint(fields[5], 10, 64)
-		}
-		if len(fields) > 6 {
-			t.irq, _ = strconv.ParseUint(fields[6], 10, 64)
-		}
-		if len(fields) > 7 {
-			t.softirq, _ = strconv.ParseUint(fields[7], 10, 64)
-		}
-		if len(fields) > 8 {
-			t.steal, _ = strconv.ParseUint(fields[8], 10, 64)
 		}
 		result[idx] = t
 	}
-	return result
+	if err := scanner.Err(); err != nil {
+		lineErrs = append(lineErrs, err)
+	}
+	return result, errors.Join(lineErrs...)
+}
+
+// parseProcStatLine parses the fields of one "cpuN" line of /proc/stat: the
+// CPU's index and its counters. Every counter it needs must be present and a
+// valid unsigned integer; there is no partial result.
+func parseProcStatLine(fields []string) (int, cpuTimes, error) {
+	idx, err := strconv.Atoi(strings.TrimPrefix(fields[0], "cpu"))
+	if err != nil {
+		return 0, cpuTimes{}, err
+	}
+	values := fields[1:]
+	if len(values) < procStatRequired {
+		return 0, cpuTimes{}, &types.ProcStatusFieldError{Path: procStatPath, Field: procStatFields[len(values)]}
+	}
+	var counters [8]uint64
+	for i := range min(len(values), len(procStatFields)) {
+		if counters[i], err = strconv.ParseUint(values[i], 10, 64); err != nil {
+			return 0, cpuTimes{}, err
+		}
+	}
+	return idx, cpuTimes{
+		user:    counters[0],
+		nice:    counters[1],
+		system:  counters[2],
+		idle:    counters[3],
+		iowait:  counters[4],
+		irq:     counters[5],
+		softirq: counters[6],
+		steal:   counters[7],
+	}, nil
 }
 
 // Info returns the most recently collected CPU info slice.

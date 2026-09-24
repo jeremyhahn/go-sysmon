@@ -10,10 +10,13 @@
     type ECharts,
   } from "$lib/echarts";
   import { theme } from "$lib/theme.svelte";
+  import { isLone, type LinePoint } from "$lib/history";
 
   export interface SeriesConfig {
     label: string;
-    data: number[];
+    /** One point per sample; null is a sample that was not measured, drawn
+     * as a gap rather than as zero. */
+    data: (number | null)[];
     color?: string;
     /** Optional formatter applied to Y-axis labels and tooltip. */
     formatter?: (v: number) => string;
@@ -59,11 +62,21 @@
           crossStyle: { color: p.axisPointer },
         },
         formatter: (params: unknown) => {
-          const items = params as Array<{
-            seriesName: string;
-            value: number;
-            color: string;
-          }>;
+          // A null sample is a break, as in HistoryChart: that line was not
+          // measured at this instant, which is not a zero, so it is left out
+          // of the tooltip rather than formatted. ECharts may hand it back as
+          // null or as NaN, so both are refused.
+          const items = (
+            params as Array<{
+              seriesName: string;
+              value: number | null | undefined;
+              color: string;
+            }>
+          ).filter(
+            (i): i is typeof i & { value: number } =>
+              typeof i.value === "number" && Number.isFinite(i.value)
+          );
+          if (items.length === 0) return "";
           return tooltipContent(
             items.map((p) => {
               const fmt = s.find((x) => x.label === p.seriesName)?.formatter;
@@ -100,7 +113,7 @@
       series: s.map((ser, idx) => ({
         name: ser.label,
         type: "line",
-        data: ser.data,
+        data: drawn(ser.data),
         smooth,
         symbol: "none",
         lineStyle: {
@@ -125,6 +138,19 @@
           : undefined,
       })),
     };
+  }
+
+  /**
+   * drawn marks every lone sample with a dot, by the rule HistoryChart uses
+   * (isLone). The line carries no markers, so a sample between two breaks --
+   * the first measured CPU reading after a run of unmeasured ones -- would
+   * otherwise draw nothing at all.
+   */
+  function drawn(data: (number | null)[]) {
+    const line = data.map((v, i): LinePoint => [i, v]);
+    return data.map((v, i) =>
+      isLone(line, i) ? { value: v, symbol: "circle", symbolSize: 4 } : v
+    );
   }
 
   const palette = $derived(chartPalette(theme.resolved));

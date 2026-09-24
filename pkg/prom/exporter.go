@@ -456,7 +456,7 @@ func (e *Exporter) ensureBuilder(o Options) {
 			// the current reading is new to it.
 			clear(e.marks)
 		}
-		e.writer = NewWriter(o.RemoteWriteURL, timeout)
+		e.writer = NewWriter(o.RemoteWriteURL, timeout, e.log)
 		e.writerURL, e.writerTimeout = o.RemoteWriteURL, timeout
 	}
 }

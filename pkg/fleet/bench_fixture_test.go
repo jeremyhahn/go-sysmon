@@ -62,7 +62,7 @@ func busyHost(host string) *types.Snapshot {
 			PhysicalID: fmt.Sprint(i / 56), CoreID: fmt.Sprint(i % 28),
 			Mhz: 2200, CacheSize: 39424, Microcode: "0x5003604",
 			Flags:        x86Flags,
-			UsagePercent: float64(i%50) + 10, TemperatureCelsius: 60,
+			UsagePercent: float64(i%50) + 10, UsageAvailable: true, TemperatureCelsius: 60,
 		}
 	}
 

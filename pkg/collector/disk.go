@@ -311,7 +311,11 @@ func (c *DiskCollector) buildDiskInfo(
 
 	// Temperature via hwmon sysfs (best-effort).
 	if info.Temperature == 0 {
-		info.Temperature = readHwmonTemp(name)
+		temp, err := readHwmonTemp(name)
+		if err != nil {
+			c.logger.Debug("disk: hwmon temperature unavailable", "device", name, "error", err)
+		}
+		info.Temperature = temp
 	}
 
 	return info
@@ -536,16 +540,26 @@ func readSysfsUint64(path string) uint64 {
 }
 
 // readHwmonTemp attempts to read a temperature in milli-Celsius from the
-// hwmon sysfs entries associated with the given block device name.
+// hwmon sysfs entries associated with the given block device name, and returns
+// it in Celsius. 0 means the device exposes no hwmon temperature, which is what
+// DiskInfo.Temperature documents for a drive that did not report one.
 // NVMe devices expose hwmon directly under device/ (e.g. device/hwmon8/),
 // while SCSI/ATA devices may use device/hwmon/hwmon*/.
-func readHwmonTemp(devName string) float64 {
+//
+// The error is a *types.SysfsReadError when a pattern cannot be searched at
+// all: the device name is part of the glob, and a name holding a glob
+// metacharacter such as '[' makes the pattern malformed rather than unmatched.
+func readHwmonTemp(devName string) (float64, error) {
+	deviceDir := filepath.Join(sysBlockRoot, devName, "device")
 	patterns := []string{
-		fmt.Sprintf("/sys/block/%s/device/hwmon*/temp1_input", devName),
-		fmt.Sprintf("/sys/block/%s/device/hwmon/hwmon*/temp1_input", devName),
+		filepath.Join(deviceDir, "hwmon*", "temp1_input"),
+		filepath.Join(deviceDir, "hwmon", "hwmon*", "temp1_input"),
 	}
 	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return 0, &types.SysfsReadError{Path: pattern, Cause: err}
+		}
 		if len(matches) == 0 {
 			continue
 		}
@@ -553,9 +567,9 @@ func readHwmonTemp(devName string) float64 {
 		if raw == 0 {
 			continue
 		}
-		return float64(raw) / 1000.0
+		return float64(raw) / 1000.0, nil
 	}
-	return 0
+	return 0, nil
 }
 
 // Info returns the most recently collected DiskInfo slice.

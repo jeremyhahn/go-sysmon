@@ -69,7 +69,11 @@ func rollup(nodes []types.FleetNode, names int) *types.FleetRollup {
 
 		r.Reporting++
 		s := &n.NodeSummary
-		worst(&r.CPU, n.Name, s.CPUPercent)
+		if s.CPUAvailable {
+			worst(&r.CPU, n.Name, s.CPUPercent)
+		} else {
+			r.CPUUnknown++
+		}
 		worst(&r.Memory, n.Name, s.MemoryPercent)
 		worst(&r.LoadPerCore, n.Name, s.LoadPerCore)
 		// Zero here means "nothing to read" -- no filesystem, no thermometer

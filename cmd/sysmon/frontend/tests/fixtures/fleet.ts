@@ -97,6 +97,7 @@ export function fleetNode(name: string, over: Json = {}): Json {
     warning_count: 0,
     alerts: [],
     cpu_percent: 5,
+    cpu_available: true,
     memory_percent: 20,
     load_per_core: 0.1,
     swap_percent: 0,

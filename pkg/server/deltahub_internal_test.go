@@ -107,7 +107,7 @@ func (s *tickingSnapshotter) Snapshot() (*types.Snapshot, error) {
 	s.uptime++
 	return &types.Snapshot{
 		Host:  types.HostInfo{Hostname: "mon0", Uptime: s.uptime},
-		CPUs:  []types.CPUInfo{{Index: 0, UsagePercent: float64(s.uptime)}},
+		CPUs:  []types.CPUInfo{{Index: 0, UsagePercent: float64(s.uptime), UsageAvailable: true}},
 		Disks: []types.DiskInfo{{Name: "sda", UsedPercent: 40}},
 	}, nil
 }

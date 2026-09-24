@@ -30,9 +30,9 @@ func (a *snapshotterAdapter) Snapshot() (*types.Snapshot, error) {
 	return &snap, nil
 }
 
-// collectSnapshot creates a SystemCollector with tiering disabled, takes a
-// single snapshot, and returns it. It is the shared entry point for all
-// one-shot CLI commands.
+// collectSnapshot creates a SystemCollector with tiering disabled, samples it
+// with sampleSnapshot, and returns the result. It is the shared entry point for
+// all one-shot CLI commands.
 //
 // It is a variable rather than a plain function so that unit tests can supply
 // a synthetic snapshot: every command funnels through here, and reading real
@@ -40,11 +40,55 @@ func (a *snapshotterAdapter) Snapshot() (*types.Snapshot, error) {
 var collectSnapshot = func() (*types.Snapshot, error) {
 	sc := collector.NewSystemCollector(slog.Default())
 	sc.SetTiering(false)
-	snap, err := sc.Snapshot(context.Background())
+	return sampleSnapshot(cmdContext(), sc, sampleWait)
+}
+
+// sampleWait is the wait collectSnapshot uses between its readings. A test
+// that runs the real collector replaces it, so it never sleeps on the clock.
+var sampleWait = waitSample
+
+// oneShotSampleInterval is how long a one-shot command waits between its two
+// readings. CPU usage, and every other rate, is the difference of two readings,
+// so a command that read once could never report one; this is what top -n1 and
+// mpstat do too. Half a second is the dashboard's fastest collection interval,
+// and at the kernel's usual 100 ticks a second it resolves a core's usage to 2%.
+const oneShotSampleInterval = 500 * time.Millisecond
+
+// systemSnapshotter is the part of collector.SystemCollector sampleSnapshot
+// reads, so a test can hand it readings of its choosing.
+type systemSnapshotter interface {
+	Snapshot(ctx context.Context) (types.Snapshot, error)
+}
+
+// sampleSnapshot takes a priming reading, waits oneShotSampleInterval through
+// wait, and returns the second reading, whose rates are measured across the
+// wait. A figure the second reading still could not measure -- a core whose
+// /proc/stat line is malformed -- stays marked unknown in it.
+func sampleSnapshot(ctx context.Context, sc systemSnapshotter, wait func(context.Context, time.Duration) error) (*types.Snapshot, error) {
+	if _, err := sc.Snapshot(ctx); err != nil {
+		return nil, err
+	}
+	if err := wait(ctx, oneShotSampleInterval); err != nil {
+		return nil, err
+	}
+	snap, err := sc.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &snap, nil
+}
+
+// waitSample blocks for d or until ctx is done, whichever is first. It is what
+// sampleSnapshot waits with outside tests.
+func waitSample(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return &types.CollectorError{Collector: "cli", Cause: ctx.Err()}
+	case <-timer.C:
+		return nil
+	}
 }
 
 // newMonitorSnapshotter wraps a SystemCollector in a snapshotterAdapter

@@ -353,7 +353,7 @@ func selfRequest(srv *server.Server) watchdog.Probe {
 			// have nothing to do with liveness.
 			//
 			// Annotated for gosec rather than suppressed for the linter alone:
-			// the standalone scanner does not read //nolint, so a nolint here
+			// the standalone scanner does not read nolint directives, so one here
 			// silences `make lint` and leaves CI failing, which is the worst of
 			// both -- a suppression that hides the finding from the developer
 			// and not from the gate.
@@ -384,11 +384,13 @@ func selfRequest(srv *server.Server) watchdog.Probe {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close() //nolint:errcheck
 		// Read the body rather than only the status: a response whose headers
 		// arrived before the stall and whose body never followed is a served
-		// request only if nobody looks.
-		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		// request only if nobody looks. The close is part of the same answer:
+		// either failing means the request did not complete, and the read
+		// failure, the earlier of the two, is reported first.
+		_, readErr := io.Copy(io.Discard, resp.Body)
+		if err := errors.Join(readErr, resp.Body.Close()); err != nil {
 			return err
 		}
 		if resp.StatusCode != http.StatusOK {

@@ -11,18 +11,21 @@
   import { theme } from "$lib/theme.svelte";
 
   interface Props {
-    value: number;     // 0–100
+    /** 0–100, or null when the figure was not measured: the gauge then shows
+     * an empty track and "—", never a reading of 0%. */
+    value: number | null;
     label?: string;
     height?: string;
   }
 
-  let { value = 0, label = "", height = "180px" }: Props = $props();
+  let { value = null, label = "", height = "180px" }: Props = $props();
 
   let container: HTMLDivElement;
   let chart: ECharts | null = null;
 
-  function buildOption(pct: number, p: ChartPalette): ChartOption {
-    const color = usageEchartsColor(pct, p.usage);
+  function buildOption(value: number | null, p: ChartPalette): ChartOption {
+    const pct = value ?? 0;
+    const color = value === null ? p.mutedText : usageEchartsColor(pct, p.usage);
     return {
       darkMode: p.darkMode,
       backgroundColor: "transparent",
@@ -50,7 +53,7 @@
           axisLabel: { show: false },
           detail: {
             valueAnimation: true,
-            formatter: "{value}%",
+            formatter: value === null ? "—" : "{value}%",
             color,
             fontSize: 14,
             fontWeight: "bold",
@@ -89,4 +92,11 @@
   });
 </script>
 
-<div bind:this={container} style="width:100%;height:{height};"></div>
+<!-- The canvas carries no text a screen reader or a test can read, so the
+     figure is stated here too, including when it was not measured. -->
+<div
+  bind:this={container}
+  role="img"
+  aria-label="{label}: {value === null ? 'not measured' : `${Math.round(value)}%`}"
+  style="width:100%;height:{height};"
+></div>

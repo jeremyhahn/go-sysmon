@@ -25,7 +25,7 @@ function fleetNode(name: string, hostname: string) {
     name, self: false, reachable: true, error: '',
     age_seconds: 1, status: 'healthy', hostname, version: '1.0.0',
     uptime_seconds: 3600, critical_count: 0, warning_count: 0,
-    cpu_percent: 5, memory_percent: 20, swap_percent: 0, load_per_core: 0.1,
+    cpu_percent: 5, cpu_available: true, memory_percent: 20, swap_percent: 0, load_per_core: 0.1,
     worst_disk_percent: 30, raid_degraded: false, smart_unhealthy: 0,
     max_temp_c: 40, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
   };

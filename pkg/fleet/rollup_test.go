@@ -170,9 +170,9 @@ func TestRollup_DeviceHealthCountsDevicesNotNodes(t *testing.T) {
 // last values are not candidates; ties keep the first node by name.
 func TestRollup_ExtremesNameTheNode(t *testing.T) {
 	r := boundedRollup([]types.FleetNode{
-		up("alpha", types.NodeSummary{CPUPercent: 44.9, MemoryPercent: 83.3, LoadPerCore: 1.69, WorstDiskPercent: 70, MaxTempC: 83, MaxTempSource: types.TempGPU}),
-		up("bravo", types.NodeSummary{CPUPercent: 44.9, MemoryPercent: 10, LoadPerCore: 0.2, WorstDiskPercent: 92.1}),
-		down("charlie", 30, types.NodeSummary{CPUPercent: 100, MemoryPercent: 100, WorstDiskPercent: 100, MaxTempC: 120}),
+		up("alpha", types.NodeSummary{CPUPercent: 44.9, CPUAvailable: true, MemoryPercent: 83.3, LoadPerCore: 1.69, WorstDiskPercent: 70, MaxTempC: 83, MaxTempSource: types.TempGPU}),
+		up("bravo", types.NodeSummary{CPUPercent: 44.9, CPUAvailable: true, MemoryPercent: 10, LoadPerCore: 0.2, WorstDiskPercent: 92.1}),
+		down("charlie", 30, types.NodeSummary{CPUPercent: 100, CPUAvailable: true, MemoryPercent: 100, WorstDiskPercent: 100, MaxTempC: 120}),
 	})
 	checks := map[string]struct {
 		got  *types.FleetExtreme
@@ -190,7 +190,7 @@ func TestRollup_ExtremesNameTheNode(t *testing.T) {
 		}
 	}
 
-	cold := boundedRollup([]types.FleetNode{up("vm", types.NodeSummary{CPUPercent: 5})})
+	cold := boundedRollup([]types.FleetNode{up("vm", types.NodeSummary{CPUPercent: 5, CPUAvailable: true})})
 	if cold.Temperature != nil || cold.Disk != nil {
 		t.Errorf("zeros that mean no sensor became extremes: temperature %+v, disk %+v", cold.Temperature, cold.Disk)
 	}
@@ -219,6 +219,30 @@ func TestRollup_SwapPagingKnownAndUnknown(t *testing.T) {
 	all := boundedRollup([]types.FleetNode{up("old", types.NodeSummary{SwapPercent: 100})})
 	if all.SwapOut != nil || all.SwapUnknown != 1 {
 		t.Errorf("no node could measure paging: SwapOut %+v, unknown %d; want omitted and 1", all.SwapOut, all.SwapUnknown)
+	}
+}
+
+// TestRollup_CPUKnownAndUnknown: the busiest node is taken over the nodes
+// whose CPU usage was measured, and the ones whose was not are counted -- a
+// node on its first collection is not the fleet's idlest, and cannot hide a
+// busier one either.
+func TestRollup_CPUKnownAndUnknown(t *testing.T) {
+	r := boundedRollup([]types.FleetNode{
+		up("alpha", types.NodeSummary{CPUPercent: 12, CPUAvailable: true}),
+		up("bravo", types.NodeSummary{CPUPercent: 67, CPUAvailable: true}),
+		up("starting", types.NodeSummary{}),
+		down("gone", 30, types.NodeSummary{}),
+	})
+	if r.CPU == nil || *r.CPU != (types.FleetExtreme{Node: "bravo", Value: 67}) {
+		t.Errorf("CPU = %+v, want bravo at 67", r.CPU)
+	}
+	if r.CPUUnknown != 1 {
+		t.Errorf("CPUUnknown = %d, want 1 (the reachable node with no measurement; the unreachable one is counted as unreachable)", r.CPUUnknown)
+	}
+
+	all := boundedRollup([]types.FleetNode{up("starting", types.NodeSummary{}), up("also", types.NodeSummary{})})
+	if all.CPU != nil || all.CPUUnknown != 2 {
+		t.Errorf("no node could measure CPU: CPU %+v, unknown %d; want omitted and 2", all.CPU, all.CPUUnknown)
 	}
 }
 

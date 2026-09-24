@@ -183,7 +183,8 @@
     "flush_l1d",
     "arch_capabilities"
    ],
-   "usage_percent": 0,
+   "usage_percent": 12.5,
+   "usage_available": true,
    "temperature_celsius": 46,
    "voltage_v": 0
   },
@@ -344,7 +345,8 @@
     "flush_l1d",
     "arch_capabilities"
    ],
-   "usage_percent": 0,
+   "usage_percent": 37.5,
+   "usage_available": true,
    "temperature_celsius": 44,
    "voltage_v": 0
   }

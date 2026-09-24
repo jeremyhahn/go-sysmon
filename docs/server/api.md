@@ -99,6 +99,7 @@ instead of `/api/snapshot` (#76).
     "warning_count": 2,
     "alerts": [ ... ],
     "cpu_percent": 43.7,
+    "cpu_available": true,
     "memory_percent": 73.7,
     "load_per_core": 0.36,
     "swap_percent": 51.1,
@@ -131,6 +132,10 @@ instead of `/api/snapshot` (#76).
   predates it.
 - `alerts` holds only the warning and critical alerts, the ones that set the
   node's state.
+- `cpu_percent` is the mean over the node's cores whose usage was measured.
+  `cpu_available` is false when none was: the node's first collection, an
+  unreadable `/proc/stat`, or a peer too old to report `usage_available`. The
+  figure is then unknown, not zero, and the dashboard shows a dash.
 - `swap_in_rate` and `swap_out_rate` are bytes per second paged over the
   node's last collection interval, from its two latest readings (#134).
   `swap_rate_available` is false when the rate could not be measured:

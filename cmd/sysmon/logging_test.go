@@ -21,7 +21,9 @@ func withLogFlags(t *testing.T, file, level, format string) {
 	logFile, logLevel, logFormat = file, level, format
 
 	t.Cleanup(func() {
-		closeLogFile()
+		if err := closeLogFile(); err != nil {
+			t.Errorf("closeLogFile: %v", err)
+		}
 		logFile, logLevel, logFormat = origFile, origLevel, origFormat
 		slog.SetDefault(origLogger)
 	})
@@ -79,7 +81,9 @@ func TestSetupLogging_WritesToFile(t *testing.T) {
 		t.Fatalf("setupLogging() error = %v", err)
 	}
 	slog.Info("a message that must reach the file", "key", "value")
-	closeLogFile()
+	if err := closeLogFile(); err != nil {
+		t.Fatalf("closeLogFile: %v", err)
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -100,13 +104,17 @@ func TestSetupLogging_AppendsAcrossRuns(t *testing.T) {
 		t.Fatalf("first setupLogging: %v", err)
 	}
 	slog.Info("first run")
-	closeLogFile()
+	if err := closeLogFile(); err != nil {
+		t.Fatalf("closeLogFile: %v", err)
+	}
 
 	if err := setupLogging(); err != nil {
 		t.Fatalf("second setupLogging: %v", err)
 	}
 	slog.Info("second run")
-	closeLogFile()
+	if err := closeLogFile(); err != nil {
+		t.Fatalf("closeLogFile: %v", err)
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -128,7 +136,9 @@ func TestSetupLogging_JSONFormat(t *testing.T) {
 		t.Fatalf("setupLogging() error = %v", err)
 	}
 	slog.Info("structured", "field", 42)
-	closeLogFile()
+	if err := closeLogFile(); err != nil {
+		t.Fatalf("closeLogFile: %v", err)
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -150,7 +160,9 @@ func TestSetupLogging_LevelFiltering(t *testing.T) {
 	}
 	slog.Info("this must be filtered out")
 	slog.Error("this must survive")
-	closeLogFile()
+	if err := closeLogFile(); err != nil {
+		t.Fatalf("closeLogFile: %v", err)
+	}
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -217,7 +229,42 @@ func TestCloseLogFile_Idempotent(t *testing.T) {
 		t.Fatalf("setupLogging: %v", err)
 	}
 
-	closeLogFile()
-	// A second close must not panic or double-close a descriptor.
-	closeLogFile()
+	if err := closeLogFile(); err != nil {
+		t.Fatalf("first closeLogFile: %v", err)
+	}
+	// A second close must not fail, panic or double-close a descriptor.
+	if err := closeLogFile(); err != nil {
+		t.Errorf("second closeLogFile = %v, want nil", err)
+	}
+}
+
+// TestCloseLogFile_ReportsACloseFailure verifies a log file that will not
+// close is returned as a typed error naming the file, and that the handle is
+// released all the same so a later close does not retry it.
+func TestCloseLogFile_ReportsACloseFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sysmon.log")
+	withLogFlags(t, path, "info", "text")
+	if err := setupLogging(); err != nil {
+		t.Fatalf("setupLogging: %v", err)
+	}
+	// Close the descriptor underneath the handle, so closeLogFile's own
+	// close fails the way a lost NFS mount or a full disk would.
+	if err := logFileHandle.Close(); err != nil {
+		t.Fatalf("close underneath: %v", err)
+	}
+
+	err := closeLogFile()
+	var logErr *types.LogFileError
+	if !errors.As(err, &logErr) {
+		t.Fatalf("closeLogFile() = %v, want *types.LogFileError", err)
+	}
+	if logErr.Path != path {
+		t.Errorf("LogFileError.Path = %q, want %q", logErr.Path, path)
+	}
+	if !errors.Is(err, os.ErrClosed) {
+		t.Errorf("closeLogFile() = %v, want it to wrap os.ErrClosed", err)
+	}
+	if logFileHandle != nil {
+		t.Error("the handle was kept after a failed close")
+	}
 }

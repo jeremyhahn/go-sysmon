@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -31,12 +32,16 @@ const errorBodyLimit = 512
 type Writer struct {
 	url    string
 	client *http.Client
+	log    *slog.Logger
 }
 
 // NewWriter returns a Writer posting to url, bounding each request by timeout.
-func NewWriter(url string, timeout time.Duration) *Writer {
+// log receives what cannot be returned: a response body that failed to drain
+// after the write's outcome was already known.
+func NewWriter(url string, timeout time.Duration, log *slog.Logger) *Writer {
 	return &Writer{
 		url: url,
+		log: log,
 		// Not a default client. A remote-write receiver that answers 302 could
 		// otherwise move this node's metrics to another host, or walk an https
 		// endpoint down to plaintext, with the write still reported as having
@@ -71,17 +76,18 @@ func (w *Writer) Write(ctx context.Context, series []Series) error {
 	}
 	// Draining before closing lets the connection go back to the pool instead
 	// of being torn down after every write.
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
+	defer releaseBody(resp.Body, w.url, w.log)
 
 	if resp.StatusCode/100 != 2 {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
+		// The status is the rejection; the body only explains it. A body that
+		// fails partway still leaves the status to report, so the read error
+		// travels with it rather than replacing it.
+		detail, readErr := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
 		return &ErrRemoteWrite{
-			URL:    w.url,
-			Status: resp.StatusCode,
-			Body:   strings.TrimSpace(string(detail)),
+			URL:     w.url,
+			Status:  resp.StatusCode,
+			Body:    strings.TrimSpace(string(detail)),
+			BodyErr: readErr,
 		}
 	}
 	return nil

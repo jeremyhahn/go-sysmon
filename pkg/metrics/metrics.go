@@ -148,13 +148,10 @@ func Write(m Sink, snap *types.Snapshot) {
 	m.Gauge("sysmon_uptime_seconds", "Host uptime in seconds.", float64(snap.Host.Uptime))
 
 	// CPU
-	var cpuSum float64
-	for _, c := range snap.CPUs {
-		cpuSum += c.UsagePercent
-	}
-	if len(snap.CPUs) > 0 {
-		m.Gauge("sysmon_cpu_usage_percent", "Mean CPU usage across all logical processors.",
-			cpuSum/float64(len(snap.CPUs)))
+	// Omitted, not zero, when no core's usage was measured: a gauge at zero
+	// would chart the collector's first interval as an idle host.
+	if mean, measured := types.MeanCPUUsage(snap.CPUs); measured > 0 {
+		m.Gauge("sysmon_cpu_usage_percent", "Mean CPU usage across the logical processors whose usage was measured.", mean)
 	}
 	m.Gauge("sysmon_load1", "One-minute load average.", snap.LoadAvg.Load1)
 	m.Gauge("sysmon_load5", "Five-minute load average.", snap.LoadAvg.Load5)

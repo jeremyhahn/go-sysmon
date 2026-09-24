@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -34,8 +35,8 @@ func fixtureSnapshot() *types.Snapshot {
 			TotalCores: 2, TotalThreads: 2, MaxMHz: 4000, MinMHz: 800,
 		},
 		CPUs: []types.CPUInfo{
-			{Index: 0, ModelName: "Fixture CPU", CoreID: "0", PhysicalID: "0", Mhz: 3200, UsagePercent: 12.5, TemperatureCelsius: 45},
-			{Index: 1, ModelName: "Fixture CPU", CoreID: "1", PhysicalID: "0", Mhz: 3300, UsagePercent: 7.5, TemperatureCelsius: 43},
+			{Index: 0, ModelName: "Fixture CPU", CoreID: "0", PhysicalID: "0", Mhz: 3200, UsagePercent: 12.5, UsageAvailable: true, TemperatureCelsius: 45},
+			{Index: 1, ModelName: "Fixture CPU", CoreID: "1", PhysicalID: "0", Mhz: 3300, UsagePercent: 7.5, UsageAvailable: true, TemperatureCelsius: 43},
 		},
 		Memory: types.MemoryInfo{
 			TotalBytes: 16 << 30, UsedBytes: 8 << 30, AvailableBytes: 8 << 30,
@@ -473,7 +474,19 @@ func TestRunVersionCmd_RenderFailure(t *testing.T) {
 //
 // It only reads /proc and /sys, so it neither modifies the host nor blocks.
 func TestCollectSnapshot_RealCollector(t *testing.T) {
+	// Both readings are real; only the pause between them is skipped.
+	var waited []time.Duration
+	orig := sampleWait
+	sampleWait = func(_ context.Context, d time.Duration) error {
+		waited = append(waited, d)
+		return nil
+	}
+	t.Cleanup(func() { sampleWait = orig })
+
 	snap, err := collectSnapshot()
+	if len(waited) != 1 || waited[0] != oneShotSampleInterval {
+		t.Errorf("collectSnapshot waited %v, want once for oneShotSampleInterval", waited)
+	}
 	if err != nil {
 		t.Fatalf("collectSnapshot() error = %v, want nil", err)
 	}

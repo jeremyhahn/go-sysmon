@@ -149,7 +149,13 @@ type NodeSummary struct {
 	// only the alert says what.
 	Alerts []Alert `json:"alerts"`
 
+	// CPUPercent is the mean usage over the node's cores whose usage was
+	// measured (CPUInfo.UsageAvailable). CPUAvailable is false when none of
+	// them was -- the node's first collection, or a /proc/stat it could not
+	// read -- and a false here with a zero CPUPercent is "unknown", never an
+	// idle node.
 	CPUPercent    float64 `json:"cpu_percent"`
+	CPUAvailable  bool    `json:"cpu_available"`
 	MemoryPercent float64 `json:"memory_percent"`
 	LoadPerCore   float64 `json:"load_per_core"`
 
@@ -466,7 +472,11 @@ type FleetRollup struct {
 	// 3 of 10 nodes".
 	Reporting int `json:"reporting"`
 
+	// CPU is the busiest node among those whose CPU usage could be measured.
+	// CPUUnknown counts the reporting nodes whose usage could not be, so a
+	// quiet fleet figure is never read as covering them.
 	CPU         *FleetExtreme `json:"cpu,omitempty"`
+	CPUUnknown  int           `json:"cpu_unknown"`
 	Memory      *FleetExtreme `json:"memory,omitempty"`
 	Disk        *FleetExtreme `json:"disk,omitempty"`
 	LoadPerCore *FleetExtreme `json:"load_per_core,omitempty"`
@@ -1041,23 +1051,33 @@ type CPUSummary struct {
 
 // CPUInfo contains detailed information about a CPU.
 type CPUInfo struct {
-	Index              int      `json:"index"`
-	ModelName          string   `json:"model_name"`
-	VendorID           string   `json:"vendor_id"`
-	Family             string   `json:"family"`
-	Model              string   `json:"model"`
-	Stepping           int32    `json:"stepping"`
-	PhysicalID         string   `json:"physical_id"`
-	CoreID             string   `json:"core_id"`
-	Cores              int32    `json:"cores"`
-	Threads            int32    `json:"threads"`
-	Mhz                float64  `json:"mhz"`
-	CacheSize          int32    `json:"cache_size"`
-	Microcode          string   `json:"microcode"`
-	Flags              []string `json:"flags"`
-	UsagePercent       float64  `json:"usage_percent"`
-	TemperatureCelsius float64  `json:"temperature_celsius"`
-	VoltageV           float64  `json:"voltage_v"`
+	Index      int      `json:"index"`
+	ModelName  string   `json:"model_name"`
+	VendorID   string   `json:"vendor_id"`
+	Family     string   `json:"family"`
+	Model      string   `json:"model"`
+	Stepping   int32    `json:"stepping"`
+	PhysicalID string   `json:"physical_id"`
+	CoreID     string   `json:"core_id"`
+	Cores      int32    `json:"cores"`
+	Threads    int32    `json:"threads"`
+	Mhz        float64  `json:"mhz"`
+	CacheSize  int32    `json:"cache_size"`
+	Microcode  string   `json:"microcode"`
+	Flags      []string `json:"flags"`
+	// UsagePercent is the share of the core's time spent busy across the
+	// collector's last interval. It is a difference of two /proc/stat
+	// readings, so it exists only when UsageAvailable is true.
+	UsagePercent float64 `json:"usage_percent"`
+	// UsageAvailable says UsagePercent was measured. It is false on the first
+	// collection, which has no earlier reading to difference against; when
+	// the core's /proc/stat line was missing or malformed in either reading;
+	// and when its counters did not advance or went backwards between them.
+	// A false here with a zero UsagePercent is "unknown", never an idle core,
+	// and every consumer leaves such a core out of any mean.
+	UsageAvailable     bool    `json:"usage_available"`
+	TemperatureCelsius float64 `json:"temperature_celsius"`
+	VoltageV           float64 `json:"voltage_v"`
 }
 
 // MemoryInfo contains detailed memory information.

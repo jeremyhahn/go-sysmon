@@ -36,12 +36,10 @@ func Summarize(prev, cur *types.Snapshot) types.NodeSummary {
 	// A per-node mean over that node's own cores is the node's utilisation.
 	// The rule against means is about the FLEET: averaging across machines of
 	// different sizes, which the roll-up never does.
-	for _, c := range cur.CPUs {
-		n.CPUPercent += c.UsagePercent
-	}
-	if len(cur.CPUs) > 0 {
-		n.CPUPercent /= float64(len(cur.CPUs))
-	}
+	// Only the cores whose usage was measured count; a node with none is
+	// unknown, never idle.
+	mean, measured := types.MeanCPUUsage(cur.CPUs)
+	n.CPUPercent, n.CPUAvailable = mean, measured > 0
 	if cur.CPUSummary.TotalThreads > 0 {
 		n.LoadPerCore = cur.LoadAvg.Load1 / float64(cur.CPUSummary.TotalThreads)
 	}

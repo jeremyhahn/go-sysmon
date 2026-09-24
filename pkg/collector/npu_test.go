@@ -1,9 +1,12 @@
 package collector
 
 import (
+	"bufio"
+	"bytes"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1037,5 +1040,35 @@ func TestProcessComm(t *testing.T) {
 	}
 	if got := processComm(filepath.Join(t.TempDir(), "absent")); got != "" {
 		t.Errorf("processComm of a missing file = %q, want empty", got)
+	}
+}
+
+// TestLookupPCINames_ReadStoppedEarly verifies that a pci.ids read which fails
+// partway keeps what it parsed, leaves what it never reached unresolved, and
+// says so in the log rather than presenting a truncated database as complete.
+// A line longer than the scanner's buffer is what stops it.
+func TestLookupPCINames_ReadStoppedEarly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pci.ids")
+	body := "8086  Intel Corporation\n" +
+		"\t" + strings.Repeat("x", bufio.MaxScanTokenSize) + "\n" +
+		"1002  Advanced Micro Devices, Inc. [AMD/ATI]\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write pci.ids: %v", err)
+	}
+	withPCIIDs(t, path)
+
+	var logs bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	if vendor, _, _ := lookupPCINames("0x8086", "", ""); vendor != "Intel Corporation" {
+		t.Errorf("vendor before the failure = %q, want %q", vendor, "Intel Corporation")
+	}
+	if vendor, _, _ := lookupPCINames("0x1002", "", ""); vendor != "" {
+		t.Errorf("vendor past the failure = %q, want unresolved", vendor)
+	}
+	if !strings.Contains(logs.String(), "pci.ids read stopped early") || !strings.Contains(logs.String(), path) {
+		t.Errorf("expected a warning naming %s, got log %q", path, logs.String())
 	}
 }

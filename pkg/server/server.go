@@ -462,10 +462,13 @@ func (s *Server) Stop(ctx context.Context) error {
 	// use (#106).
 	//
 	// Closing twice is not an error worth reporting: http.Server has already
-	// closed it on the normal path, and "use of closed network connection" is
-	// the expected answer there rather than a failure to stop.
+	// closed it on the normal path, and net.ErrClosed is the expected answer
+	// there rather than a failure to stop. Any other failure means the port
+	// may still be held, which is exactly what #106 was, so it is returned.
 	if l := s.listener(); l != nil {
-		_ = l.Close()
+		if closeErr := l.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+			err = errors.Join(err, &types.ListenerCloseError{Addr: l.Addr().String(), Cause: closeErr})
+		}
 	}
 	return err
 }
@@ -484,8 +487,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	if d == "" {
 		d = "unknown"
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	writeJSON(w, map[string]string{
 		"version":    v,
 		"git_commit": c,
 		"build_date": d,
@@ -496,7 +498,11 @@ func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("go-sysmon is running\n"))
+	if _, err := w.Write([]byte("go-sysmon is running\n")); err != nil {
+		// The status is already sent; a failed body write means the client
+		// went away, and there is no one left to tell.
+		slog.Debug("status page write", "err", err, "remote", r.RemoteAddr)
+	}
 }
 
 // handleSnapshot returns the most recent system snapshot as JSON.
@@ -691,7 +697,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer stream.Close()
+	defer func() {
+		// Flushes the gzip trailer. The response is already streamed, so a
+		// failure here is a client that went away mid-stream: logged, since
+		// there is no response left to carry it.
+		if err := stream.Close(); err != nil {
+			slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+		}
+	}()
 
 	if err := stream.retry(reconnectDelayMS); err != nil {
 		slog.Debug("event stream retry", "err", err, "remote", r.RemoteAddr)

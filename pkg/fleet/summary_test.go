@@ -354,3 +354,23 @@ func TestSummarize_UnmeasuredRatesAreNotThroughput(t *testing.T) {
 		t.Errorf("with an unmeasured device: reported %v, rx %v; want not reported", s.NetReported, s.NetRxRate)
 	}
 }
+
+// TestSummarize_CPUUsesOnlyMeasuredCores: a node's CPU figure is the mean over
+// the cores whose usage was measured, and a node with none measured -- its
+// first collection, or an unreadable /proc/stat -- is unknown, not idle.
+func TestSummarize_CPUUsesOnlyMeasuredCores(t *testing.T) {
+	snap := healthySnapshot("omega")
+	snap.CPUs = []types.CPUInfo{
+		{UsagePercent: 60, UsageAvailable: true},
+		{},
+		{UsagePercent: 20, UsageAvailable: true},
+	}
+	if s := fleet.Summarize(nil, snap); !s.CPUAvailable || s.CPUPercent != 40 {
+		t.Errorf("some cores unknown: cpu %v available %v; want 40 over the two measured cores", s.CPUPercent, s.CPUAvailable)
+	}
+
+	snap.CPUs = []types.CPUInfo{{}, {}}
+	if s := fleet.Summarize(nil, snap); s.CPUAvailable || s.CPUPercent != 0 {
+		t.Errorf("every core unknown: cpu %v available %v; want unknown", s.CPUPercent, s.CPUAvailable)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -181,4 +182,56 @@ func TestMain_ExecutesRootCommand(t *testing.T) {
 		}
 	}()
 	main()
+}
+
+// ---- run ------------------------------------------------------------------
+
+// TestRun_FailingCommandReportsAndExitsNonZero verifies run reports a command
+// error on stderr and returns status 1, and that it still releases the log
+// file, which main's old deferred close skipped on exactly this path because
+// os.Exit does not run defers. An unknown flag fails in cobra's parse, before
+// any command runs.
+func TestRun_FailingCommandReportsAndExitsNonZero(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sysmon.log")
+	withLogFlags(t, path, "info", "text")
+	if err := setupLogging(); err != nil {
+		t.Fatalf("setupLogging: %v", err)
+	}
+	rootCmd.SetArgs([]string{"--no-such-flag"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+	var stderr bytes.Buffer
+	if status := run(&stderr); status != 1 {
+		t.Errorf("run() = %d, want 1", status)
+	}
+	if !strings.Contains(stderr.String(), "Error:") || !strings.Contains(stderr.String(), "no-such-flag") {
+		t.Errorf("stderr = %q, want the command error reported", stderr.String())
+	}
+	if logFileHandle != nil {
+		t.Error("run returned without releasing the log file")
+	}
+}
+
+// TestRun_LogFileCloseFailureIsReported verifies a log file that fails to
+// close is reported and turns the exit status non-zero: the tail of the log
+// may be lost, and a zero status would hide it.
+func TestRun_LogFileCloseFailureIsReported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sysmon.log")
+	withLogFlags(t, path, "info", "text")
+	if err := setupLogging(); err != nil {
+		t.Fatalf("setupLogging: %v", err)
+	}
+	if err := logFileHandle.Close(); err != nil {
+		t.Fatalf("close underneath: %v", err)
+	}
+	rootCmd.SetArgs([]string{"--no-such-flag"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+	var stderr bytes.Buffer
+	if status := run(&stderr); status != 1 {
+		t.Errorf("run() = %d, want 1", status)
+	}
+	if !strings.Contains(stderr.String(), "log file "+path) {
+		t.Errorf("stderr = %q, want the log file close failure reported", stderr.String())
+	}
 }

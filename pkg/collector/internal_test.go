@@ -4,7 +4,9 @@
 package collector
 
 import (
+	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -100,11 +102,30 @@ func TestReadSysfsUint64_Valid(t *testing.T) {
 	}
 }
 
-// TestReadHwmonTemp_NoMatch verifies 0 is returned when no glob matches.
+// TestReadHwmonTemp_NoMatch verifies 0 and no error when no glob matches: a
+// drive without hwmon simply did not report a temperature.
 func TestReadHwmonTemp_NoMatch(t *testing.T) {
-	got := readHwmonTemp("devicethatdoesnotexist")
+	withSysBlockRoot(t, t.TempDir())
+	got, err := readHwmonTemp("devicethatdoesnotexist")
+	if err != nil {
+		t.Fatalf("readHwmonTemp: unexpected error %v", err)
+	}
 	if got != 0 {
 		t.Errorf("expected 0 for unmatched device, got %v", got)
+	}
+}
+
+// TestReadHwmonTemp_BadPattern verifies that a device name which makes the
+// glob malformed is reported as an error, not folded into "no temperature".
+func TestReadHwmonTemp_BadPattern(t *testing.T) {
+	withSysBlockRoot(t, t.TempDir())
+	got, err := readHwmonTemp("sd[a")
+	var readErr *types.SysfsReadError
+	if !errors.As(err, &readErr) || !errors.Is(err, filepath.ErrBadPattern) {
+		t.Fatalf("readHwmonTemp: error %v, want a *types.SysfsReadError wrapping filepath.ErrBadPattern", err)
+	}
+	if got != 0 {
+		t.Errorf("got %v alongside an error, want 0", got)
 	}
 }
 
@@ -567,24 +588,27 @@ func TestParseNVMeSmartLog_TemperatureConversion(t *testing.T) {
 // TestReadHwmonTemp_ValidFile
 // ---------------------------------------------------------------------------
 
-// TestReadHwmonTemp_ValidFile creates a synthetic hwmon directory and verifies
-// that readHwmonTemp correctly reads and converts the millicelsius value.
+// TestReadHwmonTemp_ValidFile creates a synthetic hwmon tree under each of the
+// two layouts and verifies readHwmonTemp converts the millicelsius value.
 func TestReadHwmonTemp_ValidFile(t *testing.T) {
-	// readHwmonTemp uses a glob on /sys/block/<dev>/device/hwmon/hwmon*/temp*_input
-	// We cannot write to /sys/block in tests, so we test the underlying file
-	// read helpers instead.  A temperature of 45000 mC should yield 45.0°C.
-	dir := t.TempDir()
-	tempFile := filepath.Join(dir, "temp1_input")
-	if err := os.WriteFile(tempFile, []byte("45000\n"), 0644); err != nil {
-		t.Fatal(err)
+	layouts := map[string]string{
+		"nvme": filepath.Join("nvme0n1", "device", "hwmon8", "temp1_input"),
+		"ata":  filepath.Join("sda", "device", "hwmon", "hwmon3", "temp1_input"),
 	}
-	raw := readSysfsUint64(tempFile)
-	if raw == 0 {
-		t.Fatal("expected non-zero raw temperature")
-	}
-	celsius := float64(raw) / 1000.0
-	if celsius != 45.0 {
-		t.Errorf("expected 45.0°C, got %v", celsius)
+	for name, rel := range layouts {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			withSysBlockRoot(t, root)
+			writeSysfsFile(t, filepath.Join(root, rel), "45000\n")
+			dev := strings.SplitN(rel, string(filepath.Separator), 2)[0]
+			got, err := readHwmonTemp(dev)
+			if err != nil {
+				t.Fatalf("readHwmonTemp: unexpected error %v", err)
+			}
+			if got != 45.0 {
+				t.Errorf("expected 45.0°C, got %v", got)
+			}
+		})
 	}
 }
 
@@ -1813,43 +1837,134 @@ func TestCollectFans_NoFans(t *testing.T) {
 // TestParsePSILine_Valid verifies correct parsing of a well-formed PSI line.
 func TestParsePSILine_Valid(t *testing.T) {
 	line := "some avg10=1.23 avg60=4.56 avg300=7.89 total=12345"
-	avg10, avg60, avg300, total, ok := parsePSILine(line)
-
-	if !ok {
-		t.Error("parsePSILine reported not-ok for a well-formed line")
+	got, err := parsePSILine("/proc/pressure/cpu", line)
+	if err != nil {
+		t.Fatalf("parsePSILine: unexpected error for a well-formed line: %v", err)
 	}
-	if avg10 != 1.23 {
-		t.Errorf("avg10: got %v, want 1.23", avg10)
-	}
-	if avg60 != 4.56 {
-		t.Errorf("avg60: got %v, want 4.56", avg60)
-	}
-	if avg300 != 7.89 {
-		t.Errorf("avg300: got %v, want 7.89", avg300)
-	}
-	if total != 12345 {
-		t.Errorf("total: got %d, want 12345", total)
+	want := psiHalf{avg10: 1.23, avg60: 4.56, avg300: 7.89, total: 12345}
+	if got != want {
+		t.Errorf("parsePSILine: got %+v, want %+v", got, want)
 	}
 }
 
-// TestParsePSILine_Invalid verifies that a malformed line returns all zeros
-// AND reports not-ok, so the caller can tell "nothing was read" from "the
-// kernel reported zero pressure".
+// TestParsePSILine_Invalid verifies that a line missing a field, or holding one
+// that does not parse, is an error and yields no reading -- never the fields
+// that did parse with zeros for the rest.
 func TestParsePSILine_Invalid(t *testing.T) {
-	cases := []string{
-		"",
-		"some",
-		"some avg10",
-		"garbage line with no equals signs",
+	cases := map[string]struct {
+		line       string
+		wantField  string // the missing field, when that is the defect
+		wantNumErr bool   // a strconv failure, when that is the defect
+	}{
+		"empty":              {line: "", wantField: "avg10"},
+		"header only":        {line: "some", wantField: "avg10"},
+		"key without value":  {line: "some avg10", wantField: "avg10"},
+		"no key=value pairs": {line: "garbage line with no equals signs", wantField: "avg10"},
+		"missing total":      {line: "some avg10=1.00 avg60=2.00 avg300=3.00", wantField: "total"},
+		"bad avg10":          {line: "some avg10=x avg60=2.00 avg300=3.00 total=4", wantNumErr: true},
+		"bad avg60":          {line: "some avg10=1.00 avg60=x avg300=3.00 total=4", wantNumErr: true},
+		"bad avg300":         {line: "some avg10=1.00 avg60=2.00 avg300=x total=4", wantNumErr: true},
+		"bad total":          {line: "some avg10=1.00 avg60=2.00 avg300=3.00 total=-4", wantNumErr: true},
 	}
-	for _, line := range cases {
-		avg10, avg60, avg300, total, ok := parsePSILine(line)
-		if avg10 != 0 || avg60 != 0 || avg300 != 0 || total != 0 {
-			t.Errorf("parsePSILine(%q): expected all zeros, got (%v,%v,%v,%d)", line, avg10, avg60, avg300, total)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := parsePSILine("/proc/pressure/io", tc.line)
+			if got != (psiHalf{}) {
+				t.Errorf("parsePSILine(%q): got %+v, want no reading", tc.line, got)
+			}
+			var parseErr *types.PSIParseError
+			if !errors.As(err, &parseErr) {
+				t.Fatalf("parsePSILine(%q): error %v, want *types.PSIParseError", tc.line, err)
+			}
+			if parseErr.Resource != "io" {
+				t.Errorf("PSIParseError.Resource = %q, want the resource name %q", parseErr.Resource, "io")
+			}
+			var fieldErr *types.ProcStatusFieldError
+			if tc.wantField != "" && (!errors.As(err, &fieldErr) || fieldErr.Field != tc.wantField) {
+				t.Errorf("parsePSILine(%q): error %v, want a missing %q field", tc.line, err, tc.wantField)
+			}
+			var numErr *strconv.NumError
+			if tc.wantNumErr && !errors.As(err, &numErr) {
+				t.Errorf("parsePSILine(%q): error %v, want a *strconv.NumError", tc.line, err)
+			}
+		})
+	}
+}
+
+// TestParsePSIFile_FullLine verifies the rules for the "full" half: required of
+// memory and io, optional for cpu, and failing the resource closed when present
+// but malformed.
+func TestParsePSIFile_FullLine(t *testing.T) {
+	const some = "some avg10=1.00 avg60=2.00 avg300=3.00 total=5000\n"
+	cases := map[string]struct {
+		data         string
+		fullRequired bool
+		wantErr      bool
+	}{
+		"cpu without full":         {data: some, fullRequired: false},
+		"memory without full":      {data: some, fullRequired: true, wantErr: true},
+		"malformed full on cpu":    {data: some + "full avg10=x avg60=0 avg300=0 total=0\n", fullRequired: false, wantErr: true},
+		"truncated full on memory": {data: some + "full avg10=0.50\n", fullRequired: true, wantErr: true},
+		"no some line":             {data: "full avg10=0 avg60=0 avg300=0 total=0\n", fullRequired: false, wantErr: true},
+		"well-formed memory":       {data: some + "full avg10=0.50 avg60=1.00 avg300=1.50 total=2500\n", fullRequired: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			res, err := parsePSIFile("/proc/pressure/x", []byte(tc.data), tc.fullRequired)
+			if tc.wantErr {
+				var parseErr *types.PSIParseError
+				if !errors.As(err, &parseErr) {
+					t.Fatalf("error %v, want *types.PSIParseError", err)
+				}
+				if res != (types.PSIResource{}) {
+					t.Errorf("got %+v, want the zero, unavailable resource", res)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !res.Available || res.SomeTotal != 5000 {
+				t.Errorf("got %+v, want an available reading with SomeTotal 5000", res)
+			}
+		})
+	}
+}
+
+// TestCollectPSI_MalformedFullLine verifies end to end that a memory file whose
+// full line is corrupt reports memory as unavailable, and with it the aggregate
+// flag, rather than showing a machine on which nothing ever fully stalls.
+func TestCollectPSI_MalformedFullLine(t *testing.T) {
+	resetWarnOnce()
+	t.Cleanup(resetWarnOnce)
+	dir := t.TempDir()
+	files := map[string]string{
+		"cpu":    "some avg10=0.10 avg60=0.20 avg300=0.30 total=1000\n",
+		"memory": "some avg10=1.00 avg60=2.00 avg300=3.00 total=5000\nfull avg10=0.50 avg60=oops avg300=1.50 total=2500\n",
+		"io":     "some avg10=2.00 avg60=4.00 avg300=6.00 total=9000\nfull avg10=1.00 avg60=2.00 avg300=3.00 total=4500\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
 		}
-		if ok {
-			t.Errorf("parsePSILine(%q): reported ok for a malformed line", line)
-		}
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	c := newSensorCollectorWithPaths(logger, dir, dir, dir, dir, dir)
+	psi := c.collectPSI()
+
+	if psi.Memory != (types.PSIResource{}) {
+		t.Errorf("Memory: got %+v, want the zero, unavailable resource", psi.Memory)
+	}
+	if !psi.CPU.Available || !psi.IO.Available {
+		t.Errorf("cpu and io were well formed: got cpu=%v io=%v, want both available", psi.CPU.Available, psi.IO.Available)
+	}
+	if psi.Available {
+		t.Error("PSIData.Available: got true with memory malformed, want false")
+	}
+	if !strings.Contains(logs.String(), "PSI file malformed") || !strings.Contains(logs.String(), filepath.Join(dir, "memory")) {
+		t.Errorf("expected a warning naming the malformed file, got log %q", logs.String())
 	}
 }
 

@@ -105,12 +105,14 @@
     <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-3">
       <StatCard
         label="CPU"
-        value={formatPercent(overallCpuPercent)}
-        colorClass={overallCpuPercent >= 80
-          ? "text-error"
-          : overallCpuPercent >= 50
-            ? "text-warning"
-            : "text-success"}
+        value={overallCpuPercent === null ? "—" : formatPercent(overallCpuPercent)}
+        colorClass={overallCpuPercent === null
+          ? "text-base-content/60"
+          : overallCpuPercent >= 80
+            ? "text-error"
+            : overallCpuPercent >= 50
+              ? "text-warning"
+              : "text-success"}
       />
       <StatCard
         label="Memory"

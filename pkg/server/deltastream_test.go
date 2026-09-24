@@ -26,8 +26,8 @@ func (s *movingSnapshotter) Snapshot() (*types.Snapshot, error) {
 	return &types.Snapshot{
 		Host: types.HostInfo{Hostname: "mon0", Uptime: n},
 		CPUs: []types.CPUInfo{
-			{Index: 0, ModelName: "Ryzen", UsagePercent: float64(n % 100)},
-			{Index: 1, ModelName: "Ryzen", UsagePercent: float64((n * 7) % 100)},
+			{Index: 0, ModelName: "Ryzen", UsagePercent: float64(n % 100), UsageAvailable: true},
+			{Index: 1, ModelName: "Ryzen", UsagePercent: float64((n * 7) % 100), UsageAvailable: true},
 		},
 		Disks:    []types.DiskInfo{{Name: "sda", TotalBytes: 1 << 40, UsedPercent: 40}},
 		Networks: []types.NetworkInfo{{Name: "eno1", IsUp: true, BytesRecvRate: float64(n)}},

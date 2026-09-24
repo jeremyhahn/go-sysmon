@@ -172,7 +172,21 @@ export interface CPUInfo {
   cache_size: number;
   microcode: string;
   flags: string[];
+  /**
+   * UsagePercent is the share of the core's time spent busy across the
+   * collector's last interval. It is a difference of two /proc/stat
+   * readings, so it exists only when UsageAvailable is true.
+   */
   usage_percent: number;
+  /**
+   * UsageAvailable says UsagePercent was measured. It is false on the first
+   * collection, which has no earlier reading to difference against; when
+   * the core's /proc/stat line was missing or malformed in either reading;
+   * and when its counters did not advance or went backwards between them.
+   * A false here with a zero UsagePercent is "unknown", never an idle core,
+   * and every consumer leaves such a core out of any mean.
+   */
+  usage_available: boolean;
   temperature_celsius: number;
   voltage_v: number;
 }
@@ -708,7 +722,15 @@ export interface FleetNode {
    * only the alert says what.
    */
   alerts: Alert[];
+  /**
+   * CPUPercent is the mean usage over the node's cores whose usage was
+   * measured (CPUInfo.UsageAvailable). CPUAvailable is false when none of
+   * them was -- the node's first collection, or a /proc/stat it could not
+   * read -- and a false here with a zero CPUPercent is "unknown", never an
+   * idle node.
+   */
   cpu_percent: number;
+  cpu_available: boolean;
   memory_percent: number;
   load_per_core: number;
   /**
@@ -878,7 +900,13 @@ export interface FleetRollup {
    * 3 of 10 nodes".
    */
   reporting: number;
+  /**
+   * CPU is the busiest node among those whose CPU usage could be measured.
+   * CPUUnknown counts the reporting nodes whose usage could not be, so a
+   * quiet fleet figure is never read as covering them.
+   */
   cpu?: FleetExtreme | null;
+  cpu_unknown: number;
   memory?: FleetExtreme | null;
   disk?: FleetExtreme | null;
   load_per_core?: FleetExtreme | null;

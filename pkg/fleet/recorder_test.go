@@ -52,7 +52,7 @@ func healthyPeerSnapshot() *types.Snapshot {
 	return &types.Snapshot{
 		Timestamp: time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC),
 		Host:      types.HostInfo{Hostname: "peer"},
-		CPUs:      []types.CPUInfo{{UsagePercent: 10, Flags: []string{"fpu"}}},
+		CPUs:      []types.CPUInfo{{UsagePercent: 10, UsageAvailable: true, Flags: []string{"fpu"}}},
 		Processes: types.ProcessSummary{Total: 1, Processes: []types.ProcessDetail{{PID: 1}}},
 	}
 }

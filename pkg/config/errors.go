@@ -38,6 +38,21 @@ func (e *ErrConfigUnreadable) Error() string {
 
 func (e *ErrConfigUnreadable) Unwrap() error { return e.Err }
 
+// ConfigWatchError reports that the config file's directory could not be
+// watched for changes: the watcher could not be created, or the directory could
+// not be added to it. Dir is the directory, since that, not the file, is what
+// is watched.
+type ConfigWatchError struct {
+	Dir string
+	Err error
+}
+
+func (e *ConfigWatchError) Error() string {
+	return fmt.Sprintf("config: cannot watch %s: %v", e.Dir, e.Err)
+}
+
+func (e *ConfigWatchError) Unwrap() error { return e.Err }
+
 // ErrDuplicatePeer reports two fleet peers claiming the same name. The name is
 // a peer's identity throughout the fleet subsystem, so a duplicate cannot be
 // resolved to one host: it is a mistake in the config file that only the

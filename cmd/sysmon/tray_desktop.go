@@ -132,7 +132,7 @@ type trayMenuTitles struct {
 // same byte and percentage formatting as the CLI.
 func newTrayMenuTitles(snap *types.Snapshot) trayMenuTitles {
 	titles := trayMenuTitles{
-		CPU: "CPU:  " + cli.FormatPercent(cli.AverageCPUUsage(snap.CPUs)),
+		CPU: "CPU:  " + cli.FormatMeanCPUUsage(snap.CPUs),
 		RAM: fmt.Sprintf(
 			"RAM:  %s / %s (%s)",
 			cli.FormatBytes(snap.Memory.UsedBytes),

@@ -79,12 +79,21 @@
     class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-4 gap-y-2 text-xs"
     data-testid="fleet-figures"
   >
-    {#if rollup.cpu}
-      <div>
+    <!-- Nodes whose CPU usage could not be measured are counted, so the
+         busiest figure is never read as covering them. -->
+    {#if rollup.cpu || rollup.cpu_unknown > 0}
+      <div data-testid="fleet-cpu">
         <p class="text-base-content/60">Highest CPU</p>
-        <p class="font-mono {usageColor(rollup.cpu.value)}">
-          {formatPercent(rollup.cpu.value)} <span class="text-base-content/70">{rollup.cpu.node}</span>
-        </p>
+        {#if rollup.cpu}
+          <p class="font-mono {usageColor(rollup.cpu.value)}">
+            {formatPercent(rollup.cpu.value)} <span class="text-base-content/70">{rollup.cpu.node}</span>
+          </p>
+        {/if}
+        {#if rollup.cpu_unknown > 0}
+          <p class="text-base-content/60">
+            unknown on {rollup.cpu_unknown} node{rollup.cpu_unknown === 1 ? "" : "s"}
+          </p>
+        {/if}
       </div>
     {/if}
     {#if rollup.memory}

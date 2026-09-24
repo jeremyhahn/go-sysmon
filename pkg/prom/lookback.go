@@ -248,10 +248,7 @@ func (q *Querier) statusGet(ctx context.Context, endpoint string, out any) (foun
 	if err != nil {
 		return false, &ErrRequest{URL: endpoint, Err: err}
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
+	defer releaseBody(resp.Body, endpoint, q.log)
 	if resp.StatusCode == http.StatusNotFound {
 		return false, nil
 	}

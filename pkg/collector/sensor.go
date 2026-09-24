@@ -534,68 +534,112 @@ func (c *SensorCollector) collectFans() []types.FanInfo {
 	return fans
 }
 
+// psiHalf is one line of a PSI file: the "some" or the "full" reading.
+type psiHalf struct {
+	avg10, avg60, avg300 float64
+	total                uint64
+}
+
+// psiKeys are the fields every PSI line carries. A line missing any of them, or
+// holding one that does not parse, is not a reading: the kernel has written the
+// same four fields since PSI was introduced, so anything else is a truncated or
+// corrupted read, and taking the fields that did parse would present the rest
+// as zero pressure.
+var psiKeys = []string{"avg10", "avg60", "avg300", "total"}
+
 // parsePSILine parses a single PSI line of the form:
 //
 //	some avg10=0.00 avg60=0.00 avg300=0.00 total=0
 //
-// It returns (avg10, avg60, avg300, total, ok). ok is false when the line
-// carried no recognisable key=value pair — a truncated or garbage line — and
-// all values are zero in that case. The caller needs the flag because zero is
-// also a perfectly ordinary reading, and the two must not be confused.
-func parsePSILine(line string) (avg10, avg60, avg300 float64, total uint64, ok bool) {
+// path names the file the line came from; the error names its resource, the
+// file's base name, as every PSIParseError does. Every field in psiKeys
+// must be present and parse; otherwise the line yields a *types.PSIParseError
+// and no reading at all, because zero is also a perfectly ordinary reading and
+// the two must not be confused.
+func parsePSILine(path, line string) (psiHalf, error) {
+	values := make(map[string]string, len(psiKeys))
 	fields := strings.Fields(line)
-	// Minimum: "some/full avg10=X avg60=X avg300=X total=X" -> 5 fields.
-	if len(fields) < 5 {
-		return 0, 0, 0, 0, false
-	}
-
-	for _, field := range fields[1:] {
-		idx := strings.IndexByte(field, '=')
-		if idx < 0 {
-			continue
+	if len(fields) > 0 {
+		for _, field := range fields[1:] {
+			if key, val, ok := strings.Cut(field, "="); ok {
+				values[key] = val
+			}
 		}
-		key := field[:idx]
-		val := field[idx+1:]
-		switch key {
-		case "avg10":
-			avg10, _ = strconv.ParseFloat(val, 64)
-			ok = true
-		case "avg60":
-			avg60, _ = strconv.ParseFloat(val, 64)
-			ok = true
-		case "avg300":
-			avg300, _ = strconv.ParseFloat(val, 64)
-			ok = true
-		case "total":
-			total, _ = strconv.ParseUint(val, 10, 64)
-			ok = true
+	}
+	for _, key := range psiKeys {
+		if _, ok := values[key]; !ok {
+			return psiHalf{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: &types.ProcStatusFieldError{Path: path, Field: key}}
 		}
 	}
 
-	return avg10, avg60, avg300, total, ok
+	var half psiHalf
+	var err error
+	if half.avg10, err = strconv.ParseFloat(values["avg10"], 64); err != nil {
+		return psiHalf{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: err}
+	}
+	if half.avg60, err = strconv.ParseFloat(values["avg60"], 64); err != nil {
+		return psiHalf{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: err}
+	}
+	if half.avg300, err = strconv.ParseFloat(values["avg300"], 64); err != nil {
+		return psiHalf{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: err}
+	}
+	if half.total, err = strconv.ParseUint(values["total"], 10, 64); err != nil {
+		return psiHalf{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: err}
+	}
+	return half, nil
 }
 
-// parsePSIFile parses a PSI resource file and fills both "some" and "full"
-// halves of a PSIResource. CPU files omit the "full" line; that is handled
-// gracefully by leaving the full fields at zero.
+// parsePSIFile parses a PSI resource file into both halves of a PSIResource.
+// path names the file, for the error.
 //
-// Available is set from the "some" line alone: every resource file has one, and
-// a file that yields no parseable "some" line yielded no measurement at all.
-// The absent "full" line on cpu is normal and does not make the reading
-// unavailable.
-func parsePSIFile(data []byte) types.PSIResource {
-	var res types.PSIResource
+// Available is true only when the file yielded a complete reading, and on any
+// error the whole resource is left at its zero value, unavailable. A "some" line
+// is required of every resource. A "full" line is required too, except of cpu:
+// the kernel added cpu's full line in 5.13 and older kernels omit it, which is
+// normal and leaves the full fields at zero. A full line that is present but
+// malformed fails the resource closed, since its zeros would read as a machine
+// on which nothing ever stalls.
+func parsePSIFile(path string, data []byte, fullRequired bool) (types.PSIResource, error) {
+	var some, full *psiHalf
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := scanner.Text()
+		var dst **psiHalf
 		switch {
 		case strings.HasPrefix(line, "some"):
-			res.SomeAvg10, res.SomeAvg60, res.SomeAvg300, res.SomeTotal, res.Available = parsePSILine(line)
+			dst = &some
 		case strings.HasPrefix(line, "full"):
-			res.FullAvg10, res.FullAvg60, res.FullAvg300, res.FullTotal, _ = parsePSILine(line)
+			dst = &full
+		default:
+			continue
 		}
+		half, err := parsePSILine(path, line)
+		if err != nil {
+			return types.PSIResource{}, err
+		}
+		*dst = &half
 	}
-	return res
+	if err := scanner.Err(); err != nil {
+		return types.PSIResource{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: err}
+	}
+	if some == nil {
+		return types.PSIResource{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: &types.ProcStatusFieldError{Path: path, Field: "some"}}
+	}
+	if full == nil && fullRequired {
+		return types.PSIResource{}, &types.PSIParseError{Resource: filepath.Base(path), Cause: &types.ProcStatusFieldError{Path: path, Field: "full"}}
+	}
+
+	res := types.PSIResource{
+		Available:  true,
+		SomeAvg10:  some.avg10,
+		SomeAvg60:  some.avg60,
+		SomeAvg300: some.avg300,
+		SomeTotal:  some.total,
+	}
+	if full != nil {
+		res.FullAvg10, res.FullAvg60, res.FullAvg300, res.FullTotal = full.avg10, full.avg60, full.avg300, full.total
+	}
+	return res, nil
 }
 
 // collectPSI reads /proc/pressure/{cpu,memory,io} and returns Pressure Stall
@@ -610,25 +654,23 @@ func parsePSIFile(data []byte) types.PSIResource {
 func (c *SensorCollector) collectPSI() types.PSIData {
 	var data types.PSIData
 
-	read := func(resource string) []byte {
+	read := func(resource string, fullRequired bool) types.PSIResource {
 		path := c.pressureBase + "/" + resource
 		b, err := os.ReadFile(path)
 		if err != nil {
 			c.logger.Debug("sensor: PSI file unavailable", "path", path, "error", err)
-			return nil
+			return types.PSIResource{}
 		}
-		return b
+		res, err := parsePSIFile(path, b, fullRequired)
+		if err != nil {
+			warnOnce(c.logger, "sensor:psi:"+resource, "sensor: PSI file malformed; reporting it as unavailable", "path", path, "error", err)
+		}
+		return res
 	}
 
-	if b := read("cpu"); b != nil {
-		data.CPU = parsePSIFile(b)
-	}
-	if b := read("memory"); b != nil {
-		data.Memory = parsePSIFile(b)
-	}
-	if b := read("io"); b != nil {
-		data.IO = parsePSIFile(b)
-	}
+	data.CPU = read("cpu", false)
+	data.Memory = read("memory", true)
+	data.IO = read("io", true)
 
 	data.Available = data.CPU.Available && data.Memory.Available && data.IO.Available
 

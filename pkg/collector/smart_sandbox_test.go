@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"bufio"
 	"errors"
 	"os"
 	"path/filepath"
@@ -168,5 +169,21 @@ func TestDevIsPrivateTmpfs_NoMountinfo(t *testing.T) {
 	withProcRoot(t, filepath.Join(t.TempDir(), "absent"))
 	if readDevIsPrivateTmpfs() {
 		t.Error("readDevIsPrivateTmpfs() = true with no mountinfo, want false")
+	}
+}
+
+// TestDevIsPrivateTmpfs_ReadStoppedEarly verifies that a mountinfo read which
+// fails partway answers "not a sandbox" even after it has seen a tmpfs /dev: the
+// lines it never reached could shadow that entry, so the read settled nothing.
+// A line longer than the scanner's buffer is what stops it.
+func TestDevIsPrivateTmpfs_ReadStoppedEarly(t *testing.T) {
+	proc := t.TempDir()
+	writeSysfs(t, filepath.Join(proc, "self", "mountinfo"),
+		"24 28 0:23 / /dev rw,nosuid - tmpfs tmpfs rw\n"+
+			"25 24 0:25 / /mnt rw - ext4 /dev/sda1 rw,"+strings.Repeat("x", bufio.MaxScanTokenSize)+"\n")
+	withProcRoot(t, proc)
+
+	if readDevIsPrivateTmpfs() {
+		t.Error("readDevIsPrivateTmpfs() = true from a read that stopped early, want false")
 	}
 }

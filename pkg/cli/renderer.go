@@ -67,13 +67,12 @@ func RenderOverview(w io.Writer, snap *types.Snapshot) error {
 	if len(snap.CPUs) > 0 {
 		model = snap.CPUs[0].ModelName
 	}
-	avgUsage := AverageCPUUsage(snap.CPUs)
 	fmt.Fprintf(w, "%-12s%s\n", "CPU:", model)
 	fmt.Fprintf(w, "%-12s%d Cores / %d Threads | Usage: %s\n\n",
 		"",
 		cpu.TotalCores,
 		cpu.TotalThreads,
-		FormatPercent(avgUsage),
+		FormatMeanCPUUsage(snap.CPUs),
 	)
 
 	// Memory block
@@ -294,16 +293,20 @@ func RenderCPU(w io.Writer, snap *types.Snapshot) error {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Per-Core Usage:")
 		for _, c := range cpus {
-			bar := formatBar(c.UsagePercent, 20)
+			// An unmeasured core gets no bar at all: an empty one would
+			// read as an idle core.
+			bar, usage := strings.Repeat(" ", coreBarWidth), fmt.Sprintf("%6s", unknownValue)
+			if c.UsageAvailable {
+				bar, usage = formatBar(c.UsagePercent, coreBarWidth), fmt.Sprintf("%5.1f%%", c.UsagePercent)
+			}
 			if c.TemperatureCelsius > 0 {
-				fmt.Fprintf(w, "  Core %2d:  %s  %5.1f%%  %.1f°C\n", c.Index, bar, c.UsagePercent, c.TemperatureCelsius)
+				fmt.Fprintf(w, "  Core %2d:  %s  %s  %.1f°C\n", c.Index, bar, usage, c.TemperatureCelsius)
 			} else {
-				fmt.Fprintf(w, "  Core %2d:  %s  %5.1f%%\n", c.Index, bar, c.UsagePercent)
+				fmt.Fprintf(w, "  Core %2d:  %s  %s\n", c.Index, bar, usage)
 			}
 		}
-		avg := AverageCPUUsage(cpus)
 		fmt.Fprintln(w)
-		fmt.Fprintf(w, "%-16s%s\n", "Average:", FormatPercent(avg))
+		fmt.Fprintf(w, "%-16s%s\n", "Average:", FormatMeanCPUUsage(cpus))
 	}
 
 	s := snap.Sensors
@@ -982,17 +985,23 @@ func renderInterface(w io.Writer, iface types.NetworkInfo) {
 	)
 }
 
-// AverageCPUUsage computes the mean usage across all CPU entries.
-func AverageCPUUsage(cpus []types.CPUInfo) float64 {
-	if len(cpus) == 0 {
-		return 0
+// FormatMeanCPUUsage formats the mean usage over the cores whose usage was
+// measured (types.MeanCPUUsage), or "-" when none was: a single snapshot, as a
+// one-shot command takes, has no earlier reading to measure usage against, and
+// 0.0% would present that as an idle machine.
+func FormatMeanCPUUsage(cpus []types.CPUInfo) string {
+	mean, measured := types.MeanCPUUsage(cpus)
+	if measured == 0 {
+		return unknownValue
 	}
-	total := 0.0
-	for _, c := range cpus {
-		total += c.UsagePercent
-	}
-	return total / float64(len(cpus))
+	return FormatPercent(mean)
 }
+
+// unknownValue is what the CLI prints for a figure that was not measured.
+const unknownValue = "-"
+
+// coreBarWidth is the width of a per-core usage bar.
+const coreBarWidth = 20
 
 // aggregateDiskUsage sums total and used bytes across all disks.
 func aggregateDiskUsage(disks []types.DiskInfo) (total, used uint64) {

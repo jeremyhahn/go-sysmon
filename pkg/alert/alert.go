@@ -661,15 +661,13 @@ func (e *Evaluator) evalCPUAndMemory(b *builder, snap *types.Snapshot, elapsed f
 
 	// Sustained processor usage. Reported as the mean across logical CPUs so
 	// the number means the same thing on a 4-thread and a 64-thread host.
-	if t.CPUPct > 0 && len(snap.CPUs) > 0 {
-		var sum float64
-		for _, c := range snap.CPUs {
-			sum += c.UsagePercent
-		}
-		mean := sum / float64(len(snap.CPUs))
-		if mean >= t.CPUPct {
+	// Only measured cores count, and with none measured -- the first
+	// collection, or an unreadable /proc/stat -- the rule does not evaluate:
+	// an unknown is neither over the threshold nor under it.
+	if t.CPUPct > 0 {
+		if mean, measured := types.MeanCPUUsage(snap.CPUs); measured > 0 && mean >= t.CPUPct {
 			b.add(RuleCPUHigh, types.SeverityWarning, catCPU, "",
-				fmt.Sprintf("CPU is %.0f%% busy across %d threads", mean, len(snap.CPUs)),
+				fmt.Sprintf("CPU is %.0f%% busy across %d threads", mean, measured),
 				mean, t.CPUPct)
 		}
 	}

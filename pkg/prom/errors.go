@@ -11,14 +11,23 @@ import "strconv"
 // does not parse -- while 5xx and 429 are transient and worth retrying. Body is
 // truncated, since a misconfigured URL can point at anything and a rejected
 // write must not paste a stranger's HTML into the log.
+//
+// BodyErr is set when the body could not be read in full, and Body then holds
+// what was read before the failure. The status stands either way: it, not the
+// body, is the rejection.
 type ErrRemoteWrite struct {
-	URL    string
-	Status int
-	Body   string
+	URL     string
+	Status  int
+	Body    string
+	BodyErr error
 }
 
 func (e *ErrRemoteWrite) Error() string {
-	return "prom: remote write to " + e.URL + " returned " + strconv.Itoa(e.Status) + ": " + e.Body
+	msg := "prom: remote write to " + e.URL + " returned " + strconv.Itoa(e.Status) + ": " + e.Body
+	if e.BodyErr != nil {
+		msg += " (response body unreadable: " + e.BodyErr.Error() + ")"
+	}
+	return msg
 }
 
 // Retryable reports whether replaying the same request could succeed. A 429 is

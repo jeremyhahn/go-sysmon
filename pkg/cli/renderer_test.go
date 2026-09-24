@@ -46,7 +46,7 @@ func testSnapshot() *types.Snapshot {
 				VendorID:     "GenuineIntel",
 				CacheSize:    36864,
 				Microcode:    "0x11b",
-				UsagePercent: 32.1,
+				UsagePercent: 32.1, UsageAvailable: true,
 			},
 			{
 				Index:        1,
@@ -54,7 +54,7 @@ func testSnapshot() *types.Snapshot {
 				VendorID:     "GenuineIntel",
 				CacheSize:    36864,
 				Microcode:    "0x11b",
-				UsagePercent: 18.5,
+				UsagePercent: 18.5, UsageAvailable: true,
 			},
 		},
 		Memory: types.MemoryInfo{
@@ -696,28 +696,59 @@ func TestRenderNetwork(t *testing.T) {
 	})
 }
 
-func TestAverageCPUUsage(t *testing.T) {
+func TestFormatMeanCPUUsage(t *testing.T) {
 	t.Parallel()
+	cases := map[string]struct {
+		cpus []types.CPUInfo
+		want string
+	}{
+		"every core measured":    {cpus: []types.CPUInfo{{UsagePercent: 10, UsageAvailable: true}, {UsagePercent: 30, UsageAvailable: true}}, want: "20.0%"},
+		"unknown cores left out": {cpus: []types.CPUInfo{{UsagePercent: 10, UsageAvailable: true}, {}}, want: "10.0%"},
+		"no core measured":       {cpus: []types.CPUInfo{{}, {}}, want: "-"},
+		"no cores":               {cpus: nil, want: "-"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := FormatMeanCPUUsage(tc.cpus); got != tc.want {
+				t.Errorf("FormatMeanCPUUsage = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
-	t.Run("correct average", func(t *testing.T) {
-		t.Parallel()
-		cpus := []types.CPUInfo{
-			{UsagePercent: 10},
-			{UsagePercent: 30},
-		}
-		got := AverageCPUUsage(cpus)
-		if got != 20.0 {
-			t.Errorf("AverageCPUUsage = %v, want 20.0", got)
-		}
-	})
+// TestRenderCPU_UnmeasuredCores verifies a core with no usage measurement is
+// printed as unknown, with no bar, and is left out of the average -- the
+// one-shot command's first and only snapshot is exactly this case.
+func TestRenderCPU_UnmeasuredCores(t *testing.T) {
+	t.Parallel()
+	snap := &types.Snapshot{CPUs: []types.CPUInfo{
+		{Index: 0, UsagePercent: 40, UsageAvailable: true},
+		{Index: 1},
+	}}
+	var buf bytes.Buffer
+	if err := RenderCPU(&buf, snap); err != nil {
+		t.Fatalf("RenderCPU: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Core  1:  "+strings.Repeat(" ", coreBarWidth)+"       -") {
+		t.Errorf("the unmeasured core is not shown as unknown:\n%s", out)
+	}
+	if strings.Contains(out, "  0.0%") {
+		t.Errorf("the unmeasured core was rendered as 0.0%%:\n%s", out)
+	}
+	if !strings.Contains(out, "Average:        40.0%") {
+		t.Errorf("the average counted the unmeasured core:\n%s", out)
+	}
 
-	t.Run("empty slice returns zero", func(t *testing.T) {
-		t.Parallel()
-		got := AverageCPUUsage(nil)
-		if got != 0 {
-			t.Errorf("AverageCPUUsage(nil) = %v, want 0", got)
-		}
-	})
+	snap.CPUs[0] = types.CPUInfo{Index: 0}
+	buf.Reset()
+	if err := RenderCPU(&buf, snap); err != nil {
+		t.Fatalf("RenderCPU: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Average:        -") {
+		t.Errorf("with no core measured the average is not unknown:\n%s", buf.String())
+	}
 }
 
 func TestAllDisksHealthy(t *testing.T) {

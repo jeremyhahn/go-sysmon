@@ -305,6 +305,16 @@ Run `sysmon` with no subcommand and it decides:
 
 The server build always takes the second path, since it has no GUI compiled in.
 
+## One-shot mode
+
+Without `--refresh`, a command takes two readings 500 ms apart
+(`oneShotSampleInterval` in `cmd/sysmon/snapshot.go`) and prints the second,
+the way `top -n1` and `mpstat` do. CPU usage and every other rate — network,
+disk, swap paging — is the difference of two readings, so a single reading
+could never show one. A figure the second reading still could not measure,
+such as a core whose `/proc/stat` line was malformed, prints as `-`, never as
+0.
+
 ## Refresh mode
 
 `--refresh N` takes seconds, decimals allowed. The terminal clears between
@@ -313,3 +323,5 @@ than served from cache. Ctrl+C to stop.
 
 Sleep time is the interval minus however long collection and rendering took, so
 `--refresh 1` means a frame per second rather than a frame per second-plus-work.
+The first frame has no earlier reading to measure rates against, so CPU usage
+reads `-` until the second.

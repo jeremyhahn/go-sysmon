@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -308,11 +309,17 @@ var devIsPrivateTmpfs = sync.OnceValue(readDevIsPrivateTmpfs)
 // mountinfo answers false: claiming a sandbox we cannot see would send an
 // operator to a unit file over a disk that simply went away.
 func readDevIsPrivateTmpfs() bool {
-	f, err := os.Open(filepath.Join(procRoot, "self", "mountinfo"))
+	path := filepath.Join(procRoot, "self", "mountinfo")
+	f, err := os.Open(path)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	// Read-only: a close error loses nothing that was read.
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Debug("smart: close mountinfo", "path", path, "error", err)
+		}
+	}()
 
 	// mountinfo: id parent major:minor root MOUNTPOINT opts - FSTYPE source ...
 	// The mount point is field 5 and the filesystem type is the field after
@@ -332,6 +339,13 @@ func readDevIsPrivateTmpfs() bool {
 				break
 			}
 		}
+	}
+	// A read that stopped early has not seen the lines that could shadow the
+	// /dev entry it found, so it settles nothing: answer as for an unreadable
+	// mountinfo.
+	if err := scanner.Err(); err != nil {
+		slog.Debug("smart: mountinfo read stopped early", "path", path, "error", err)
+		return false
 	}
 	return private
 }

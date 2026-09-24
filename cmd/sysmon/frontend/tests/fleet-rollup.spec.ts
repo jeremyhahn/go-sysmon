@@ -32,6 +32,7 @@ function fleetNode(name: string, over: Json = {}): Json {
     warning_count: 0,
     alerts: [],
     cpu_percent: 5,
+    cpu_available: true,
     memory_percent: 20,
     swap_percent: 0,
     swap_counters_available: true,
@@ -65,7 +66,7 @@ function rollup(over: Json = {}): Json {
     never_answered: 0,
     attention: [],
     reporting: 1,
-    swap_unknown: 0,
+    swap_unknown: 0, cpu_unknown: 0,
     builds: [],
     build_groups: 0,
     ...over,
@@ -226,6 +227,32 @@ test('a node that cannot measure paging says so even with no swap in use', async
   await expect(card(page, 'fresh').getByTestId('swap-cell')).toContainText('paging unknown');
   // Measured, no swap, no paging: nothing to say.
   await expect(card(page, 'noswap').getByTestId('swap-cell')).toHaveCount(0);
+});
+
+test('CPU: a node whose usage was not measured shows a dash and is counted, not ranked as idle', async ({ page }) => {
+  await showFleet(page, [
+    fleetNode('busy', { cpu_percent: 67 }),
+    fleetNode('starting', { cpu_percent: 0, cpu_available: false }),
+  ], rollup({ nodes: 2, healthy: 2, reporting: 2, cpu: { node: 'busy', value: 67 }, cpu_unknown: 1 }));
+
+  await expect(card(page, 'busy')).toContainText('67.0%');
+  const unknown = card(page, 'starting').getByTestId('node-cpu-unknown');
+  await expect(unknown).toHaveText('—');
+  // The CPU cell holds the dash alone: no percentage, zero or otherwise.
+  await expect(unknown.locator('..')).not.toContainText('%');
+
+  const cpu = page.getByTestId('fleet-cpu');
+  await expect(cpu).toContainText('67.0% busy');
+  await expect(cpu).toContainText('unknown on 1 node');
+});
+
+test('CPU: a fleet with no measured node shows no busiest figure, only the count', async ({ page }) => {
+  await showFleet(page, [fleetNode('starting', { cpu_percent: 0, cpu_available: false })],
+    rollup({ cpu_unknown: 1 }));
+
+  const cpu = page.getByTestId('fleet-cpu');
+  await expect(cpu).toContainText('unknown on 1 node');
+  await expect(cpu).not.toContainText('%');
 });
 
 test('network throughput names its coverage: nodes that measure it, of those reachable', async ({ page }) => {

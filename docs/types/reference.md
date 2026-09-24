@@ -122,7 +122,19 @@ The top-level structure. One of these per collection.
 
 ## CPUInfo
 
-Per-logical-processor fields including `index`, `model_name`, `vendor_id`, `family`, `model`, `stepping`, `physical_id`, `core_id`, `cores`, `threads`, `mhz`, `cache_size`, `microcode`, `flags`, `usage_percent`, `temperature_celsius`, and `voltage_v`.
+Per-logical-processor fields including `index`, `model_name`, `vendor_id`, `family`, `model`, `stepping`, `physical_id`, `core_id`, `cores`, `threads`, `mhz`, `cache_size`, `microcode`, `flags`, `usage_percent`, `usage_available`, `temperature_celsius`, and `voltage_v`.
+
+`usage_percent` is the difference of two `/proc/stat` readings, so it exists
+only when `usage_available` is true. It is false on the collector's first
+collection, which has nothing to difference against; for a core whose
+`/proc/stat` line was missing or malformed in either reading; and for a core
+whose counters did not advance or went backwards. `usage_percent` is then 0,
+which is **unknown, not idle**. Every consumer — the `cpu_high` alert, the
+`sysmon_cpu_usage_percent` gauge, the fleet summary, the CLI, the tray and the
+dashboard — leaves such a core out of its mean (`types.MeanCPUUsage`), and a
+node with no measured core reports its CPU as unknown. A one-shot CLI command
+takes two readings half a second apart so its usage is measured, and prints
+`-` for a core the second reading still could not measure.
 
 ## MemoryInfo
 
@@ -343,9 +355,13 @@ fails closed. `PSIResource.available` says which ones individually were.
 | `full_total`  | `uint64`  | Cumulative stall microseconds (full)            |
 
 `available` is false when the file could not be read, and also when it was read
-but carried no parseable `some` line — a truncated read produces the same
-unquestionable zeros as an absent one. A missing `full` line is normal for
-`cpu` and leaves the resource available with the full fields at zero.
+but did not parse: every line must carry all four of `avg10`, `avg60`, `avg300`
+and `total`, each a valid number, and there must be a `some` line — a truncated
+read produces the same unquestionable zeros as an absent one. A `full` line is
+required of `memory` and `io`. It is optional for `cpu`, whose `full` line
+arrived in Linux 5.13, and a missing one leaves the resource available with the
+full fields at zero; a `full` line that is present but malformed makes the
+whole resource unavailable. The collector logs the malformed file once.
 
 ## Errors
 

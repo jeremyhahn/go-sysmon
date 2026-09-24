@@ -565,17 +565,24 @@ func loadPCIIDs() {
 	pciClasses = make(map[string]string)
 
 	var f *os.File
-	for _, path := range pciIDsPaths {
-		opened, err := os.Open(path)
+	var path string
+	for _, candidate := range pciIDsPaths {
+		opened, err := os.Open(candidate)
 		if err == nil {
-			f = opened
+			f, path = opened, candidate
 			break
 		}
 	}
 	if f == nil {
 		return
 	}
-	defer f.Close()
+	// Read-only: a close error loses nothing that was read, and there is no
+	// caller to hand it to, since the parse runs once behind a sync.Once.
+	defer func() {
+		if err := f.Close(); err != nil {
+			slog.Debug("npu: close pci.ids", "path", path, "error", err)
+		}
+	}()
 
 	scanner := bufio.NewScanner(f)
 	var vendor string
@@ -607,6 +614,11 @@ func loadPCIIDs() {
 				vendor = id
 			}
 		}
+	}
+	// What was parsed before the failure is correct and is kept; names past
+	// it resolve to nothing, the same as an identifier the database lacks.
+	if err := scanner.Err(); err != nil {
+		slog.Warn("npu: pci.ids read stopped early; later PCI names are unresolved", "path", path, "error", err)
 	}
 }
 

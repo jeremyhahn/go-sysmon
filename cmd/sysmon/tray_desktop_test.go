@@ -21,7 +21,7 @@ import (
 // the CLI's byte and percentage formatters.
 func TestNewTrayMenuTitles(t *testing.T) {
 	snap := &types.Snapshot{
-		CPUs: []types.CPUInfo{{UsagePercent: 10}, {UsagePercent: 35}},
+		CPUs: []types.CPUInfo{{UsagePercent: 10, UsageAvailable: true}, {UsagePercent: 35, UsageAvailable: true}},
 		Memory: types.MemoryInfo{
 			UsedBytes:      1536 << 20,
 			TotalBytes:     16 << 30,
@@ -52,17 +52,32 @@ func TestNewTrayMenuTitles(t *testing.T) {
 
 // TestNewTrayMenuTitles_EmptySnapshot verifies a snapshot with no CPUs and no
 // GPUs -- the first one on a host whose collectors have not reported yet --
-// reads as zero rather than dividing by zero, and adds no GPU lines.
+// reads CPU as unknown rather than dividing by zero or claiming 0%, and adds no
+// GPU lines.
 func TestNewTrayMenuTitles_EmptySnapshot(t *testing.T) {
 	got := newTrayMenuTitles(&types.Snapshot{})
-	if got.CPU != "CPU:  0.0%" {
-		t.Errorf("CPU = %q, want %q", got.CPU, "CPU:  0.0%")
+	if got.CPU != "CPU:  -" {
+		t.Errorf("CPU = %q, want %q", got.CPU, "CPU:  -")
 	}
 	if got.RAM != "RAM:  0 B / 0 B (0.0%)" {
 		t.Errorf("RAM = %q, want %q", got.RAM, "RAM:  0 B / 0 B (0.0%)")
 	}
 	if len(got.GPUs) != 0 {
 		t.Errorf("GPUs = %q, want none", got.GPUs)
+	}
+}
+
+// TestNewTrayMenuTitles_UnmeasuredCPU verifies the tray reads CPU as unknown on
+// the monitor's first collection, when no core's usage has been measured, and
+// averages only the measured cores after that.
+func TestNewTrayMenuTitles_UnmeasuredCPU(t *testing.T) {
+	first := newTrayMenuTitles(&types.Snapshot{CPUs: []types.CPUInfo{{}, {}}})
+	if first.CPU != "CPU:  -" {
+		t.Errorf("no core measured: CPU = %q, want %q", first.CPU, "CPU:  -")
+	}
+	partial := newTrayMenuTitles(&types.Snapshot{CPUs: []types.CPUInfo{{UsagePercent: 30, UsageAvailable: true}, {}}})
+	if partial.CPU != "CPU:  30.0%" {
+		t.Errorf("one core measured: CPU = %q, want %q", partial.CPU, "CPU:  30.0%")
 	}
 }
 

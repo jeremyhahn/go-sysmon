@@ -432,9 +432,15 @@
                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
                   <div>
                     <p class="text-xs text-base-content/60">CPU</p>
-                    <p class="font-mono {usageColor(node.cpu_percent)}">
-                      {formatPercent(node.cpu_percent)}
-                    </p>
+                    {#if node.cpu_available}
+                      <p class="font-mono {usageColor(node.cpu_percent)}">
+                        {formatPercent(node.cpu_percent)}
+                      </p>
+                    {:else}
+                      <!-- No core measured yet: the node's first collection,
+                           or a peer too old to say. Unknown, not idle. -->
+                      <p class="font-mono text-base-content/60" title="CPU usage not measured" data-testid="node-cpu-unknown">—</p>
+                    {/if}
                   </div>
                   <div>
                     <p class="text-xs text-base-content/60">Memory</p>

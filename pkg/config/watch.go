@@ -23,14 +23,19 @@ const watchDebounce = 250 * time.Millisecond
 // left in place: a syntax error in a half-saved file must not take the daemon's
 // settings down with it.
 func (m *Manager) Watch(done <-chan struct{}, logger *slog.Logger, onReload func(deferred []string)) error {
+	dir := configFileDir(m.Path())
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
-		return err
+		return &ConfigWatchError{Dir: dir, Err: err}
 	}
-	dir := configFileDir(m.Path())
 	if err := w.Add(dir); err != nil {
-		_ = w.Close()
-		return err
+		// The watcher never started watching, but it holds an inotify
+		// descriptor all the same. A failure to release it is reported with
+		// the failure to watch, not in place of it.
+		if closeErr := w.Close(); closeErr != nil {
+			return &ConfigWatchError{Dir: dir, Err: errors.Join(err, closeErr)}
+		}
+		return &ConfigWatchError{Dir: dir, Err: err}
 	}
 
 	target := filepath.Clean(m.Path())
