@@ -14,3 +14,9 @@ const SubscriberBufSize = subscriberBufSize
 func SetTicker(m *Monitor, start func(time.Duration) Ticker) {
 	m.newTicker = start
 }
+
+// SetFanningOut makes m call f each time a publication has been stored and is
+// about to be broadcast. It must be called before Start.
+func SetFanningOut(m *Monitor, f func()) {
+	m.fanningOut = f
+}

@@ -327,6 +327,54 @@ func TestStop_ClosesSubscriberDone(t *testing.T) {
 	}
 }
 
+// TestSubscribe_DuringABroadcastIsNeverSentAnOlderReading pins the ordering
+// Subscribe documents, with a publication held between being stored and being
+// broadcast (#214). In that window Snapshot already answers with the new
+// reading -- every helper that waits for a publication relies on it -- and a
+// subscription taken there may be sent that reading, but never the one before
+// it: that one's broadcast finished before the new one was stored.
+func TestSubscribe_DuringABroadcastIsNeverSentAnOlderReading(t *testing.T) {
+	m := newMonitor(t, &countingSnapshotter{}, time.Hour)
+	ticker := useManualTicker(m)
+	hold := holdFanOut(m)
+	startMonitor(t, m)
+
+	// Collection 1 is published first. Its broadcast has begun once a
+	// subscriber is sent it, so it has passed the point the hold waits at and
+	// the hold can only catch collection 2.
+	first := m.Subscribe()
+	t.Cleanup(func() { m.Unsubscribe(first.ID) })
+	ticker.tick(t)
+	await.Recv(t, "collection 1 to be broadcast", first.Ch)
+	hold.arm(t)
+	ticker.tick(t)
+	hold.reached(t)
+
+	seen, err := m.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot() while collection 2 waits for its broadcast: %v", err)
+	}
+	if collection(seen) != 2 {
+		t.Fatalf("Snapshot() = collection %d while collection 2 waits for its broadcast; "+
+			"a reading must be stored before any subscriber is sent it", collection(seen))
+	}
+	sub := m.Subscribe()
+	t.Cleanup(func() { m.Unsubscribe(sub.ID) })
+	hold.release(t)
+
+	ticker.tick(t)
+	for {
+		got := await.Recv(t, "collection 3 to be broadcast", sub.Ch)
+		if collection(got) < collection(seen) {
+			t.Fatalf("a subscriber that had seen collection %d was sent collection %d",
+				collection(seen), collection(got))
+		}
+		if collection(got) == 3 {
+			return
+		}
+	}
+}
+
 // ---- Multiple subscribers -----------------------------------------------
 
 func TestBroadcast_AllSubscribersReceive(t *testing.T) {

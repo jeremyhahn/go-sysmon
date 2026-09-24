@@ -58,6 +58,21 @@ consumer that falls behind wants the current reading, not a queue of stale
 ones. And more importantly, one wedged event stream must never stall
 the loop for everyone else.
 
+### Ordering
+
+A publication is stored before it is broadcast, and publications are
+serialised: each one finishes its broadcast before the next is stored. Two
+things follow, and consumers rely on both.
+
+- A subscriber that has been sent a snapshot can read it back through
+  `Snapshot()`. Test helpers that wait for a publication subscribe first, then
+  check `Snapshot()`, then wait on the channel.
+- A subscription taken while a publication is being broadcast may be sent that
+  publication, even though `Snapshot()` already answered with it. It is never
+  sent an older one. So a consumer that reads `Snapshot()` and then subscribes
+  can receive the same reading once more, and must not count it as a new
+  publication (#214).
+
 ## Changing the interval
 
 `SetInterval(d)` pushes the new duration onto a channel of capacity 1. If a
@@ -70,14 +85,16 @@ Clients may pick 250ms, 500ms, 1s, 5s, 10s, 15s, 30s or 60s via POST
 
 ## Thread safety
 
-No mutexes:
-
-- `running` — `atomic.Bool`, flipped with `CompareAndSwap`
 - `subscribers` — `sync.Map`, which is a good fit for a read-heavy set
-- `nextID` — `atomic.Uint64`
-- `latest` — `atomic.Pointer[types.Snapshot]`
+- `nextID`, `generation`, `intervalNs` — atomics
+- `latest` — `atomic.Pointer` to the published reading and the baseline of the
+  one before it, swapped as a pair so a reader never mixes two ticks
 - `intervalCh` — buffered channel with replace-on-full
+- `mu` — guards the start/stop lifecycle, because "is it running" and "cancel
+  the context" have to move together; an early version raced there and could
+  call a nil cancel func
+- `pubMu` — serialises publishing: a new collection, and a re-decoration of the
+  published one by `SetDecorator` or `Restamp`. Collection runs outside it, so
+  a hung collector never blocks a rename
 
-The lifecycle around start and stop *is* guarded, because "is it running" and
-"cancel the context" have to move together — an early version raced there and
-could call a nil cancel func.
+Reading the published snapshot takes no lock.

@@ -163,6 +163,13 @@ type Monitor struct {
 	// Always newClockTicker outside tests.
 	newTicker func(time.Duration) ticker
 
+	// fanningOut, when set, is called by broadcast before it delivers a
+	// publication: the publication is already what Snapshot answers with, and
+	// no subscriber has been sent it yet. Always nil outside tests, which use
+	// it to hold a publication in exactly that window rather than hoping to
+	// land in it.
+	fanningOut func()
+
 	// intervalCh delivers a new interval to the running poll loop.
 	// Buffered with capacity 1 so SetInterval never blocks the caller.
 	intervalCh chan time.Duration
@@ -394,6 +401,17 @@ func (m *Monitor) Running() bool {
 // Subscribe registers a new consumer and returns its Subscriber.
 // The caller receives snapshots on Subscriber.Ch until Unsubscribe is called
 // or the monitor is stopped (Subscriber.Done is closed in both cases).
+//
+// A publication is stored before it is broadcast, so Snapshot answers with a
+// reading before any subscriber is sent it: once a subscriber has received a
+// snapshot, Snapshot answers with that one or a newer one. The converse does
+// not hold. A subscription taken while a publication is being broadcast --
+// after Snapshot has started answering with it -- may be sent that
+// publication too. That is the newest reading, never an older one:
+// publications are serialised, and each finishes its broadcast before the
+// next is stored. A consumer that has seen a reading through Snapshot and then
+// subscribes can therefore receive that same reading once more, and must not
+// take it for a new publication.
 func (m *Monitor) Subscribe() *Subscriber {
 	sub := &Subscriber{
 		ID:   m.nextID.Add(1),
@@ -654,6 +672,9 @@ func (m *Monitor) run(ctx context.Context, stopped chan struct{}) {
 // If a subscriber's channel is full the snapshot is dropped for that subscriber
 // so that one slow consumer cannot stall the broadcast loop.
 func (m *Monitor) broadcast(snap *types.Snapshot) {
+	if m.fanningOut != nil {
+		m.fanningOut()
+	}
 	m.subscribers.Range(func(_, value any) bool {
 		sub := value.(*Subscriber)
 		select {

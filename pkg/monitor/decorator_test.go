@@ -257,7 +257,7 @@ func TestSetDecorator_NilRemovesIt(t *testing.T) {
 // TestRestamp_LandsWhileCollectionIsHung: a collector stuck in a syscall must
 // not hold a rename back -- the published snapshot is restamped at once.
 func TestRestamp_LandsWhileCollectionIsHung(t *testing.T) {
-	m, _ := hungMonitor(t)
+	m := hungMonitor(t)
 	d := &countingDecorator{name: "db-01"}
 	mustDecorate(t, m, d)
 	awaitPublished(t, m, func(s *types.Snapshot) bool { return s.NodeName == "db-01" })
@@ -316,14 +316,37 @@ func (f snapshotterFunc) Snapshot() (*types.Snapshot, error) { return f() }
 
 // TestRestamp_UnchangedIdentityPublishesNothing: most reloads change nothing
 // Identify reads. Those must not republish -- a stream would be sent a frame
-// that repeats the reading and says nothing new. The collector is held after
-// its first reading, so nothing else can publish while this looks.
+// that repeats the reading and says nothing new. The loop is paced by hand, so
+// nothing else can publish while this looks.
+//
+// The subscriber is taken before anything decorated is published and waits
+// for that publication to arrive, so it can have nothing left to be sent but
+// what Restamp broadcasts. Taking it after the published snapshot is seen is
+// not enough: a publication is visible to Snapshot before its broadcast has
+// reached every subscriber, and a subscription taken in between is sent it --
+// which this test then blamed on Restamp (#214). The publication is held in
+// exactly that window, so the ordering is exercised on every run.
 func TestRestamp_UnchangedIdentityPublishesNothing(t *testing.T) {
-	m, release := hungMonitor(t)
-	mustDecorate(t, m, &countingDecorator{name: "db-01"})
-	before := awaitPublished(t, m, func(s *types.Snapshot) bool { return s.NodeName == "db-01" })
+	m := newMonitor(t, newStub("host"), time.Hour)
+	ticker := useManualTicker(m)
+	hold := holdFanOut(m)
+	startMonitor(t, m)
 	sub := m.Subscribe()
 	t.Cleanup(func() { m.Unsubscribe(sub.ID) })
+	// Nothing is published yet, so installing it publishes nothing either,
+	// and the hold catches the first collection.
+	mustDecorate(t, m, &countingDecorator{name: "db-01"})
+	hold.arm(t)
+	ticker.tick(t)
+	hold.reached(t)
+	before, err := m.Snapshot()
+	if err != nil || before.NodeName != "db-01" {
+		t.Fatalf("Snapshot() = %+v, %v while its broadcast waits; want the decorated reading", before, err)
+	}
+	hold.release(t)
+	if got := await.Recv(t, "the decorated reading to be broadcast", sub.Ch); got != before {
+		t.Fatalf("the subscriber was sent %p, want the published %p", got, before)
+	}
 
 	m.Restamp()
 
@@ -335,12 +358,11 @@ func TestRestamp_UnchangedIdentityPublishesNothing(t *testing.T) {
 		t.Errorf("an unchanged identity was broadcast: %+v", got)
 	default:
 	}
-	close(release)
 }
 
 // hungMonitor runs a monitor whose collector answers once and then blocks
-// until release is closed.
-func hungMonitor(t *testing.T) (*monitor.Monitor, chan struct{}) {
+// until the test ends.
+func hungMonitor(t *testing.T) *monitor.Monitor {
 	t.Helper()
 	release := make(chan struct{})
 	var calls atomic.Int64
@@ -358,16 +380,12 @@ func hungMonitor(t *testing.T) (*monitor.Monitor, chan struct{}) {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
+		close(release)
 		if err := m.Stop(); err != nil {
 			t.Errorf("Stop: %v", err)
 		}
 	})
-	return m, release
+	return m
 }
 
 // TestSetDecorator_RemovedWhileRunningStopsDecorating: removal takes effect for
@@ -548,7 +566,7 @@ func TestRestamp_NeverCarriesAReadingIntoTheNextRun(t *testing.T) {
 // installed again is the same evaluator, and has already seen the published
 // reading; evaluating it twice would feed it a zero-length interval.
 func TestSetDecorator_ReinstallingDoesNotEvaluateAgain(t *testing.T) {
-	m, _ := hungMonitor(t)
+	m := hungMonitor(t)
 	d := &countingDecorator{name: "db-01"}
 	mustDecorate(t, m, d)
 	awaitPublished(t, m, func(s *types.Snapshot) bool { return s.NodeName == "db-01" })
@@ -567,7 +585,7 @@ func TestSetDecorator_ReinstallingDoesNotEvaluateAgain(t *testing.T) {
 // decorator evaluated the published reading -- or reinstalling that one would
 // evaluate the reading a second time.
 func TestRestamp_WithNoDecoratorKeepsTheEvaluationRecord(t *testing.T) {
-	m, _ := hungMonitor(t)
+	m := hungMonitor(t)
 	d := &countingDecorator{name: "db-01"}
 	mustDecorate(t, m, d)
 	published := awaitPublished(t, m, func(s *types.Snapshot) bool { return s.NodeName == "db-01" })
@@ -590,7 +608,7 @@ func TestRestamp_WithNoDecoratorKeepsTheEvaluationRecord(t *testing.T) {
 // evaluate the reading with d1 a second time -- and the snapshot must carry
 // d1's alerts again, not d2's.
 func TestSetDecorator_SwappingBackReusesTheFirstEvaluation(t *testing.T) {
-	m, _ := hungMonitor(t)
+	m := hungMonitor(t)
 	d1 := &countingDecorator{name: "one"}
 	d2 := &countingDecorator{name: "two"}
 	mustDecorate(t, m, d1)
