@@ -135,7 +135,7 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both generate check-generated check-tests check-test-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
+        build-both generate check-generated check-ts check-test-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
         check-build-tags test-fips \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
@@ -432,7 +432,7 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-test-nolint check-tests \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-test-nolint check-ts \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
@@ -449,15 +449,19 @@ lint-shape-%:
 check-test-nolint:
 	@./scripts/check-test-nolint.sh
 
-# check-tests type-checks the Playwright specs, their fixtures and the
-# Playwright config. svelte-check covers src/ only, so the specs had never been
-# type-checked, and one already carried an error nothing reported (#196).
+# check-ts type-checks the frontend TypeScript that svelte-check does not
+# cover: the Playwright specs and their fixtures (tests/tsconfig.json), and the
+# Node-side configuration -- vite.config.ts, svelte.config.js,
+# playwright.config.ts and e2e-port.ts (tsconfig.node.json). svelte-check
+# covers src/ only, so the specs had never been type-checked and one already
+# carried an error nothing reported (#196); the build configuration was left
+# out the same way (#209).
 #
 # This is what makes `lint` need node. The committed bundle exists so that
-# BUILDING the Go binary never does, and that still holds; linting the specs
-# cannot happen without the TypeScript compiler they are written for.
-check-tests: $(FRONTEND_STAMP)
-	cd $(FRONTEND_DIR) && npm run check:tests
+# BUILDING the Go binary never does, and that still holds; type-checking
+# cannot happen without the TypeScript compiler the files are written for.
+check-ts: $(FRONTEND_STAMP)
+	cd $(FRONTEND_DIR) && npm run check:tests && npm run check:node
 
 # tools installs every pinned analysis tool that is missing or at the wrong
 # version, and leaves a matching one alone. The per-tool targets let a CI job
@@ -520,7 +524,8 @@ check-cgo-clean:
 # NOT a prerequisite of `lint`, deliberately: it rebuilds the whole bundle,
 # which is a build rather than a check of source, and as its own CI job a stale
 # bundle is reported as exactly that. (`lint` does need node since #196, for
-# check-tests; that type-checks the specs and builds nothing.)
+# check-ts; that type-checks the specs and the build configuration and builds
+# nothing.)
 # frontend-deps installs the node toolchain when it is absent OR older than the
 # lockfile, so check-bundle-current can run from an aggregate target on a fresh
 # checkout without paying for npm every time.

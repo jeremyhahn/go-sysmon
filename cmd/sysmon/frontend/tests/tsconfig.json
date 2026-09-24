@@ -6,8 +6,6 @@
   },
   "include": [
     "./**/*.ts",
-    "../src/**/*.d.ts",
-    "../e2e-port.ts",
-    "../playwright.config.ts"
+    "../src/**/*.d.ts"
   ]
 }

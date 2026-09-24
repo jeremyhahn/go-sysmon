@@ -359,11 +359,17 @@ exist.** Both had happened here before #196: fifteen unchecked
   a run without it.
 - **`//nolint` cannot silence errcheck in a test.** `make check-test-nolint`
   rejects a directive naming `errcheck` or `all`, or naming no linter at all.
-- **The Playwright specs are type-checked.** `make check-tests` runs
-  `npm run check:tests`, which is `tsc` over `tests/tsconfig.json`: every spec,
-  every fixture, `playwright.config.ts` and `e2e-port.ts`. Only that config
-  sees Node's types; the application's `tsconfig.json` sets `"types": []`, so
-  `process` does not type-check inside browser code.
+- **Every frontend source file is type-checked.** `npm run check`
+  (svelte-check, run by `make build-frontend`) covers `src/` and the
+  verbatim scripts in `public/` through the application's `tsconfig.json`,
+  which checks JavaScript as well as TypeScript. `make check-ts`, part of
+  `make lint`, covers the rest with `tsc`: `npm run check:tests` over
+  `tests/tsconfig.json` (every spec and fixture) and `npm run check:node` over
+  `tsconfig.node.json`, which takes every `.ts` and `.js` file at the frontend
+  root (`vite.config.ts`, `svelte.config.js`, `playwright.config.ts`,
+  `e2e-port.ts`), so a new config file there is checked without being listed.
+  Only those two configs see Node's types; the application's `tsconfig.json`
+  sets `"types": []`, so `process` does not type-check inside browser code.
 
 The idiom for cleanup that can fail is a `t.Cleanup` that reports it:
 
