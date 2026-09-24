@@ -147,14 +147,7 @@ func (s *Server) knownNode(name string) bool {
 		}
 		return false
 	}
-	if s.fleet != nil {
-		for _, n := range s.fleet.View().Nodes {
-			if n.Name == name {
-				return true
-			}
-		}
-	}
-	return false
+	return s.fleet != nil && s.fleet.Has(name)
 }
 
 // historyEnabled reports whether this node can answer a range. It is checked

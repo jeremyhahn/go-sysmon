@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { serveFleet } from './fixtures/fleet';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 import { openTab } from './fixtures/tabs';
 
@@ -58,18 +59,8 @@ function fleetNode(name: string, hostname: string) {
 async function setupFleet(page: Page) {
   await mockSnapshotFeed(page);
 
-  await page.route(/\/api\/fleet$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        enabled: true,
-        nodes: [
-          fleetNode('alpha', 'alpha-host'),
-          fleetNode('bravo', 'bravo-host'),
-        ],
-      }),
-    });
+  await serveFleet(page, {
+    nodes: [fleetNode('alpha', 'alpha-host'), fleetNode('bravo', 'bravo-host')],
   });
 
   // Patch fetch so alpha's body parses slowly and bravo's resolves at once.

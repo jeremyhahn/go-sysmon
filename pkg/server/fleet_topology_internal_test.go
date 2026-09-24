@@ -83,13 +83,18 @@ func TestFleetEndpoints_PublishNoPeerAddress(t *testing.T) {
 	}
 
 	responses := map[string]int{
-		"/api/fleet":               http.StatusOK,
-		"/api/fleet/live/config":   http.StatusOK,
-		"/api/fleet/live/snapshot": http.StatusOK,
-		"/api/fleet/dead/config":   http.StatusBadGateway,
-		"/api/fleet/dead/snapshot": http.StatusBadGateway,
-		"/api/summary":             http.StatusOK,
-		"/api/config":              http.StatusOK,
+		"/api/fleet": http.StatusOK,
+		// The paged view (#15), a search that matches the dead peer, and the
+		// roll-up alone: every shape the fleet view is served in.
+		"/api/fleet?offset=0&limit=1": http.StatusOK,
+		"/api/fleet?q=dead&limit=25":  http.StatusOK,
+		"/api/fleet/rollup":           http.StatusOK,
+		"/api/fleet/live/config":      http.StatusOK,
+		"/api/fleet/live/snapshot":    http.StatusOK,
+		"/api/fleet/dead/config":      http.StatusBadGateway,
+		"/api/fleet/dead/snapshot":    http.StatusBadGateway,
+		"/api/summary":                http.StatusOK,
+		"/api/config":                 http.StatusOK,
 	}
 	for path, wantCode := range responses {
 		rec := httptest.NewRecorder()

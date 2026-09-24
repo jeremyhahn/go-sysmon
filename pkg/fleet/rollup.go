@@ -33,21 +33,30 @@ var statusCounters = map[string]func(*types.FleetRollup){
 // sum with its denominator -- never a mean. And only reachable nodes contribute
 // to a figure: an unreachable node is counted once, as unreachable, and its
 // last known values are not re-reported as current.
-func rollup(nodes []types.FleetNode) *types.FleetRollup {
+//
+// names bounds every per-node list -- attention, the build groups and the
+// names in each -- at that many; zero leaves them whole. See View for which
+// requests get which.
+func rollup(nodes []types.FleetNode, names int) *types.FleetRollup {
+	within := func(n int) bool { return names == 0 || n < names }
 	r := &types.FleetRollup{
 		Nodes:     len(nodes),
 		Attention: []types.NodeAttention{},
 		Builds:    []types.FleetBuild{},
 	}
-	builds := map[string][]string{}
+	builds := map[string]*types.FleetBuild{}
+	// The nodes needing attention, by rank, in name order within each: only
+	// the first RollupNames of them overall are ever named, so only indexes
+	// are kept, and a NodeAttention is built for no more than are sent.
+	needing := make([][]int, len(attentionRank))
 
 	for i := range nodes {
 		n := &nodes[i]
 		if count, ok := statusCounters[n.Status]; ok {
 			count(r)
 		}
-		if _, ok := attentionRank[n.Status]; ok {
-			r.Attention = append(r.Attention, attention(n))
+		if rank, ok := attentionRank[n.Status]; ok && within(len(needing[rank])) {
+			needing[rank] = append(needing[rank], i)
 		}
 		if !n.Reachable {
 			if n.AgeSeconds > 0 {
@@ -103,7 +112,15 @@ func rollup(nodes []types.FleetNode) *types.FleetRollup {
 		if commit == unstatedCommit {
 			commit = ""
 		}
-		builds[commit] = append(builds[commit], n.Name)
+		b, ok := builds[commit]
+		if !ok {
+			b = &types.FleetBuild{Commit: commit, Nodes: []string{}}
+			builds[commit] = b
+		}
+		b.Count++
+		if within(len(b.Nodes)) {
+			b.Nodes = append(b.Nodes, n.Name)
+		}
 	}
 
 	if r.Power != nil {
@@ -118,22 +135,31 @@ func rollup(nodes []types.FleetNode) *types.FleetRollup {
 		}
 	}
 
-	sort.SliceStable(r.Attention, func(i, j int) bool {
-		return attentionRank[r.Attention[i].Status] < attentionRank[r.Attention[j].Status]
-	})
+	for _, rank := range needing {
+		for _, i := range rank {
+			if !within(len(r.Attention)) {
+				break
+			}
+			r.Attention = append(r.Attention, attention(&nodes[i]))
+		}
+	}
 
-	for commit, names := range builds {
-		r.Builds = append(r.Builds, types.FleetBuild{Commit: commit, Nodes: names})
+	for _, b := range builds {
+		r.Builds = append(r.Builds, *b)
 	}
 	// The largest group first, so the common build leads and the stragglers
 	// follow; commit breaks ties so the order does not depend on map order.
 	sort.Slice(r.Builds, func(i, j int) bool {
 		a, b := r.Builds[i], r.Builds[j]
-		if len(a.Nodes) != len(b.Nodes) {
-			return len(a.Nodes) > len(b.Nodes)
+		if a.Count != b.Count {
+			return a.Count > b.Count
 		}
 		return a.Commit < b.Commit
 	})
+	r.BuildGroups = len(r.Builds)
+	if names > 0 {
+		r.Builds = r.Builds[:min(len(r.Builds), names)]
+	}
 	return r
 }
 

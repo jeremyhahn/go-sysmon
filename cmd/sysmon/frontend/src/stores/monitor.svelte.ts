@@ -8,13 +8,23 @@ import type { IntervalScope, Transport } from "$lib/transport";
 import { sortBySeverity } from "$lib/alerts";
 import { liveReading } from "$lib/peer";
 import { isNewReading } from "$lib/reading";
-import { readStoredJSON, writeStoredJSON } from "$lib/storage";
+import {
+  fleetPageUrl,
+  lastPageIfPast,
+  parsePageSize,
+  type FleetPageRequest,
+} from "$lib/fleetpage";
+import {
+  readStored,
+  readStoredJSON,
+  writeStored,
+  writeStoredJSON,
+} from "$lib/storage";
 import type {
   Alert,
   CPUInfo,
   DiskInfo,
   Fleet,
-  FleetNode,
   NetworkInfo,
   PeerSnapshot,
   SensorData,
@@ -23,7 +33,10 @@ import type {
 
 const HISTORY_LENGTH = 60;
 
-const FLEET_URL = "/api/fleet";
+/** localStorage keys for the fleet view's search and page size. The page
+ * index is deliberately not kept: a reload lands on page one. */
+const FLEET_SEARCH_KEY = "sysmon.fleet.search";
+const FLEET_PAGE_SIZE_KEY = "sysmon.fleet.pageSize";
 
 /**
  * A peer snapshot and the fleet summary are plain HTTP round trips through the
@@ -99,6 +112,17 @@ class MonitorStore {
 
   /** Last successful /api/fleet response; null until the first poll lands. */
   fleet = $state<Fleet | null>(null);
+
+  /**
+   * The page of the fleet the viewer has asked for. The server searches and
+   * pages (#15), so this is what every fleet poll requests, and changing it
+   * requests the new page at once rather than on the next tick.
+   */
+  fleetRequest = $state<FleetPageRequest>({
+    search: readStored(FLEET_SEARCH_KEY) ?? "",
+    page: 0,
+    pageSize: parsePageSize(readStored(FLEET_PAGE_SIZE_KEY)),
+  });
 
   /**
    * Name of the peer whose data every panel is showing, or null for this host.
@@ -296,36 +320,35 @@ class MonitorStore {
   readonly fleetEnabled = $derived(this.fleet?.enabled === true);
 
   /**
-   * Fleet members exactly as reported, in no guaranteed order. Ordering is
-   * deliberately not applied here: the Fleet view owns filter, sort and paging
-   * as one pipeline, and sorting in both places would run the comparator twice
-   * per poll for no benefit.
+   * The page of fleet members the server sent, in its order: by name, searched
+   * and paged server-side. The view shows it as it is.
    */
   readonly fleetNodes = $derived(this.fleet?.nodes ?? []);
+
+  /** What the page is: its bounds and how many nodes matched, of how many. */
+  readonly fleetPage = $derived(this.fleet?.page ?? null);
 
   /** The server's whole-fleet roll-up, or null when it sent none. */
   readonly fleetRollup = $derived(this.fleet?.rollup ?? null);
 
-  /** The local node's own version, shown beside a peer's when they differ. */
-  readonly localVersion = $derived(
-    this.fleet?.nodes?.find((n) => n.self)?.version ?? ""
+  /**
+   * The node serving the fleet view, which is not necessarily on the page.
+   * A server from before #15 sends no `self`, but sends every node, and marks
+   * this one among them.
+   */
+  readonly fleetSelf = $derived(
+    this.fleet?.self ?? this.fleet?.nodes.find((n) => n.self) ?? null
   );
+
+  /** The local node's own version, shown beside a peer's when they differ. */
+  readonly localVersion = $derived(this.fleetSelf?.version ?? "");
 
   /**
    * The local node's own commit. Named in the drift tooltips so "a different
    * build than this one" says WHICH build -- the version string beside it is
    * the same word on every node and identifies nothing.
    */
-  readonly localCommit = $derived(
-    this.fleet?.nodes?.find((n) => n.self)?.git_commit ?? ""
-  );
-
-  /** The FleetNode currently selected, or null when viewing this host. */
-  readonly selectedNodeInfo = $derived<FleetNode | null>(
-    this.selectedNode == null
-      ? null
-      : this.fleet?.nodes?.find((n) => n.name === this.selectedNode) ?? null
-  );
+  readonly localCommit = $derived(this.fleetSelf?.git_commit ?? "");
 
   // Tracking maps for manual delta calculation between snapshots.
   #prevNetworkMap = new Map<string, { sent: number; recv: number }>();
@@ -334,6 +357,12 @@ class MonitorStore {
   #lastReadingAt: string | null = null;
   #transport: Transport | null = null;
   #fleetTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  /** Aborts the fleet request in flight when a newer one supersedes it. */
+  #fleetAbort: AbortController | null = null;
+  /** Monotonic token for fleet requests: a response is applied only if no
+   * request has been issued since it was, so a slow page can never overwrite
+   * the one the viewer has moved on to. */
+  #fleetGeneration = 0;
   #peerTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   #fleetPolling = false;
 
@@ -422,25 +451,82 @@ class MonitorStore {
     void this.#pollFleet();
   }
 
+  /**
+   * setFleetRequest changes the page of the fleet being asked for and fetches
+   * it now. A change of search or page size returns to the first page, since
+   * the old index describes a different list.
+   */
+  setFleetRequest(change: Partial<FleetPageRequest>): void {
+    // An anchor applies to the one request that carries it, never to the
+    // next change of page or search.
+    const next = { ...this.fleetRequest, ...change, anchor: change.anchor };
+    const relisted =
+      next.search !== this.fleetRequest.search ||
+      next.pageSize !== this.fleetRequest.pageSize;
+    if (relisted && change.page === undefined) next.page = 0;
+    next.page = Math.max(0, next.page);
+    this.fleetRequest = next;
+    writeStored(FLEET_SEARCH_KEY, next.search);
+    writeStored(FLEET_PAGE_SIZE_KEY, String(next.pageSize));
+    this.#refetchFleet();
+  }
+
+  /** #refetchFleet replaces the scheduled poll with an immediate one. */
+  #refetchFleet(): void {
+    if (!this.#fleetPolling) return;
+    if (this.#fleetTimer != null) {
+      globalThis.clearTimeout(this.#fleetTimer);
+      this.#fleetTimer = null;
+    }
+    void this.#pollFleet();
+  }
+
   async #pollFleet(): Promise<void> {
+    const generation = ++this.#fleetGeneration;
+    this.#fleetAbort?.abort();
+    const abort = new AbortController();
+    this.#fleetAbort = abort;
+    const request = this.fleetRequest;
+
     try {
-      const res = await fetch(FLEET_URL);
-      if (res.ok) {
-        const fleet = (await res.json()) as Fleet;
+      const res = await fetch(fleetPageUrl(request), { signal: abort.signal });
+      const fleet = res.ok ? ((await res.json()) as Fleet) : null;
+      // Superseded while in flight: the newer request owns the view and the
+      // schedule, so this one neither applies nor reschedules.
+      if (generation !== this.#fleetGeneration) return;
+      if (fleet != null) {
+        // The fleet shrank, or the search narrowed, under the page being
+        // viewed: move to the new last page and fetch it, rather than
+        // showing an empty page of a list that is not empty. The page on
+        // screen stays until the corrected one arrives, so a failed
+        // correction leaves the last good page rather than an empty one.
+        // An anchored request is answered at the anchor's page, which the
+        // response's offset says; it is not "past the end" of anything.
+        const last =
+          fleet.page != null && !request.anchor
+            ? lastPageIfPast(request.page, fleet.page.matched, request.pageSize)
+            : null;
+        if (last != null) {
+          this.fleetRequest = { ...request, page: last };
+          void this.#pollFleet();
+          return;
+        }
         this.fleet = {
           enabled: fleet.enabled === true,
           nodes: fleet.nodes ?? [],
+          page: fleet.page ?? null,
+          self: fleet.self ?? null,
           rollup: fleet.rollup ?? null,
         };
-
-        // A node that leaves the fleet must not strand the UI on a dead
-        // selection with no way back.
-        const selected = this.selectedNode;
-        if (
-          selected != null &&
-          !this.fleet.nodes.some((n) => n.name === selected)
-        ) {
-          this.selectNode(null);
+        // The anchor has done its job: the page it landed on becomes the page
+        // being viewed, and later polls ask for that page like any other.
+        if (request.anchor) {
+          const offset = fleet.page?.offset ?? 0;
+          this.fleetRequest = {
+            search: request.search,
+            pageSize: request.pageSize,
+            page: Math.floor(offset / request.pageSize),
+          };
         }
       } else if (res.status === 404) {
         // An older backend has no fleet endpoint at all, which is simply the
@@ -449,7 +535,9 @@ class MonitorStore {
       }
     } catch {
       // Keep the last known fleet rather than blanking the view on one
-      // dropped request.
+      // dropped request -- or on one this store aborted, whose successor is
+      // already running and owns the schedule.
+      if (generation !== this.#fleetGeneration) return;
     }
     // Follow the refresh selector like every other stream, rather than a fixed
     // ten seconds that ignored it.
@@ -463,6 +551,18 @@ class MonitorStore {
       const res = await fetch(
         `/api/fleet/${encodeURIComponent(name)}/snapshot`
       );
+      if (res.status === 404 && this.#selectionGeneration === generation) {
+        // The node has left the fleet. A drill-in answers 404 only for a name
+        // the aggregator does not know, or for its own name before its first
+        // reading -- a configured peer it cannot read is 502 -- and a
+        // selection that has become this node's own name belongs on the local
+        // view anyway. Either way the UI must not be stranded on a selection
+        // with no node behind it. (The fleet poll used to catch this, from
+        // the whole node list; it now carries one page, which cannot say
+        // whether a node is absent or merely elsewhere.)
+        this.selectNode(null);
+        return;
+      }
       if (!res.ok) {
         this.#peerPollFailed(generation, `the aggregator answered ${res.status}`);
       } else {

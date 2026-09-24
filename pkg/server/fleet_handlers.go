@@ -11,15 +11,40 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// handleFleet serves the aggregated fleet view. A node with no peers answers
-// with Enabled=false rather than 404, so the dashboard can tell "this build has
-// no fleet support" from "this node is standalone".
+// handleFleet serves the aggregated fleet view: the page of nodes the q,
+// offset and limit parameters select, and the whole-fleet roll-up. A node with
+// no peers answers with Enabled=false rather than 404, so the dashboard can
+// tell "this build has no fleet support" from "this node is standalone".
+//
+// A malformed parameter is 400 whether or not a fleet is configured: the
+// request is wrong either way, and answering it would teach a client that its
+// query works.
 func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
+	q, err := fleet.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	view := types.Fleet{Enabled: false}
 	if s.fleet != nil {
-		view = s.fleet.View()
+		view = s.fleet.View(q)
 	}
 	writeJSON(w, view)
+}
+
+// handleFleetRollup serves the whole-fleet roll-up alone, for a consumer that
+// wants the fleet's state without any of its nodes. Like the per-node fleet
+// resources it is 404 on a node with no fleet: there is no fleet to roll up.
+func (s *Server) handleFleetRollup(w http.ResponseWriter, r *http.Request) {
+	var rollup *types.FleetRollup
+	if s.fleet != nil {
+		rollup = s.fleet.Rollup()
+	}
+	if rollup == nil {
+		http.Error(w, "fleet is not configured", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, rollup)
 }
 
 // handleFleetSnapshot serves one node's full snapshot through the aggregator,

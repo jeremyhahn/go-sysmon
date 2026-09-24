@@ -21,7 +21,7 @@ type orderCase struct {
 	Sorted []string `json:"sorted"`
 }
 
-// orderInputs are the name sets the two implementations are held to.
+// orderInputs are the name sets the order is pinned by.
 //
 // Every one of them is chosen to DISTINGUISH the rule from a plausible wrong
 // one. A list of lowercase ASCII names sorts identically under bytewise
@@ -70,14 +70,11 @@ var orderInputs = []struct {
 	},
 }
 
-// TestCompareNodeNames_MatchesTheCommittedOrder is the contract between this
-// package and the browser.
-//
-// pkg/fleet sorts the fleet for GET /api/fleet and Fleet.svelte sorts it for
-// the view. Nothing in either language connects them, and a disagreement is
-// invisible: both lists look sorted, and only someone comparing the API to the
-// screen would notice they are not the same list. So both are run against this
-// one file.
+// TestCompareNodeNames_MatchesTheCommittedOrder pins the node order against a
+// committed file, so a change to it -- such as making the comparison
+// allocation-free -- cannot move a node without the diff saying so. The order
+// is what every page boundary of GET /api/fleet is cut from; a quiet change
+// would move nodes between pages under a viewer paging through them.
 //
 // Regenerate with: go test ./pkg/fleet -run TestCompareNodeNames -update
 func TestCompareNodeNames_MatchesTheCommittedOrder(t *testing.T) {
@@ -113,8 +110,9 @@ func TestCompareNodeNames_MatchesTheCommittedOrder(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("%s is out of date with CompareNodeNames.\n"+
-			"Regenerate with: go test ./pkg/fleet -run TestCompareNodeNames -update\n"+
-			"and check that cmd/sysmon/frontend/src/lib/nodeorder.ts still agrees.",
+			"If the order was meant to change, regenerate with:\n"+
+			"go test ./pkg/fleet -run TestCompareNodeNames -update\n"+
+			"and say in the change why every consumer's node order moves.",
 			orderPath)
 	}
 }

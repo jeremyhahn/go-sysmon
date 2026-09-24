@@ -282,6 +282,7 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	mux.HandleFunc("GET /api/interval", s.handleGetInterval)
 	mux.HandleFunc("POST /api/interval", s.handleSetInterval)
 	mux.HandleFunc("GET /api/fleet", s.handleFleet)
+	mux.HandleFunc("GET /api/fleet/rollup", s.handleFleetRollup)
 	mux.HandleFunc("GET /api/fleet/{name}/snapshot", s.handleFleetSnapshot)
 	mux.HandleFunc("GET /api/fleet/{name}/config", s.handleFleetConfig)
 	mux.HandleFunc("GET /api/config", s.handleConfig)

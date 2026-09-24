@@ -297,11 +297,42 @@ type FleetNode struct {
 // Fleet is the aggregated view served at /api/fleet. Enabled is false when no
 // peers are configured, which is what keeps a standalone node behaving exactly
 // as it did before fleet mode existed.
+//
+// Nodes is ONE PAGE of the fleet, chosen by the request's search and bounds and
+// described by Page. Rollup is never computed from that page: it is the whole
+// fleet, whatever was asked for, because a fleet statement that silently
+// described twenty-five nodes of ten thousand would be worse than none.
 type Fleet struct {
 	Enabled bool        `json:"enabled"`
 	Nodes   []FleetNode `json:"nodes"`
+	// Page says which part of the fleet Nodes is. Absent when Enabled is
+	// false.
+	Page *FleetPage `json:"page,omitempty"`
+	// Self is the node serving this view, whichever page was asked for: its
+	// build is what every node's BuildMatch was compared against, and a
+	// consumer needs it without having to find the page it sorts onto.
+	// Absent when Enabled is false.
+	Self *FleetNode `json:"self,omitempty"`
 	// Rollup is the whole fleet in one place. Absent when Enabled is false.
 	Rollup *FleetRollup `json:"rollup,omitempty"`
+}
+
+// FleetPage describes the page of nodes a fleet view carries: the nodes whose
+// name or hostname contains Query, in name order, from Offset, at most Limit of
+// them.
+type FleetPage struct {
+	// Query is the search the page was filtered by, as applied: trimmed of
+	// surrounding space. Empty matches every node.
+	Query string `json:"q"`
+	// Offset is the position of the page's first node among the Matched ones.
+	Offset int `json:"offset"`
+	// Limit is the most nodes the page could hold. ZERO MEANS NO LIMIT WAS
+	// ASKED FOR, and the page runs to the end of the matching nodes.
+	Limit int `json:"limit"`
+	// Matched is how many nodes the query matched, across every page.
+	Matched int `json:"matched"`
+	// Total is how many nodes the fleet has, whatever the query.
+	Total int `json:"total"`
 }
 
 // FleetRollup is the fleet-level statement: what the fleet is, rather than
@@ -337,10 +368,14 @@ type FleetRollup struct {
 	// have no absence to measure.
 	NeverAnswered int `json:"never_answered"`
 
-	// Attention lists every node that is not healthy, worst first --
-	// critical, then unreachable, then warning -- with the reasons named.
-	// It is the whole list; a consumer showing a few says how many it left
-	// out.
+	// Attention names the worst of the nodes that are not healthy --
+	// critical, then unreachable, then warning, by name within each -- with
+	// the reasons named. On a page of the view, and from GET
+	// /api/fleet/rollup, it holds at most RollupNames of them (#46: a
+	// per-node list in a roll-up needs a rule for fifty nodes, and for ten
+	// thousand); a request with no parameters, already the size of the
+	// fleet, names them all. Critical + Unreachable + Warning is how many there are in
+	// all, so a consumer can say how many it was not sent.
 	Attention []NodeAttention `json:"attention"`
 
 	// Reporting is how many nodes contributed to the figures below: the
@@ -365,10 +400,22 @@ type FleetRollup struct {
 	SMART   *FleetHealth `json:"smart,omitempty"`
 	RAID    *FleetHealth `json:"raid,omitempty"`
 
-	// Builds groups the nodes by the commit they run. It is identity, not
-	// health: mid-rollout every node differs for as long as the rollout takes.
-	Builds []FleetBuild `json:"builds"`
+	// Builds groups the nodes by the commit they run, the largest group
+	// first. It is identity, not health: mid-rollout every node differs for
+	// as long as the rollout takes. Bounded as Attention is, at RollupNames
+	// groups of RollupNames names; BuildGroups is how many there are.
+	Builds      []FleetBuild `json:"builds"`
+	BuildGroups int          `json:"build_groups"`
 }
+
+// RollupNames bounds every per-node list in a bounded roll-up -- the one on a
+// page of the fleet view, and GET /api/fleet/rollup: the attention list, the
+// build groups, and the nodes named in each group. A roll-up is served on every
+// poll, and one whose size grew with the fleet would cost a ten-thousand-node
+// aggregator megabytes a request to say who needs looking at -- when nobody
+// reads past the fifth name, and the counts beside the list already say how
+// many there are.
+const RollupNames = 5
 
 // NodeAttention is one node that is not healthy, and why.
 type NodeAttention struct {
@@ -422,8 +469,12 @@ type FleetHealth struct {
 // FleetBuild is one commit and the nodes running it. An empty Commit collects
 // the nodes that did not state their build, which is unknown, not agreement.
 type FleetBuild struct {
-	Commit string   `json:"commit"`
-	Nodes  []string `json:"nodes"`
+	Commit string `json:"commit"`
+	// Count is how many nodes run this build.
+	Count int `json:"count"`
+	// Nodes names them by name: the first RollupNames of them in a bounded
+	// roll-up, every one in the unbounded one.
+	Nodes []string `json:"nodes"`
 }
 
 // ConfigEntry is one effective setting and where its value came from, for the

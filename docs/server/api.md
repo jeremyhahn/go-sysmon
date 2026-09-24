@@ -168,11 +168,41 @@ a fifth of the whole snapshot.
 
 ## GET /api/fleet
 
-The fleet view: `{enabled, nodes, rollup}`. `enabled` is false on a node with
-no peers, and then there is no roll-up. Each node is a `NodeSummary` with the
-poll's own fields beside it: `name`, `self`, `reachable`, `error`,
-`age_seconds`, `status`, `build_match`, `name_match`, and `source` (`local`,
-`summary`, or `snapshot` for a peer too old to serve a summary).
+The fleet view: `{enabled, nodes, page, self, rollup}`. `enabled` is false on a
+node with no peers, and then there is no page, no `self` and no roll-up.
+
+`nodes` is **one page** of the fleet, in name order (#15):
+
+| Parameter | Meaning | Absent |
+|---|---|---|
+| `q` | keep nodes whose `name` or `hostname` contains it, A–Z case-folded; surrounding space is trimmed | every node |
+| `offset` | skip that many matching nodes; an integer ≥ 0 | `0` |
+| `limit` | at most that many nodes; an integer ≥ 1 | no limit |
+| `anchor` | with `limit`: open the page holding the node of this exact name instead of `offset`; `page.offset` says where that is. Ignored if no matching node has the name | `offset` applies |
+
+`page` describes the answer: `{q, offset, limit, matched, total}` — the query
+as applied, how many nodes matched it across every page, and how many the
+fleet has. An offset past the last match is an empty page, not an error: a
+node leaving the fleet can shrink the list under a client already on its last
+page, and `matched` tells it where the end now is. A malformed parameter —
+not an integer, below its minimum, given twice, or a `q` that is not UTF-8 —
+is `400 Bad Request` naming the parameter, on a standalone node too. So is a
+query string that does not parse at all (`limit=25;offset=0`): it is refused
+whole rather than having the bad pair dropped and the rest answered unbounded.
+
+The order is the node order in `pkg/fleet/order.go`, a total order, so pages
+are contiguous runs of one list: walking them by `offset` visits every
+matching node exactly once. With no parameters the response is the whole
+fleet, as before paging existed. The dashboard always asks for a page: at ten
+thousand busy nodes the whole list is about 9 MB, a page of 25 about 25 KB.
+
+`self` is the node serving the view, whatever the page — the build every
+node's `build_match` was compared with.
+
+Each node is a `NodeSummary` with the poll's own fields beside it: `name`,
+`self`, `reachable`, `error`, `age_seconds`, `status`, `build_match`,
+`name_match`, and `source` (`local`, `summary`, or `snapshot` for a peer too
+old to serve a summary).
 
 **No field carries a peer's URL or address** (#120). The endpoint has no
 authentication of its own, and a peer's URL is its scheme, address and port on
@@ -186,11 +216,24 @@ set — `connection refused` and the kernel's other socket errors, `timed out`,
 refused the TLS handshake: tls: certificate required`, `peer did not answer
 with TLS`, `malformed response: …` — and anything else reads `request failed;
 see this node's log`. The aggregator logs the whole error at debug level, on
-its own host. The roll-up's `attention` reasons are the same strings. `rollup` is the fleet-level
-statement: state counts, how long the longest absence has lasted, the nodes
-needing attention with their reasons, worst values with the node named, and
-sums with their denominators. Every field is described in
+its own host. The roll-up's `attention` reasons are the same strings.
+
+`rollup` is the fleet-level statement, **always over the whole fleet and never
+over the page**, whatever `q`, `offset` and `limit` say: state counts, how long
+the longest absence has lasted, the nodes needing attention with their
+reasons, worst values with the node named, and sums with their denominators.
+With any of `q`, `offset` or `limit` its per-node lists are bounded — at most
+five nodes needing attention, five build groups and five names in each — so
+its size does not grow with the fleet; the counts beside them are whole. A
+request with no parameters is already the size of the fleet and gets the
+lists whole, which is also what a consumer written before paging reads. Every field is described in
 [the fleet section](alerting-fleet-config.md#fleet).
+
+## GET /api/fleet/rollup
+
+The same whole-fleet roll-up alone, bounded as a page's is, for a consumer that wants the fleet's
+state and none of its nodes. `404` on a node with no peers: there is no fleet
+to roll up.
 
 ## GET /api/fleet/{name}/snapshot
 

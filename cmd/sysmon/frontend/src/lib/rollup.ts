@@ -25,8 +25,9 @@ export function tempSourceLabel(kind: TempSource | undefined): string {
   return kind ? (TEMP_SOURCE_LABELS[kind] ?? "") : "";
 }
 
-/** How many nodes the "needs attention" list names before summarising. */
-export const ATTENTION_LIMIT = 5;
+/** How many nodes the attention list names: the server's bound,
+ * types.RollupNames. */
+export const ATTENTION_SHOWN = 5;
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -78,16 +79,21 @@ export function coverage(of: number, r: FleetRollup): string {
     : `of ${plural(of, "node", "nodes")}`;
 }
 
-/** The attention list as shown: the worst few, and how many were left out. */
+/**
+ * The attention list as shown: the worst few, as the server sends them, and
+ * how many it did not send. The server bounds the list; the state counts are
+ * whole-fleet, so every node needing attention is in exactly one of them.
+ */
 export function visibleAttention(r: FleetRollup): {
   shown: NodeAttention[];
   more: number;
 } {
-  const all = r.attention ?? [];
-  return {
-    shown: all.slice(0, ATTENTION_LIMIT),
-    more: Math.max(0, all.length - ATTENTION_LIMIT),
-  };
+  // The server sends at most ATTENTION_SHOWN. The slice is for a server from
+  // before #15, which sent the whole list -- a tab left open across a
+  // rollback must not list a thousand nodes.
+  const shown = (r.attention ?? []).slice(0, ATTENTION_SHOWN);
+  const needing = r.critical + r.unreachable + r.warning;
+  return { shown, more: Math.max(0, needing - shown.length) };
 }
 
 /** What a node needs attention for, as one line. */
@@ -108,18 +114,41 @@ export function attentionReason(a: NodeAttention): string {
  * otherwise list most of the fleet -- unless the largest is tied, when no build
  * is the common one and every group is named. Identity, not health -- it is
  * never coloured.
+ *
+ * The server sends at most a few groups and names at most a few nodes in each,
+ * with the true sizes beside them, so a large fleet mid-rollout reads
+ * "6000 on a46f6cf, 4000 on c00eb87 (n1, n2, n3, n4, n5 and 3995 more)"
+ * rather than listing four thousand names.
  */
-export function buildsLine(builds: FleetBuild[]): string {
+export function buildsLine(
+  builds: FleetBuild[],
+  groups: number = builds.length
+): string {
   const common =
-    builds.length > 1 && builds[0].nodes.length > builds[1].nodes.length;
-  return builds
+    builds.length > 1 && sizeOf(builds[0]) > sizeOf(builds[1]);
+  const line = builds
     .map((b, i) => {
       const commit = b.commit === "" ? "an unstated build" : b.commit;
       const named =
-        builds.length > 1 && (i > 0 || !common)
-          ? ` (${b.nodes.join(", ")})`
-          : "";
-      return `${b.nodes.length} on ${commit}${named}`;
+        builds.length > 1 && (i > 0 || !common) ? ` (${namesOf(b)})` : "";
+      return `${sizeOf(b)} on ${commit}${named}`;
     })
     .join(", ");
+  const unsent = groups - builds.length;
+  return unsent > 0
+    ? `${line}, and ${plural(unsent, "other build", "other builds")}`
+    : line;
+}
+
+/** A group's size. A server from before #15 sent no count, and named every
+ * node in the group instead, so the names are the count. */
+function sizeOf(b: FleetBuild): number {
+  return b.count ?? b.nodes.length;
+}
+
+/** "a, b, c", or "a, b, c and 7 more" when the group has more than it named. */
+function namesOf(b: FleetBuild): string {
+  const unnamed = sizeOf(b) - b.nodes.length;
+  const names = b.nodes.join(", ");
+  return unnamed > 0 ? `${names} and ${unnamed} more` : names;
 }

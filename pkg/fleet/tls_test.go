@@ -306,10 +306,18 @@ func TestSetClient(t *testing.T) {
 	})
 
 	t.Run("replaces", func(t *testing.T) {
-		replacement := &http.Client{}
+		// Installed as a copy with its own pooled transport (see pooled), so
+		// what is checked is that the caller's settings -- its timeout and
+		// its TLS policy -- are the ones the poller now uses.
+		transport := &http.Transport{TLSClientConfig: &tls.Config{ServerName: "peers.example"}}
+		replacement := &http.Client{Timeout: 7 * time.Second, Transport: transport}
 		p.SetClient(replacement)
-		if p.client != replacement {
-			t.Error("SetClient() did not install the client")
+		if p.client == original {
+			t.Fatal("SetClient() did not install the client")
+		}
+		installed, ok := p.client.Transport.(*http.Transport)
+		if p.client.Timeout != 7*time.Second || !ok || installed.TLSClientConfig.ServerName != "peers.example" {
+			t.Errorf("installed client = %+v; want the replacement's timeout and TLS policy", p.client)
 		}
 	})
 }

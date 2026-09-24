@@ -6,6 +6,7 @@ import refusals from '../../../../pkg/delta/testdata/refusals.json' with { type:
 import accepted from '../../../../pkg/delta/testdata/accepted.json' with { type: 'json' };
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 import { openTab } from './fixtures/tabs';
+import { serveFleet } from './fixtures/fleet';
 
 /**
  * Delta streaming.
@@ -796,25 +797,18 @@ test.describe('the delta stream', () => {
         }),
       })
     );
-    await page.route(/\/api\/fleet$/, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          enabled: true,
-          nodes: [
-            {
-              name: 'alpha', self: false, reachable: true,
-              error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
-              version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
-              cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
-              worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
-              max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
-            },
-          ],
-        }),
-      })
-    );
+    await serveFleet(page, () => ({
+      nodes: [
+        {
+          name: 'alpha', self: false, reachable: true,
+          error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
+          version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
+          cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
+          worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
+          max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
+        },
+      ],
+    }));
     // Held open, so the selection sits in the window under test.
     await page.route(/\/api\/fleet\/alpha\/snapshot$/, async (route) => {
       await held;

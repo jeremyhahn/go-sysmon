@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { serveFleet } from './fixtures/fleet';
 
 /**
  * A fleet peer held under a name it does not write its history as (#162).
@@ -44,13 +45,7 @@ function node(name: string, extra: Record<string, unknown>) {
 
 async function fleetWith(page: Page, nodes: unknown[]) {
   await mockSnapshotFeed(page);
-  await page.route(/\/api\/fleet$/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ enabled: true, nodes }),
-    })
-  );
+  await serveFleet(page, { nodes: nodes as Record<string, unknown>[] });
   await page.goto('/');
   await page.getByRole('button', { name: 'Fleet', exact: true }).click();
 }

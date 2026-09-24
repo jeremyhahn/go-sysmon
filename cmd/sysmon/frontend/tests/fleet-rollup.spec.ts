@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { serveFleet } from './fixtures/fleet';
 
 /**
  * The fleet roll-up (#46) and the swap paging signal on the cards (#134).
@@ -66,19 +67,14 @@ function rollup(over: Json = {}): Json {
     reporting: 1,
     swap_unknown: 0,
     builds: [],
+    build_groups: 0,
     ...over,
   };
 }
 
 async function showFleet(page: Page, nodes: Json[], r: Json) {
   await mockSnapshotFeed(page);
-  await page.route(/\/api\/fleet$/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ enabled: true, nodes, rollup: r }),
-    })
-  );
+  await serveFleet(page, { nodes, rollup: r });
   await page.goto('/');
   await page.getByRole('button', { name: 'Fleet', exact: true }).click();
 }
@@ -111,6 +107,8 @@ test('a node that never answered is not given a zero-second absence', async ({ p
   await expect(headline(page)).not.toContainText('0s');
 });
 
+// The server names at most five (types.RollupNames) and counts the rest; the
+// view shows what it is sent and says how many it was not.
 test('the nodes needing attention are named with their reasons, worst first, five at most', async ({ page }) => {
   const attention = [
     { name: 'ci-node-1', status: 'critical', age_seconds: 0, reasons: ['array md0 is inactive', 'CPU package at 80 °C'] },
@@ -118,8 +116,6 @@ test('the nodes needing attention are named with their reasons, worst first, fiv
     { name: 'fs', status: 'warning', age_seconds: 0, reasons: ['filesystem /srv is 92.1% full'] },
     { name: 'vm-host-2', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
     { name: 'vm-host-3', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
-    { name: 'vm-host-4', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
-    { name: 'vm-host-5', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
   ];
   await showFleet(page, [fleetNode('fs', { status: 'warning' })], rollup({
     nodes: 8, healthy: 1, warning: 5, critical: 1, unreachable: 1, attention,
@@ -133,7 +129,7 @@ test('the nodes needing attention are named with their reasons, worst first, fiv
   await expect(items.nth(1)).toContainText('no reading for 2h 14m — connection refused');
   await expect(items.nth(2)).toContainText('filesystem /srv is 92.1% full');
   await expect(items.nth(5)).toHaveText('and 2 more');
-  await expect(list).not.toContainText('vm-host-5');
+  await expect(list).not.toContainText('vm-host-4');
 });
 
 test('choosing an unreachable node from the attention list narrows the list to its card', async ({ page }) => {
@@ -283,10 +279,11 @@ test('a peer polled by its whole snapshot is marked on its card', async ({ page 
 test('builds are listed as identity, the stragglers named', async ({ page }) => {
   await showFleet(page, [fleetNode('gitea')], rollup({
     builds: [
-      { commit: 'a46f6cf', nodes: ['a', 'b', 'c'] },
-      { commit: 'c00eb87', nodes: ['gitea'] },
-      { commit: '', nodes: ['old'] },
+      { commit: 'a46f6cf', count: 3, nodes: ['a', 'b', 'c'] },
+      { commit: 'c00eb87', count: 1, nodes: ['gitea'] },
+      { commit: '', count: 1, nodes: ['old'] },
     ],
+    build_groups: 3,
   }));
   await expect(page.getByTestId('fleet-builds')).toHaveText(
     'Builds: 3 on a46f6cf, 1 on c00eb87 (gitea), 1 on an unstated build (old)'
@@ -296,9 +293,30 @@ test('builds are listed as identity, the stragglers named', async ({ page }) => 
 test('a tied build count names every group: no build is the common one', async ({ page }) => {
   await showFleet(page, [fleetNode('a')], rollup({
     builds: [
-      { commit: 'a46f6cf', nodes: ['a'] },
-      { commit: 'c00eb87', nodes: ['b'] },
+      { commit: 'a46f6cf', count: 1, nodes: ['a'] },
+      { commit: 'c00eb87', count: 1, nodes: ['b'] },
     ],
+    build_groups: 2,
   }));
   await expect(page.getByTestId('fleet-builds')).toHaveText('Builds: 1 on a46f6cf (a), 1 on c00eb87 (b)');
+});
+
+// At fleet scale the server sends the largest few groups and names the first
+// few nodes of each, with the true sizes (#15). The line says what it left
+// out rather than presenting five names as the whole group.
+test('a large rollout reads as counts, naming a few nodes and saying how many more', async ({ page }) => {
+  await showFleet(page, [fleetNode('n1')], rollup({
+    builds: [
+      { commit: 'a46f6cf', count: 6000, nodes: ['m1', 'm2', 'm3', 'm4', 'm5'] },
+      { commit: 'c00eb87', count: 3990, nodes: ['n1', 'n2', 'n3', 'n4', 'n5'] },
+      { commit: 'd1e2f3a', count: 4, nodes: ['p1', 'p2', 'p3', 'p4'] },
+      { commit: 'e4f5a6b', count: 2, nodes: ['q1', 'q2'] },
+      { commit: 'f7a8b9c', count: 1, nodes: ['r1'] },
+    ],
+    build_groups: 8,
+  }));
+  await expect(page.getByTestId('fleet-builds')).toHaveText(
+    'Builds: 6000 on a46f6cf, 3990 on c00eb87 (n1, n2, n3, n4, n5 and 3985 more), ' +
+      '4 on d1e2f3a (p1, p2, p3, p4), 2 on e4f5a6b (q1, q2), 1 on f7a8b9c (r1), and 3 other builds'
+  );
 });

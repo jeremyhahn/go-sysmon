@@ -592,6 +592,14 @@ need two names.
 
 - `GET /api/fleet` — one summary per node and the **fleet roll-up** over them.
 
+  **Paged server-side** (#15). `?q=&offset=&limit=` select a page: the nodes
+  whose name or hostname contains `q` (A–Z case-folded), in name order, from
+  `offset`, at most `limit`. `page` carries `{q, offset, limit, matched,
+  total}`, and `self` the serving node. The roll-up is computed over every
+  node whatever page is asked for; `GET /api/fleet/rollup` serves it alone.
+  The parameters, their bounds and their errors are in
+  [api.md](api.md#get-apifleet).
+
   Each node's figures are its `NodeSummary`: status, alert counts and the
   firing warning and critical alerts, CPU, memory, load per core, swap
   occupancy **and paging rate**, worst filesystem, RAID, SMART, temperature,
@@ -647,10 +655,14 @@ need two names.
     unreachable nodes. It tells a node restarting from one that has been gone
     since Tuesday. `never_answered` counts unreachable nodes that have never
     sent a reading.
-  - `attention` lists every node that is not healthy: critical first, then
-    unreachable, then warning. Each entry gives the node's alert messages, or
-    the poll error for an unreachable node. The dashboard shows five and
-    says how many more there are.
+  - `attention` names the worst five nodes that are not healthy: critical
+    first, then unreachable, then warning, by name within each. Each entry
+    gives the node's alert messages, or the poll error for an unreachable
+    node. On a page, and from `/api/fleet/rollup`, the list is bounded on the
+    server (#15): the roll-up is sent on every poll and must not grow with
+    the fleet. A request with no parameters names every node. `critical + unreachable +
+    warning` is how many there are in all, which the dashboard shows as
+    `and N more`.
   - `cpu`, `memory`, `disk`, `load_per_core`, `temperature` and `swap_out`
     are `{node, value}`: the worst value and the node that holds it.
     `temperature` also carries `kind`, the component it came from. A zero
@@ -665,7 +677,11 @@ need two names.
     count too (#45/#51). Each is omitted when no node has any, because
     "0 of 0 unhealthy" would read as a clean bill of health for hardware that
     does not exist.
-  - `builds` groups the reachable nodes by commit. It is identity, not health.
+  - `builds` groups the reachable nodes by commit, the largest group first.
+    It is identity, not health. Each group is `{commit, count, nodes}`:
+    `count` is its size and `nodes` names its first five by name (all of
+    them with no parameters). At most five groups are sent otherwise;
+    `build_groups` is how many there are.
   - **Only reachable nodes contribute a figure.** `reporting` says how many
     there are. An unreachable node's last known values would record an
     observation nobody made.

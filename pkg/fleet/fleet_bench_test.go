@@ -167,19 +167,3 @@ func BenchmarkPoller_Refresh(b *testing.B) {
 		})
 	}
 }
-
-// BenchmarkPoller_View is what a dashboard request costs: every cached summary
-// into the fleet payload, and the roll-up over them. It runs per request
-// rather than per poll, so a browser left open on the fleet page pays it
-// repeatedly.
-func BenchmarkPoller_View(b *testing.B) {
-	p, cfg, _ := benchFleet(b, benchPeerCount, pollShapes[1])
-	p.refresh(cfg)
-
-	b.ResetTimer()
-	for b.Loop() {
-		if v := p.View(); len(v.Nodes) == 0 || v.Rollup == nil {
-			b.Fatal("View returned no nodes; the benchmark is measuring nothing")
-		}
-	}
-}

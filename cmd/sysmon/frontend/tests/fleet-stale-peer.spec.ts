@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { serveFleet } from './fixtures/fleet';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 import { openTab } from './fixtures/tabs';
 
@@ -71,16 +72,9 @@ function setup(page: Page) {
   const install = async () => {
     await mockSnapshotFeed(page);
 
-    await page.route(/\/api\/fleet$/, async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          enabled: true,
-          nodes: [fleetNode('fs', 'fs-host', state.reachable)],
-        }),
-      });
-    });
+    await serveFleet(page, () => ({
+      nodes: [fleetNode('fs', 'fs-host', state.reachable)],
+    }));
 
     await page.route(/\/api\/fleet\/fs\/snapshot$/, async (route) => {
       const b = body();

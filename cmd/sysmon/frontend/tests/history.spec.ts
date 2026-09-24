@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
+import { serveFleet } from './fixtures/fleet';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import snapshot from './fixtures/snapshot.json' with { type: 'json' };
 import { openTab, type TabLabel } from './fixtures/tabs';
@@ -333,25 +334,18 @@ test.describe('the date range control', () => {
     // peer.
     const mock = await mockHistory(page);
 
-    await page.route(/\/api\/fleet$/, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          enabled: true,
-          nodes: [
-            {
-              name: 'alpha', self: false, reachable: true,
-              error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
-              version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
-              cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
-              worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
-              max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
-            },
-          ],
-        }),
-      })
-    );
+    await serveFleet(page, () => ({
+      nodes: [
+        {
+          name: 'alpha', self: false, reachable: true,
+          error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
+          version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
+          cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
+          worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
+          max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
+        },
+      ],
+    }));
     await page.route(/\/api\/fleet\/alpha\/snapshot$/, (route) =>
       route.fulfill({
         status: 200,
@@ -393,25 +387,18 @@ test.describe('the date range control', () => {
     let reachable = true;
     const mock = await mockHistory(page);
 
-    await page.route(/\/api\/fleet$/, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          enabled: true,
-          nodes: [
-            {
-              name: 'alpha', self: false, reachable: true,
-              error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
-              version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
-              cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
-              worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
-              max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
-            },
-          ],
-        }),
-      })
-    );
+    await serveFleet(page, () => ({
+      nodes: [
+        {
+          name: 'alpha', self: false, reachable: true,
+          error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
+          version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
+          cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
+          worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
+          max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
+        },
+      ],
+    }));
     await page.route(/\/api\/fleet\/alpha\/snapshot$/, (route) =>
       route.fulfill({
         status: 200,
@@ -458,25 +445,18 @@ test.describe('the date range control', () => {
     let failing = false;
     const mock = await mockHistory(page);
 
-    await page.route(/\/api\/fleet$/, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          enabled: true,
-          nodes: [
-            {
-              name: 'alpha', self: false, reachable: true,
-              error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
-              version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
-              cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
-              worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
-              max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
-            },
-          ],
-        }),
-      })
-    );
+    await serveFleet(page, () => ({
+      nodes: [
+        {
+          name: 'alpha', self: false, reachable: true,
+          error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
+          version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
+          cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
+          worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
+          max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
+        },
+      ],
+    }));
     await page.route(/\/api\/fleet\/alpha\/snapshot$/, (route) => {
       if (failing) {
         return route.fulfill({ status: 500, contentType: 'text/plain', body: 'boom' });
@@ -534,25 +514,18 @@ test.describe('the date range control', () => {
     // node at a time. Keeping a peer's window while showing another node's
     // history would be a chart labelled with a machine whose data it is not.
     const mock = await mockHistory(page);
-    await page.route(/\/api\/fleet$/, (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          enabled: true,
-          nodes: [
-            {
-              name: 'alpha', self: false, reachable: true,
-              error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
-              version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
-              cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
-              worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
-              max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
-            },
-          ],
-        }),
-      })
-    );
+    await serveFleet(page, () => ({
+      nodes: [
+        {
+          name: 'alpha', self: false, reachable: true,
+          error: '', age_seconds: 1, status: 'healthy', hostname: 'alpha-host',
+          version: '1.0.0', uptime_seconds: 1, critical_count: 0, warning_count: 0,
+          cpu_percent: 1, memory_percent: 1, swap_percent: 0, load_per_core: 0,
+          worst_disk_percent: 0, raid_degraded: false, smart_unhealthy: 0,
+          max_temp_c: 0, power_w: 0, net_rx_rate: 0, net_tx_rate: 0,
+        },
+      ],
+    }));
     // The peer endpoint returns a freshness envelope, not a bare snapshot. It
     // has to be reachable and well formed, or the store declines the peer and
     // drops the selection -- correctly -- and this test would pass for the

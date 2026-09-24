@@ -128,7 +128,7 @@ func TestView_OldPeerSwapRateAcrossPolls(t *testing.T) {
 		done := make(chan struct{})
 		close(done)
 		p.Run(done) // one cycle, then return
-		return node(t, p.View(), "old")
+		return node(t, p.View(fleet.Query{}), "old")
 	}
 
 	if n := refresh(); n.SwapRateAvailable {
@@ -163,7 +163,7 @@ func TestView_LocalSwapRateFromConsecutiveSnapshots(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return prev, cur, 0 },
 		func() string { return "local" }, quiet())
-	n := node(t, p.View(), "local")
+	n := node(t, p.View(fleet.Query{}), "local")
 	if !n.SwapRateAvailable || n.SwapOutRate != 256*4096 {
 		t.Errorf("local swap-out = available %v, %v; want 1 MiB/s", n.SwapRateAvailable, n.SwapOutRate)
 	}
@@ -286,7 +286,7 @@ func TestView_ARepointedOldPeerStartsAFreshBaseline(t *testing.T) {
 		done := make(chan struct{})
 		close(done)
 		p.Run(done)
-		return node(t, p.View(), "db")
+		return node(t, p.View(fleet.Query{}), "db")
 	}
 
 	cycle()
@@ -312,7 +312,7 @@ func TestView_OldPeerRepeatedSnapshotKeepsItsRate(t *testing.T) {
 		done := make(chan struct{})
 		close(done)
 		p.Run(done)
-		return node(t, p.View(), "old")
+		return node(t, p.View(fleet.Query{}), "old")
 	}
 
 	cycle()
@@ -356,7 +356,7 @@ func TestView_OldLibraryPeerAnsweringPlainTextFallsBack(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	p.Run(done)
-	if n := node(t, p.View(), "embedded"); !n.Reachable || n.Source != types.SummarySourceSnapshot {
+	if n := node(t, p.View(fleet.Query{}), "embedded"); !n.Reachable || n.Source != types.SummarySourceSnapshot {
 		t.Errorf("embedded = reachable %v, source %q, error %q; want it read by snapshot", n.Reachable, n.Source, n.Error)
 	}
 }
@@ -405,7 +405,7 @@ func TestView_APeerRepointedMidPollShowsNoStaleMachine(t *testing.T) {
 	p.Run(done)
 
 	cfg.Store(&config.Fleet{Peers: []config.Peer{{Name: "db", URL: "http://127.0.0.1:1"}}, TimeoutMs: 2000})
-	n := node(t, p.View(), "db")
+	n := node(t, p.View(fleet.Query{}), "db")
 	if n.Hostname == "old-machine" || n.Reachable {
 		t.Errorf("after repointing, db = host %q reachable %v; want no reading until the new address is polled", n.Hostname, n.Reachable)
 	}
@@ -437,7 +437,7 @@ func TestPeerSnapshot_APollFailureEndsReuse(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
 	p.Run(done)
-	if node(t, p.View(), "omega").Reachable {
+	if node(t, p.View(fleet.Query{}), "omega").Reachable {
 		t.Fatal("the poll did not find omega unreachable")
 	}
 	if got, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); err != nil || got.Reachable {

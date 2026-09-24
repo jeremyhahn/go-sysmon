@@ -206,6 +206,10 @@ export interface NodeAttention {
 export interface FleetBuild {
   /** Empty: the nodes did not state their build. */
   commit: string;
+  /** How many nodes run this build. Absent from a server before #15, whose
+   * `nodes` named every one of them. */
+  count?: number;
+  /** The first few of them by name (at most five: the server bounds every per-node list in a roll-up, types.RollupNames), not all. */
   nodes: string[];
 }
 
@@ -222,6 +226,8 @@ export interface FleetRollup {
   unreachable: number;
   longest_absence_seconds: number;
   never_answered: number;
+  /** The worst few nodes needing attention (at most five: the server bounds every per-node list in a roll-up, types.RollupNames); the
+   * critical, unreachable and warning counts say how many there are. */
   attention: NodeAttention[];
   reporting: number;
   cpu?: FleetExtreme;
@@ -235,13 +241,36 @@ export interface FleetRollup {
   network?: FleetNet;
   smart?: FleetHealth;
   raid?: FleetHealth;
+  /** The largest few build groups (at most five: the server bounds every per-node list in a roll-up, types.RollupNames). */
   builds: FleetBuild[];
+  /** How many build groups there are in all. Absent from a server before
+   * #15, which sent every group. */
+  build_groups?: number;
+}
+
+/** Which part of the fleet a GET /api/fleet response's nodes are. */
+export interface FleetPage {
+  /** The search applied, trimmed. Empty matched every node. */
+  q: string;
+  offset: number;
+  /** Zero: no limit was asked for. */
+  limit: number;
+  /** How many nodes the search matched, across every page. */
+  matched: number;
+  /** How many nodes the fleet has, whatever the search. */
+  total: number;
 }
 
 export interface Fleet {
   enabled: boolean;
+  /** One page of the fleet, in name order; see page. */
   nodes: FleetNode[];
-  /** Absent from a server that predates the roll-up. */
+  /** Absent when fleet mode is off. */
+  page?: FleetPage | null;
+  /** The node serving the view, whatever the page. Absent when fleet mode
+   * is off. */
+  self?: FleetNode | null;
+  /** The whole fleet, never the page. Absent when fleet mode is off. */
   rollup?: FleetRollup | null;
 }
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
+	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/metrics"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/prom"
@@ -73,13 +74,6 @@ func historyServer(t *testing.T, url string) *Server {
 			return prom.QueryOptions{BaseURL: url, Timeout: 5 * time.Second}
 		}),
 	}, nil)
-}
-
-func get(t *testing.T, s *Server, path string) *httptest.ResponseRecorder {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	s.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, http.NoBody))
-	return rec
 }
 
 // TestHandleHistory_DisabledIsNotAnError. A node with no Prometheus is a
@@ -460,5 +454,36 @@ func TestHandleHistory_ServesTheLocalNodeWithNoFleetOrConfig(t *testing.T) {
 	}
 	if got.Node != host {
 		t.Errorf("history is labelled %q, want the local hostname %q", got.Node, host)
+	}
+}
+
+// TestHandleHistory_KnowsTheFleetWithoutAConfigManager: a server embedded as
+// a library can be given a fleet and no configuration manager. The fleet then
+// says which nodes history may be asked about -- this node and its configured
+// peers, polled or not -- and nothing else is forwarded to Prometheus.
+func TestHandleHistory_KnowsTheFleetWithoutAConfigManager(t *testing.T) {
+	prometheus := newFakePrometheus(t)
+	cfg := config.Fleet{Peers: []config.Peer{{Name: "fs", URL: "https://10.0.0.1:8081"}}, PollIntervalMs: 3000, TimeoutMs: 3000}
+	poller := fleet.New(
+		func() config.Fleet { return cfg },
+		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 },
+		func() string { return "mon0" },
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	srv := newServer(Config{
+		Fleet: poller,
+		History: prom.NewQuerier(func() prom.QueryOptions {
+			return prom.QueryOptions{BaseURL: prometheus.srv.URL, Timeout: 5 * time.Second}
+		}),
+	}, nil)
+
+	for node, want := range map[string]int{
+		"mon0":  http.StatusOK,
+		"fs":    http.StatusOK,
+		"other": http.StatusBadRequest,
+	} {
+		if rec := get(t, srv, "/api/history?metric=cpu&node="+node); rec.Code != want {
+			t.Errorf("history for %q = %d, want %d: %s", node, rec.Code, want, rec.Body.String())
+		}
 	}
 }

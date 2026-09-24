@@ -188,7 +188,39 @@ func (p *Poller) SetClient(c *http.Client) {
 	if c == nil {
 		return
 	}
-	p.client = c
+	p.client = pooled(c)
+}
+
+// pooled returns c with a transport of its own whose idle pool holds a
+// connection to every peer, rather than the standard library's 100 across all
+// hosts (#15).
+//
+// Every peer is polled every cycle, so each one's connection is wanted again
+// within seconds. With the default pool, a fleet of more than a hundred peers
+// evicted the surplus between cycles and redialled it on the next: measured at
+// 300 peers, 222 new connections every cycle -- each a TLS handshake on an
+// https fleet, on both ends, forever. Per host the default of two idle
+// connections stays, which covers a peer's summary poll and its history worker
+// at once, and the idle timeout still closes the connections of a peer that has
+// been removed.
+//
+// The transport is cloned, never modified: without TLS settings the client
+// arrives on http.DefaultTransport, which the rest of the process shares. A
+// client whose transport is not an *http.Transport is used as given.
+func pooled(c *http.Client) *http.Client {
+	base := c.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	t, ok := base.(*http.Transport)
+	if !ok {
+		return c
+	}
+	t = t.Clone()
+	t.MaxIdleConns = 0 // no cap across hosts; MaxIdleConnsPerHost still bounds each peer
+	own := *c
+	own.Transport = t
+	return &own
 }
 
 // Observe registers fn to be called for each peer history reading that
@@ -218,7 +250,7 @@ func New(cfgFn ConfigFunc, localFn LocalFunc, localNameFn func() string, logger 
 		localFn:     localFn,
 		localNameFn: localNameFn,
 		logger:      logger,
-		client:      outbound.NewClient(0),
+		client:      pooled(outbound.NewClient(0)),
 		peers:       make(map[string]*peerState),
 	}
 	p.history = newRecorder(p)
@@ -848,15 +880,72 @@ func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Dura
 	return d.answer()
 }
 
-// View builds the fleet view: every node's summary, in name order, and the
-// fleet-level roll-up over them.
-func (p *Poller) View() types.Fleet {
-	cfg := p.cfgFn()
-	if len(cfg.Peers) == 0 {
+// View builds the fleet view: the page of nodes q selects, in name order, and
+// the fleet-level roll-up over EVERY node -- never over the page.
+func (p *Poller) View(q Query) types.Fleet {
+	nodes, ok := p.nodes()
+	if !ok {
 		return types.Fleet{Enabled: false}
 	}
+	var self *types.FleetNode
+	for i := range nodes {
+		if nodes[i].Self {
+			n := nodes[i]
+			self = &n
+			break
+		}
+	}
+	shown, matched, offset := page(nodes, q)
+	return types.Fleet{
+		Enabled: true,
+		Nodes:   shown,
+		Page: &types.FleetPage{
+			Query:   q.Search,
+			Offset:  offset,
+			Limit:   max(q.Limit, 0),
+			Matched: matched,
+			Total:   len(nodes),
+		},
+		Self:   self,
+		Rollup: rollup(nodes, rollupNames(q)),
+	}
+}
 
-	nodes := make([]types.FleetNode, 0, len(cfg.Peers)+1)
+// rollupNames is how many nodes the roll-up names in each list for q. Only a
+// request with no parameters at all -- the whole fleet, the one shape there was
+// before paging -- gets the lists whole: it is already the size of the fleet,
+// and it is what every consumer written before paging, the dashboard left open
+// across an upgrade included, reads its "and N more" from. Any search or bound
+// is a request for less than the fleet, and its roll-up is bounded (#15); a
+// search matching one node must not carry every unhealthy node's name.
+func rollupNames(q Query) int {
+	if q.bounded() == (Query{}) {
+		return 0
+	}
+	return types.RollupNames
+}
+
+// Rollup is the fleet-level statement alone, over every node: what GET
+// /api/fleet/rollup serves to a consumer that wants the fleet's state and none
+// of its nodes. It is nil when no peers are configured.
+func (p *Poller) Rollup() *types.FleetRollup {
+	nodes, ok := p.nodes()
+	if !ok {
+		return nil
+	}
+	return rollup(nodes, types.RollupNames)
+}
+
+// nodes is every node in the fleet, this one included, in name order, with
+// its status and build agreement stamped. ok is false when no peers are
+// configured and there is no fleet to describe.
+func (p *Poller) nodes() (nodes []types.FleetNode, ok bool) {
+	cfg := p.cfgFn()
+	if len(cfg.Peers) == 0 {
+		return nil, false
+	}
+
+	nodes = make([]types.FleetNode, 0, len(cfg.Peers)+1)
 
 	self := types.FleetNode{Name: p.localNameFn(), Self: true}
 	if prev, cur, interval := p.localFn(); cur != nil {
@@ -939,13 +1028,12 @@ func (p *Poller) View() types.Fleet {
 	// and the fault is not hidden by name order: the roll-up above the list
 	// counts the nodes by state and names every one that needs attention.
 	//
-	// The UI sorts the same way. It owns its own filter/sort/page pipeline, so
-	// the two must be changed together or the API and the screen disagree about
-	// what "the fleet" looks like.
+	// Search and paging are applied to this order (see View), so a page is a
+	// contiguous run of it and the same node can never appear on two pages.
 	sort.SliceStable(nodes, func(i, j int) bool {
 		return CompareNodeNames(nodes[i].Name, nodes[j].Name) < 0
 	})
-	return types.Fleet{Enabled: true, Nodes: nodes, Rollup: rollup(nodes)}
+	return nodes, true
 }
 
 // ErrPlaintextPeer reports a peer configured with an http URL on a fleet that
@@ -1111,6 +1199,16 @@ func (p *Poller) PeerConfig(name string) (*types.ConfigView, error) {
 	// are: its bind address, and anything an older build still sends verbatim.
 	view = config.RedactPeerView(view)
 	return &view, nil
+}
+
+// Has reports whether name is a node of this fleet: this node, or a configured
+// peer. It answers from the configuration, without building the view.
+func (p *Poller) Has(name string) bool {
+	if name == p.localNameFn() {
+		return true
+	}
+	_, _, ok := p.resolvePeer(name)
+	return ok
 }
 
 // resolvePeer finds name in the current configuration, and returns that

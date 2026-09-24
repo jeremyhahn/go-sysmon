@@ -3,16 +3,17 @@
   // name order, with search and paging so the view stays usable as the fleet
   // grows.
   //
-  // The pipeline is filter -> sort -> page, and it lives here rather than in
-  // the store: the view must not depend on the order the server happened to
-  // send, and keeping the three steps together makes the ordering rule visible
-  // to whoever next edits the list.
+  // Search, order and paging are the SERVER's (#15): GET /api/fleet returns
+  // one page, in name order, and the counts to draw the controls from. The
+  // browser used to receive every node on every poll and page them itself,
+  // which is megabytes a poll at fleet scale to draw twenty-five cards. This
+  // view holds only what the viewer asked for and shows what came back.
   import {
     nodeStatusBadgeClass,
     nodeStatusBorderClass,
   } from "$lib/alerts";
   import FleetRollup from "$components/FleetRollup.svelte";
-  import { compareNodeNames } from "$lib/nodeorder";
+  import { PAGE_SIZE_OPTIONS, pageCount, rangeLabel } from "$lib/fleetpage";
   import { tempSourceLabel } from "$lib/rollup";
   import {
     formatAge,
@@ -23,8 +24,7 @@
     formatWatts,
     usageColor,
   } from "$lib/format";
-  import { readStored, writeStored } from "$lib/storage";
-  import type { FleetNode } from "$lib/types";
+  import type { FleetNode, NodeAttention } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
   interface Props {
@@ -34,86 +34,48 @@
 
   let { onSelect }: Props = $props();
 
-  const PAGE_SIZE_OPTIONS = [25, 50, 100, 250];
-  const DEFAULT_PAGE_SIZE = 25;
-  const PAGE_SIZE_KEY = "sysmon.fleet.pageSize";
-  const SEARCH_KEY = "sysmon.fleet.search";
-
-  /** A stored page size is only honoured if it is still one of the options. */
-  function loadPageSize(): number {
-    const raw = readStored(PAGE_SIZE_KEY);
-    const parsed = raw == null ? Number.NaN : Number.parseInt(raw, 10);
-    return PAGE_SIZE_OPTIONS.includes(parsed) ? parsed : DEFAULT_PAGE_SIZE;
-  }
-
-  const allNodes = $derived(monitor.fleetNodes);
+  const nodes = $derived(monitor.fleetNodes);
+  const info = $derived(monitor.fleetPage);
   const rollup = $derived(monitor.fleetRollup);
   const localVersion = $derived(monitor.localVersion);
   const localCommit = $derived(monitor.localCommit);
   const selectedNode = $derived(monitor.selectedNode);
+  const request = $derived(monitor.fleetRequest);
 
-  let query = $state(readStored(SEARCH_KEY) ?? "");
-  let perPage = $state(loadPageSize());
-  let page = $state(0);
+  // The search box's own text, so typing is never held up by the round trip;
+  // each keystroke asks the server for the new first page.
+  let query = $state(monitor.fleetRequest.search);
 
-  // Persist the viewer's preferences. Both writes are guarded inside
-  // writeStored, so a private window costs the preference and nothing else.
-  $effect(() => {
-    writeStored(SEARCH_KEY, query);
-  });
-  $effect(() => {
-    writeStored(PAGE_SIZE_KEY, String(perPage));
-  });
+  const total = $derived(info?.total ?? 0);
+  const matched = $derived(info?.matched ?? 0);
+  // The controls describe the page ON SCREEN, from the server's echo of what
+  // it answered, rather than the one requested: until the answer lands, the
+  // cards and the "3 / 7" beside them must agree.
+  const shownLimit = $derived(info != null && info.limit > 0 ? info.limit : request.pageSize);
+  const pages = $derived(pageCount(matched, shownLimit));
+  const shownPage = $derived(info != null ? Math.floor(info.offset / shownLimit) : 0);
+  const range = $derived(info != null ? rangeLabel(info, nodes.length) : "");
 
-  // --- filter -> sort -> page ----------------------------------------------
-
-  const filtered = $derived.by(() => {
-    const q = query.trim().toLowerCase();
-    if (q === "") return allNodes;
-    return allNodes.filter(
-      (n) =>
-        n.name.toLowerCase().includes(q) ||
-        n.hostname.toLowerCase().includes(q)
-    );
-  });
-
-  // Alphabetical by name (owner ruling 2026-09-01). Names are unique within a
-  // fleet, so this is a total order: nodes cannot reshuffle between polls.
-  //
-  // This used to sort worst-status-first so problems surfaced on page one. That
-  // reads as "not sorted" to anyone looking for a host, because a warning node
-  // sorts ahead of a healthy one whose name comes first alphabetically -- with
-  // fs, gpu-host and omega listed above ci-node-1, the list looks shuffled. A
-  // fleet view is used far more often to FIND a named host than to discover an
-  // unknown fault, and the faults are not hidden by this: the summary line
-  // above the table counts unreachable and degraded nodes whatever the order,
-  // and the search box narrows to a host directly.
-  // compareNodeNames rather than localeCompare: the backend sorts this list
-  // too, and localeCompare cannot agree with it. See $lib/nodeorder.
-  const sorted = $derived.by(() =>
-    [...filtered].sort((a, b) => compareNodeNames(a.name, b.name))
-  );
-
-  const pageCount = $derived(Math.max(1, Math.ceil(sorted.length / perPage)));
-  // Clamping on read as well as resetting on change: a node leaving the fleet
-  // can shrink the list under a page the user is already sitting on.
-  const safePage = $derived(Math.min(page, pageCount - 1));
-  const start = $derived(safePage * perPage);
-  const visible = $derived(sorted.slice(start, start + perPage));
-
-  const rangeLabel = $derived(
-    sorted.length === 0
-      ? "0 of 0"
-      : `${start + 1}–${Math.min(start + perPage, sorted.length)} of ${sorted.length}`
+  // Whether the page on screen answers the search and page size asked for.
+  // Until it does, the controls' "3 / 7" describes a list that has been
+  // replaced, and a step from it would land on the wrong page of the new one.
+  const settled = $derived(
+    info != null &&
+      info.q === request.search.trim() &&
+      info.limit === request.pageSize
   );
 
   function goTo(target: number) {
-    page = Math.min(Math.max(target, 0), pageCount - 1);
+    monitor.setFleetRequest({ page: Math.min(Math.max(target, 0), pages - 1) });
+  }
+
+  function search(text: string) {
+    query = text;
+    monitor.setFleetRequest({ search: text });
   }
 
   function clearSearch() {
-    query = "";
-    page = 0;
+    search("");
   }
 
   // --- per-node helpers -----------------------------------------------------
@@ -196,14 +158,17 @@
 
   /** A node picked from the roll-up's attention list: open it if it can be
    * opened, otherwise narrow the list to its card, which says why not. */
-  function pick(name: string): void {
-    const node = allNodes.find((n) => n.name === name);
-    if (node?.reachable) {
-      select(node);
+  function pick(a: NodeAttention): void {
+    if (a.status !== "unreachable") {
+      onSelect(a.name === monitor.fleetSelf?.name ? null : a.name);
       return;
     }
-    query = name;
-    page = 0;
+    // Anchored on the node: a search for its name can match many nodes that
+    // sort before it -- "db" is in every hostname containing it -- so neither
+    // page one nor the current page is sure to hold its card. The server
+    // answers with the page that does.
+    query = a.name;
+    monitor.setFleetRequest({ search: a.name, page: 0, anchor: a.name });
   }
 
   // Selection is reported upward rather than applied here: the parent both
@@ -215,7 +180,7 @@
 </script>
 
 <div class="space-y-4">
-  {#if allNodes.length === 0}
+  {#if info != null && total === 0}
     <div class="card bg-base-200 shadow-sm">
       <div class="card-body p-4">
         <p class="text-sm text-base-content/70">No fleet members reported.</p>
@@ -241,6 +206,15 @@
           </p>
         {/if}
 
+        {#if info == null}
+          <!-- A server from before #15 ignores the paging parameters and
+               sends every node, with no counts to page by. Say so rather
+               than offer a search box that does nothing. -->
+          <p class="text-xs text-base-content/60" data-testid="fleet-unpaged">
+            This server predates server-side paging; every node it sent is
+            shown, and search is unavailable.
+          </p>
+        {:else}
         <!-- Search + page size -->
         <div class="flex flex-wrap items-center gap-2">
           <input
@@ -248,14 +222,15 @@
             class="input input-bordered input-sm w-64 max-w-full"
             placeholder="Search name or hostname…"
             aria-label="Search fleet nodes"
-            bind:value={query}
-            oninput={() => (page = 0)}
+            value={query}
+            oninput={(e) => search(e.currentTarget.value)}
           />
           <select
             class="select select-bordered select-sm"
             aria-label="Nodes per page"
-            bind:value={perPage}
-            onchange={() => (page = 0)}
+            value={request.pageSize}
+            onchange={(e) =>
+              monitor.setFleetRequest({ pageSize: Number(e.currentTarget.value) })}
           >
             {#each PAGE_SIZE_OPTIONS as size (size)}
               <option value={size}>{size} / page</option>
@@ -267,18 +242,19 @@
             </button>
           {/if}
           <span class="text-xs text-base-content/60 ml-auto">
-            Showing {rangeLabel}
-            {#if sorted.length !== allNodes.length}
+            Showing {range}
+            {#if matched !== total}
               <span class="text-base-content/60">
-                (filtered from {allNodes.length})
+                (filtered from {total})
               </span>
             {/if}
           </span>
         </div>
+        {/if}
       </div>
     </div>
 
-    {#if sorted.length === 0}
+    {#if info != null && matched === 0}
       <!-- Distinct from an empty fleet: there are nodes, the filter hid them. -->
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-4 items-start gap-2">
@@ -292,7 +268,7 @@
       </div>
     {:else}
       <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        {#each visible as node (node.name)}
+        {#each nodes as node (node.name)}
           {@const isSelected = selectedNode === node.name}
           {@const drift = hasBuildDrift(node)}
           {@const build = buildLabel(node)}
@@ -614,41 +590,41 @@
 
       <!-- Pagination -->
       <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-base-content/60">
-        <span>Showing {rangeLabel}</span>
+        <span>{#if info != null}Showing {range}{/if}</span>
 
-        {#if pageCount > 1}
+        {#if pages > 1}
           <div class="join">
             <button
               class="join-item btn btn-xs"
               onclick={() => goTo(0)}
-              disabled={safePage === 0}
+              disabled={!settled || shownPage === 0}
               aria-label="First page"
             >
               «
             </button>
             <button
               class="join-item btn btn-xs"
-              onclick={() => goTo(safePage - 1)}
-              disabled={safePage === 0}
+              onclick={() => goTo(shownPage - 1)}
+              disabled={!settled || shownPage === 0}
               aria-label="Previous page"
             >
               ‹
             </button>
             <span class="join-item btn btn-xs btn-disabled">
-              {safePage + 1} / {pageCount}
+              {shownPage + 1} / {pages}
             </span>
             <button
               class="join-item btn btn-xs"
-              onclick={() => goTo(safePage + 1)}
-              disabled={safePage >= pageCount - 1}
+              onclick={() => goTo(shownPage + 1)}
+              disabled={!settled || shownPage >= pages - 1}
               aria-label="Next page"
             >
               ›
             </button>
             <button
               class="join-item btn btn-xs"
-              onclick={() => goTo(pageCount - 1)}
-              disabled={safePage >= pageCount - 1}
+              onclick={() => goTo(pages - 1)}
+              disabled={!settled || shownPage >= pages - 1}
               aria-label="Last page"
             >
               »

@@ -20,12 +20,17 @@
     tempSourceLabel,
     visibleAttention,
   } from "$lib/rollup";
-  import type { FleetExtreme, FleetHealth, FleetRollup } from "$lib/types";
+  import type {
+    FleetExtreme,
+    FleetHealth,
+    FleetRollup,
+    NodeAttention,
+  } from "$lib/types";
 
   interface Props {
     rollup: FleetRollup;
-    /** Called with a node's name when its entry in the attention list is chosen. */
-    onPick: (name: string) => void;
+    /** Called with a node's entry when it is chosen from the attention list. */
+    onPick: (node: NodeAttention) => void;
   }
 
   let { rollup, onPick }: Props = $props();
@@ -57,7 +62,7 @@
           <button
             type="button"
             class="link link-hover font-semibold"
-            onclick={() => onPick(a.name)}
+            onclick={() => onPick(a)}
           >
             {a.name}
           </button>
@@ -184,7 +189,7 @@
   {#if rollup.builds.length > 0}
     <!-- Identity, not health: never coloured, never counted as a fault. -->
     <p class="text-xs text-base-content/60" data-testid="fleet-builds">
-      Builds: {buildsLine(rollup.builds)}
+      Builds: {buildsLine(rollup.builds, rollup.build_groups)}
     </p>
   {/if}
 </section>

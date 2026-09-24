@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { alertEveryTab, mockSnapshotFeed } from './fixtures/mock-sse';
+import { serveFleet } from './fixtures/fleet';
 import { dashboardTab, openTab, TAB_IDS, type TabLabel } from './fixtures/tabs';
 
 /**
@@ -19,13 +20,7 @@ const LABELS = Object.keys(TAB_IDS) as TabLabel[];
 async function openNoisyDashboard(page: Page) {
   await mockSnapshotFeed(page, { gpus: 1, npus: 1, alerts: alertEveryTab() });
   // Fleet mode on, so the Fleet tab exists too. No peers are needed for that.
-  await page.route(/\/api\/fleet$/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ enabled: true, nodes: [] }),
-    })
-  );
+  await serveFleet(page, () => ({ nodes: [] }));
   await page.goto('/');
   await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
   await expect(dashboardTab(page, 'Fleet')).toBeVisible();

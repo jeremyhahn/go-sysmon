@@ -61,7 +61,7 @@ func TestView_DisabledWithoutPeers(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, healthySnapshot("local"), 0 },
 		func() string { return "local" }, quiet(),
 	)
-	view := p.View()
+	view := p.View(fleet.Query{})
 	if view.Enabled {
 		t.Error("fleet reports enabled with no peers configured")
 	}
@@ -90,7 +90,7 @@ func TestView_SummarizesLocalAndPeer(t *testing.T) {
 	done := make(chan struct{})
 	go p.Run(done)
 	waitFor(t, func() bool {
-		for _, n := range p.View().Nodes {
+		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Name == "omega" && n.Reachable {
 				return true
 			}
@@ -99,7 +99,7 @@ func TestView_SummarizesLocalAndPeer(t *testing.T) {
 	})
 	close(done)
 
-	view := p.View()
+	view := p.View(fleet.Query{})
 	if !view.Enabled {
 		t.Fatal("fleet should be enabled with a peer configured")
 	}
@@ -144,7 +144,7 @@ func TestView_UnreachablePeerIsNotHealthy(t *testing.T) {
 	done := make(chan struct{})
 	go p.Run(done)
 	waitFor(t, func() bool {
-		for _, n := range p.View().Nodes {
+		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Name == "dead" && n.Status == fleet.StatusUnreachable {
 				return true
 			}
@@ -153,7 +153,7 @@ func TestView_UnreachablePeerIsNotHealthy(t *testing.T) {
 	})
 	close(done)
 
-	for _, n := range p.View().Nodes {
+	for _, n := range p.View(fleet.Query{}).Nodes {
 		if n.Name != "dead" {
 			continue
 		}
@@ -176,7 +176,7 @@ func TestView_AlertsDriveStatus(t *testing.T) {
 	cfg := config.Fleet{Peers: []config.Peer{{Name: "x", URL: "http://127.0.0.1:1"}}, PollIntervalMs: 10000, TimeoutMs: 200}
 	p := fleet.New(func() config.Fleet { return cfg }, func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
-	for _, n := range p.View().Nodes {
+	for _, n := range p.View(fleet.Query{}).Nodes {
 		if !n.Self {
 			continue
 		}
@@ -419,7 +419,7 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 
 	// Let one good poll land.
 	waitFor(t, func() bool {
-		for _, n := range p.View().Nodes {
+		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Name == "omega" && n.Reachable {
 				return true
 			}
@@ -430,7 +430,7 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 	// Take the peer down and let several failed polls go by.
 	serving.Store(false)
 	waitFor(t, func() bool {
-		for _, n := range p.View().Nodes {
+		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Name == "omega" && !n.Reachable {
 				return true
 			}
@@ -440,9 +440,9 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 	time.Sleep(250 * time.Millisecond)
 
 	var node *types.FleetNode
-	for i, n := range p.View().Nodes {
+	for i, n := range p.View(fleet.Query{}).Nodes {
 		if n.Name == "omega" {
-			node = &p.View().Nodes[i]
+			node = &p.View(fleet.Query{}).Nodes[i]
 			_ = n
 		}
 	}
@@ -500,7 +500,7 @@ func TestView_OrdersByNameNotSeverity(t *testing.T) {
 	go p.Run(done)
 	waitFor(t, func() bool {
 		reachable := 0
-		for _, n := range p.View().Nodes {
+		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Reachable {
 				reachable++
 			}
@@ -510,7 +510,7 @@ func TestView_OrdersByNameNotSeverity(t *testing.T) {
 	close(done)
 
 	var got []string
-	for _, n := range p.View().Nodes {
+	for _, n := range p.View(fleet.Query{}).Nodes {
 		got = append(got, n.Name)
 	}
 
@@ -751,9 +751,9 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 			)
 
 			var local *types.FleetNode
-			for i := range p.View().Nodes {
-				if p.View().Nodes[i].Self {
-					local = &p.View().Nodes[i]
+			for i := range p.View(fleet.Query{}).Nodes {
+				if p.View(fleet.Query{}).Nodes[i].Self {
+					local = &p.View(fleet.Query{}).Nodes[i]
 					break
 				}
 			}
@@ -819,7 +819,7 @@ func TestView_APeerThatNeverAnsweredHasNoAge(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	var node types.FleetNode
 	for time.Now().Before(deadline) {
-		for _, n := range p.View().Nodes {
+		for _, n := range p.View(fleet.Query{}).Nodes {
 			if n.Name == "dead" && n.Error != "" && n.Error != "not polled yet" {
 				node = n
 			}
@@ -949,7 +949,7 @@ func TestObserve_SilentWhileAPeerIsUnreachable(t *testing.T) {
 	}
 
 	var found bool
-	for _, n := range p.View().Nodes {
+	for _, n := range p.View(fleet.Query{}).Nodes {
 		if n.Name == "omega" {
 			found = true
 			if n.Status == "" {
@@ -1008,9 +1008,9 @@ func TestPeerPayloads_AnOlderPeersNullListsAreNotPassedOn(t *testing.T) {
 
 	done := make(chan struct{})
 	go p.Run(done)
-	waitFor(t, func() bool { return node(t, p.View(), "old").Reachable })
+	waitFor(t, func() bool { return node(t, p.View(fleet.Query{}), "old").Reachable })
 	close(done)
-	assertNoNullLists(t, "fleet view", p.View())
+	assertNoNullLists(t, "fleet view", p.View(fleet.Query{}))
 
 	view, err := p.PeerConfig("old")
 	if err != nil {

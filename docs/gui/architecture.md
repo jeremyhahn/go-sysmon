@@ -285,8 +285,9 @@ worst and name the node, or show a sum with its denominator — never a mean.*
   7 healthy, 2 warning, 1 critical, 1 unreachable (no reading for 2h 14m)`.
   A node that never answered reads `never answered`, not a zero-second gap.
 - **Needs attention**: the worst five non-healthy nodes, critical first, with
-  their alert messages, then `and N more`. Choosing a node opens it. If it is
-  unreachable, the list narrows to its card, which says why.
+  their alert messages, then `and N more`. The server sends only those five;
+  the count comes from the state totals. Choosing a node opens it. If it is
+  unreachable, the search narrows to its card, which says why.
 - **Figures**: the highest CPU, memory, filesystem, load per core and
   swap-out rate, each with its node, and the hottest component with its node
   and kind (`83.0°C ci-node-1 (GPU)`). Every component that reports a
@@ -297,8 +298,39 @@ worst and name the node, or show a sum with its denominator — never a mean.*
   nodes`. A figure no reachable node could report is left out, never shown
   as 0.
 - **Builds**: which commit each node runs, the largest group first and the
-  others named (every group, when the largest is tied). It is never
-  coloured, because a rollout is not a fault.
+  others named (every group, when the largest is tied). A group larger than
+  the five names the server sends says `and N more`, and groups beyond the
+  five sent read `and N other builds`. It is never coloured, because a
+  rollout is not a fault.
+
+**The node list is paged by the server** (#15). The view asks
+`GET /api/fleet?q=&offset=&limit=` for the page it shows and draws the answer:
+the cards in the order sent, `Showing 26–50 of 180 (filtered from 10000)` and
+the page controls from the response's `page` counts. It never sorts or filters
+a list itself — a page re-sorted in the browser could only disagree with the
+order the pages were cut from. `src/lib/fleetpage.ts` holds the request and
+the page arithmetic; the store (`fleetRequest`, `setFleetRequest`) owns the
+request, so the poll that keeps the tab alive and the view's controls ask for
+the same page.
+
+- A new search or page size goes back to page one and is fetched at once,
+  not on the next tick. Search and page size are remembered in
+  `localStorage`; the page index is not.
+- A request superseded while in flight is aborted, and a response is applied
+  only if no request has been issued since — a slow answer to an old search
+  can never replace the page for the new one.
+- If the list shrinks under the page on screen, the view moves to the new last
+  page rather than showing an empty one.
+- Against a server from before paging (a tab left open across a rollback),
+  which sends every node and no `page`, the view shows what it was sent and
+  says search is unavailable. A roll-up without `count` or `build_groups`
+  reads its sizes from the names, which that server sent in full.
+- Choosing an unreachable node from the attention list searches for its name
+  and sends it as the `anchor`, so the view opens the page that holds its
+  card: many nodes whose names or hostnames contain it can sort first.
+- A selected peer whose drill-in answers `404` has left the fleet, and the
+  dashboard returns to this node. The fleet poll used to catch that from the
+  whole node list; a page cannot say whether a node is gone or elsewhere.
 
 The cards keep the per-node figures an operator checks before deciding to
 drill in. Max temp names the component kind it came from. A node with no

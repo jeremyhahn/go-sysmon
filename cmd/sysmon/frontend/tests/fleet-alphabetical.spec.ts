@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { openTab } from './fixtures/tabs';
+import { serveFleet } from './fixtures/fleet';
 
 /**
  * The fleet list is ordered by name (owner ruling 2026-09-01).
@@ -11,9 +12,15 @@ import { openTab } from './fixtures/tabs';
  * `fs`, `gpu-host` and `omega` were listed above `ci-node-1` and the list
  * looked shuffled.
  *
- * The fixture below is that exact shape -- statuses deliberately ANTI-correlated
- * with the alphabet -- because a fixture whose severity order happens to match
- * its name order passes either way and proves nothing.
+ * The ORDER is the server's since #15: it searches, sorts and pages, and
+ * pkg/fleet's tests pin the order and the page boundaries cut from it. What is
+ * checked here is the browser's half -- that it shows the page in the order it
+ * was sent. A view that re-sorted each page could only disagree with the order
+ * the pages were cut from.
+ *
+ * The fixture below has statuses deliberately ANTI-correlated with the
+ * alphabet, because a fixture whose severity order happens to match its name
+ * order passes under either ordering and proves nothing.
  */
 
 function fleetNode(name: string, status: string) {
@@ -57,30 +64,22 @@ const EXPECTED = ['alpha', 'bravo', 'yankee', 'zulu'];
 
 async function setup(page: Page) {
   await mockSnapshotFeed(page);
-  await page.route(/\/api\/fleet$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      // Served in the order the aggregator returns them -- worst first -- so
-      // the test fails if the view merely passes the API order through.
-      body: JSON.stringify({
-        enabled: true,
-        nodes: [NODES[3], NODES[2], NODES[0], NODES[1]],
-        rollup: {
-          nodes: 4, healthy: 2, warning: 1, critical: 0, unreachable: 1,
-          longest_absence_seconds: 754, never_answered: 0, reporting: 3,
-          attention: [
-            { name: 'zulu', status: 'unreachable', age_seconds: 754, reasons: ['connection refused'] },
-            { name: 'yankee', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
-          ],
-          swap_unknown: 0, builds: [],
-        },
-      }),
-    });
+  await serveFleet(page, {
+    // The server's order: by name.
+    nodes: NODES,
+    rollup: {
+      nodes: 4, healthy: 2, warning: 1, critical: 0, unreachable: 1,
+      longest_absence_seconds: 754, never_answered: 0, reporting: 3,
+      attention: [
+        { name: 'zulu', status: 'unreachable', age_seconds: 754, reasons: ['connection refused'] },
+        { name: 'yankee', status: 'warning', age_seconds: 0, reasons: ['cpu sustained'] },
+      ],
+      swap_unknown: 0, builds: [], build_groups: 0,
+    },
   });
 }
 
-test('the fleet list is ordered by name, not by severity', async ({ page }) => {
+test('the fleet list is shown in the server\'s name order, not by severity', async ({ page }) => {
   await setup(page);
   await page.goto('/');
   await openTab(page, 'Fleet');
@@ -118,25 +117,18 @@ test('a degraded node is still counted even though it sorts last', async ({ page
  */
 test('an unreachable node says how long, and the summary reports the worst', async ({ page }) => {
   await mockSnapshotFeed(page);
-  await page.route(/\/api\/fleet$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        enabled: true,
-        nodes: [
-          // Mid-deploy: the data is nine seconds old.
-          { ...fleetNode('alpha', 'unreachable'), age_seconds: 9 },
-          // Gone since Tuesday: two days.
-          { ...fleetNode('zulu', 'unreachable'), age_seconds: 172800 },
-        ],
-        rollup: {
-          nodes: 2, healthy: 0, warning: 0, critical: 0, unreachable: 2,
-          longest_absence_seconds: 172800, never_answered: 0, reporting: 0,
-          attention: [], swap_unknown: 0, builds: [],
-        },
-      }),
-    });
+  await serveFleet(page, {
+    nodes: [
+      // Mid-deploy: the data is nine seconds old.
+      { ...fleetNode('alpha', 'unreachable'), age_seconds: 9 },
+      // Gone since Tuesday: two days.
+      { ...fleetNode('zulu', 'unreachable'), age_seconds: 172800 },
+    ],
+    rollup: {
+      nodes: 2, healthy: 0, warning: 0, critical: 0, unreachable: 2,
+      longest_absence_seconds: 172800, never_answered: 0, reporting: 0,
+      attention: [], swap_unknown: 0, builds: [], build_groups: 0,
+    },
   });
 
   await page.goto('/');
@@ -160,20 +152,13 @@ test('an unreachable node says how long, and the summary reports the worst', asy
  */
 test('a node that never reported says so, rather than reporting a zero-second gap', async ({ page }) => {
   await mockSnapshotFeed(page);
-  await page.route(/\/api\/fleet$/, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        enabled: true,
-        nodes: [{ ...fleetNode('never', 'unreachable'), age_seconds: 0, error: 'no data' }],
-        rollup: {
-          nodes: 1, healthy: 0, warning: 0, critical: 0, unreachable: 1,
-          longest_absence_seconds: 0, never_answered: 1, reporting: 0,
-          attention: [], swap_unknown: 0, builds: [],
-        },
-      }),
-    });
+  await serveFleet(page, {
+    nodes: [{ ...fleetNode('never', 'unreachable'), age_seconds: 0, error: 'no data' }],
+    rollup: {
+      nodes: 1, healthy: 0, warning: 0, critical: 0, unreachable: 1,
+      longest_absence_seconds: 0, never_answered: 1, reporting: 0,
+      attention: [], swap_unknown: 0, builds: [], build_groups: 0,
+    },
   });
 
   await page.goto('/');

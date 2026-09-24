@@ -4,61 +4,73 @@ import "strings"
 
 // Node ordering.
 //
-// The fleet list is sorted in two places -- here, for GET /api/fleet, and in
-// the browser, for the view. They have to produce the SAME order or the API and
-// the screen disagree about what the fleet looks like, which is the thing this
-// ordering exists to prevent.
+// The fleet list is ordered here, and only here: GET /api/fleet searches and
+// pages the fleet server-side (#15), so the dashboard shows the order it is
+// sent. Until then the browser sorted the list as well, and the two had to
+// agree -- which is where this rule comes from, and why it is the rule it is.
 //
-// That is harder than it sounds across two languages. Go compares strings
-// bytewise; JavaScript's localeCompare is locale-aware and collates "a" before
-// "B" where Go puts "B" first, and orders accented characters differently
-// again. Node names mix case and punctuation -- a peer name may carry '.', '_',
-// ':' and '-', and this node's own name is whatever fleet.local_name or the
-// hostname says -- so this is reachable rather than theoretical.
-//
-// The rule below is therefore chosen to be implementable identically in both,
-// with no locale data and no library:
+// Go compares strings bytewise; JavaScript's localeCompare is locale-aware and
+// collates "a" before "B" where Go puts "B" first, and orders accented
+// characters differently again. Node names mix case and punctuation -- a peer
+// name may carry '.', '_', ':' and '-', and this node's own name is whatever
+// fleet.local_name or the hostname says -- so that was reachable rather than
+// theoretical. The rule was chosen to be implementable identically in any
+// language, with no locale data and no library, and it stays so: a consumer of
+// the API that sorts nodes itself can match it exactly.
 //
 //  1. Fold ASCII letters to lower case. Only A-Z, nothing else: it is the
 //     entire difference between "B" and "b" for realistic host names, and it is
-//     the one case mapping both languages are guaranteed to agree on. Unicode
-//     case folding is not used precisely because Go and JavaScript can disagree
-//     about it.
-//  2. Compare by code point. Not by byte, not by UTF-16 code unit -- Go's
-//     bytewise comparison of valid UTF-8 IS code-point order, and JavaScript's
-//     "<" is code-unit order, which differs above the basic plane. Comparing
-//     code points explicitly is the only form both can implement exactly.
+//     the one case mapping every language agrees on.
+//  2. Compare by code point. Go's bytewise comparison of valid UTF-8 IS
+//     code-point order; JavaScript's "<" is UTF-16 code-unit order, which
+//     differs above the basic plane.
 //  3. Break ties on the unfolded name, so "NODE" and "node" have a stable
 //     order rather than an arbitrary one.
 //
-// cmd/sysmon/frontend/src/lib/nodeorder.ts is the other half. Both are checked
-// against testdata/order.json, which is generated here, because nothing else
-// connects them: they would drift silently, and the symptom would be a list
-// that looks different depending on whether you read it through the API.
+// testdata/order.json pins the rule with cases chosen to distinguish it from
+// every plausible wrong one; the search in query.go folds by the same rule.
 
 // foldASCII lower-cases A-Z and leaves every other byte alone.
 func foldASCII(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		b.WriteByte(c)
+		b.WriteByte(foldByte(s[i]))
 	}
 	return b.String()
+}
+
+// foldByte lower-cases one byte if it is A-Z. Every byte of a multi-byte UTF-8
+// sequence is 0x80 or above, so folding byte by byte never touches one.
+func foldByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
 }
 
 // CompareNodeNames orders two node names. It returns a negative number, zero or
 // a positive number, matching the shape of a JavaScript comparator so the two
 // implementations read the same.
+//
+// The folded comparison is made byte by byte rather than on folded copies: it
+// runs O(n log n) times for every fleet request, and a copy of both names per
+// comparison was a fifth of what serving a ten-thousand-node page cost. Folding
+// maps each byte on its own, so comparing folded bytes is comparing the folded
+// strings.
 func CompareNodeNames(a, b string) int {
-	fa, fb := foldASCII(a), foldASCII(b)
-	if fa != fb {
-		if fa < fb {
-			return -1
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if fa, fb := foldByte(a[i]), foldByte(b[i]); fa != fb {
+			if fa < fb {
+				return -1
+			}
+			return 1
 		}
+	}
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
 		return 1
 	}
 	switch {

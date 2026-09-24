@@ -26,8 +26,8 @@ atomic pointer read of the last completed collection — and every handler goes
 through it: `/api/snapshot`, the event stream, the delta hub's first frame, and
 the Prometheus exporter at `/metrics`. `/api/summary` and `/api/snapshot/history`
 read the same state through `Monitor.Consecutive()`, which pairs it with the
-collection before it. `/api/fleet` serves the fleet poller's cached peer
-summaries, and `/api/fleet/{name}/snapshot` fetches a peer's published snapshot
+collection before it. `/api/fleet` serves a page of the fleet poller's cached
+peer summaries, and `/api/fleet/rollup` the whole-fleet roll-up over them, and `/api/fleet/{name}/snapshot` fetches a peer's published snapshot
 from that peer when someone drills in (#76), which is the peer's own last poll
 and not fresh host state; `/api/history` queries storage, which is not host state.
 **`pkg/server` does not import a collector at all.**

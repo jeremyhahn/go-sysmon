@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
+import { serveFleet } from './fixtures/fleet';
 import { openTab } from './fixtures/tabs';
 
 /**
@@ -48,13 +49,7 @@ function node(name: string, health: Record<string, number | boolean>) {
 
 async function fleetWith(page: Page, nodes: unknown[]) {
   await mockSnapshotFeed(page);
-  await page.route(/\/api\/fleet$/, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ enabled: true, nodes }),
-    })
-  );
+  await serveFleet(page, { nodes: nodes as Record<string, unknown>[] });
   await page.goto('/');
   await openTab(page, 'Fleet');
 }

@@ -38,7 +38,7 @@ func pollUntilReachable(t *testing.T, p *fleet.Poller, names ...string) types.Fl
 	done := make(chan struct{})
 	go p.Run(done)
 	waitFor(t, func() bool {
-		view := p.View()
+		view := p.View(fleet.Query{})
 		answered := 0
 		for _, n := range view.Nodes {
 			for _, want := range names {
@@ -50,7 +50,7 @@ func pollUntilReachable(t *testing.T, p *fleet.Poller, names ...string) types.Fl
 		return answered == len(names)
 	})
 	close(done)
-	return p.View()
+	return p.View(fleet.Query{})
 }
 
 // TestView_CarriesPeerBuildIdentity is the defect in #68: the aggregator
@@ -219,18 +219,18 @@ func TestView_ASilentNodeHasNoBuildAgreement(t *testing.T) {
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	// Before any poll has run at all.
-	if got := node(t, p.View(), "dead").BuildMatch; got != fleet.BuildUnknown {
+	if got := node(t, p.View(fleet.Query{}), "dead").BuildMatch; got != fleet.BuildUnknown {
 		t.Errorf("never-polled BuildMatch = %q, want %q", got, fleet.BuildUnknown)
 	}
 
 	done := make(chan struct{})
 	go p.Run(done)
 	waitFor(t, func() bool {
-		return node(t, p.View(), "dead").Status == fleet.StatusUnreachable
+		return node(t, p.View(fleet.Query{}), "dead").Status == fleet.StatusUnreachable
 	})
 	close(done)
 
-	dead := node(t, p.View(), "dead")
+	dead := node(t, p.View(fleet.Query{}), "dead")
 	if dead.BuildMatch != fleet.BuildUnknown {
 		t.Errorf("unreachable BuildMatch = %q, want %q", dead.BuildMatch, fleet.BuildUnknown)
 	}
