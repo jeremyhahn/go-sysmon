@@ -27,7 +27,8 @@ The server build links three shared libraries and runs anywhere.
 3. Wails calls `OnStartup`, which stores the Wails context, starts the monitor,
    launches `streamToFrontend` in a goroutine, and starts the tray unless
    `--no-tray` was passed.
-4. `streamToFrontend` subscribes and emits a `sysmon:snapshot` event per frame.
+4. `streamToFrontend` runs the delta stream and emits each frame as a
+   `sysmon:full` or `sysmon:delta` event.
 5. `OnBeforeClose` hides the window rather than quitting, when the tray is up.
 6. `OnShutdown` stops the tray, then the monitor.
 

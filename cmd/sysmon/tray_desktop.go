@@ -1,4 +1,4 @@
-//go:build desktop
+//go:build desktop && systray
 
 package main
 
@@ -49,6 +49,12 @@ func stopSystray() {
 		return
 	}
 	systray.Quit()
+}
+
+// trayRunning reports whether the tray icon is up, and so whether the window
+// can be reopened from it.
+func trayRunning() bool {
+	return trayState.running.Load()
 }
 
 // onTrayReady is called by systray once the tray icon is initialised. It

@@ -12,10 +12,13 @@ includes by default. To leave it out:
 make build WITH_SYSTRAY=0
 ```
 
-| File              | Tag        | Purpose                     |
-|-------------------|------------|-----------------------------|
-| `tray_desktop.go` | `desktop`  | The real implementation     |
-| `tray_stub.go`    | `!desktop` | No-ops                      |
+| File              | Constraint             | Purpose                 |
+|-------------------|------------------------|-------------------------|
+| `tray_desktop.go` | `desktop && systray`   | The real implementation |
+| `tray_stub.go`    | `!desktop \|\| !systray` | No-ops                  |
+
+Without the tray, closing the window quits the application; with it, closing
+hides the window and **Open Monitor** brings it back.
 
 To turn it off without rebuilding:
 

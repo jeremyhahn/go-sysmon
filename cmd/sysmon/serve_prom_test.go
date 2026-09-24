@@ -1,4 +1,4 @@
-//go:build prometheus && !desktop
+//go:build prometheus
 
 package main
 

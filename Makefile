@@ -18,11 +18,46 @@ WITH_SYSTRAY ?= 1
 # exactly as before. It is NOT on the default build: NVML has no pure-Go
 # implementation, and importing it unconditionally made CGO_ENABLED=0 impossible
 # for anything embedding pkg/collector (#8). See check-cgo-clean below.
+# systray compiles the tray into the desktop binary (cmd/sysmon/tray_desktop.go);
+# WITH_SYSTRAY=0 leaves it out, and closing the window then quits.
 SERVER_TAGS := prometheus,nvml
-DESKTOP_TAGS := desktop,production,webkit2_41,nvml
+DESKTOP_BASE_TAGS := desktop,production,webkit2_41,nvml
+DESKTOP_TAGS := $(DESKTOP_BASE_TAGS)
 ifeq ($(WITH_SYSTRAY),1)
-  DESKTOP_TAGS := $(DESKTOP_TAGS),systray
+  DESKTOP_TAGS := $(DESKTOP_BASE_TAGS),systray
 endif
+# The published container image. The Dockerfile does not build through make, so
+# it names the same tags itself; this is the copy the gates below check.
+IMAGE_TAGS := nvml
+
+# Build shapes: every tag set a go-sysmon binary or an embedding consumer is
+# built with. `make vet`, `make lint` and `make test` run over each one, because
+# vet and test report success over the files their tags select and say nothing
+# about the rest -- the desktop build's test files stopped compiling with every
+# gate green (#204). check-build-tags fails when a build constraint names a tag
+# that no shape here sets, so a new tag cannot arrive without a shape that
+# compiles it. Each shape is also a target: `make test-shape-desktop`.
+#
+#   default          what an embedder of pkg/* gets; CGO_ENABLED=0 and FIPS clean
+#   image            the published container image (Dockerfile)
+#   server           sysmon-server, the release and `make deploy` binary
+#   desktop          sysmon, the desktop release binary, with the tray
+#   desktop-notray   sysmon built with WITH_SYSTRAY=0
+SHAPE_default :=
+SHAPE_image := $(IMAGE_TAGS)
+SHAPE_server := $(SERVER_TAGS)
+SHAPE_desktop := $(DESKTOP_BASE_TAGS),systray
+SHAPE_desktop-notray := $(DESKTOP_BASE_TAGS)
+BUILD_SHAPES := default image server desktop desktop-notray
+
+# Check shapes are compiled, vetted and linted but ship nothing. nomegaraid
+# stands in for a target without the RAID passthrough (see megaraid_unsupported.go),
+# and its unit tests run here too; integration's run in their container
+# (make integration-test), so here they are vetted only.
+SHAPE_nomegaraid := nomegaraid
+SHAPE_integration := integration
+TEST_SHAPES := $(BUILD_SHAPES) nomegaraid
+ALL_SHAPES := $(BUILD_SHAPES) nomegaraid integration
 
 PKG_ALL := ./...
 PKG_CLI := ./pkg/cli/...
@@ -33,6 +68,7 @@ PKG_MONITOR := ./pkg/monitor/...
 PKG_SERVER := ./pkg/server/...
 PKG_TYPES := ./pkg/types/...
 PKG_TSGEN := ./internal/tsgen/...
+PKG_BUILDTAGS := ./internal/buildtags/...
 PKG_CMD := ./cmd/sysmon/...
 
 FRONTEND_DIR := cmd/sysmon/frontend
@@ -99,7 +135,8 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both generate check-generated test-tsgen coverage-tsgen \
+        build-both generate check-generated test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
+        check-build-tags test-fips \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -220,12 +257,26 @@ dev:
 
 # -race is on by default: the monitor broadcasts to concurrent subscribers and
 # two real data races shipped undetected while this target ran without it.
-# Both shapes, because a build tag that is only ever compiled one way is not
-# tested: the untagged run is what a desktop or systray user gets, and it has
-# its own history handlers to check (#100).
-test:
-	go test $(PKG_ALL) -race -count=1
-	go test -tags "$(SERVER_TAGS)" $(PKG_ALL) -race -count=1
+# Every shape, because a build tag that is only ever compiled one way is not
+# tested (#100, #204): see BUILD_SHAPES at the top of this file.
+test: $(addprefix test-shape-,$(TEST_SHAPES))
+
+# The desktop shapes link GTK and WebKit, so they need the packages `make deps`
+# installs; so do their vet and lint below.
+test-shape-%:
+	go test -tags "$(SHAPE_$*)" $(PKG_ALL) -race -count=1
+
+# test-fips runs the suite in FIPS 140-3 mode, in the shapes a FIPS consumer
+# embeds (go-quicbaas builds pkg/collector with CGO_ENABLED=0 GOFIPS140=latest,
+# #8). The tagged run matters too: pkg/prom encodes protobuf and snappy by hand,
+# so if anything in it reaches a non-approved primitive, this is where it shows
+# (#100).
+FIPS_ENV := GOFIPS140=latest GODEBUG=fips140=on
+test-fips:
+	$(FIPS_ENV) go build $(PKG_ALL)
+	$(FIPS_ENV) go build -tags prometheus $(PKG_ALL)
+	$(FIPS_ENV) go test -count=1 -timeout=900s $(PKG_ALL)
+	$(FIPS_ENV) go test -tags prometheus -count=1 -timeout=900s $(PKG_ALL)
 
 # build-both compiles the two shapes without running anything, which is the
 # cheap half of the same guarantee.
@@ -257,6 +308,9 @@ test-cmd:
 test-tsgen:
 	go test $(PKG_TSGEN) -v -count=1
 
+test-buildtags:
+	go test $(PKG_BUILDTAGS) -v -count=1
+
 ## Coverage targets
 
 coverage-cli:
@@ -282,6 +336,10 @@ coverage-types:
 coverage-tsgen:
 	go test $(PKG_TSGEN) -coverprofile=/tmp/coverage-tsgen.out -count=1
 	go tool cover -func=/tmp/coverage-tsgen.out
+
+coverage-buildtags:
+	go test $(PKG_BUILDTAGS) -coverprofile=/tmp/coverage-buildtags.out -count=1
+	go tool cover -func=/tmp/coverage-buildtags.out
 
 coverage-metrics:
 	go test $(PKG_METRICS) -coverprofile=/tmp/coverage-metrics.out -count=1
@@ -374,9 +432,14 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags \
+	$(addprefix lint-shape-,$(ALL_SHAPES))
+
+# golangci-lint in one shape. Its unused check is what finds code that only one
+# shape compiles and no shape calls.
+lint-shape-%:
 	@$(TOOL) check "$(GOLANGCI_LINT)" $(GOLANGCI_LINT_PKG) $(GOLANGCI_LINT_VERSION)
-	$(GOLANGCI_LINT) run $(PKG_ALL)
+	$(GOLANGCI_LINT) run --build-tags "$(SHAPE_$*)" $(PKG_ALL)
 
 # tools installs every pinned analysis tool that is missing or at the wrong
 # version, and leaves a matching one alone. The per-tool targets let a CI job
@@ -494,15 +557,26 @@ fmt-check:
 fmt:
 	gofmt -w cmd pkg test
 
-vet:
-	go vet $(PKG_ALL)
-	@# The hardware RAID passthrough is built only for the 64-bit ABI its
-	@# packet layout describes, with a stub elsewhere. pkg/collector cannot be
-	@# compiled for a 32-bit target at all (NVML, issue #8), so the stub was
-	@# unverifiable and silently stopped compiling: two symbols that untagged
-	@# files use lived only in the tagged ones. Selecting a file is not the
-	@# same as building it, and this is what checks the difference.
-	go vet -tags nomegaraid $(PKG_ALL)
+# vet runs in every shape, test files included. The nomegaraid shape is here
+# because the hardware RAID passthrough is built only for the 64-bit ABI its
+# packet layout describes, with a stub elsewhere. pkg/collector cannot be
+# compiled for a 32-bit target at all (NVML, issue #8), so the stub was
+# unverifiable and silently stopped compiling: two symbols that untagged files
+# use lived only in the tagged ones. Selecting a file is not the same as
+# building it, and this is what checks the difference.
+vet: $(addprefix vet-shape-,$(ALL_SHAPES))
+
+vet-shape-%:
+	go vet -tags "$(SHAPE_$*)" $(PKG_ALL)
+
+# check-build-tags fails when a build constraint names a tag no shape sets --
+# a file no gate compiles -- or when the Dockerfile builds the image with tags
+# other than IMAGE_TAGS, the shape that stands for it here.
+check-build-tags:
+	go run ./cmd/buildtags -shapes "$(foreach s,$(ALL_SHAPES),$(SHAPE_$(s)))"
+	@grep -qE '^RUN go build .*-tags $(IMAGE_TAGS) ' Dockerfile || { \
+		echo "Dockerfile does not build with -tags $(IMAGE_TAGS) (IMAGE_TAGS): update one to match the other."; \
+		exit 1; }
 
 ## Clean
 
@@ -610,13 +684,20 @@ deploy-binary: build-server
 GOSEC_EXCLUDE ?= G304,G115
 GOSEC_ARGS ?= -exclude-dir=cmd/sysmon/frontend -exclude=$(GOSEC_EXCLUDE) -severity medium
 
-gosec:
-	@$(TOOL) check "$(GOSEC)" $(GOSEC_PKG) $(GOSEC_VERSION)
-	$(GOSEC) -concurrency 4 $(GOSEC_ARGS) ./...
+# gosec and govulncheck run in every shape, like vet: a finding in code only the
+# desktop or server build compiles -- Wails, the tray, NVML, remote write -- is a
+# finding in a binary we ship, and an untagged scan never reads that code.
+gosec: $(addprefix gosec-shape-,$(ALL_SHAPES))
 
-vulncheck:
+gosec-shape-%:
+	@$(TOOL) check "$(GOSEC)" $(GOSEC_PKG) $(GOSEC_VERSION)
+	$(GOSEC) -concurrency 4 -tags "$(SHAPE_$*)" $(GOSEC_ARGS) ./...
+
+vulncheck: $(addprefix vulncheck-shape-,$(BUILD_SHAPES))
+
+vulncheck-shape-%:
 	@$(TOOL) check "$(GOVULNCHECK)" $(GOVULNCHECK_PKG) $(GOVULNCHECK_VERSION)
-	$(GOVULNCHECK) ./...
+	$(GOVULNCHECK) -tags "$(SHAPE_$*)" ./...
 
 # audit checks the frontend dependency tree, and distinguishes the two ways it
 # can come back non-zero.
@@ -708,11 +789,11 @@ scan-image-sarif:
 # seconds, the browser suite takes a minute. One dependency graph, so shared
 # prerequisites are built once -- check-bundle-current reads the bundle from HEAD
 # rather than the working tree, so it does not care whether build has run yet.
-ci: fmt-check vet lint vulncheck gosec audit-report test test-extensions check-bundle-current build build-both integration-test test-e2e
+ci: fmt-check vet lint vulncheck gosec audit-report test test-fips test-extensions check-bundle-current build build-both integration-test test-e2e
 	@echo ""
 	@echo "CI pipeline passed."
 
-ci-fast: fmt-check vet lint vulncheck gosec audit-report test test-extensions check-bundle-current build build-both
+ci-fast: fmt-check vet lint vulncheck gosec audit-report test test-fips test-extensions check-bundle-current build build-both
 	@echo ""
 	@echo "CI (fast) passed. Container and browser suites were skipped."
 

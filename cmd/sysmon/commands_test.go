@@ -1,5 +1,3 @@
-//go:build !desktop
-
 package main
 
 import (
@@ -839,38 +837,6 @@ func TestCheckDesktopGUI_MissingLibsGivesInstallCommand(t *testing.T) {
 	}
 	if got.Fix == "" {
 		t.Error("no install command offered for a missing library")
-	}
-}
-
-// TestExplainNoGUI_NamesMissingLibraries verifies the fallback notice tells a
-// user exactly what to install rather than only that a GUI is unavailable.
-func TestExplainNoGUI_NamesMissingLibraries(t *testing.T) {
-	withMissingLibs(t, []collector.DesktopLib{
-		{SOName: "libgtk-3.so.0", Debian: "libgtk-3-0", Fedora: "gtk3", Arch: "gtk3"},
-	})
-
-	var buf bytes.Buffer
-	explainNoGUI(&buf)
-
-	out := buf.String()
-	for _, want := range []string{"No GUI in this build", "sysmon serve", "libgtk-3.so.0"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("notice missing %q; got:\n%s", want, out)
-		}
-	}
-}
-
-// TestExplainNoGUI_LibsPresentRecommendsDesktopBuild covers the other branch:
-// the libraries are there, so the answer is to build the desktop binary.
-func TestExplainNoGUI_LibsPresentRecommendsDesktopBuild(t *testing.T) {
-	withMissingLibs(t, nil)
-
-	var buf bytes.Buffer
-	explainNoGUI(&buf)
-
-	out := buf.String()
-	if !strings.Contains(out, "make build-desktop") {
-		t.Errorf("notice does not point at the desktop build; got:\n%s", out)
 	}
 }
 

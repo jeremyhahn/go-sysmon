@@ -20,20 +20,18 @@ import "github.com/jeremyhahn/go-sysmon/pkg/types"
 // cannot currently be built for a 32-bit target at all -- gpu.go imports NVML,
 // which does not compile there (#8) -- so "the unsupported path builds" was a
 // claim nothing could check. It was wrong when it was written: DiskCollector
-// carries a megaraidSessions field whose type lived only in the 64-bit file,
+// carried a megaraidSessions field whose type lived only in the 64-bit file,
 // so the stub target failed with `undefined: megaraidSession`.
 //
 // Selecting a file is not the same as compiling it, and `go list` only proved
 // the former. `go build -tags nomegaraid ./...` proves the latter, on any host.
 
-// megaraidSession is the type DiskCollector's field refers to. It is declared
-// here as well because that field is in disk.go, which has no build tag and is
-// therefore compiled on every target.
-type megaraidSession struct{}
+// megaraidCycle is the type of DiskCollector's megaraid field, which disk.go
+// declares on every target because it has no build tag. There are no
+// controller sessions here, so a cycle begins and ends without doing anything.
+type megaraidCycle struct{}
+
+func (megaraidCycle) begin() {}
+func (megaraidCycle) end()   {}
 
 func (c *DiskCollector) applyHardwareRAID(string, *types.DiskInfo) {}
-
-// beginMegaRAID and endMegaRAID bracket a collect cycle's controller sessions
-// on the supported targets, and do nothing here.
-func (c *DiskCollector) beginMegaRAID() {}
-func (c *DiskCollector) endMegaRAID()   {}

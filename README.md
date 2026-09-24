@@ -97,7 +97,7 @@ subcommand; only their runtime dependencies differ.
 
 | | `bin/sysmon` | `bin/sysmon-server` |
 |---|---|---|
-| Build tags | `desktop,production,webkit2_41,systray` | none |
+| Build tags | `desktop,production,webkit2_41,nvml,systray` | `prometheus,nvml` |
 | Shared libraries | **129** (GTK, WebKit, libsoup, …) | **3** (libc, ld.so, vdso) |
 | Size | ~22 MB | ~15 MB |
 | Native GUI window | yes | no |

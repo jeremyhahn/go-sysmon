@@ -48,12 +48,11 @@ type DiskCollector struct {
 	prevIO map[string]diskIOSnapshot
 	peaks  map[string]diskPeaks
 
-	// megaraidSessions holds the open management node for the collect cycle in
-	// progress, one per hardware RAID controller, and is nil outside a cycle.
-	// It is declared here rather than in the linux-only file so the struct has
-	// the same shape on every target; the field is simply unused where the
-	// passthrough is not built.
-	megaraidSessions map[uint16]*megaraidSession
+	// megaraid is the hardware RAID passthrough's state for the collect cycle
+	// in progress. Its type is declared per target, beside the code that uses
+	// it: the 64-bit Linux build keeps its controller sessions there, and every
+	// other target has an empty type whose begin and end do nothing.
+	megaraid megaraidCycle
 }
 
 // NewDiskCollector returns a new DiskCollector.
@@ -189,8 +188,8 @@ func (c *DiskCollector) Collect() error {
 
 	// One controller session for the whole cycle: the configuration is read
 	// once however many volumes are built on it.
-	c.beginMegaRAID()
-	defer c.endMegaRAID()
+	c.megaraid.begin()
+	defer c.megaraid.end()
 
 	var result []types.DiskInfo
 

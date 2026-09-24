@@ -39,6 +39,7 @@ when you need to know why a number says what it says.
 | Topic | What it covers |
 |-------|----------------|
 | [Where testing effort pays](testing/writing-tests.md) | Five rules learned the expensive way, with the bugs that taught them |
+| [Build shapes](testing/build-shapes.md) | Every build-tag set the project ships, and the gates that vet, lint and test each one |
 
 ## Building, testing, releasing
 

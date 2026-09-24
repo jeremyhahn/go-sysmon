@@ -1,5 +1,3 @@
-//go:build !desktop
-
 package main
 
 import (
@@ -18,46 +16,6 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
-
-// ---- non-desktop stubs ----------------------------------------------------
-
-// TestLaunchGUI_ReportsUnavailable verifies the non-desktop build reports the
-// typed error that runRoot uses to fall through to the CLI.
-func TestLaunchGUI_ReportsUnavailable(t *testing.T) {
-	err := launchGUI()
-	if err == nil {
-		t.Fatal("launchGUI() = nil, want a GUIUnavailableError in a non-desktop build")
-	}
-	var guiErr *types.GUIUnavailableError
-	if !errors.As(err, &guiErr) {
-		t.Errorf("launchGUI() error = %T (%v), want *types.GUIUnavailableError", err, err)
-	}
-}
-
-// TestEmitSnapshot_NoOp verifies the stub emitter accepts any input without
-// panicking, including a nil snapshot.
-func TestEmitSnapshot_NoOp(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("emitSnapshot panicked: %v", r)
-		}
-	}()
-	emitSnapshot(context.Background(), &types.Snapshot{})
-	emitSnapshot(context.Background(), nil)
-	emitSnapshot(nil, nil) //nolint:staticcheck // a nil context must not panic
-}
-
-// TestSystrayStubs_NoOp verifies the tray stubs are safe no-ops, including
-// with nil callbacks.
-func TestSystrayStubs_NoOp(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("systray stub panicked: %v", r)
-		}
-	}()
-	startSystray(nil, nil, nil)
-	stopSystray()
-}
 
 // ---- newMonitorSnapshotter ------------------------------------------------
 
@@ -108,6 +66,11 @@ func TestMonitorBinding_StartupShutdown(t *testing.T) {
 		t.Fatalf("monitor.New: %v", err)
 	}
 	b := NewMonitorBinding(mon)
+	// startup also starts the frontend stream. This test is about the
+	// monitor's lifecycle, and the desktop build's emitter is the Wails
+	// runtime, which exits the process when handed a context the Wails
+	// lifecycle did not create -- so frames go nowhere here, in every shape.
+	b.emit = func(context.Context, string, []byte) {}
 
 	b.startup(context.Background())
 
@@ -157,25 +120,6 @@ func TestRunRoot_NoDisplayFallsBackToOverview(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("fixture-host")) {
 		t.Errorf("runRoot() did not render the overview; got:\n%s", buf.String())
-	}
-}
-
-// TestRunRoot_WithDisplayFallsBackWhenGUIUnavailable verifies that in a
-// non-desktop build a detected display still falls through to the overview,
-// because launchGUI reports GUIUnavailableError.
-func TestRunRoot_WithDisplayFallsBackWhenGUIUnavailable(t *testing.T) {
-	t.Setenv("DISPLAY", ":0")
-	resetGlobals(t)
-	withFixtureSnapshot(t, fixtureSnapshot(), nil)
-
-	var buf bytes.Buffer
-	cmd := newTestCmd(&buf)
-
-	if err := runRoot(cmd, nil); err != nil {
-		t.Fatalf("runRoot() error = %v, want nil", err)
-	}
-	if !bytes.Contains(buf.Bytes(), []byte("fixture-host")) {
-		t.Errorf("runRoot() did not fall back to the overview; got:\n%s", buf.String())
 	}
 }
 

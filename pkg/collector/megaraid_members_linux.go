@@ -266,31 +266,37 @@ func (s *megaraidSession) close() {
 	s.file = nil
 }
 
-// beginMegaRAID starts a collect cycle's controller sessions.
-func (c *DiskCollector) beginMegaRAID() {
-	c.megaraidSessions = make(map[uint16]*megaraidSession)
+// megaraidCycle holds the controller sessions of the collect cycle in
+// progress, one per hardware RAID controller. sessions is nil outside a cycle.
+type megaraidCycle struct {
+	sessions map[uint16]*megaraidSession
 }
 
-// endMegaRAID closes every controller opened during the cycle.
-func (c *DiskCollector) endMegaRAID() {
-	for _, s := range c.megaraidSessions {
+// begin starts a collect cycle's controller sessions.
+func (m *megaraidCycle) begin() {
+	m.sessions = make(map[uint16]*megaraidSession)
+}
+
+// end closes every controller opened during the cycle.
+func (m *megaraidCycle) end() {
+	for _, s := range m.sessions {
 		s.close()
 	}
-	c.megaraidSessions = nil
+	m.sessions = nil
 }
 
-// megaraidFor returns the session for one controller, opening it and reading
+// sessionFor returns the session for one controller, opening it and reading
 // its configuration the first time it is asked for in a cycle.
-func (c *DiskCollector) megaraidFor(hostNo uint16) *megaraidSession {
-	if c.megaraidSessions == nil {
-		c.megaraidSessions = make(map[uint16]*megaraidSession)
+func (m *megaraidCycle) sessionFor(hostNo uint16) *megaraidSession {
+	if m.sessions == nil {
+		m.sessions = make(map[uint16]*megaraidSession)
 	}
-	if s, ok := c.megaraidSessions[hostNo]; ok {
+	if s, ok := m.sessions[hostNo]; ok {
 		return s
 	}
 
 	s := &megaraidSession{}
-	c.megaraidSessions[hostNo] = s
+	m.sessions[hostNo] = s
 
 	f, err := openMegaRAIDNode()
 	if err != nil {
@@ -337,7 +343,7 @@ func (c *DiskCollector) applyHardwareRAID(name string, info *types.DiskInfo) {
 		return
 	}
 
-	session := c.megaraidFor(hostNo)
+	session := c.megaraid.sessionFor(hostNo)
 	if session.err != nil {
 		// One warning per controller per run, not one per disk per cycle: a
 		// controller that cannot be opened will not start working mid-run.

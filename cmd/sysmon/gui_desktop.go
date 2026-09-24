@@ -59,11 +59,13 @@ func launchGUI() error {
 			stopSystray()
 			binding.shutdown(ctx)
 		},
-		// When the tray is active, closing the window hides it instead of
+		// When the tray is running, closing the window hides it instead of
 		// terminating the application so that the user can reopen it from
-		// the tray.
+		// the tray. Asked of the tray itself rather than of --no-tray: a
+		// build without the systray tag has no tray to reopen the window
+		// from, whatever the flag says.
 		OnBeforeClose: func(ctx context.Context) (prevent bool) {
-			if !noTray {
+			if trayRunning() {
 				wailsruntime.WindowHide(ctx)
 				return true
 			}

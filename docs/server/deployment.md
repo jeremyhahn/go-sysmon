@@ -56,7 +56,9 @@ At run time the desktop binary needs the non-`-dev` equivalents:
 | `make dev`            | Wails dev mode, with hot reload                |
 
 `WITH_SYSTRAY=0` drops the tray from the desktop build. Tags are assembled as
-`desktop,production,webkit2_41`, plus `systray` unless disabled.
+`desktop,production,webkit2_41,nvml`, plus `systray` unless disabled. Without
+the tray, closing the window quits. Every tag set is vetted, linted and tested:
+see [build shapes](../testing/build-shapes.md).
 
 ### Testing
 
@@ -107,7 +109,7 @@ dashboard. They differ only in what they link.
 
 | | `bin/sysmon` | `bin/sysmon-server` |
 |---|---|---|
-| Build tags | `desktop,production,webkit2_41,systray` | none |
+| Build tags | `desktop,production,webkit2_41,nvml,systray` | `prometheus,nvml` |
 | Shared libraries | 129 (GTK, WebKit, libsoup, …) | 3 (libc, ld.so, vdso) |
 | Size | ~22 MB | ~15 MB |
 | Native GUI window | yes | no |
