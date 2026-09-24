@@ -8,7 +8,7 @@
 # The server is built in its own stage so the Cinnamon image does not carry a Go
 # toolchain and a C compiler. The Go version must satisfy the "go" directive in
 # go.mod, otherwise the toolchain has to be downloaded on every build.
-FROM golang:1.27.1-bookworm AS builder
+FROM golang:1.27.1-trixie AS builder
 
 WORKDIR /src
 
@@ -23,7 +23,7 @@ COPY . .
 # compile without it.
 RUN CGO_ENABLED=1 go build -o /out/sysmon-server ./cmd/sysmon
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 

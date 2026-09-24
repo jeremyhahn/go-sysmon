@@ -69,6 +69,8 @@ PKG_SERVER := ./pkg/server/...
 PKG_TYPES := ./pkg/types/...
 PKG_TSGEN := ./internal/tsgen/...
 PKG_BUILDTAGS := ./internal/buildtags/...
+PKG_PINS := ./internal/pins/...
+PKG_GITEA := ./internal/gitea/...
 PKG_CMD := ./cmd/sysmon/...
 
 FRONTEND_DIR := cmd/sysmon/frontend
@@ -83,17 +85,51 @@ DOCKER_IMAGE := go-sysmon-test
 # Analysis tool versions. This is the ONLY place they are pinned: `make lint`,
 # `make vulncheck` and `make gosec` refuse a binary built at any other version,
 # and every workflow installs through `make tools`, so a local run and CI run
-# the same tools. Pins are exact module versions, which Go checksums on install;
-# staying on the latest release means bumping them here (#183 automates that).
-GOLANGCI_LINT_VERSION := v2.13.2
+# the same tools. Pins are exact module versions, which Go checksums on install.
+#
+# Every pin is the latest stable release (owner rule 2026-09-22). `make
+# check-latest` fails when one is not, and the daily check-latest workflow files
+# an issue for it (#183).
+GOLANGCI_LINT_VERSION := v2.14.0
 ACTIONLINT_VERSION := v1.7.12
 GOSEC_VERSION := v2.29.0
 GOVULNCHECK_VERSION := v1.8.0
 
-GOLANGCI_LINT_PKG := github.com/golangci/golangci-lint/v2/cmd/golangci-lint
-ACTIONLINT_PKG := github.com/rhysd/actionlint/cmd/actionlint
-GOSEC_PKG := github.com/securego/gosec/v2/cmd/gosec
-GOVULNCHECK_PKG := golang.org/x/vuln/cmd/govulncheck
+# The module each tool is released from, which is what check-latest asks for
+# the latest version of, and the package inside it that is installed.
+GOLANGCI_LINT_MOD := github.com/golangci/golangci-lint/v2
+ACTIONLINT_MOD := github.com/rhysd/actionlint
+GOSEC_MOD := github.com/securego/gosec/v2
+GOVULNCHECK_MOD := golang.org/x/vuln
+
+GOLANGCI_LINT_PKG := $(GOLANGCI_LINT_MOD)/cmd/golangci-lint
+ACTIONLINT_PKG := $(ACTIONLINT_MOD)/cmd/actionlint
+GOSEC_PKG := $(GOSEC_MOD)/cmd/gosec
+GOVULNCHECK_PKG := $(GOVULNCHECK_MOD)/cmd/govulncheck
+
+# Base releases and Node.js. Go is pinned by go.mod's go directive, which the
+# workflows read through setup-go's go-version-file. Node.js is pinned in
+# NODE_VERSION_FILE, which setup-node reads through node-version-file. The
+# Debian and Ubuntu releases are pinned here. Dockerfiles cannot read any of
+# these, so each FROM repeats the release exactly, and `make check-pins`
+# fails when one disagrees. Each is the latest stable release -- for Node.js
+# the latest LTS, for Ubuntu the latest LTS -- and `make check-latest` fails
+# when one is not.
+NODE_VERSION_FILE := .node-version
+DEBIAN_RELEASE := trixie
+UBUNTU_RELEASE := 26.04
+# HOSTED_RUNNER_RELEASE is the Ubuntu release of every versioned GitHub-hosted
+# runner label the workflows use (ubuntu-26.04, ubuntu-26.04-arm): the newest
+# generally available one in actions/runner-images, which lags Ubuntu's own
+# releases, so it is its own pin. ubuntu-latest is not one of these: on the
+# Gitea plane it is a self-hosted runner label, which is company infra.
+HOSTED_RUNNER_RELEASE := 26.04
+PIN_ARGS = -node-file $(NODE_VERSION_FILE) -debian $(DEBIAN_RELEASE) -ubuntu $(UBUNTU_RELEASE) -hosted-runner $(HOSTED_RUNNER_RELEASE)
+
+# PINNED_TOOLS names every pinned tool by its variable prefix; check-latest
+# checks each one. A tool pinned above and missing here is a tool nothing keeps
+# current, so add it to both.
+PINNED_TOOLS := GOLANGCI_LINT ACTIONLINT GOSEC GOVULNCHECK
 
 # TOOL verifies a binary against its pin, and installs the pin when asked.
 TOOL := ./scripts/tool.sh
@@ -136,7 +172,7 @@ INTERVAL ?= 1000
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
         build-both generate check-generated check-ts check-errcheck-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
-        check-build-tags test-fips \
+        check-build-tags test-fips check-pins check-latest test-pins coverage-pins test-gitea coverage-gitea \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -311,6 +347,12 @@ test-tsgen:
 test-buildtags:
 	go test $(PKG_BUILDTAGS) -v -count=1
 
+test-pins:
+	go test $(PKG_PINS) -v -count=1
+
+test-gitea:
+	go test $(PKG_GITEA) -v -count=1
+
 ## Coverage targets
 
 coverage-cli:
@@ -340,6 +382,14 @@ coverage-tsgen:
 coverage-buildtags:
 	go test $(PKG_BUILDTAGS) -coverprofile=/tmp/coverage-buildtags.out -count=1
 	go tool cover -func=/tmp/coverage-buildtags.out
+
+coverage-pins:
+	go test $(PKG_PINS) -coverprofile=/tmp/coverage-pins.out -count=1
+	go tool cover -func=/tmp/coverage-pins.out
+
+coverage-gitea:
+	go test $(PKG_GITEA) -coverprofile=/tmp/coverage-gitea.out -count=1
+	go tool cover -func=/tmp/coverage-gitea.out
 
 coverage-metrics:
 	go test $(PKG_METRICS) -coverprofile=/tmp/coverage-metrics.out -count=1
@@ -432,7 +482,7 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-errcheck-nolint check-ts \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-pins check-errcheck-nolint check-ts \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
@@ -570,7 +620,7 @@ lint-workflows:
 
 # fmt-check fails when any tracked Go file is not gofmt-clean, listing offenders.
 fmt-check:
-	@unformatted=$$(gofmt -l cmd pkg test); \
+	@unformatted=$$(gofmt -l cmd internal pkg test); \
 	if [ -n "$$unformatted" ]; then \
 		echo "The following files are not gofmt-clean:"; \
 		echo "$$unformatted"; \
@@ -580,7 +630,7 @@ fmt-check:
 	@echo "gofmt: clean"
 
 fmt:
-	gofmt -w cmd pkg test
+	gofmt -w cmd internal pkg test
 
 # vet runs in every shape, test files included. The nomegaraid shape is here
 # because the hardware RAID passthrough is built only for the 64-bit ABI its
@@ -593,6 +643,24 @@ vet: $(addprefix vet-shape-,$(ALL_SHAPES))
 
 vet-shape-%:
 	go vet -tags "$(SHAPE_$*)" $(PKG_ALL)
+
+# check-pins fails when any version reference disagrees with the pin it
+# repeats: a golang, node, debian or ubuntu image tag in a Dockerfile, compose
+# file or workflow, or an actions/setup-go or actions/setup-node step. Offline,
+# so it runs in lint. See docs/testing/toolchain.md.
+check-pins:
+	go run ./cmd/checkpins $(PIN_ARGS)
+
+# check-latest fails when any pin is not at its latest stable release: Go,
+# each pinned tool, Node.js LTS, the Debian and Ubuntu releases, and every
+# action the workflows use. It needs the network, so it is NOT part of lint -- an upstream release
+# must never fail an unrelated PR. The daily check-latest workflow runs it and
+# files an issue instead. Exit 1 means something lags; 2 means an item could
+# not be checked, which is never read as current.
+CHECK_LATEST_ARGS = $(PIN_ARGS) $(foreach t,$(PINNED_TOOLS),-tool $(call tool_name,$(t))=$($(t)_MOD)@$($(t)_VERSION))
+tool_name = $(notdir $($(1)_PKG))
+check-latest:
+	go run ./cmd/checklatest $(CHECK_LATEST_ARGS) $(CHECK_LATEST_FLAGS)
 
 # check-build-tags fails when a build constraint names a tag no shape sets --
 # a file no gate compiles -- or when the Dockerfile builds the image with tags

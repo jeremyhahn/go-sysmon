@@ -1,0 +1,80 @@
+name: Check Latest
+
+# Owner rule 2026-09-22: always the latest stable Go, golangci-lint and dev
+# tools. Nothing noticed when PR #180 was about to ship Go 1.27.0 with 1.27.1
+# out, or when CI sat two releases behind on actionlint (#183). This workflow is
+# what notices: once a day it runs `make check-latest`, and when any pin lags --
+# Go, a dev tool, Node.js LTS, the Debian or Ubuntu base release, an action a
+# workflow uses, or a GitHub-hosted runner label -- it files ONE task:ready issue as the project agent, none
+# while an earlier one is still open.
+#
+# It never fails an unrelated PR. An upstream release is not a defect in
+# anyone's change, so the online check is not in `make lint` or ci.yml, and
+# this workflow runs on a PR only when the PR changes the check itself -- and
+# then as a dry run, which prints the issue it would file and files nothing.
+# (The offline half, `make check-pins`, IS in lint: disagreeing pins are a
+# defect in the change that introduced them.)
+#
+# The run goes red only when an item could not be checked (exit 2): a lag is
+# reported through the issue, but a check that cannot reach go.dev or the
+# module proxy must not look like "everything is current".
+
+on:
+  schedule:
+    # 05:17 UTC daily: clear of the nightly desktop run at 04:00, and off the
+    # top of the hour when scheduled jobs pile up.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print the issue that would be filed instead of filing it
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - '.github/workflows/check-latest.yml'
+      - 'cmd/checklatest/**'
+      - 'internal/pins/**'
+      - 'internal/gitea/**'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: check-latest-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION_FILE: go.mod
+
+jobs:
+  check-latest:
+    name: Go and dev tools at their latest release
+    # The issue is filed through the Gitea API as the project agent. The
+    # github.com mirror has neither that API nor that token, so the job does
+    # not run there rather than failing there.
+    if: github.server_url != 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ env.GO_VERSION_FILE }}
+
+      - name: Check, and file an issue for anything that lags
+        env:
+          # The project agent's token, as automerge.yml uses: the issue is the
+          # agent's inbound work, filed under its own identity. checklatest
+          # refuses to run with it empty rather than calling the API
+          # anonymously.
+          GITEA_TOKEN: ${{ secrets.AGENT_TOKEN }}
+          GITEA_API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRY_RUN: ${{ github.event_name == 'pull_request' || github.event.inputs.dry_run == 'true' }}
+        run: |
+          set -euo pipefail
+          make check-latest CHECK_LATEST_FLAGS="-file-issue -dry-run=$DRY_RUN -gitea-api $GITEA_API -repo $REPO -run-url $RUN_URL"

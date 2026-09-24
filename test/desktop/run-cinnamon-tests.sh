@@ -458,6 +458,15 @@ gsettings set org.cinnamon enabled-applets "['panel1:right:0:${UUID}:0']" ||
 # conflict.
 gsettings set org.cinnamon.desktop.keybindings.media-keys pause "[]" ||
     abort "could not clear the conflicting media-keys pause binding"
+# Cinnamon's polkit authentication agent registers for the logind session of
+# its own process. A container has no logind, so the registration cannot
+# succeed: on polkit 127 (Ubuntu 26.04) it fails with "No session for pid N"
+# and Cinnamon logs "Failed to register Polkit Agent" on every start. The
+# agent only answers authorisation prompts (pkexec, a udisks mount by a
+# non-root user), and no test raises one, so it is switched off through
+# Cinnamon's own setting rather than exempted from the log check.
+gsettings set org.cinnamon enable-polkit-agent false ||
+    abort "could not disable Cinnamon's polkit agent"
 # The server deliberately listens on the applet's default address, so the test
 # does not depend on Cinnamon's settings plumbing to make a connection. The
 # settings file is still written -- to both the historical and the current

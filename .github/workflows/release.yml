@@ -15,7 +15,10 @@ permissions:
 
 env:
   GO_VERSION_FILE: go.mod
-  NODE_VERSION: '24'
+  # .node-version pins the exact Node.js release (the latest LTS), the same
+  # way go.mod pins Go; the Dockerfile's node image repeats it, and
+  # `make check-pins` fails if the two disagree.
+  NODE_VERSION_FILE: .node-version
 
 jobs:
   verify:
@@ -31,7 +34,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: ${{ env.NODE_VERSION_FILE }}
           cache: npm
           cache-dependency-path: cmd/sysmon/frontend/package-lock.json
 
@@ -89,7 +92,7 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
 
     # Whether this leg runs on the architecture it targets. Off GitHub there is
     # no arm64 runner, so the arm64 leg lands on an amd64 host: installing
@@ -112,7 +115,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: env.NATIVE == 'true'
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: ${{ env.NODE_VERSION_FILE }}
           cache: npm
           cache-dependency-path: cmd/sysmon/frontend/package-lock.json
 
@@ -187,7 +190,7 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v7
 
@@ -417,7 +420,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version-file: ${{ env.NODE_VERSION_FILE }}
 
       - name: Install desktop build dependencies
         run: |

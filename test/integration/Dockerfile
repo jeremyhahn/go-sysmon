@@ -1,6 +1,6 @@
 # The image Go version is pinned to match go.mod's go directive exactly, so
 # toolchain has to be downloaded on every build.
-FROM golang:1.27.1-bookworm
+FROM golang:1.27.1-trixie
 
 # Install runtime tools used by the collector (smartmontools, dmidecode).
 RUN apt-get update \

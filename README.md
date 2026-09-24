@@ -118,7 +118,7 @@ Deploy `sysmon-server` to servers; use `sysmon` on a workstation.
 ### Requirements
 
 - **Go** — the version pinned by the `go` directive in `go.mod` (downloaded automatically)
-- **Node.js 22+** — builds the embedded web frontend
+- **Node.js**, the LTS release in `.node-version` — builds the embedded web frontend
 - **CGO** — mandatory. `pkg/collector` imports NVIDIA `go-nvml`, which does not compile with `CGO_ENABLED=0`
 - **Docker** — only for `make integration-test`
 
@@ -258,7 +258,8 @@ make test            # unit tests with the race detector
 make integration-test# end-to-end CLI tests in a container
 make test-e2e        # Playwright browser tests
 make tools           # install the pinned analysis tools (golangci-lint, actionlint, gosec, govulncheck)
-make lint            # gofmt, go vet, golangci-lint, and the Playwright spec type-check
+make lint            # gofmt, go vet, golangci-lint, check-pins, and the Playwright spec type-check
+make check-latest    # online: fail when any pin (Go, tools, Node.js, base images, actions) is behind its latest release
 make vulncheck       # govulncheck: dependencies and the standard library
 make audit           # npm audit for the frontend
 make coverage-collector   # per-package coverage (also -cli, -monitor, -server, -types)
@@ -271,7 +272,9 @@ Analysis tool versions are pinned once, at the top of the `Makefile`
 (`GOLANGCI_LINT_VERSION` and friends). `make lint`, `make vulncheck` and
 `make gosec` refuse a binary built at any other version, and CI installs through
 the same `make tools` targets, so local and CI runs use identical tools. To move
-a tool to a new release, bump its pin.
+a tool to a new release, bump its pin. Every pin is the latest stable release:
+`make check-latest` fails when one is not, and a daily workflow files an issue
+for it. See [docs/testing/toolchain.md](docs/testing/toolchain.md).
 
 ### Project layout
 

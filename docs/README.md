@@ -40,6 +40,7 @@ when you need to know why a number says what it says.
 |-------|----------------|
 | [Where testing effort pays](testing/writing-tests.md) | Five rules learned the expensive way, with the bugs that taught them |
 | [Build shapes](testing/build-shapes.md) | Every build-tag set the project ships, and the gates that vet, lint and test each one |
+| [Latest toolchain](testing/toolchain.md) | Keeping Go, the dev tools, Node.js, the base images and the actions on their latest stable release, and the daily check that files an issue when one falls behind |
 
 ## Building, testing, releasing
 

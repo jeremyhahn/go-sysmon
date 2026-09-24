@@ -8,7 +8,7 @@ That is the short version. The rest of this page is the detail.
 ## Prerequisites
 
 - **Go** — whatever `go.mod`'s `toolchain` directive pins. Go downloads it for you.
-- **Node.js 22+** — builds the embedded frontend.
+- **Node.js**, the LTS release in `.node-version` — builds the embedded frontend.
 - **CGO** — not optional. `pkg/collector` imports NVIDIA's `go-nvml`, which does
   not compile with `CGO_ENABLED=0`.
 - **Linux with glibc.**
@@ -80,7 +80,8 @@ shipped undetected while it did not.
 | Target            | What it does                                     |
 |-------------------|--------------------------------------------------|
 | `make tools`      | Installs any analysis tool not at its Makefile pin |
-| `make lint`       | gofmt, `go vet`, golangci-lint, and the Playwright spec type-check |
+| `make lint`       | gofmt, `go vet`, golangci-lint, `check-pins`, and the Playwright spec type-check |
+| `make check-latest` | Online: fails when any pin (Go, a tool, Node.js, a base image, an action) is behind its latest stable release ([toolchain](../testing/toolchain.md)) |
 | `make fmt`        | Rewrites files with gofmt                        |
 | `make vulncheck`  | govulncheck across dependencies and the stdlib   |
 | `make audit`      | `npm audit` on the frontend                      |
