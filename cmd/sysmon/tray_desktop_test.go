@@ -4,63 +4,82 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"image"
 	"image/color"
 	"image/png"
+	"log/slog"
+	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// TestFmtBytes verifies each unit boundary: a value just below a unit stays in
-// the smaller one, and the unit's own size switches to it.
-func TestFmtBytes(t *testing.T) {
-	tests := []struct {
-		n    uint64
-		want string
-	}{
-		{0, "0 B"},
-		{1, "1 B"},
-		{1023, "1023 B"},
-		{1024, "1.0 KB"},
-		{1536, "1.5 KB"},
-		{1 << 20, "1.0 MB"},
-		{1 << 30, "1.0 GB"},
-		{12 << 30, "12.0 GB"},
-		{1 << 40, "1.0 TB"},
-		{^uint64(0), "16777216.0 TB"},
+// TestNewTrayMenuTitles pins the tray's menu text: the CPU average across
+// cores, the memory, swap and load lines, and one line per GPU, formatted with
+// the CLI's byte and percentage formatters.
+func TestNewTrayMenuTitles(t *testing.T) {
+	snap := &types.Snapshot{
+		CPUs: []types.CPUInfo{{UsagePercent: 10}, {UsagePercent: 35}},
+		Memory: types.MemoryInfo{
+			UsedBytes:      1536 << 20,
+			TotalBytes:     16 << 30,
+			UsedPercent:    9.375,
+			SwapUsedBytes:  0,
+			SwapTotalBytes: 1023,
+			SwapPercent:    0,
+		},
+		LoadAvg: types.LoadAverage{Load1: 0.5, Load5: 1.25, Load15: 2},
+		GPUs: []types.GPUInfo{
+			{GPUUtilPercent: 42.26, MemoryPercent: 100},
+			{GPUUtilPercent: 0, MemoryPercent: 3.14},
+		},
 	}
-	for _, tt := range tests {
-		if got := fmtBytes(tt.n); got != tt.want {
-			t.Errorf("fmtBytes(%d) = %q, want %q", tt.n, got, tt.want)
-		}
+
+	got := newTrayMenuTitles(snap)
+	want := trayMenuTitles{
+		CPU:  "CPU:  22.5%",
+		RAM:  "RAM:  1.5 GB / 16.0 GB (9.4%)",
+		Swap: "Swap: 0 B / 1023 B (0.0%)",
+		Load: "Load: 0.50 / 1.25 / 2.00",
+		GPUs: []string{"GPU0: 42.3%  mem 100.0%", "GPU1: 0.0%  mem 3.1%"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("newTrayMenuTitles() =\n%#v\nwant\n%#v", got, want)
 	}
 }
 
-// TestFmtPercent verifies one decimal place, including rounding and values the
-// kernel can report outside 0-100 on an oversubscribed counter.
-func TestFmtPercent(t *testing.T) {
-	tests := []struct {
-		v    float64
-		want string
-	}{
-		{0, "0.0%"},
-		{42.25, "42.2%"},
-		{42.26, "42.3%"},
-		{100, "100.0%"},
-		{-1, "-1.0%"},
+// TestNewTrayMenuTitles_EmptySnapshot verifies a snapshot with no CPUs and no
+// GPUs -- the first one on a host whose collectors have not reported yet --
+// reads as zero rather than dividing by zero, and adds no GPU lines.
+func TestNewTrayMenuTitles_EmptySnapshot(t *testing.T) {
+	got := newTrayMenuTitles(&types.Snapshot{})
+	if got.CPU != "CPU:  0.0%" {
+		t.Errorf("CPU = %q, want %q", got.CPU, "CPU:  0.0%")
 	}
-	for _, tt := range tests {
-		if got := fmtPercent(tt.v); got != tt.want {
-			t.Errorf("fmtPercent(%v) = %q, want %q", tt.v, got, tt.want)
-		}
+	if got.RAM != "RAM:  0 B / 0 B (0.0%)" {
+		t.Errorf("RAM = %q, want %q", got.RAM, "RAM:  0 B / 0 B (0.0%)")
+	}
+	if len(got.GPUs) != 0 {
+		t.Errorf("GPUs = %q, want none", got.GPUs)
 	}
 }
 
-// TestGenerateTrayIcon verifies the icon is a decodable 22x22 PNG with the
-// monitor drawn where the tray expects it and the corners left transparent.
-func TestGenerateTrayIcon(t *testing.T) {
-	img, err := png.Decode(bytes.NewReader(generateTrayIcon()))
+// decodeIcon decodes a PNG tray icon, failing the test if it is not one.
+func decodeIcon(t *testing.T, icon []byte) image.Image {
+	t.Helper()
+	img, err := png.Decode(bytes.NewReader(icon))
 	if err != nil {
 		t.Fatalf("decode tray icon: %v", err)
 	}
+	return img
+}
+
+// TestDrawTrayIcon verifies the icon is 22x22 with the monitor drawn where the
+// tray expects it and the corners left transparent.
+func TestDrawTrayIcon(t *testing.T) {
+	img := drawTrayIcon()
 	if b := img.Bounds(); b.Dx() != 22 || b.Dy() != 22 {
 		t.Fatalf("icon is %dx%d, want 22x22", b.Dx(), b.Dy())
 	}
@@ -79,6 +98,89 @@ func TestGenerateTrayIcon(t *testing.T) {
 		if got := color.RGBAModel.Convert(img.At(p.x, p.y)).(color.RGBA); got != p.want {
 			t.Errorf("%s pixel (%d,%d) = %v, want %v", p.name, p.x, p.y, got, p.want)
 		}
+	}
+}
+
+// TestFallbackTrayIcon_MatchesDrawnIcon verifies the embedded fallback is the
+// drawn icon pixel for pixel, so an encode failure changes nothing the user
+// sees and a redrawn icon cannot ship with a stale fallback.
+func TestFallbackTrayIcon_MatchesDrawnIcon(t *testing.T) {
+	fallback := decodeIcon(t, fallbackTrayIcon)
+	drawn := drawTrayIcon()
+	if fallback.Bounds() != drawn.Bounds() {
+		t.Fatalf("fallback bounds = %v, drawn = %v", fallback.Bounds(), drawn.Bounds())
+	}
+	b := drawn.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			got := color.RGBAModel.Convert(fallback.At(x, y))
+			want := color.RGBAModel.Convert(drawn.At(x, y))
+			if got != want {
+				t.Fatalf("fallback pixel (%d,%d) = %v, drawn = %v", x, y, got, want)
+			}
+		}
+	}
+}
+
+// TestEncodeTrayIcon verifies the drawn icon encodes to a PNG that decodes back
+// to the same size.
+func TestEncodeTrayIcon(t *testing.T) {
+	icon, err := encodeTrayIcon(drawTrayIcon())
+	if err != nil {
+		t.Fatalf("encodeTrayIcon() error = %v", err)
+	}
+	if b := decodeIcon(t, icon).Bounds(); b.Dx() != 22 || b.Dy() != 22 {
+		t.Errorf("encoded icon is %dx%d, want 22x22", b.Dx(), b.Dy())
+	}
+}
+
+// TestEncodeTrayIcon_RejectedImage verifies an image the PNG encoder refuses --
+// one with no pixels -- is reported as a TrayIconEncodeError that carries the
+// encoder's error.
+func TestEncodeTrayIcon_RejectedImage(t *testing.T) {
+	icon, err := encodeTrayIcon(image.NewRGBA(image.Rectangle{}))
+	var encErr *types.TrayIconEncodeError
+	if !errors.As(err, &encErr) {
+		t.Fatalf("encodeTrayIcon() error = %T (%v), want *types.TrayIconEncodeError", err, err)
+	}
+	if encErr.Cause == nil {
+		t.Error("TrayIconEncodeError.Cause = nil, want the encoder's error")
+	}
+	if icon != nil {
+		t.Errorf("encodeTrayIcon() icon = %d bytes, want nil on error", len(icon))
+	}
+}
+
+// TestTrayIcon_Encodes verifies a drawable icon is used as drawn and nothing
+// is logged.
+func TestTrayIcon_Encodes(t *testing.T) {
+	var logs bytes.Buffer
+	icon := trayIcon(drawTrayIcon(), slog.New(slog.NewTextHandler(&logs, nil)))
+
+	want, err := encodeTrayIcon(drawTrayIcon())
+	if err != nil {
+		t.Fatalf("encodeTrayIcon() error = %v", err)
+	}
+	if !bytes.Equal(icon, want) {
+		t.Error("trayIcon() did not return the encoded drawn icon")
+	}
+	if logs.Len() != 0 {
+		t.Errorf("trayIcon() logged %q, want nothing", logs.String())
+	}
+}
+
+// TestTrayIcon_EncodeFailureFallsBack verifies an icon that cannot be encoded
+// is replaced by the embedded fallback and the failure is logged with its
+// cause, rather than the tray showing a blank icon with no signal.
+func TestTrayIcon_EncodeFailureFallsBack(t *testing.T) {
+	var logs bytes.Buffer
+	icon := trayIcon(image.NewRGBA(image.Rectangle{}), slog.New(slog.NewTextHandler(&logs, nil)))
+
+	if !bytes.Equal(icon, fallbackTrayIcon) {
+		t.Error("trayIcon() did not return the embedded fallback icon")
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "tray icon encode") {
+		t.Errorf("trayIcon() logged %q, want a warning carrying the encode error", logs.String())
 	}
 }
 

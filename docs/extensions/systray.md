@@ -54,6 +54,17 @@ Drawn at runtime in pure Go: a 22x22 PNG, green monitor outline, grey stand. No
 icon files to install, nothing to go missing when the binary is copied to
 another machine.
 
+If the PNG encoder rejects the drawn image, the failure is logged as a warning
+carrying a `TrayIconEncodeError`, and the tray shows `cmd/sysmon/trayicon.png`
+instead, which is compiled into the binary. That file is the same icon, pixel
+for pixel, and a test fails if the drawing and the file ever differ. So an
+encode failure never shows a blank or truncated icon, and it never happens
+silently.
+
+The menu text uses the CLI's own formatters (`cli.FormatBytes`,
+`cli.FormatPercent`, `cli.AverageCPUUsage`), so the tray and `sysmon memory`
+print the same value the same way.
+
 ## How it works
 
 1. `startSystray` runs the tray in a goroutine via `fyne.io/systray`.

@@ -130,6 +130,20 @@ func (e *GUIUnavailableError) Error() string {
 	return "GUI unavailable: binary built without desktop support"
 }
 
+// TrayIconEncodeError indicates the desktop tray icon could not be encoded
+// as a PNG.
+type TrayIconEncodeError struct {
+	Cause error
+}
+
+func (e *TrayIconEncodeError) Error() string {
+	return "tray icon encode: " + e.Cause.Error()
+}
+
+func (e *TrayIconEncodeError) Unwrap() error {
+	return e.Cause
+}
+
 // SysfsReadError indicates a failure reading a sysfs file.
 type SysfsReadError struct {
 	Path  string

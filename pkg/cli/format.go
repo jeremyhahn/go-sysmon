@@ -14,8 +14,8 @@ const (
 	nvmeDataUnitBytes = 512_000
 )
 
-// formatBytes converts a byte count to a human-readable string.
-func formatBytes(n uint64) string {
+// FormatBytes converts a byte count to a human-readable string.
+func FormatBytes(n uint64) string {
 	const (
 		kb = 1024
 		mb = kb * 1024
@@ -58,8 +58,8 @@ func formatDuration(seconds uint64) string {
 	return fmt.Sprintf("%dm", mins)
 }
 
-// formatPercent formats a float64 as a percentage string.
-func formatPercent(v float64) string {
+// FormatPercent formats a float64 as a percentage with one decimal place.
+func FormatPercent(v float64) string {
 	return fmt.Sprintf("%.1f%%", v)
 }
 
@@ -103,7 +103,7 @@ func formatHours(hours uint64) string {
 // formatDataUnits converts NVMe data units (each = 512,000 bytes) to a
 // human-readable byte string.
 func formatDataUnits(units uint64) string {
-	return formatBytes(units * nvmeDataUnitBytes)
+	return FormatBytes(units * nvmeDataUnitBytes)
 }
 
 // formatTable writes a simple column-aligned table to w.

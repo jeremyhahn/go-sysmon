@@ -357,6 +357,7 @@ and falls back to the CLI overview rather than exiting.
 | Type                        | Description                                    |
 |-----------------------------|------------------------------------------------|
 | `GUIUnavailableError`       | GUI cannot launch (stub build, no display)     |
+| `TrayIconEncodeError`       | Tray icon could not be encoded as a PNG        |
 | `ServerStartError`          | HTTP server failed to start                    |
 | `CollectorError`            | A sub-collector encountered an error           |
 | `InvalidIntervalError`      | Polling interval is zero or negative           |

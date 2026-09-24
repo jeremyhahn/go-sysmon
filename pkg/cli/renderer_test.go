@@ -705,17 +705,17 @@ func TestAverageCPUUsage(t *testing.T) {
 			{UsagePercent: 10},
 			{UsagePercent: 30},
 		}
-		got := averageCPUUsage(cpus)
+		got := AverageCPUUsage(cpus)
 		if got != 20.0 {
-			t.Errorf("averageCPUUsage = %v, want 20.0", got)
+			t.Errorf("AverageCPUUsage = %v, want 20.0", got)
 		}
 	})
 
 	t.Run("empty slice returns zero", func(t *testing.T) {
 		t.Parallel()
-		got := averageCPUUsage(nil)
+		got := AverageCPUUsage(nil)
 		if got != 0 {
-			t.Errorf("averageCPUUsage(nil) = %v, want 0", got)
+			t.Errorf("AverageCPUUsage(nil) = %v, want 0", got)
 		}
 	})
 }

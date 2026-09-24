@@ -4,14 +4,17 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"log/slog"
 	"sync/atomic"
 
 	"fyne.io/systray"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/cli"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -60,7 +63,7 @@ func trayRunning() bool {
 // onTrayReady is called by systray once the tray icon is initialised. It
 // builds the menu, subscribes to the monitor, and drives the update loop.
 func onTrayReady(mon *monitor.Monitor, showWindow func(), quit func(), stopCh <-chan struct{}) {
-	systray.SetIcon(generateTrayIcon())
+	systray.SetIcon(trayIcon(drawTrayIcon(), slog.Default()))
 	systray.SetTooltip("System Monitor")
 
 	// Stat display items (read-only).
@@ -114,6 +117,53 @@ func onTrayReady(mon *monitor.Monitor, showWindow func(), quit func(), stopCh <-
 	}()
 }
 
+// trayMenuTitles holds the title of every stat item in the tray menu for one
+// snapshot.
+type trayMenuTitles struct {
+	CPU  string
+	RAM  string
+	Swap string
+	Load string
+	// GPUs has one title per GPU in the snapshot, in snapshot order.
+	GPUs []string
+}
+
+// newTrayMenuTitles formats snap into the tray menu's item titles, using the
+// same byte and percentage formatting as the CLI.
+func newTrayMenuTitles(snap *types.Snapshot) trayMenuTitles {
+	titles := trayMenuTitles{
+		CPU: "CPU:  " + cli.FormatPercent(cli.AverageCPUUsage(snap.CPUs)),
+		RAM: fmt.Sprintf(
+			"RAM:  %s / %s (%s)",
+			cli.FormatBytes(snap.Memory.UsedBytes),
+			cli.FormatBytes(snap.Memory.TotalBytes),
+			cli.FormatPercent(snap.Memory.UsedPercent),
+		),
+		Swap: fmt.Sprintf(
+			"Swap: %s / %s (%s)",
+			cli.FormatBytes(snap.Memory.SwapUsedBytes),
+			cli.FormatBytes(snap.Memory.SwapTotalBytes),
+			cli.FormatPercent(snap.Memory.SwapPercent),
+		),
+		Load: fmt.Sprintf(
+			"Load: %.2f / %.2f / %.2f",
+			snap.LoadAvg.Load1,
+			snap.LoadAvg.Load5,
+			snap.LoadAvg.Load15,
+		),
+		GPUs: make([]string, len(snap.GPUs)),
+	}
+	for i, gpu := range snap.GPUs {
+		titles.GPUs[i] = fmt.Sprintf(
+			"GPU%d: %s  mem %s",
+			i,
+			cli.FormatPercent(gpu.GPUUtilPercent),
+			cli.FormatPercent(gpu.MemoryPercent),
+		)
+	}
+	return titles
+}
+
 // updateTrayItems refreshes the title of each stat menu item from snap.
 // gpuItems is grown on the first snapshot that contains GPUs; subsequent
 // calls update the existing items in-place.
@@ -122,39 +172,14 @@ func updateTrayItems(
 	itemCPU, itemRAM, itemSwap, itemLoad *systray.MenuItem,
 	gpuItems *[]*systray.MenuItem,
 ) {
-	// Aggregate CPU usage across all cores.
-	var totalCPU float64
-	if len(snap.CPUs) > 0 {
-		for i := range snap.CPUs {
-			totalCPU += snap.CPUs[i].UsagePercent
-		}
-		totalCPU /= float64(len(snap.CPUs))
-	}
-	itemCPU.SetTitle(fmt.Sprintf("CPU:  %s", fmtPercent(totalCPU)))
+	titles := newTrayMenuTitles(snap)
+	itemCPU.SetTitle(titles.CPU)
+	itemRAM.SetTitle(titles.RAM)
+	itemSwap.SetTitle(titles.Swap)
+	itemLoad.SetTitle(titles.Load)
 
-	itemRAM.SetTitle(fmt.Sprintf(
-		"RAM:  %s / %s (%s)",
-		fmtBytes(snap.Memory.UsedBytes),
-		fmtBytes(snap.Memory.TotalBytes),
-		fmtPercent(snap.Memory.UsedPercent),
-	))
-
-	itemSwap.SetTitle(fmt.Sprintf(
-		"Swap: %s / %s (%s)",
-		fmtBytes(snap.Memory.SwapUsedBytes),
-		fmtBytes(snap.Memory.SwapTotalBytes),
-		fmtPercent(snap.Memory.SwapPercent),
-	))
-
-	itemLoad.SetTitle(fmt.Sprintf(
-		"Load: %.2f / %.2f / %.2f",
-		snap.LoadAvg.Load1,
-		snap.LoadAvg.Load5,
-		snap.LoadAvg.Load15,
-	))
-
-	// Grow GPU item slice to match the number of GPUs in this snapshot.
-	for i := len(*gpuItems); i < len(snap.GPUs); i++ {
+	// Grow the GPU item slice to match the number of GPUs in this snapshot.
+	for i := len(*gpuItems); i < len(titles.GPUs); i++ {
 		item := systray.AddMenuItem(
 			fmt.Sprintf("GPU%d: --", i),
 			fmt.Sprintf("GPU %d usage", i),
@@ -163,52 +188,43 @@ func updateTrayItems(
 		*gpuItems = append(*gpuItems, item)
 	}
 
-	for i, gpu := range snap.GPUs {
-		if i >= len(*gpuItems) {
-			break
-		}
-		(*gpuItems)[i].SetTitle(fmt.Sprintf(
-			"GPU%d: %s  mem %s",
-			i,
-			fmtPercent(gpu.GPUUtilPercent),
-			fmtPercent(gpu.MemoryPercent),
-		))
+	for i, title := range titles.GPUs {
+		(*gpuItems)[i].SetTitle(title)
 	}
 }
 
-// fmtPercent formats a float64 as a one-decimal-place percentage string.
-func fmtPercent(v float64) string {
-	return fmt.Sprintf("%.1f%%", v)
-}
+// fallbackTrayIcon is the tray icon shipped as a file, shown when the drawn
+// icon cannot be encoded. It is the PNG encoding of drawTrayIcon, pinned by a
+// test so the two cannot drift apart.
+//
+//go:embed trayicon.png
+var fallbackTrayIcon []byte
 
-// fmtBytes formats a byte count as a human-readable string.
-func fmtBytes(n uint64) string {
-	const (
-		kb = 1024
-		mb = kb * 1024
-		gb = mb * 1024
-		tb = gb * 1024
-	)
-	switch {
-	case n == 0:
-		return "0 B"
-	case n >= tb:
-		return fmt.Sprintf("%.1f TB", float64(n)/float64(tb))
-	case n >= gb:
-		return fmt.Sprintf("%.1f GB", float64(n)/float64(gb))
-	case n >= mb:
-		return fmt.Sprintf("%.1f MB", float64(n)/float64(mb))
-	case n >= kb:
-		return fmt.Sprintf("%.1f KB", float64(n)/float64(kb))
-	default:
-		return fmt.Sprintf("%d B", n)
+// trayIcon returns img encoded as the tray's PNG icon. An encode failure is
+// logged and answered with fallbackTrayIcon, so the tray never shows a blank
+// or truncated icon.
+func trayIcon(img image.Image, logger *slog.Logger) []byte {
+	icon, err := encodeTrayIcon(img)
+	if err != nil {
+		logger.Warn("tray icon: showing the embedded fallback", "error", err)
+		return fallbackTrayIcon
 	}
+	return icon
 }
 
-// generateTrayIcon produces a minimal 22x22 PNG icon rendered entirely in Go.
-// It draws a green monitor outline with a grey stand so it is recognisable at
-// small sizes without needing an external asset file.
-func generateTrayIcon() []byte {
+// encodeTrayIcon encodes img as a PNG. It returns a TrayIconEncodeError when
+// the encoder rejects the image.
+func encodeTrayIcon(img image.Image) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, &types.TrayIconEncodeError{Cause: err}
+	}
+	return buf.Bytes(), nil
+}
+
+// drawTrayIcon draws the 22x22 tray icon: a green monitor outline with a grey
+// stand, recognisable at small sizes.
+func drawTrayIcon() image.Image {
 	const size = 22
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 
@@ -239,9 +255,5 @@ func generateTrayIcon() []byte {
 		img.Set(x, 17, grey)
 	}
 
-	var buf bytes.Buffer
-	// png.Encode only returns an error for nil images; the buffer write path
-	// is always healthy, so the error is not actionable here.
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
+	return img
 }

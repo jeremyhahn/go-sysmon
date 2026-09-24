@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"os"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
@@ -26,8 +25,7 @@ func launchGUI() error {
 
 	mon, err := monitor.New(snap, defaultInterval)
 	if err != nil {
-		slog.Error("monitor create", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	binding := NewMonitorBinding(mon)

@@ -291,6 +291,23 @@ func TestGUIUnavailableError_NoUnwrap(t *testing.T) {
 	}
 }
 
+// ---- TrayIconEncodeError --------------------------------------------------
+
+func TestTrayIconEncodeError_Error(t *testing.T) {
+	e := &types.TrayIconEncodeError{Cause: errSentinel}
+	want := "tray icon encode: underlying cause"
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestTrayIconEncodeError_Unwrap(t *testing.T) {
+	e := &types.TrayIconEncodeError{Cause: errSentinel}
+	if !errors.Is(e, errSentinel) {
+		t.Error("errors.Is(TrayIconEncodeError, errSentinel) = false, want true")
+	}
+}
+
 // ---- SMARTReadError -------------------------------------------------------
 
 func TestSMARTReadError_Error(t *testing.T) {

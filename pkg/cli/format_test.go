@@ -17,21 +17,25 @@ func TestFormatBytes(t *testing.T) {
 		want  string
 	}{
 		{"zero", 0, "0 B"},
+		{"one byte", 1, "1 B"},
 		{"bytes", 512, "512 B"},
+		{"just below a kilobyte", 1023, "1023 B"},
 		{"kilobytes", 1024, "1.0 KB"},
 		{"kilobytes fractional", 1536, "1.5 KB"},
 		{"megabytes", 1024 * 1024, "1.0 MB"},
 		{"gigabytes", 2 * 1024 * 1024 * 1024, "2.0 GB"},
 		{"terabytes", 2 * 1024 * 1024 * 1024 * 1024, "2.0 TB"},
 		{"terabytes fractional", uint64(1.5 * 1024 * 1024 * 1024 * 1024), "1.5 TB"},
+		{"one terabyte", 1 << 40, "1.0 TB"},
+		{"largest count stays in terabytes", ^uint64(0), "16777216.0 TB"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := formatBytes(tc.input)
+			got := FormatBytes(tc.input)
 			if got != tc.want {
-				t.Errorf("formatBytes(%d) = %q, want %q", tc.input, got, tc.want)
+				t.Errorf("FormatBytes(%d) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
 	}
@@ -77,14 +81,16 @@ func TestFormatPercent(t *testing.T) {
 		{"rounds down", 47.14, "47.1%"},
 		{"rounds up", 47.25, "47.2%"},
 		{"100 percent", 100.0, "100.0%"},
+		{"rounds half up past the binary midpoint", 42.26, "42.3%"},
+		{"negative from an oversubscribed counter", -1, "-1.0%"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := formatPercent(tc.input)
+			got := FormatPercent(tc.input)
 			if got != tc.want {
-				t.Errorf("formatPercent(%f) = %q, want %q", tc.input, got, tc.want)
+				t.Errorf("FormatPercent(%f) = %q, want %q", tc.input, got, tc.want)
 			}
 		})
 	}

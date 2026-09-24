@@ -67,22 +67,22 @@ func RenderOverview(w io.Writer, snap *types.Snapshot) error {
 	if len(snap.CPUs) > 0 {
 		model = snap.CPUs[0].ModelName
 	}
-	avgUsage := averageCPUUsage(snap.CPUs)
+	avgUsage := AverageCPUUsage(snap.CPUs)
 	fmt.Fprintf(w, "%-12s%s\n", "CPU:", model)
 	fmt.Fprintf(w, "%-12s%d Cores / %d Threads | Usage: %s\n\n",
 		"",
 		cpu.TotalCores,
 		cpu.TotalThreads,
-		formatPercent(avgUsage),
+		FormatPercent(avgUsage),
 	)
 
 	// Memory block
-	swapStr := fmt.Sprintf("%s / %s", formatBytes(mem.SwapUsedBytes), formatBytes(mem.SwapTotalBytes))
+	swapStr := fmt.Sprintf("%s / %s", FormatBytes(mem.SwapUsedBytes), FormatBytes(mem.SwapTotalBytes))
 	fmt.Fprintf(w, "%-12s%s / %s (%s) | Swap: %s\n",
 		"Memory:",
-		formatBytes(mem.UsedBytes),
-		formatBytes(mem.TotalBytes),
-		formatPercent(mem.UsedPercent),
+		FormatBytes(mem.UsedBytes),
+		FormatBytes(mem.TotalBytes),
+		FormatPercent(mem.UsedPercent),
 		swapStr,
 	)
 	if len(mem.DIMMs) > 0 {
@@ -113,9 +113,9 @@ func RenderOverview(w io.Writer, snap *types.Snapshot) error {
 	fmt.Fprintf(w, "%-12s%d disks | Total: %s | Used: %s (%s)\n",
 		"Storage:",
 		len(snap.Disks),
-		formatBytes(totalDiskBytes),
-		formatBytes(usedDiskBytes),
-		formatPercent(diskPct),
+		FormatBytes(totalDiskBytes),
+		FormatBytes(usedDiskBytes),
+		FormatPercent(diskPct),
 	)
 	fmt.Fprintf(w, "%-12s%s | Drives: %s\n\n",
 		"",
@@ -301,9 +301,9 @@ func RenderCPU(w io.Writer, snap *types.Snapshot) error {
 				fmt.Fprintf(w, "  Core %2d:  %s  %5.1f%%\n", c.Index, bar, c.UsagePercent)
 			}
 		}
-		avg := averageCPUUsage(cpus)
+		avg := AverageCPUUsage(cpus)
 		fmt.Fprintln(w)
-		fmt.Fprintf(w, "%-16s%s\n", "Average:", formatPercent(avg))
+		fmt.Fprintf(w, "%-16s%s\n", "Average:", FormatPercent(avg))
 	}
 
 	s := snap.Sensors
@@ -384,33 +384,33 @@ func RenderMemory(w io.Writer, snap *types.Snapshot) error {
 	fmt.Fprintln(w, separator)
 	fmt.Fprintf(w, "%-12s%s used / %s total (%s)\n",
 		"RAM:",
-		formatBytes(m.UsedBytes),
-		formatBytes(m.TotalBytes),
-		formatPercent(m.UsedPercent),
+		FormatBytes(m.UsedBytes),
+		FormatBytes(m.TotalBytes),
+		FormatPercent(m.UsedPercent),
 	)
-	fmt.Fprintf(w, "%-12s%s\n", "Available:", formatBytes(m.AvailableBytes))
-	fmt.Fprintf(w, "%-12s%s\n", "Free:", formatBytes(m.FreeBytes))
+	fmt.Fprintf(w, "%-12s%s\n", "Available:", FormatBytes(m.AvailableBytes))
+	fmt.Fprintf(w, "%-12s%s\n", "Free:", FormatBytes(m.FreeBytes))
 	fmt.Fprintf(w, "%-12sBuffers: %s | Cached: %s | Shared: %s | Slab: %s\n",
 		"",
-		formatBytes(m.BuffersBytes),
-		formatBytes(m.CachedBytes),
-		formatBytes(m.SharedBytes),
-		formatBytes(m.SlabBytes),
+		FormatBytes(m.BuffersBytes),
+		FormatBytes(m.CachedBytes),
+		FormatBytes(m.SharedBytes),
+		FormatBytes(m.SlabBytes),
 	)
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%-12s%s used / %s total (%s)\n",
 		"Swap:",
-		formatBytes(m.SwapUsedBytes),
-		formatBytes(m.SwapTotalBytes),
-		formatPercent(m.SwapPercent),
+		FormatBytes(m.SwapUsedBytes),
+		FormatBytes(m.SwapTotalBytes),
+		FormatPercent(m.SwapPercent),
 	)
 	// The line above is occupancy and says nothing about whether the host is
 	// paging now. These are the cumulative counters; two readings make a rate.
 	if m.SwapCountersAvailable {
 		fmt.Fprintf(w, "%-12s%s in / %s out since boot\n",
 			"Paged:",
-			formatBytes(m.SwapInPages*m.PageSizeBytes),
-			formatBytes(m.SwapOutPages*m.PageSizeBytes),
+			FormatBytes(m.SwapInPages*m.PageSizeBytes),
+			FormatBytes(m.SwapOutPages*m.PageSizeBytes),
 		)
 	} else {
 		fmt.Fprintf(w, "%-12sn/a (no swap counters in /proc/vmstat)\n", "Paged:")
@@ -432,7 +432,7 @@ func RenderMemory(w io.Writer, snap *types.Snapshot) error {
 			rows = append(rows, []string{
 				d.Location,
 				d.BankLocator,
-				formatBytes(d.SizeBytes),
+				FormatBytes(d.SizeBytes),
 				d.Type,
 				fmt.Sprintf("%d MT/s", d.SpeedMTs),
 				fmt.Sprintf("%d MT/s", d.ConfiguredSpeedMTs),
@@ -449,7 +449,7 @@ func RenderMemory(w io.Writer, snap *types.Snapshot) error {
 		for _, line := range strings.Split(strings.TrimRight(sb.String(), "\n"), "\n") {
 			fmt.Fprintf(w, "  %s\n", line)
 		}
-		fmt.Fprintf(w, "Total Capacity: %s\n", formatBytes(totalCapacity))
+		fmt.Fprintf(w, "Total Capacity: %s\n", FormatBytes(totalCapacity))
 	}
 
 	return ew.Err()
@@ -717,7 +717,7 @@ func renderNPU(w io.Writer, n types.NPUInfo) {
 		// On Arrow Lake this reads a constant 63.6 GB on a 93 GB host, so it
 		// is not live consumption and must not be presented as any.
 		fmt.Fprintf(w, "  %-14s%s (driver counter npu_memory_utilization)\n",
-			"Memory:", formatBytes(n.MemoryUtilizationBytes))
+			"Memory:", FormatBytes(n.MemoryUtilizationBytes))
 	}
 
 	if n.CountersStale {
@@ -739,8 +739,8 @@ func renderNPU(w io.Writer, n types.NPUInfo) {
 			rows = append(rows, []string{
 				strconv.Itoa(c.PID),
 				c.Name,
-				formatPercent(c.BusyPercent),
-				formatBytes(c.MemoryBytes),
+				FormatPercent(c.BusyPercent),
+				FormatBytes(c.MemoryBytes),
 			})
 		}
 		formatTable(w, []string{"PID", "NAME", "BUSY", "MEMORY"}, rows)
@@ -777,34 +777,34 @@ func renderDisk(w io.Writer, d types.DiskInfo) {
 	fmt.Fprintf(w, "/dev/%s - %s (%s%s)\n", d.Name, d.Model, headerDetail, fwStr)
 
 	// Type and size
-	fmt.Fprintf(w, "  %-14s%s | Size: %s\n", "Type:", typeStr, formatBytes(d.SizeBytes))
+	fmt.Fprintf(w, "  %-14s%s | Size: %s\n", "Type:", typeStr, FormatBytes(d.SizeBytes))
 
 	// Usage bar
 	bar := formatBar(d.UsedPercent, 20)
 	fmt.Fprintf(w, "  %-14s%s  %s (%s / %s)\n",
 		"Usage:",
 		bar,
-		formatPercent(d.UsedPercent),
-		formatBytes(d.UsedBytes),
-		formatBytes(d.TotalBytes),
+		FormatPercent(d.UsedPercent),
+		FormatBytes(d.UsedBytes),
+		FormatBytes(d.TotalBytes),
 	)
 
 	// Live I/O and queue depth, with the peaks seen since startup. Peaks are
 	// what expose a burst that the current sample happens to fall between.
 	fmt.Fprintf(w, "  %-14sread %s/s | write %s/s | queue %d | util %s\n",
 		"I/O:",
-		formatBytes(d.ReadBytesRate),
-		formatBytes(d.WriteBytesRate),
+		FormatBytes(d.ReadBytesRate),
+		FormatBytes(d.WriteBytesRate),
 		d.QueueLength,
-		formatPercent(d.UtilPercent),
+		FormatPercent(d.UtilPercent),
 	)
 	fmt.Fprintf(w, "  %-14sread %s/s | write %s/s | queue %d | util %s | used %s\n",
 		"Peak:",
-		formatBytes(d.PeakReadBytesRate),
-		formatBytes(d.PeakWriteBytesRate),
+		FormatBytes(d.PeakReadBytesRate),
+		FormatBytes(d.PeakWriteBytesRate),
 		d.PeakQueueLength,
-		formatPercent(d.PeakUtilPercent),
-		formatPercent(d.PeakUsedPercent),
+		FormatPercent(d.PeakUtilPercent),
+		FormatPercent(d.PeakUsedPercent),
 	)
 	if d.AvgQueueLength > 0 {
 		fmt.Fprintf(w, "  %-14s%.2f\n", "Avg queue:", d.AvgQueueLength)
@@ -967,9 +967,9 @@ func renderInterface(w io.Writer, iface types.NetworkInfo) {
 
 	fmt.Fprintf(w, "  %-12s↑ %s sent (%s pkts) | ↓ %s recv (%s pkts)\n",
 		"Traffic:",
-		formatBytes(iface.BytesSent),
+		FormatBytes(iface.BytesSent),
 		formatNumber(iface.PacketsSent),
-		formatBytes(iface.BytesRecv),
+		FormatBytes(iface.BytesRecv),
 		formatNumber(iface.PacketsRecv),
 	)
 
@@ -982,8 +982,8 @@ func renderInterface(w io.Writer, iface types.NetworkInfo) {
 	)
 }
 
-// averageCPUUsage computes the mean usage across all CPU entries.
-func averageCPUUsage(cpus []types.CPUInfo) float64 {
+// AverageCPUUsage computes the mean usage across all CPU entries.
+func AverageCPUUsage(cpus []types.CPUInfo) float64 {
 	if len(cpus) == 0 {
 		return 0
 	}
@@ -1106,12 +1106,12 @@ func RenderContainers(w io.Writer, snap *types.Snapshot) error {
 
 	rows := make([][]string, 0, len(v.Containers))
 	for _, c := range v.Containers {
-		memStr := formatBytes(c.MemoryBytes)
+		memStr := FormatBytes(c.MemoryBytes)
 		if c.MemoryLimitBytes > 0 {
 			memStr = fmt.Sprintf("%s / %s (%s)",
-				formatBytes(c.MemoryBytes),
-				formatBytes(c.MemoryLimitBytes),
-				formatPercent(c.MemoryPercent))
+				FormatBytes(c.MemoryBytes),
+				FormatBytes(c.MemoryLimitBytes),
+				FormatPercent(c.MemoryPercent))
 		}
 		limitStr := "-"
 		if c.CPULimitCores > 0 {
@@ -1119,21 +1119,21 @@ func RenderContainers(w io.Writer, snap *types.Snapshot) error {
 		}
 		throttleStr := "-"
 		if c.ThrottledPercent > 0 {
-			throttleStr = formatPercent(c.ThrottledPercent)
+			throttleStr = FormatPercent(c.ThrottledPercent)
 		}
 
 		rows = append(rows, []string{
 			strconv.Itoa(c.Index),
 			c.Name,
 			c.ShortID,
-			formatPercent(c.CPUPercent),
+			FormatPercent(c.CPUPercent),
 			limitStr,
 			throttleStr,
 			memStr,
-			formatBytes(c.MemoryPeakBytes),
+			FormatBytes(c.MemoryPeakBytes),
 			strconv.FormatUint(c.PIDs, 10),
-			formatBytes(c.ReadBytesRate) + "/s",
-			formatBytes(c.WriteBytesRate) + "/s",
+			FormatBytes(c.ReadBytesRate) + "/s",
+			FormatBytes(c.WriteBytesRate) + "/s",
 			formatDuration(c.UptimeSeconds),
 		})
 	}
@@ -1160,7 +1160,7 @@ func renderContainerWarnings(w io.Writer, containers []types.ContainerInfo) {
 		if c.ThrottledPercent > 0 {
 			lines = append(lines, fmt.Sprintf(
 				"  %-14s CPU throttled in %s of periods (%d/%d), %.1fs stopped",
-				c.Name, formatPercent(c.ThrottledPercent), c.NrThrottled, c.NrPeriods,
+				c.Name, FormatPercent(c.ThrottledPercent), c.NrThrottled, c.NrPeriods,
 				float64(c.ThrottledUsec)/1e6))
 		}
 		if c.OOMKills > 0 {
@@ -1169,23 +1169,23 @@ func renderContainerWarnings(w io.Writer, containers []types.ContainerInfo) {
 		}
 		if c.MemoryLimitBytes > 0 && c.MemoryPeakBytes >= c.MemoryLimitBytes {
 			lines = append(lines, fmt.Sprintf(
-				"  %-14s peaked at its memory limit (%s)", c.Name, formatBytes(c.MemoryPeakBytes)))
+				"  %-14s peaked at its memory limit (%s)", c.Name, FormatBytes(c.MemoryPeakBytes)))
 		}
 		if c.CPUPressure >= 5 {
 			lines = append(lines, fmt.Sprintf(
-				"  %-14s CPU stall pressure %s", c.Name, formatPercent(c.CPUPressure)))
+				"  %-14s CPU stall pressure %s", c.Name, FormatPercent(c.CPUPressure)))
 		}
 		if c.MemoryPressure >= 5 {
 			lines = append(lines, fmt.Sprintf(
-				"  %-14s memory stall pressure %s", c.Name, formatPercent(c.MemoryPressure)))
+				"  %-14s memory stall pressure %s", c.Name, FormatPercent(c.MemoryPressure)))
 		}
 		if c.IOPressure >= 5 {
 			lines = append(lines, fmt.Sprintf(
-				"  %-14s I/O stall pressure %s", c.Name, formatPercent(c.IOPressure)))
+				"  %-14s I/O stall pressure %s", c.Name, FormatPercent(c.IOPressure)))
 		}
 		if c.SwapBytes > 0 {
 			lines = append(lines, fmt.Sprintf(
-				"  %-14s swapping (%s)", c.Name, formatBytes(c.SwapBytes)))
+				"  %-14s swapping (%s)", c.Name, FormatBytes(c.SwapBytes)))
 		}
 	}
 
@@ -1252,13 +1252,13 @@ func renderVM(w io.Writer, vm types.VMInfo) {
 	// Configured guest RAM against what the hypervisor actually occupies on
 	// the host; the difference is guest memory not yet faulted in.
 	fmt.Fprintf(w, "  %-14s%s configured | %s resident on host\n",
-		"Memory:", formatBytes(vm.MemoryBytes), formatBytes(vm.RSSBytes))
+		"Memory:", FormatBytes(vm.MemoryBytes), FormatBytes(vm.RSSBytes))
 	// CPUPercent is a percentage of one core, the convention top and docker
 	// stats use, so a 24-vCPU guest can legitimately reach 2400. Lead with the
 	// share of the guest's own allocation, which lands on a 0-100 scale.
 	if vm.VCPUs > 0 {
 		fmt.Fprintf(w, "  %-14s%s of %d vCPUs (%.1f cores busy)\n",
-			"CPU:", formatPercent(vm.CPUPercent/float64(vm.VCPUs)), vm.VCPUs, vm.CPUPercent/100)
+			"CPU:", FormatPercent(vm.CPUPercent/float64(vm.VCPUs)), vm.VCPUs, vm.CPUPercent/100)
 	} else {
 		fmt.Fprintf(w, "  %-14s%.1f cores busy\n", "CPU:", vm.CPUPercent/100)
 	}
@@ -1280,25 +1280,25 @@ func renderVM(w io.Writer, vm types.VMInfo) {
 	if len(vm.TapInterfaces) > 0 {
 		fmt.Fprintf(w, "  %-14s%s (in %s/s, out %s/s)\n",
 			"Host NICs:", strings.Join(vm.TapInterfaces, ", "),
-			formatBytes(vm.NetRxRate), formatBytes(vm.NetTxRate))
+			FormatBytes(vm.NetRxRate), FormatBytes(vm.NetTxRate))
 	}
 	if vm.CgroupPath != "" {
 		fmt.Fprintf(w, "  %-14sread %s/s | write %s/s (%s / %s lifetime)\n",
 			"Disk I/O:",
-			formatBytes(vm.DiskReadRate), formatBytes(vm.DiskWriteRate),
-			formatBytes(vm.DiskReadBytes), formatBytes(vm.DiskWriteBytes))
+			FormatBytes(vm.DiskReadRate), FormatBytes(vm.DiskWriteRate),
+			FormatBytes(vm.DiskReadBytes), FormatBytes(vm.DiskWriteBytes))
 		fmt.Fprintf(w, "  %-14s%s current | %s peak (cgroup charge, includes host page cache)\n",
-			"Guest memory:", formatBytes(vm.MemoryCurrentBytes), formatBytes(vm.MemoryPeakBytes))
+			"Guest memory:", FormatBytes(vm.MemoryCurrentBytes), FormatBytes(vm.MemoryPeakBytes))
 		if vm.CPUPressure > 0 || vm.IOPressure > 0 {
 			fmt.Fprintf(w, "  %-14sCPU %s | I/O %s\n",
-				"Stalled:", formatPercent(vm.CPUPressure), formatPercent(vm.IOPressure))
+				"Stalled:", FormatPercent(vm.CPUPressure), FormatPercent(vm.IOPressure))
 		}
 	}
 
 	if len(vm.DiskImages) > 0 {
 		sizeNote := ""
 		if vm.DiskImageBytes > 0 {
-			sizeNote = fmt.Sprintf(" (%s)", formatBytes(vm.DiskImageBytes))
+			sizeNote = fmt.Sprintf(" (%s)", FormatBytes(vm.DiskImageBytes))
 		}
 		fmt.Fprintf(w, "  %-14s%s%s\n", "Disks:", strings.Join(vm.DiskImages, ", "), sizeNote)
 	}
@@ -1335,18 +1335,18 @@ func RenderImages(w io.Writer, snap *types.Snapshot) error {
 
 	// Space accounting, with what a prune would return.
 	usageRows := [][]string{
-		{"Images", strconv.Itoa(r.ImagesTotal), formatBytes(r.LayersBytes),
-			fmt.Sprintf("%s (%d unused, %d dangling)", formatBytes(r.ReclaimableBytes), r.UnusedImages, r.DanglingImages)},
-		{"Volumes", strconv.Itoa(r.VolumesCount), formatBytes(r.VolumesBytes),
-			fmt.Sprintf("%s (%d unused)", formatBytes(r.VolumesReclaimableBytes), r.VolumesUnused)},
-		{"Build cache", strconv.Itoa(r.BuildCacheEntries), formatBytes(r.BuildCacheBytes),
-			formatBytes(r.BuildCacheReclaimableBytes)},
+		{"Images", strconv.Itoa(r.ImagesTotal), FormatBytes(r.LayersBytes),
+			fmt.Sprintf("%s (%d unused, %d dangling)", FormatBytes(r.ReclaimableBytes), r.UnusedImages, r.DanglingImages)},
+		{"Volumes", strconv.Itoa(r.VolumesCount), FormatBytes(r.VolumesBytes),
+			fmt.Sprintf("%s (%d unused)", FormatBytes(r.VolumesReclaimableBytes), r.VolumesUnused)},
+		{"Build cache", strconv.Itoa(r.BuildCacheEntries), FormatBytes(r.BuildCacheBytes),
+			FormatBytes(r.BuildCacheReclaimableBytes)},
 	}
 	formatTable(w, []string{"TYPE", "COUNT", "SIZE", "RECLAIMABLE"}, usageRows)
 
 	total := r.LayersBytes + r.VolumesBytes + r.BuildCacheBytes
 	reclaim := r.ReclaimableBytes + r.VolumesReclaimableBytes + r.BuildCacheReclaimableBytes
-	fmt.Fprintf(w, "\n%-14s%s total, %s reclaimable\n", "Footprint:", formatBytes(total), formatBytes(reclaim))
+	fmt.Fprintf(w, "\n%-14s%s total, %s reclaimable\n", "Footprint:", FormatBytes(total), FormatBytes(reclaim))
 
 	if len(r.Images) == 0 {
 		return ew.Err()
@@ -1366,8 +1366,8 @@ func RenderImages(w io.Writer, snap *types.Snapshot) error {
 		rows = append(rows, []string{
 			img.ShortID,
 			tag,
-			formatBytes(img.SizeBytes),
-			formatBytes(img.SharedSizeBytes),
+			FormatBytes(img.SizeBytes),
+			FormatBytes(img.SharedSizeBytes),
 			use,
 		})
 	}
