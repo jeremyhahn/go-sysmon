@@ -110,10 +110,14 @@ func clientFor(t *testing.T, leaf *x509.Certificate) *http.Client {
 	}
 }
 
-// startTLSServer starts srv on addr and stops it when the test ends.
-func startTLSServer(t *testing.T, srv *server.Server, addr string) {
+// startTLSServer binds srv, serves it until the test ends, and returns the
+// address it bound. srv is configured with port 0, so the kernel chooses a
+// port no other process holds, and the test learns it from the listener
+// rather than guessing it beforehand.
+func startTLSServer(t *testing.T, srv *server.Server) string {
 	t.Helper()
 
+	addr := bind(t, srv)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()
 
@@ -125,6 +129,7 @@ func startTLSServer(t *testing.T, srv *server.Server, addr string) {
 	})
 
 	waitForServer(t, addr)
+	return addr
 }
 
 // ---- NewWithConfig ------------------------------------------------------
@@ -153,17 +158,16 @@ func TestTLS_StaticCertFilesServeHTTPS(t *testing.T) {
 	m := newMonitor(t, "tls-host")
 	waitForSnapshot(t, m)
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS:     &server.TLS{CertFile: certPath, KeyFile: keyPath},
 	})
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
 
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	resp, err := clientFor(t, leaf).Get("https://" + addr + "/api/snapshot")
 	if err != nil {
@@ -193,17 +197,15 @@ func TestTLS_PlainHTTPRejectedOnTLSListener(t *testing.T) {
 	certPath, keyPath := writeKeyPair(t, cert)
 
 	m := newMonitor(t, "cleartext-host")
-	addr := freeAddr(t)
-
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS:     &server.TLS{CertFile: certPath, KeyFile: keyPath},
 	})
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	// Go answers a cleartext request on a TLS listener with a plain 400 rather
 	// than dropping it, so the meaningful assertion is that the request is
@@ -318,16 +320,15 @@ func TestTLS_CallerConfigIsHonouredAndNotMutated(t *testing.T) {
 	m := newMonitor(t, "caller-config-host")
 	waitForSnapshot(t, m)
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS:     &server.TLS{Config: caller},
 	})
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	resp, err := clientFor(t, leaf).Get("https://" + addr + "/api/snapshot")
 	if err != nil {
@@ -360,16 +361,15 @@ func TestTLS_MinVersionDefaultsWhenUnset(t *testing.T) {
 	m := newMonitor(t, "minversion-host")
 	waitForSnapshot(t, m)
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS:     &server.TLS{Config: &tls.Config{Certificates: []tls.Certificate{cert}}},
 	})
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	// A client capped at TLS 1.1 must be turned away.
 	pool := x509.NewCertPool()
@@ -408,10 +408,9 @@ func TestTLS_GetConfigForClientResolvesPerHandshake(t *testing.T) {
 	m := newMonitor(t, "sni-host")
 	waitForSnapshot(t, m)
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS: &server.TLS{
 			GetConfigForClient: func(hi *tls.ClientHelloInfo) (*tls.Config, error) {
 				calls.Add(1)
@@ -431,7 +430,7 @@ func TestTLS_GetConfigForClientResolvesPerHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
@@ -481,10 +480,9 @@ func TestTLS_GetConfigForClientResolvesPerHandshake(t *testing.T) {
 func TestTLS_GetConfigForClientErrorFailsHandshake(t *testing.T) {
 	m := newMonitor(t, "reject-sni-host")
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS: &server.TLS{
 			GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
 				return nil, errors.New("unknown tenant")
@@ -494,7 +492,7 @@ func TestTLS_GetConfigForClientErrorFailsHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	client := &http.Client{
 		Timeout: await.Timeout,
@@ -524,10 +522,9 @@ func TestTLS_StaticCertsCombineWithDynamicResolver(t *testing.T) {
 	m := newMonitor(t, "combined-host")
 	waitForSnapshot(t, m)
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS: &server.TLS{
 			CertFile: certPath,
 			KeyFile:  keyPath,
@@ -541,7 +538,7 @@ func TestTLS_StaticCertsCombineWithDynamicResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	resp, err := clientFor(t, staticLeaf).Get("https://" + addr + "/api/snapshot")
 	if err != nil {
@@ -573,16 +570,15 @@ func TestTLS_EventStreamOverHTTPS(t *testing.T) {
 	m := newMonitor(t, "tls-stream-host")
 	waitForSnapshot(t, m)
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS:     &server.TLS{CertFile: certPath, KeyFile: keyPath},
 	})
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
@@ -616,16 +612,15 @@ func TestTLS_GzipEventStreamOverHTTPS(t *testing.T) {
 	m := newMonitor(t, "tls-gzip-host")
 	waitForSnapshot(t, m)
 
-	addr := freeAddr(t)
 	srv, err := server.NewWithConfig(server.Config{
 		Monitor: m,
-		Addr:    addr,
+		Addr:    "127.0.0.1:0",
 		TLS:     &server.TLS{CertFile: certPath, KeyFile: keyPath},
 	})
 	if err != nil {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
-	startTLSServer(t, srv, addr)
+	addr := startTLSServer(t, srv)
 
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)

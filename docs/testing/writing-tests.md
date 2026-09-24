@@ -224,7 +224,9 @@ result, consuming the capacity whose scarcity caused it.
 Two remedies exist and they are not equivalent. **Asking the kernel for a port
 (`:0`) cannot collide**, and it is available wherever the harness can read the
 port back afterwards — which is why the Go integration suite now starts the
-server on `:0` and parses the address the server logs. **Probing for a free
+server on `:0` and parses the address the server logs, and why the unit tests
+configure `127.0.0.1:0` and read the bound port from `Server.Listen` (or, for
+`runServeCmd`, from the address `listenHook` is given) (#229). **Probing for a free
 port and then using it is a race**, not a fix: the browser suite spends a
 minute building between the probe and the bind, and a port that is free at the
 probe is one the kernel may hand to any outbound connection in between. Where

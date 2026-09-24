@@ -16,19 +16,16 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// freeAddr reserves an ephemeral port and returns it, so a test can bind a
-// real listener without racing a hardcoded port number.
-func freeAddr(t *testing.T) string {
+// bind binds srv's listener and returns the address it got. Tests configure
+// port 0 and read the port back: probing for a free port and binding it later
+// is a race another process can win in between (#229).
+func bind(t *testing.T, srv *server.Server) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	addr, err := srv.Listen()
 	if err != nil {
-		t.Fatalf("reserve port: %v", err)
+		t.Fatalf("Listen: %v", err)
 	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-	return addr
+	return addr.String()
 }
 
 // waitForServer returns once addr accepts a TCP connection. Start gives no
@@ -84,8 +81,8 @@ func newConnTrackingServer(t *testing.T, h http.Handler) (*httptest.Server, <-ch
 // real requests, and returns nil (not ErrServerClosed) after Stop.
 func TestStart_ServesUntilStopped(t *testing.T) {
 	m := newMonitor(t, "lifecycle-host")
-	addr := freeAddr(t)
-	srv := server.New(m, addr, nil)
+	srv := server.New(m, "127.0.0.1:0", nil)
+	addr := bind(t, srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()
@@ -187,7 +184,7 @@ func TestStart_TLSAddressInUse(t *testing.T) {
 // rather than a panic or a hang.
 func TestStop_BeforeStart(t *testing.T) {
 	m := newMonitor(t, "never-started")
-	srv := server.New(m, freeAddr(t), nil)
+	srv := server.New(m, "127.0.0.1:0", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), await.Timeout)
 	defer cancel()
@@ -204,8 +201,8 @@ func TestStop_BeforeStart(t *testing.T) {
 // would sit on the subscription and Shutdown would block until its timeout.
 func TestEvents_ByeEventWhenMonitorStops(t *testing.T) {
 	m := newMonitor(t, "closing-host")
-	addr := freeAddr(t)
-	srv := server.New(m, addr, nil)
+	srv := server.New(m, "127.0.0.1:0", nil)
+	addr := bind(t, srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()
@@ -234,8 +231,8 @@ func TestEvents_ByeEventWhenMonitorStops(t *testing.T) {
 // once the monitor has released its subscribers.
 func TestShutdown_CompletesWithOpenStream(t *testing.T) {
 	m := newMonitor(t, "shutdown-host")
-	addr := freeAddr(t)
-	srv := server.New(m, addr, nil)
+	srv := server.New(m, "127.0.0.1:0", nil)
+	addr := bind(t, srv)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start() }()

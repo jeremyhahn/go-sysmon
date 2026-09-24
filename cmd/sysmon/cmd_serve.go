@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -89,9 +90,10 @@ func localNodeName(mgr *config.Manager) string {
 	return mgr.Current().LocalName()
 }
 
-// listenHook is called once the listener is bound, before anything serves. It
-// does nothing outside tests; see afterListen in runServe.
-var listenHook = func() {}
+// listenHook is called with the bound address once the listener is bound,
+// before anything serves. It does nothing outside tests; see afterListen in
+// runServe.
+var listenHook = func(net.Addr) {}
 
 // serverListeningMsg is logged once the listener is bound, with the address it
 // bound to. Named rather than inlined because the integration suite reads this
@@ -285,7 +287,9 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// afterListen is called with the socket bound and nothing serving yet.
+	// afterListen is called with the socket bound and nothing serving yet, and
+	// is given the address the kernel bound -- the only way a caller that
+	// asked for port 0 learns which port it got.
 	//
 	// It exists so a test can occupy that instant deterministically: the window
 	// this fix closes is a few microseconds wide, and a test that waits for the
@@ -309,7 +313,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	// reading the journal, or a test harness that asked for port 0 precisely so
 	// that no two of them could collide.
 	slog.Info(serverListeningMsg, "addr", bound.String())
-	afterListen()
+	afterListen(bound)
 
 	return serveUntilSignal(ctx, srv, mon, status)
 }

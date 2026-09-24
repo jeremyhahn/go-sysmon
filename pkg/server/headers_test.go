@@ -63,12 +63,11 @@ func TestSecurityHeaders_HSTSFollowsTheServersOwnTransport(t *testing.T) {
 
 	for name, mode := range modes {
 		t.Run(name, func(t *testing.T) {
-			addr := freeAddr(t)
-			srv, err := server.NewWithConfig(server.Config{Monitor: m, Addr: addr, TLS: mode.tls})
+			srv, err := server.NewWithConfig(server.Config{Monitor: m, Addr: "127.0.0.1:0", TLS: mode.tls})
 			if err != nil {
 				t.Fatalf("NewWithConfig: %v", err)
 			}
-			startTLSServer(t, srv, addr)
+			addr := startTLSServer(t, srv)
 
 			scheme, client := "http://", http.DefaultClient
 			if srv.UsesTLS() {

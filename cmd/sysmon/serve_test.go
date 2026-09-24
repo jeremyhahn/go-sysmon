@@ -114,18 +114,15 @@ func TestServeUntilSignal_ReturnsListenError(t *testing.T) {
 // TestServeUntilSignal_ShutsDownOnSignal covers the signal path end to end:
 // SIGTERM must stop the server cleanly and return nil.
 func TestServeUntilSignal_ShutsDownOnSignal(t *testing.T) {
-	// Reserve then release a port so the server can bind it.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-
+	// Bound on port 0 and read back, so no other process can take the port
+	// between choosing it and binding it (#229).
 	mon := startedMonitor(t)
-	srv := server.New(mon, addr, nil)
+	srv := server.New(mon, "127.0.0.1:0", nil)
+	bound, err := srv.Listen()
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	addr := bound.String()
 
 	done := make(chan error, 1)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -179,25 +176,24 @@ func TestStopMonitor_AlreadyStopped(t *testing.T) {
 // the real collector, monitor and server, serves on an ephemeral port, and
 // exits cleanly on SIGTERM.
 func TestRunServeCmd_ServesAndShutsDown(t *testing.T) {
-	// Reserve then release a port so the command can bind it.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-
+	// The command binds port 0 and reports the port it got through the listen
+	// hook, so no other process can take the port between choosing it and
+	// binding it (#229).
 	origAddr, origInterval := serveAddr, serveIntervalMs
 	t.Cleanup(func() { serveAddr, serveIntervalMs = origAddr, origInterval })
-	serveAddr = addr
+	serveAddr = "127.0.0.1:0"
 	serveIntervalMs = 1000
+
+	previousHook := listenHook
+	t.Cleanup(func() { listenHook = previousHook })
+	bound := make(chan string, 1)
+	listenHook = func(addr net.Addr) { bound <- addr.String() }
 
 	done := make(chan error, 1)
 	go func() { done <- runServeCmd(nil, nil) }()
 
 	// Wait for the listener before signalling.
+	addr := await.Recv(t, "runServeCmd to bind its listener", bound)
 	awaitListening(t, addr)
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {

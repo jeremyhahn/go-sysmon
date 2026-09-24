@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -31,7 +33,7 @@ func TestServe_StopDuringStartupIsHandled(t *testing.T) {
 
 	// Sent from inside the window: the socket is bound, nothing is serving.
 	// Before the fix this killed the test binary.
-	listenHook = func() {
+	listenHook = func(net.Addr) {
 		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 			t.Errorf("send SIGTERM: %v", err)
 		}
@@ -66,19 +68,13 @@ func TestServe_StopDuringStartupIsHandled(t *testing.T) {
 func TestServeUntilSignal_AlreadyCancelledNeverServes(t *testing.T) {
 	mon := startedMonitor(t)
 
-	// Reserve then release a port, so the address is free and known.
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	srv := server.New(mon, "127.0.0.1:0", nil)
+	bound, err := srv.Listen()
 	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("release port: %v", err)
-	}
-
-	srv := server.New(mon, addr, nil)
-	if _, err := srv.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
+	}
+	if !listensOn(t, bound) {
+		t.Fatalf("no listening socket on %v after Listen, so the check below proves nothing", bound)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,13 +88,46 @@ func TestServeUntilSignal_AlreadyCancelledNeverServes(t *testing.T) {
 	}
 
 	// The socket is closed rather than left listening on a process that is on
-	// its way out. A loopback dial is answered at once either way -- accepted
-	// by a listener or refused without one -- so no timeout stands in for the
-	// answer.
-	if conn, dialErr := net.Dial("tcp", addr); dialErr == nil {
-		t.Error("the listener is still accepting after a shutdown during startup")
-		if err := conn.Close(); err != nil {
-			t.Errorf("closing the probe connection: %v", err)
+	// its way out. This asks the kernel whether this process still holds a
+	// listening socket on the port, rather than dialling it: once released,
+	// the port may belong to another process at once, and a dial would find
+	// that process's listener and blame this one (#229).
+	if listensOn(t, bound) {
+		t.Error("the listener is still open after a shutdown during startup")
+	}
+}
+
+// listensOn reports whether this process holds a listening TCP socket on
+// addr's port, from the kernel's socket table and this process's descriptors.
+func listensOn(t *testing.T, addr net.Addr) bool {
+	t.Helper()
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("%v is not a TCP address", addr)
+	}
+	table, err := os.ReadFile("/proc/self/net/tcp")
+	if err != nil {
+		t.Fatalf("read the socket table: %v", err)
+	}
+	port := fmt.Sprintf(":%04X", tcp.Port)
+	const listen = "0A"
+	inodes := map[string]bool{}
+	for _, line := range strings.Split(string(table), "\n")[1:] {
+		f := strings.Fields(line)
+		if len(f) > 9 && strings.HasSuffix(f[1], port) && f[3] == listen {
+			inodes["socket:["+f[9]+"]"] = true
 		}
 	}
+	fds, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatalf("read descriptors: %v", err)
+	}
+	for _, fd := range fds {
+		// A descriptor closed between the listing and the read is not a
+		// listener this process holds.
+		if link, err := os.Readlink("/proc/self/fd/" + fd.Name()); err == nil && inodes[link] {
+			return true
+		}
+	}
+	return false
 }
