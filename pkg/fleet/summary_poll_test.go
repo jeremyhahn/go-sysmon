@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -160,7 +161,7 @@ func TestView_OldPeerSwapRateAcrossPolls(t *testing.T) {
 func TestView_LocalSwapRateFromConsecutiveSnapshots(t *testing.T) {
 	t0 := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	prev, cur := pagingSnapshot(t0, 0, 0), pagingSnapshot(t0.Add(time.Second), 0, 256)
-	cfg := config.Fleet{Peers: []config.Peer{{Name: "p", URL: "http://127.0.0.1:1"}}, TimeoutMs: 100}
+	cfg := config.Fleet{Peers: []config.Peer{{Name: "p", URL: deadpeer.URL(t)}}, TimeoutMs: 100}
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return prev, cur, 0 },
 		func() string { return "local" }, quiet())
@@ -419,7 +420,7 @@ func TestView_APeerRepointedMidPollShowsNoStaleMachine(t *testing.T) {
 	close(done)
 	p.Run(done)
 
-	cfg.Store(&config.Fleet{Peers: []config.Peer{{Name: "db", URL: "http://127.0.0.1:1"}}, TimeoutMs: 2000})
+	cfg.Store(&config.Fleet{Peers: []config.Peer{{Name: "db", URL: deadpeer.URL(t)}}, TimeoutMs: 2000})
 	n := node(t, p.View(context.Background(), fleet.Query{}), "db")
 	if n.Hostname == "old-machine" || n.Reachable {
 		t.Errorf("after repointing, db = host %q reachable %v; want no reading until the new address is polled", n.Hostname, n.Reachable)

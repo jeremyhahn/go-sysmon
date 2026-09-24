@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -31,7 +32,7 @@ import (
 // every one of these addresses a node, so a name is what they still carry.
 func TestFleetEndpoints_PublishNoPeerAddress(t *testing.T) {
 	live := livePeer(t)
-	deadURL := closedAddress(t)
+	deadURL := deadpeer.URL(t)
 
 	cfg := config.Fleet{
 		Peers:          []config.Peer{{Name: "live", URL: live}, {Name: "dead", URL: deadURL}},
@@ -48,11 +49,15 @@ func TestFleetEndpoints_PublishNoPeerAddress(t *testing.T) {
 	go poller.Run(done)
 	defer close(done)
 
+	aggMon := startedMonitor(t, &pagingSnapshotter{}, 5*time.Millisecond)
 	aggregator := newServer(Config{
-		Monitor: startedMonitor(t, &pagingSnapshotter{}, 5*time.Millisecond),
+		Monitor: aggMon,
 		Fleet:   poller,
 		Config:  managerFor(t, "fleet:\n  peers:\n    - name: live\n      url: "+live+"\n    - name: dead\n      url: "+deadURL+"\n"),
 	}, nil)
+	// /api/summary below is served from the aggregator's own snapshot, which a
+	// loaded host may not have collected yet.
+	waitForFirstSnapshot(t, aggMon)
 
 	// The poller announces no cycle, so this re-reads the served view.
 	await.Until(t, "the live peer reachable and the dead one's failure recorded", func(context.Context) bool {
@@ -148,20 +153,6 @@ func livePeer(t *testing.T) string {
 		t.Fatalf("peer's own server.addr = %q, want %q", v, addr)
 	}
 	return ts.URL
-}
-
-// closedAddress returns the URL of a loopback port nothing is listening on.
-func closedAddress(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	return "http://" + addr
 }
 
 // managerFor loads body as a configuration file.

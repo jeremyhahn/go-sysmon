@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -89,8 +90,7 @@ func startTreeNodeWithHistory(t *testing.T, s namedSnapshotter, h HistoryQuerier
 		cfg.Fleet = n.poller
 	}
 	n.srv = newServer(cfg, nil)
-	n.ts = httptest.NewServer(n.srv)
-	t.Cleanup(n.ts.Close)
+	n.ts = deadpeer.Server(t, n.srv)
 	if n.poller != nil {
 		done := make(chan struct{})
 		t.Cleanup(func() { close(done) })

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
@@ -55,7 +56,7 @@ func postInterval(t *testing.T, srv *Server, body string) (int, intervalPayload)
 // is a peer, the poller feeding it is the fleet poller, so that is what the
 // control has to change.
 func TestInterval_FleetScopeDrivesThePeerPoller(t *testing.T) {
-	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: "http://127.0.0.1:1"}})
+	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: deadpeer.URL(t)}})
 
 	localBefore := srv.mon.Interval()
 	code, got := postInterval(t, srv, `{"interval_ms":5000,"scope":"fleet"}`)
@@ -81,7 +82,7 @@ func TestInterval_FleetScopeDrivesThePeerPoller(t *testing.T) {
 // dashboard stating a cadence nothing collects at, which is the defect #97
 // exists to remove.
 func TestInterval_FleetScopeReportsTheFlooredValue(t *testing.T) {
-	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: "http://127.0.0.1:1"}})
+	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: deadpeer.URL(t)}})
 
 	code, got := postInterval(t, srv, `{"interval_ms":250,"scope":"fleet"}`)
 	if code != http.StatusOK {
@@ -98,7 +99,7 @@ func TestInterval_FleetScopeReportsTheFlooredValue(t *testing.T) {
 // TestInterval_LocalScopeIsUnchanged is the compatibility case: every existing
 // client sends no scope at all and must keep driving the local monitor.
 func TestInterval_LocalScopeIsUnchanged(t *testing.T) {
-	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: "http://127.0.0.1:1"}})
+	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: deadpeer.URL(t)}})
 	fleetBefore := srv.fleet.PollInterval()
 
 	code, got := postInterval(t, srv, `{"interval_ms":5000}`)
@@ -121,7 +122,7 @@ func TestInterval_LocalScopeIsUnchanged(t *testing.T) {
 // rather than silently doing nothing, because a control that reports success
 // and changes nothing is worse than one that errors.
 func TestInterval_RejectsWhatItCannotHonour(t *testing.T) {
-	withFleet := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: "http://127.0.0.1:1"}})
+	withFleet := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: deadpeer.URL(t)}})
 	if code, _ := postInterval(t, withFleet, `{"interval_ms":5000,"scope":"nonsense"}`); code != http.StatusBadRequest {
 		t.Errorf("unknown scope: status %d, want 400", code)
 	}
@@ -145,7 +146,7 @@ func TestInterval_RejectsWhatItCannotHonour(t *testing.T) {
 // TestInterval_GetReportsBothCadences is what lets the header state the
 // effective rate rather than the requested one.
 func TestInterval_GetReportsBothCadences(t *testing.T) {
-	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: "http://127.0.0.1:1"}})
+	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: deadpeer.URL(t)}})
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/interval", nil))

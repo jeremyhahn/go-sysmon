@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/outbound"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -163,10 +164,8 @@ func TestPollInterval_StillHonoursTheOverrideAndFloor(t *testing.T) {
 // cadence -- a failing fleet stretches the cycle rather than shortening it, and
 // reporting the configured value then would be at its most misleading.
 func TestRefresh_RecordsDurationEvenWhenEveryPeerFails(t *testing.T) {
-	// A closed listener: connection refused immediately, no waiting on a timeout.
-	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	url := dead.URL
-	dead.Close()
+	// Connection refused immediately, no waiting on a timeout.
+	url := deadpeer.URL(t)
 
 	cfg := config.Fleet{
 		PollIntervalMs: 3000,

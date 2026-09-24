@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/outbound"
 )
@@ -143,15 +144,8 @@ func TestPeerRequestError_KeepsTheChain(t *testing.T) {
 // from -- and checks each still says what went wrong without the address.
 func TestFetch_FailuresNameNoAddress(t *testing.T) {
 	t.Run("refused", func(t *testing.T) {
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatalf("listen: %v", err)
-		}
-		target := "http://" + l.Addr().String()
-		if err := l.Close(); err != nil {
-			t.Fatalf("close: %v", err)
-		}
-		_, err = fetchSnapshot(testPoller(t), config.Peer{Name: "gone", URL: target}, plaintextAllowed())
+		target := deadpeer.URL(t)
+		_, err := fetchSnapshot(testPoller(t), config.Peer{Name: "gone", URL: target}, plaintextAllowed())
 		assertPeerFailure(t, err, target, "connection refused")
 	})
 
@@ -287,14 +281,7 @@ func TestPeerConfig_FailuresNameNoAddress(t *testing.T) {
 	}))
 	defer garbage.Close()
 
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	refused := "http://" + l.Addr().String()
-	if err := l.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
+	refused := deadpeer.URL(t)
 
 	cfg := config.Fleet{TimeoutMs: 2000, Peers: []config.Peer{
 		{Name: "garbage", URL: garbage.URL},
@@ -303,7 +290,7 @@ func TestPeerConfig_FailuresNameNoAddress(t *testing.T) {
 	}}
 	p := New(func() config.Fleet { return cfg }, nil, func() string { return "local" }, testPoller(t).logger)
 
-	_, err = p.PeerConfig(context.Background(), "garbage")
+	_, err := p.PeerConfig(context.Background(), "garbage")
 	assertPeerFailure(t, err, garbage.URL, "malformed response")
 
 	_, err = p.PeerConfig(context.Background(), "refused")

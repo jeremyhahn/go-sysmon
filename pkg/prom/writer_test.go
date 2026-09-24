@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/golang/snappy"
+
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 )
 
 // capture records what a remote-write receiver saw.
@@ -137,7 +139,7 @@ func TestWriter_Write_RejectionIsTyped(t *testing.T) {
 // all is a different error from one that answered no, and the exporter treats
 // it as retryable by default rather than dropping the batch.
 func TestWriter_Write_UnreachableEndpoint(t *testing.T) {
-	w := NewWriter("http://127.0.0.1:1/api/v1/write", 500*time.Millisecond, discardLog)
+	w := NewWriter(deadpeer.URL(t)+"/api/v1/write", 500*time.Millisecond, discardLog)
 
 	err := w.Write(context.Background(), goldenSeries())
 	var reqErr *ErrRequest

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -100,7 +101,7 @@ func TestView_ANodeThatDoesNotStateItsNameIsUnknown(t *testing.T) {
 func TestView_AnUnreachableNodeHasNoNameAgreement(t *testing.T) {
 	cfg := config.Fleet{
 		// Port 1 on loopback refuses connections immediately.
-		Peers:          []config.Peer{{Name: "dead", URL: "http://127.0.0.1:1"}},
+		Peers:          []config.Peer{{Name: "dead", URL: deadpeer.URL(t)}},
 		PollIntervalMs: 10000, TimeoutMs: 500,
 	}
 	local := namedSnapshot("local", "local")
@@ -164,7 +165,7 @@ func TestView_AStalePeerLosesItsNameAgreement(t *testing.T) {
 // so its own card must not warn it that it disagrees with itself.
 func TestView_ThisNodeAgreesWithItselfAcrossARename(t *testing.T) {
 	cfg := config.Fleet{
-		Peers:          []config.Peer{{Name: "db-01", URL: "http://127.0.0.1:1"}},
+		Peers:          []config.Peer{{Name: "db-01", URL: deadpeer.URL(t)}},
 		PollIntervalMs: 10000, TimeoutMs: 500,
 	}
 	stale := namedSnapshot("host", "old-name")
@@ -185,7 +186,7 @@ func TestView_ThisNodeAgreesWithItselfAcrossARename(t *testing.T) {
 // it -- its name included -- has been confirmed.
 func TestView_ThisNodeWithNoSnapshotIsUnknown(t *testing.T) {
 	cfg := config.Fleet{
-		Peers:          []config.Peer{{Name: "db-01", URL: "http://127.0.0.1:1"}},
+		Peers:          []config.Peer{{Name: "db-01", URL: deadpeer.URL(t)}},
 		PollIntervalMs: 10000, TimeoutMs: 500,
 	}
 	p := fleet.New(func() config.Fleet { return cfg },

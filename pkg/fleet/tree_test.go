@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -87,8 +88,7 @@ func newFakeChild(t *testing.T, name string, below ...types.FleetIndexEntry) *fa
 		sortByName(nodes)
 		c.subtree = &types.FleetSubtree{Nodes: entries, Rollup: collect(nodes, types.RollupNames), Aggregators: []string{c.id}}
 	}
-	c.srv = httptest.NewServer(http.HandlerFunc(c.serve))
-	t.Cleanup(c.srv.Close)
+	c.srv = deadpeer.Server(t, http.HandlerFunc(c.serve))
 	return c
 }
 

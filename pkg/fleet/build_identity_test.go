@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -213,7 +214,7 @@ func TestView_AnUnstatedAggregatorKnowsNothing(t *testing.T) {
 func TestView_ASilentNodeHasNoBuildAgreement(t *testing.T) {
 	cfg := config.Fleet{
 		// Port 1 on loopback refuses connections immediately.
-		Peers:          []config.Peer{{Name: "dead", URL: "http://127.0.0.1:1"}},
+		Peers:          []config.Peer{{Name: "dead", URL: deadpeer.URL(t)}},
 		PollIntervalMs: 10000, TimeoutMs: 500,
 	}
 	local := builtSnapshot("local", "a46f6cf", "2026-09-05T03:26:50Z")

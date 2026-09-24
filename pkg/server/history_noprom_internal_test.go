@@ -91,26 +91,37 @@ func TestHistory_WithoutPrometheusSaysUnavailable(t *testing.T) {
 }
 
 // TestMetricsExposition_WithoutPrometheusHasNoExporterSeries is the other half:
-// the exposition is byte-for-byte what a node with no remote_write_url
-// produces, because there is no exporter to have any health.
+// the exposition is what a node with no remote_write_url produces, because
+// there is no exporter to have any health.
+//
+// It reads the exposition only once the monitor has published a snapshot.
+// Before that /metrics answers 503 with no series at all, and a check that no
+// exporter series is present would pass without testing anything.
 func TestMetricsExposition_WithoutPrometheusHasNoExporterSeries(t *testing.T) {
-	srv := noPromServer(t)
+	mon := startedMonitor(t, idleSnapshotter{}, 5*time.Millisecond)
+	waitForFirstSnapshot(t, mon)
+	srv, err := NewWithConfig(Config{Monitor: mon, Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("NewWithConfig: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
-	if rec.Code != http.StatusOK && rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status %d, want 200 or 503", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); len(body) > 0 {
-		for _, name := range []string{
-			"sysmon_remote_write_enabled",
-			"sysmon_remote_write_buffered_samples",
-			"sysmon_remote_write_consecutive_failures",
-		} {
-			if strings.Contains(body, name) {
-				t.Errorf("%s is exported by a build with no exporter", name)
-			}
+	body := rec.Body.String()
+	if !strings.Contains(body, "sysmon_up") {
+		t.Fatalf("the exposition carries no node series:\n%s", body)
+	}
+	for _, name := range []string{
+		"sysmon_remote_write_enabled",
+		"sysmon_remote_write_buffered_samples",
+		"sysmon_remote_write_consecutive_failures",
+	} {
+		if strings.Contains(body, name) {
+			t.Errorf("%s is exported by a build with no exporter", name)
 		}
 	}
 }

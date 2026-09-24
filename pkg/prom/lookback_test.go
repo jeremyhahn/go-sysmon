@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 )
 
 // statusAnswers is how a backend answers the two status endpoints the
@@ -134,7 +135,7 @@ func TestLookback_FailuresAreErrors(t *testing.T) {
 	}
 
 	var request *ErrRequest
-	if _, err := querier("http://127.0.0.1:1", time.Second).Lookback(context.Background()); !errors.As(err, &request) {
+	if _, err := querier(deadpeer.URL(t), time.Second).Lookback(context.Background()); !errors.As(err, &request) {
 		t.Errorf("Lookback() on a refused connection = %v, want *ErrRequest", err)
 	}
 

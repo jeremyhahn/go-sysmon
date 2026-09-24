@@ -234,6 +234,28 @@ the port must be known in advance, derive it from something already unique —
 the CI job's identity — and choose a band **below** `ip_local_port_range`
 (32768 by default) where the kernel never allocates on its own.
 
+**A "dead" peer on a port nobody holds.** The same race, run the other way. A
+test that needs an address nobody answers on used to listen on `:0`, read the
+port and close the listener; a test that takes a peer down closed its
+`httptest.Server`. Either way the port is free for the rest of the test, and
+under a parallel `go test ./...` another test binary's server can bind it and
+answer as the dead peer. That happened to
+`TestFleetEndpoints_PublishNoPeerAddress` in 2 of 200 runs of an 8-process
+stress run (#222). When it was reproduced, a socket listing taken at the failure
+showed a listener on the "dead" port that belonged to another `server.test`
+process. Its relay returned 200 where 502 was expected.
+
+Use `internal/deadpeer` instead. `deadpeer.URL(t)` (or `Addr`) returns a
+loopback address held by a TCP socket that is **bound but never listening**.
+On Linux, `connect(2)` to it is refused at once, because only listening sockets
+accept. `bind(2)` to it fails with `EADDRINUSE` whatever reuse options the
+other socket sets, because the holder sets neither `SO_REUSEADDR` nor
+`SO_REUSEPORT`. `deadpeer.Server(t, h)` is an `httptest.Server` whose
+listener shares its port, through `SO_REUSEPORT`, with a socket that holds
+it. Closing the server takes the peer down and leaves the port refusing
+connections. Both release the port when the test ends. The package's tests
+check each of these kernel behaviours.
+
 **A threshold written in terms of the thing it is testing.** A queue test
 asserted `accepted == submitQueue`, which the queue depth satisfies **whatever
 it is set to**: raising the constant from 256 to 100,000 left the test green

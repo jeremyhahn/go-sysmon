@@ -69,6 +69,7 @@ PKG_SERVER := ./pkg/server/...
 PKG_TYPES := ./pkg/types/...
 PKG_TSGEN := ./internal/tsgen/...
 PKG_BUILDTAGS := ./internal/buildtags/...
+PKG_DEADPEER := ./internal/deadpeer/...
 PKG_PINS := ./internal/pins/...
 PKG_GITEA := ./internal/gitea/...
 PKG_CMD := ./cmd/sysmon/...
@@ -171,7 +172,7 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both generate check-generated check-ts check-errcheck-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
+        build-both generate check-generated check-ts check-errcheck-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags test-deadpeer coverage-deadpeer \
         check-build-tags test-fips check-pins check-latest test-pins coverage-pins test-gitea coverage-gitea \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
@@ -347,6 +348,9 @@ test-tsgen:
 test-buildtags:
 	go test $(PKG_BUILDTAGS) -v -count=1
 
+test-deadpeer:
+	go test $(PKG_DEADPEER) -race -v -count=1
+
 test-pins:
 	go test $(PKG_PINS) -v -count=1
 
@@ -382,6 +386,10 @@ coverage-tsgen:
 coverage-buildtags:
 	go test $(PKG_BUILDTAGS) -coverprofile=/tmp/coverage-buildtags.out -count=1
 	go tool cover -func=/tmp/coverage-buildtags.out
+
+coverage-deadpeer:
+	go test $(PKG_DEADPEER) -coverprofile=/tmp/coverage-deadpeer.out -count=1
+	go tool cover -func=/tmp/coverage-deadpeer.out
 
 coverage-pins:
 	go test $(PKG_PINS) -coverprofile=/tmp/coverage-pins.out -count=1

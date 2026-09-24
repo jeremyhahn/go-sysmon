@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/internal/deadpeer"
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/fleet"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -38,10 +39,11 @@ func healthySnapshot(host string) *types.Snapshot {
 	}
 }
 
-// peerServer serves a snapshot as a real HTTP peer.
+// peerServer serves a snapshot as a real HTTP peer. Closing it takes the peer
+// down: its port refuses connections for the rest of the test.
 func peerServer(t *testing.T, snap *types.Snapshot) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return deadpeer.Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/snapshot" {
 			http.NotFound(w, r)
 			return
@@ -50,8 +52,6 @@ func peerServer(t *testing.T, snap *types.Snapshot) *httptest.Server {
 			t.Errorf("encoding peer snapshot: %v", err)
 		}
 	}))
-	t.Cleanup(srv.Close)
-	return srv
 }
 
 // TestView_DisabledWithoutPeers is the guarantee that a standalone node keeps
@@ -136,7 +136,7 @@ func TestView_SummarizesLocalAndPeer(t *testing.T) {
 func TestView_UnreachablePeerIsNotHealthy(t *testing.T) {
 	cfg := config.Fleet{
 		// Port 1 on loopback refuses connections immediately.
-		Peers:          []config.Peer{{Name: "dead", URL: "http://127.0.0.1:1"}},
+		Peers:          []config.Peer{{Name: "dead", URL: deadpeer.URL(t)}},
 		PollIntervalMs: 10000, TimeoutMs: 500,
 	}
 	p := fleet.New(func() config.Fleet { return cfg },
@@ -174,7 +174,7 @@ func TestView_AlertsDriveStatus(t *testing.T) {
 		{Rule: "raid_degraded", Severity: types.SeverityCritical},
 		{Rule: "disk_full", Severity: types.SeverityWarning},
 	}
-	cfg := config.Fleet{Peers: []config.Peer{{Name: "x", URL: "http://127.0.0.1:1"}}, PollIntervalMs: 10000, TimeoutMs: 200}
+	cfg := config.Fleet{Peers: []config.Peer{{Name: "x", URL: deadpeer.URL(t)}}, PollIntervalMs: 10000, TimeoutMs: 200}
 	p := fleet.New(func() config.Fleet { return cfg }, func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, local, 0 }, func() string { return "local" }, quiet())
 
 	for _, n := range p.View(context.Background(), fleet.Query{}).Nodes {
@@ -457,7 +457,7 @@ func TestView_OrdersByNameNotSeverity(t *testing.T) {
 
 	cfg := config.Fleet{
 		Peers: []config.Peer{
-			{Name: "zulu", URL: "http://127.0.0.1:1"}, // unreachable, sorts last
+			{Name: "zulu", URL: deadpeer.URL(t)}, // unreachable, sorts last
 			{Name: "mike", URL: mike.URL},
 			{Name: "alpha", URL: alpha.URL},
 		},
@@ -716,9 +716,10 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 			snap := healthySnapshot("local")
 			snap.Disks = tc.disks
 
+			dead := deadpeer.URL(t)
 			p := fleet.New(
 				func() config.Fleet {
-					return config.Fleet{Peers: []config.Peer{{Name: "peer", URL: "http://127.0.0.1:1"}}}
+					return config.Fleet{Peers: []config.Peer{{Name: "peer", URL: dead}}}
 				},
 				func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, snap, 0 },
 				func() string { return "local" }, quiet(),
