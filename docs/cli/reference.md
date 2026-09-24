@@ -189,7 +189,8 @@ sysmon images --json
 ```
 
 The query walks every layer and volume and takes several seconds on a host with
-a large image library.
+a large image library. If the runtime rejects the query, the command exits with
+that error instead of listing images with zero sizes.
 
 | Flag | Default | Description |
 |---|---|---|

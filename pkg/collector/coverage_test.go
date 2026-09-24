@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -283,37 +284,32 @@ func TestRuntimeAPI_NeedsNoOptIn(t *testing.T) {
 func TestWaitForRuntimeDiskUsage_ReturnsWhenNoRuntime(t *testing.T) {
 	s := NewSystemCollector(quietLogger())
 
-	done := make(chan struct{})
-	go func() {
-		s.WaitForRuntimeDiskUsage(context.Background())
-		close(done)
-	}()
+	done := make(chan error, 1)
+	go func() { done <- s.WaitForRuntimeDiskUsage(context.Background()) }()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Errorf("WaitForRuntimeDiskUsage() = %v, want nil with no runtime", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Error("WaitForRuntimeDiskUsage hung with no runtime present")
 	}
 }
 
-// TestWaitForRuntimeDiskUsage_HonoursContext verifies a cancelled context ends
-// the wait when nothing ever answers.
+// TestWaitForRuntimeDiskUsage_HonoursContext verifies a context that ends
+// while a query is still running ends the wait with a typed error.
 func TestWaitForRuntimeDiskUsage_HonoursContext(t *testing.T) {
 	s := NewSystemCollector(quietLogger())
+	s.runtime.dfQuery.Store(&diskUsageQuery{done: make(chan struct{})})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
-	done := make(chan struct{})
-	go func() {
-		s.WaitForRuntimeDiskUsage(ctx)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Error("WaitForRuntimeDiskUsage ignored its context deadline")
+	err := s.WaitForRuntimeDiskUsage(ctx)
+	var collErr *types.CollectorError
+	if !errors.As(err, &collErr) || !errors.Is(err, context.Canceled) {
+		t.Errorf("WaitForRuntimeDiskUsage() = %v, want a CollectorError wrapping context.Canceled", err)
 	}
 }
 

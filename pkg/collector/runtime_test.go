@@ -314,7 +314,9 @@ func TestRuntimeCollector_AgainstFakeDaemon(t *testing.T) {
 	// Disk usage is collected in the background; wait for it.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c.WaitForDiskUsage(ctx)
+	if err := c.WaitForDiskUsage(ctx); err != nil {
+		t.Fatalf("WaitForDiskUsage() = %v", err)
+	}
 
 	if err := c.Collect(); err != nil {
 		t.Fatalf("second Collect() error = %v", err)
@@ -335,14 +337,14 @@ func TestWaitForDiskUsage_ReturnsWhenNothingIsComing(t *testing.T) {
 	t.Parallel()
 	c := NewRuntimeCollector(nil)
 
-	done := make(chan struct{})
-	go func() {
-		c.WaitForDiskUsage(context.Background())
-		close(done)
-	}()
+	done := make(chan error, 1)
+	go func() { done <- c.WaitForDiskUsage(context.Background()) }()
 
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Errorf("WaitForDiskUsage() = %v, want nil: nothing is coming", err)
+		}
 	case <-time.After(3 * time.Second):
 		t.Error("WaitForDiskUsage hung when no result could arrive")
 	}

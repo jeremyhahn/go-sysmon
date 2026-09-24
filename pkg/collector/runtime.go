@@ -69,6 +69,19 @@ type RuntimeCollector struct {
 	diskUsage   atomic.Pointer[types.RuntimeInfo]
 	dfInFlight  atomic.Bool
 	dfLastStart atomic.Int64
+
+	// dfQuery is the most recently started disk usage query. Waiters block
+	// on its done channel rather than polling for a result, so they wake the
+	// moment the query concludes, whether it succeeded or failed.
+	dfQuery atomic.Pointer[diskUsageQuery]
+}
+
+// diskUsageQuery tracks one background /system/df query. The goroutine
+// running it writes err, stores any result, and then closes done; the close
+// publishes err to every waiter, so err is never written after it.
+type diskUsageQuery struct {
+	done chan struct{}
+	err  error
 }
 
 // NewRuntimeCollector returns a collector that probes for a runtime socket on
@@ -78,8 +91,6 @@ func NewRuntimeCollector(logger *slog.Logger) *RuntimeCollector {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	// info stays nil until the first Collect concludes, which is what lets
-	// WaitForDiskUsage tell "no runtime here" apart from "not looked yet".
 	return &RuntimeCollector{logger: logger}
 }
 
@@ -141,7 +152,13 @@ func (c *RuntimeCollector) refreshDiskUsage(socket string) {
 	}
 	c.dfLastStart.Store(now.UnixMilli())
 
+	query := &diskUsageQuery{done: make(chan struct{})}
+	c.dfQuery.Store(query)
+
 	go func() {
+		// Deferred calls run last-in first-out: the in-flight flag clears
+		// before done closes, so a released waiter can start the next query.
+		defer close(query.done)
 		defer c.dfInFlight.Store(false)
 
 		ctx, cancel := context.WithTimeout(context.Background(), diskUsageTimeout)
@@ -150,6 +167,7 @@ func (c *RuntimeCollector) refreshDiskUsage(socket string) {
 		var df dockerDiskUsage
 		if err := getJSON(ctx, unixHTTPClient(socket, diskUsageTimeout), "/system/df", &df); err != nil {
 			c.logger.Debug("runtime: /system/df query failed", "socket", socket, "error", err)
+			query.err = err
 			return
 		}
 
@@ -181,23 +199,25 @@ func mergeDiskUsage(dst *types.RuntimeInfo, src *types.RuntimeInfo) {
 // context is done. One-shot commands use it so that "sysmon images" prints
 // sizes rather than an empty table on first run.
 //
-// It waits only while a result could still arrive: either a query is already
-// in flight, or a collection has found a reachable runtime that will start
-// one. Otherwise it returns at once, because nothing is coming — on a host
-// with no container runtime, or before any collection has run, the alternative
-// is waiting out the caller's entire timeout for a result that cannot exist.
-func (c *RuntimeCollector) WaitForDiskUsage(ctx context.Context) {
-	for c.diskUsage.Load() == nil {
-		info := c.info.Load()
-		reachable := info != nil && info.Available
-		if !reachable && !c.dfInFlight.Load() {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(100 * time.Millisecond):
-		}
+// It returns nil at once when a result is already stored, and also when no
+// query has ever started: that is the state on a host with no container
+// runtime, or before any collection has run, and waiting would only burn the
+// caller's whole timeout on a result that cannot arrive. Otherwise it waits
+// on the latest query and returns that query's error, or a CollectorError
+// wrapping the context's error when ctx ends first.
+func (c *RuntimeCollector) WaitForDiskUsage(ctx context.Context) error {
+	if c.diskUsage.Load() != nil {
+		return nil
+	}
+	query := c.dfQuery.Load()
+	if query == nil {
+		return nil
+	}
+	select {
+	case <-query.done:
+		return query.err
+	case <-ctx.Done():
+		return runtimeError(ctx.Err())
 	}
 }
 
@@ -233,25 +253,35 @@ func unixHTTPClient(socket string, timeout time.Duration) *http.Client {
 }
 
 // getJSON performs a GET against the runtime API and decodes the response.
-func getJSON(ctx context.Context, client *http.Client, path string, dst any) error {
+// Every failure is reported as a runtime CollectorError.
+func getJSON(ctx context.Context, client *http.Client, path string, dst any) (err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+path, nil)
 	if err != nil {
-		return err
+		return runtimeError(err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return runtimeError(err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil && err == nil {
+			err = runtimeError(closeErr)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return &types.CollectorError{
-			Collector: "runtime",
-			Cause:     &runtimeStatusError{Path: path, Status: resp.StatusCode},
-		}
+		return runtimeError(&runtimeStatusError{Path: path, Status: resp.StatusCode})
 	}
-	return json.NewDecoder(resp.Body).Decode(dst)
+	if err := json.NewDecoder(resp.Body).Decode(dst); err != nil {
+		return runtimeError(err)
+	}
+	return nil
+}
+
+// runtimeError attributes a failure to the runtime collector.
+func runtimeError(cause error) error {
+	return &types.CollectorError{Collector: "runtime", Cause: cause}
 }
 
 // runtimeStatusError reports a non-200 response from the runtime API.

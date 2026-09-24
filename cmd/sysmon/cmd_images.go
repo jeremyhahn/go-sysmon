@@ -93,7 +93,11 @@ var collectSnapshotWithRuntime = func() (*types.Snapshot, error) {
 	if _, err := sc.Snapshot(ctx); err != nil {
 		return nil, err
 	}
-	sc.WaitForRuntimeDiskUsage(ctx)
+	// A failed query is reported rather than printed as an inventory of
+	// zero-sized images.
+	if err := sc.WaitForRuntimeDiskUsage(ctx); err != nil {
+		return nil, err
+	}
 
 	snap, err := sc.Snapshot(ctx)
 	if err != nil {

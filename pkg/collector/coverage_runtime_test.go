@@ -3,10 +3,12 @@ package collector
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -111,11 +113,14 @@ func TestRuntimeCollect_DiskUsageRejected(t *testing.T) {
 		t.Fatal("/system/df was never queried")
 	}
 
-	// The failed query leaves nothing to wait for, so a short deadline is
-	// enough to confirm the wait terminates rather than hanging.
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	// The failed query releases the wait with its own error; the deadline
+	// only bounds a regression that would hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c.WaitForDiskUsage(ctx)
+	var statusErr *runtimeStatusError
+	if err := c.WaitForDiskUsage(ctx); !errors.As(err, &statusErr) {
+		t.Errorf("WaitForDiskUsage() = %v, want the /system/df status error", err)
+	}
 
 	info := c.Info()
 	if !info.Available || info.Version != "29.1.3" {
@@ -130,17 +135,15 @@ func TestRuntimeCollect_DiskUsageRejected(t *testing.T) {
 // repeated on every cycle. It takes seconds against a real daemon, so running
 // it per-tick would stall collection.
 func TestRuntimeCollect_DiskUsageIsThrottled(t *testing.T) {
-	var dfCalls int
-	done := make(chan struct{}, 4)
+	var dfCalls atomic.Int32
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/info", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(dockerInfo{ServerVersion: "29.1.3"})
 	})
 	mux.HandleFunc("/system/df", func(w http.ResponseWriter, _ *http.Request) {
-		dfCalls++
+		dfCalls.Add(1)
 		_ = json.NewEncoder(w).Encode(diskUsageFixture())
-		done <- struct{}{}
 	})
 	serveFakeDaemon(t, mux)
 
@@ -154,10 +157,12 @@ func TestRuntimeCollect_DiskUsageIsThrottled(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c.WaitForDiskUsage(ctx)
+	if err := c.WaitForDiskUsage(ctx); err != nil {
+		t.Fatalf("WaitForDiskUsage() = %v", err)
+	}
 
-	if dfCalls != 1 {
-		t.Errorf("/system/df was queried %d times across 4 cycles, want 1", dfCalls)
+	if calls := dfCalls.Load(); calls != 1 {
+		t.Errorf("/system/df was queried %d times across 4 cycles, want 1", calls)
 	}
 }
 

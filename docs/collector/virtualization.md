@@ -391,7 +391,22 @@ minutes, and each snapshot serves the last completed result. Engine details
 (`/info`) are cheap and are collected inline.
 
 `sysmon images` waits for the first result so a one-shot command prints sizes
-rather than zeros.
+rather than zeros. `WaitForDiskUsage` never polls. Each query carries a
+completion channel that the query's goroutine closes once it has stored the
+result or recorded the failure, and waiters block on that channel and on their
+context:
+
+| State when called | Returns |
+|---|---|
+| A result is already stored | `nil` at once, even while a refresh runs |
+| No query has ever started (no runtime, or nothing collected yet) | `nil` at once, since no result can arrive |
+| A query succeeds | `nil` as the result lands |
+| A query fails | that query's runtime `CollectorError`, as it fails |
+| The context ends first | a runtime `CollectorError` wrapping `ctx.Err()` |
+
+Every concurrent waiter is released together. A later refresh gets its own
+channel, so a waiter never gets an earlier query's outcome. `sysmon images`
+reports a failed query as an error rather than printing zero-sized images.
 
 ## Limitations
 

@@ -243,6 +243,8 @@ func mergeSensorIntoCPUs(cpus []types.CPUInfo, sensors types.SensorData) {
 // WaitForRuntimeDiskUsage blocks until the container runtime's disk usage has
 // been collected or ctx is done. The query takes many seconds, so it runs in
 // the background; one-shot commands call this to avoid printing empty sizes.
-func (s *SystemCollector) WaitForRuntimeDiskUsage(ctx context.Context) {
-	s.runtime.WaitForDiskUsage(ctx)
+// It returns the query's error when the query failed, and a CollectorError
+// wrapping ctx's error when ctx ends first.
+func (s *SystemCollector) WaitForRuntimeDiskUsage(ctx context.Context) error {
+	return s.runtime.WaitForDiskUsage(ctx)
 }
