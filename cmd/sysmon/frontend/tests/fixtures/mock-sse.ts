@@ -261,13 +261,16 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
   const count = opts.processCount ?? 60;
 
   const processes = makeProcesses(count);
-  let disks =
+  const listed =
     opts.disks == null
       ? snapshot.disks
       : opts.disks.map((d, i) => ({ ...snapshot.disks[0], index: i, ...d }));
-  if (opts.smartAttrs) {
-    disks = disks.map((d, i) => (i === 0 ? { ...d, smart_attrs: makeSMARTAttrs() } : d));
-  }
+  // A separate binding rather than reassigning `listed`: the fixture file's
+  // disks carry "smart_attrs": null, so a disk given a populated list is a
+  // different shape and the element type has to say so.
+  const disks = opts.smartAttrs
+    ? listed.map((d, i) => (i === 0 ? { ...d, smart_attrs: makeSMARTAttrs() } : d))
+    : listed;
 
   const gpus = opts.gpus == null ? snapshot.gpus : makeGPUs(opts.gpus);
   const npus = opts.npus == null ? snapshot.npus : makeNPUs(opts.npus);

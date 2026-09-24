@@ -169,7 +169,11 @@ func TestTLS_StaticCertFilesServeHTTPS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET over TLS: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -209,7 +213,11 @@ func TestTLS_PlainHTTPRejectedOnTLSListener(t *testing.T) {
 	if err != nil {
 		return // refused at the transport layer, which is also acceptable
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode == http.StatusOK {
 		t.Fatal("plain HTTP request was served by a TLS listener")
@@ -325,7 +333,11 @@ func TestTLS_CallerConfigIsHonouredAndNotMutated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET over TLS: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.TLS.Version != tls.VersionTLS13 {
 		t.Errorf("negotiated version = %x, want TLS 1.3 as the caller required", resp.TLS.Version)
@@ -535,7 +547,11 @@ func TestTLS_StaticCertsCombineWithDynamicResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET over TLS: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)

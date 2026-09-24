@@ -1,6 +1,6 @@
 # Where testing effort pays
 
-Five rules, each of which was learned the expensive way in this repository. The
+Six rules, each of which was learned the expensive way in this repository. The
 examples are real and the commit history has them; they are here because the
 general form is not obvious from the specific bug.
 
@@ -339,3 +339,42 @@ written for the volume silently governed every member.
 The check that catches these is not a stronger assertion. It is asking, of each
 name in a change: **what does this resolve to, here, at the moment it is used —
 and is that the same thing the code beside it means by it?**
+
+## 6. Test code is held to the same checks as the code it tests
+
+**A test that drops an error can pass over the very failure it exists to
+catch, and a spec nobody type-checks can assert against a field that does not
+exist.** Both had happened here before #196: fifteen unchecked
+`defer resp.Body.Close()` and seven `defer s.Close() //nolint:errcheck` in
+`pkg/server`, and a type error in `tests/delta.spec.ts` that nothing reported.
+
+`make lint` now enforces both halves:
+
+- **errcheck runs over test code in full.** `.golangci.yml` does not use the
+  `std-error-handling` preset, which exempted every `Close` in every file, and
+  sets `check-blank`, so `_ = f.Close()` is reported like `f.Close()`. The
+  exemptions that remain are scoped away from `_test.go` files.
+- **Every test file is linted.** golangci-lint runs once untagged and once
+  with `prometheus,nvml,integration`, since a file behind a tag is invisible to
+  a run without it.
+- **`//nolint` cannot silence errcheck in a test.** `make check-test-nolint`
+  rejects a directive naming `errcheck` or `all`, or naming no linter at all.
+- **The Playwright specs are type-checked.** `make check-tests` runs
+  `npm run check:tests`, which is `tsc` over `tests/tsconfig.json`: every spec,
+  every fixture, `playwright.config.ts` and `e2e-port.ts`. Only that config
+  sees Node's types; the application's `tsconfig.json` sets `"types": []`, so
+  `process` does not type-check inside browser code.
+
+The idiom for cleanup that can fail is a `t.Cleanup` that reports it:
+
+```go
+t.Cleanup(func() {
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("close response body: %v", err)
+	}
+})
+```
+
+A fake server's handler checks its own writes and reads the same way, with
+`t.Errorf`, because a handler that silently fails to answer makes the test
+under it fail for a reason nobody will look for.

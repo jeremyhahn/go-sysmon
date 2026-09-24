@@ -114,7 +114,11 @@ func TestHandleSnapshot_ReturnsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -136,7 +140,10 @@ func TestHandleSnapshot_MonitorNotStarted(t *testing.T) {
 	stub := &stubSnapshotter{
 		snapshot: &types.Snapshot{Host: types.HostInfo{Hostname: "h"}},
 	}
-	m, _ := monitor.New(stub, time.Second)
+	m, err := monitor.New(stub, time.Second)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
 	// Do NOT start the monitor – no snapshot available yet.
 
 	s := server.New(m, ":0", nil)
@@ -147,7 +154,11 @@ func TestHandleSnapshot_MonitorNotStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
@@ -166,7 +177,11 @@ func TestHandleStatus_NoAssets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -426,7 +441,11 @@ func TestHandleGetInterval_ReportsCurrent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/interval: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -455,7 +474,11 @@ func TestHandleSetInterval_ChangesMonitorInterval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -551,7 +574,11 @@ func TestHandleSetInterval_RejectsOversizedBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST oversized: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
@@ -575,7 +602,11 @@ func TestHandleInterval_MethodNotAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DELETE /api/interval: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", resp.StatusCode)
@@ -617,7 +648,11 @@ func TestNew_WithAssets_ServesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /index.html: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -639,7 +674,11 @@ func TestWebSocketRouteIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /ws: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	// With no assets configured the catch-all status handler answers, so the
 	// meaningful assertion is that nothing upgrades or streams.

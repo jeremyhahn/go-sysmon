@@ -135,7 +135,7 @@ INTERVAL ?= 1000
         bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both generate check-generated test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
+        build-both generate check-generated check-tests check-test-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags \
         check-build-tags test-fips \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
@@ -432,14 +432,32 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-test-nolint check-tests \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
-# shape compiles and no shape calls.
+# shape compiles and no shape calls. Every shape runs the same .golangci.yml, so
+# errcheck's full test-code coverage (#196) reaches every tagged test file --
+# the integration shape is what lints test/integration at all.
 lint-shape-%:
 	@$(TOOL) check "$(GOLANGCI_LINT)" $(GOLANGCI_LINT_PKG) $(GOLANGCI_LINT_VERSION)
 	$(GOLANGCI_LINT) run --build-tags "$(SHAPE_$*)" $(PKG_ALL)
+
+# check-test-nolint fails when a Go test silences errcheck with //nolint. The
+# linter checks test code in full, and a directive is the one way around that
+# it cannot report (#196). See the script for what counts.
+check-test-nolint:
+	@./scripts/check-test-nolint.sh
+
+# check-tests type-checks the Playwright specs, their fixtures and the
+# Playwright config. svelte-check covers src/ only, so the specs had never been
+# type-checked, and one already carried an error nothing reported (#196).
+#
+# This is what makes `lint` need node. The committed bundle exists so that
+# BUILDING the Go binary never does, and that still holds; linting the specs
+# cannot happen without the TypeScript compiler they are written for.
+check-tests: $(FRONTEND_STAMP)
+	cd $(FRONTEND_DIR) && npm run check:tests
 
 # tools installs every pinned analysis tool that is missing or at the wrong
 # version, and leaves a matching one alone. The per-tool targets let a CI job
@@ -499,9 +517,10 @@ check-cgo-clean:
 # recently `main` served a dashboard built before #130's PSI card and #132's swap
 # types, with every test passing, because no test reads the bundle.
 #
-# NOT a prerequisite of `lint`, deliberately: this needs the node toolchain, and
-# requiring node in order to lint Go would reintroduce the very dependency the
-# committed bundle exists to remove. It is its own CI job instead.
+# NOT a prerequisite of `lint`, deliberately: it rebuilds the whole bundle,
+# which is a build rather than a check of source, and as its own CI job a stale
+# bundle is reported as exactly that. (`lint` does need node since #196, for
+# check-tests; that type-checks the specs and builds nothing.)
 # frontend-deps installs the node toolchain when it is absent OR older than the
 # lockfile, so check-bundle-current can run from an aggregate target on a fresh
 # checkout without paying for npm every time.

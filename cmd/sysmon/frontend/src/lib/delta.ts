@@ -25,12 +25,16 @@ export interface Patch {
    * is `undefined` when there is no replacement, `null` when the new value is
    * JSON null. */
   r?: unknown;
+  // The three below may arrive present-and-null, unlike `r`: null is not an
+  // operation but the absence of one, so apply() counts only non-null ones and
+  // the Go decoder reads null as an empty map or nil pointer the same way. The
+  // committed acceptance cases (pkg/delta/testdata/accepted.json) carry them.
   /** Patch these fields of an object. */
-  o?: Record<string, Patch>;
+  o?: Record<string, Patch> | null;
   /** Patch these positions of an array. */
-  i?: Record<string, Patch>;
+  i?: Record<string, Patch> | null;
   /** Patch this array by element identity. */
-  a?: KeyedPatch;
+  a?: KeyedPatch | null;
 }
 
 /** KeyedPatch describes an array whose elements are matched by an identity

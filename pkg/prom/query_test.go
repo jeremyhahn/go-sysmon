@@ -20,7 +20,9 @@ func promServer(t *testing.T, status int, body string) (*httptest.Server, *url.V
 		*seen = r.URL.Query()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv, seen
@@ -239,7 +241,9 @@ func TestQuerier_TrailingSlashInBaseURL(t *testing.T) {
 	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
-		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		if _, err := w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(srv.Close)
 

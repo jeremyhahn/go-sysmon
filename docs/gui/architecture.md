@@ -88,9 +88,10 @@ already caused bugs:
   flagged, because the question is whether the embedded UI matches what the
   source compiles to -- not whether someone remembered to run a command.
 
-  It is deliberately NOT part of `make lint`: it needs the node toolchain, and
-  requiring node in order to lint Go would reintroduce the dependency the
-  committed bundle exists to remove.
+  It is deliberately NOT part of `make lint`: it rebuilds the whole bundle,
+  which is a build rather than a check of source, and as its own CI job a stale
+  bundle is reported as exactly that. `make lint` does need node, for
+  `make check-tests` (below), but that type-checks and builds nothing.
 - The application chunk and its stylesheet are emitted under **fixed** names,
   `assets/index.js` and `assets/index.css`, not content-hashed ones. A hash
   renamed a *committed* file on every build, so any two branches touching the

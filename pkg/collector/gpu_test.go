@@ -43,8 +43,11 @@ func TestGPUCollector_CancelledContext(t *testing.T) {
 	c := NewGPUCollector(newNopLogger())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	// Should not panic regardless of whether NVML is present.
-	_ = c.Collect(ctx)
+	// Should not panic regardless of whether NVML is present, and must not
+	// report the cancellation as a collection failure.
+	if err := c.Collect(ctx); err != nil {
+		t.Errorf("Collect(cancelled ctx) error = %v, want nil", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

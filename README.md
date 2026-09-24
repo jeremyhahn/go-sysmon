@@ -258,7 +258,7 @@ make test            # unit tests with the race detector
 make integration-test# end-to-end CLI tests in a container
 make test-e2e        # Playwright browser tests
 make tools           # install the pinned analysis tools (golangci-lint, actionlint, gosec, govulncheck)
-make lint            # gofmt, go vet and golangci-lint
+make lint            # gofmt, go vet, golangci-lint, and the Playwright spec type-check
 make vulncheck       # govulncheck: dependencies and the standard library
 make audit           # npm audit for the frontend
 make coverage-collector   # per-package coverage (also -cli, -monitor, -server, -types)

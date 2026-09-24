@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"errors"
 	"go/build"
 	"os"
 	"path/filepath"
@@ -106,10 +107,16 @@ func tagAwareImports(t *testing.T, tags []string) map[string][]string {
 				return filepath.SkipDir
 			}
 			pkg, importErr := ctx.ImportDir(path, 0)
+			// A directory with no buildable Go files under these tags is a fact
+			// about the tags, not an error. Anything else -- an unparsable file,
+			// two package clauses -- is a graph this test could not load, and
+			// skipping it would let a prom import hide behind the failure.
+			var noGo *build.NoGoError
+			if errors.As(importErr, &noGo) {
+				return nil
+			}
 			if importErr != nil {
-				// A directory with no buildable Go files under these tags is a
-				// fact about the tags, not an error.
-				return nil //nolint:nilerr
+				return importErr
 			}
 			rel, relErr := filepath.Rel(root, path)
 			if relErr != nil {

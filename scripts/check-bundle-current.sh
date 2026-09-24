@@ -25,9 +25,7 @@ DIST_PATH="$FRONTEND_DIR/dist"
 # extraction below is the real precondition, and it is checked there.
 if [ ! -x "$FRONTEND_DIR/node_modules/.bin/vite" ]; then
 	echo "vite is not installed in $FRONTEND_DIR." >&2
-	echo "This check needs the frontend toolchain, which is why it is NOT part of" >&2
-	echo "\`make lint\`: requiring node to lint Go would reintroduce the dependency" >&2
-	echo "the committed bundle exists to remove. Run: cd $FRONTEND_DIR && npm ci" >&2
+	echo "This check needs the frontend toolchain. Run: make frontend-deps" >&2
 	exit 1
 fi
 

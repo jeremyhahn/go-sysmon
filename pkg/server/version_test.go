@@ -31,7 +31,11 @@ func TestHandleVersion_ReportsBuildMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/version: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -62,7 +66,11 @@ func TestHandleVersion_DefaultsWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /api/version: %v", err)
 	}
-	defer resp.Body.Close()
+	t.Cleanup(func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	})
 
 	var got map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {

@@ -64,7 +64,9 @@ func TestQuerier_RefusesRedirectOffTheConfiguredHost(t *testing.T) {
 	// A well-formed answer from the wrong place is the dangerous case: it
 	// parses, and the chart drawn from it looks exactly like this node's past.
 	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+		if _, err := w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer elsewhere.Close()
 
@@ -141,7 +143,12 @@ func TestWriter_RefusesASameHostRedirectThatDropsTheBody(t *testing.T) {
 			http.Redirect(w, r, "/", http.StatusFound)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		landingMethod.Store(r.Method)
 		landingBody.Store(int64(len(body)))
 		w.WriteHeader(http.StatusOK) // "Success." As far as a caller can tell.
@@ -179,7 +186,12 @@ func TestWriter_FollowsASameHostRedirectThatKeepsThePost(t *testing.T) {
 			http.Redirect(w, r, "/api/v2/write", http.StatusTemporaryRedirect)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		gotMethod.Store(r.Method)
 		gotBytes.Store(int64(len(body)))
 		w.WriteHeader(http.StatusNoContent)

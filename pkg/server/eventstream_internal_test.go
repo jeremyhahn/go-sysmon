@@ -79,7 +79,7 @@ func TestNewEventStream_IdentityWhenGzipNotOffered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	closeOnCleanup(t, s)
 
 	if s.gz != nil {
 		t.Error("stream compressed without the client offering gzip")
@@ -169,7 +169,7 @@ func TestEventStream_SendFraming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	closeOnCleanup(t, s)
 
 	if err := s.send("snapshot", map[string]any{"host": "framing", "n": 1}); err != nil {
 		t.Fatalf("send: %v", err)
@@ -206,7 +206,7 @@ func TestEventStream_RetryFraming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	closeOnCleanup(t, s)
 
 	if err := s.retry(4200); err != nil {
 		t.Fatalf("retry: %v", err)
@@ -224,7 +224,7 @@ func TestEventStream_CommentFraming(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	closeOnCleanup(t, s)
 
 	if err := s.comment("keepalive"); err != nil {
 		t.Fatalf("comment: %v", err)
@@ -247,7 +247,7 @@ func TestEventStream_SendUnencodableValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	closeOnCleanup(t, s)
 
 	if err := s.send("snapshot", make(chan int)); err == nil {
 		t.Fatal("send(chan) = nil error, want an encoding failure")
@@ -265,7 +265,7 @@ func TestEventStream_SendToBrokenPeer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEventStream: %v", err)
 	}
-	defer s.Close() //nolint:errcheck
+	closeOnCleanup(t, s)
 
 	err = s.send("snapshot", map[string]string{"host": "broken"})
 	if err == nil {
@@ -292,7 +292,9 @@ func TestEventStream_RetryAndCommentToBrokenPeer(t *testing.T) {
 		if err := fn(s); !errors.Is(err, wantErr) {
 			t.Errorf("%s() error = %v, want it to wrap %v", name, err, wantErr)
 		}
-		s.Close() //nolint:errcheck
+		if err := s.Close(); err != nil {
+			t.Errorf("%s: close stream: %v", name, err)
+		}
 	}
 }
 
@@ -309,4 +311,16 @@ func TestEventStream_CloseWithoutGzip(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Errorf("Close() = %v, want nil for an uncompressed stream", err)
 	}
+}
+
+// closeOnCleanup closes s when the test finishes and fails the test if closing
+// reports an error. A stream's Close flushes and finalises the gzip trailer, so
+// an error there is a real failure, not noise to discard.
+func closeOnCleanup(t *testing.T, s *eventStream) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close stream: %v", err)
+		}
+	})
 }

@@ -92,7 +92,7 @@ test.describe('the patch format', () => {
     // the exactly-one rule refuses two things to do, not two keys. Both sides
     // have to agree about that, and the agreement was previously assumed.
     for (const c of accepted) {
-      expect(applyPatch(c.tree, c.patch as Patch), `${c.name}: ${c.why}`).toEqual(c.want);
+      expect(applyPatch(c.tree, c.patch), `${c.name}: ${c.why}`).toEqual(c.want);
     }
   });
 

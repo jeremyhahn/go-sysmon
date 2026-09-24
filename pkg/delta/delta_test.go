@@ -655,7 +655,11 @@ func TestDiffApply_RandomKeyedArrays(t *testing.T) {
 			}
 		}
 		if !reflect.DeepEqual(got, after) {
-			raw, _ := Encode(patch)
+			raw, encErr := Encode(patch)
+			if encErr != nil {
+				t.Fatalf("case %d: round trip lost data\nbefore %v\nafter  %v\ngot    %v\nencoding the patch: %v",
+					i, before, after, got, encErr)
+			}
 			t.Fatalf("case %d: round trip lost data\nbefore %v\nafter  %v\ngot    %v\npatch  %s",
 				i, before, after, got, raw)
 		}

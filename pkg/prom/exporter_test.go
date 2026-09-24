@@ -37,7 +37,12 @@ func newRecorder(t *testing.T) *recorder {
 	r := &recorder{}
 	r.status.Store(http.StatusNoContent)
 	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		body, _ := io.ReadAll(req.Body)
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		status := int(r.status.Load())
 		r.mu.Lock()
 		r.requests++

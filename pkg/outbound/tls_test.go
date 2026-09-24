@@ -206,7 +206,11 @@ func TestNewTLSClient_VerifiesAgainstTheConfiguredCA(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Get() error = %v, want the handshake to succeed", err)
 		}
-		defer func() { _ = resp.Body.Close() }()
+		t.Cleanup(func() {
+			if err := resp.Body.Close(); err != nil {
+				t.Errorf("close response body: %v", err)
+			}
+		})
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Get() status = %d, want 200", resp.StatusCode)
 		}
@@ -220,7 +224,9 @@ func TestNewTLSClient_VerifiesAgainstTheConfiguredCA(t *testing.T) {
 		}
 		resp, err := c.Get(srv.URL)
 		if err == nil {
-			_ = resp.Body.Close()
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				t.Errorf("close response body: %v", closeErr)
+			}
 			t.Fatal("Get() succeeded against a server signed by an authority the client does not trust")
 		}
 	})

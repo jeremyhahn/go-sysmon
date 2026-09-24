@@ -3,6 +3,12 @@ version: "2"
 linters:
   settings:
     errcheck:
+      # An error assigned to the blank identifier is still a discarded error:
+      # `_ = f.Close()` and `v, _ := strconv.Atoi(s)` are reported like a bare
+      # `f.Close()`. Test code gets no exception (#196) -- a test that drops the
+      # error from its own cleanup or its own fake server can pass over the very
+      # failure it exists to catch.
+      check-blank: true
       # The fmt.Fprint family is excluded because every renderer writes through
       # pkg/cli.errWriter, which records the first write error and short-circuits
       # the rest; each Render* function returns that error to its caller. Checking
@@ -18,4 +24,22 @@ linters:
     generated: lax
     presets:
       - comments
-      - std-error-handling
+    # NOT the std-error-handling preset. It exempts every Close, Flush,
+    # os.Remove and Setenv from errcheck in every file, tests included, which is
+    # how fifteen unchecked `defer resp.Body.Close()` sat in the test suite
+    # unreported (#196).
+    #
+    # The two rules below keep NON-TEST code exactly where it was before #196:
+    # the preset's exemption, and no blank-identifier checking. They are scoped
+    # away from _test.go files by path-except, so a test gets errcheck in full.
+    # Production code still discards errors at the sites these rules hide;
+    # fixing them and deleting both rules is #207.
+    rules:
+      - path-except: '_test\.go$'
+        linters:
+          - errcheck
+        text: '(?i)Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*print(f|ln)?|os\.(Un)?Setenv). is not checked'
+      - path-except: '_test\.go$'
+        linters:
+          - errcheck
+        source: '(^|[^\w])_\s*(,\s*\w+\s*)*:?=[^=]|,\s*_\s*:?=[^=]'

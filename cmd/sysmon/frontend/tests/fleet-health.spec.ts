@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { serveFleet } from './fixtures/fleet';
 import { openTab } from './fixtures/tabs';
+import type { FleetNode } from '../src/lib/types';
 
 /**
  * A health indicator must not be green because there was nothing to check.
@@ -17,7 +18,9 @@ import { openTab } from './fixtures/tabs';
  * is the treatment swap, temperature and power already use in the same card.
  */
 
-function node(name: string, health: Record<string, number | boolean>) {
+// `health` is typed against the wire's FleetNode, so a misspelt field fails the
+// type check instead of being sent, ignored by the card, and passing anyway.
+function node(name: string, health: Partial<FleetNode>) {
   return {
     name,
     self: false,

@@ -80,7 +80,7 @@ shipped undetected while it did not.
 | Target            | What it does                                     |
 |-------------------|--------------------------------------------------|
 | `make tools`      | Installs any analysis tool not at its Makefile pin |
-| `make lint`       | gofmt, `go vet`, then golangci-lint              |
+| `make lint`       | gofmt, `go vet`, golangci-lint, and the Playwright spec type-check |
 | `make fmt`        | Rewrites files with gofmt                        |
 | `make vulncheck`  | govulncheck across dependencies and the stdlib   |
 | `make audit`      | `npm audit` on the frontend                      |

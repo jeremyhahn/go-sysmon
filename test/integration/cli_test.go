@@ -46,12 +46,21 @@ func TestMain(m *testing.M) {
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "build failed: %v\n%s\n", err, out)
-		os.RemoveAll(tmpDir)
+		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
+			fmt.Fprintf(os.Stderr, "remove build dir %s: %v\n", tmpDir, rmErr)
+		}
 		os.Exit(1)
 	}
 
 	code := m.Run()
-	os.RemoveAll(tmpDir)
+	// A build directory that cannot be removed is leaked onto the host, which
+	// fails the run even when every test passed.
+	if err := os.RemoveAll(tmpDir); err != nil {
+		fmt.Fprintf(os.Stderr, "remove build dir %s: %v\n", tmpDir, err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
 }
 

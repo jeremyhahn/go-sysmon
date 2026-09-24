@@ -28,7 +28,12 @@ func receiver(t *testing.T, status int, message string) (*httptest.Server, *capt
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.requests++
 		got.headers = r.Header.Clone()
-		body, _ := io.ReadAll(r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		got.body = body
 		if status != http.StatusOK {
 			http.Error(w, message, status)
