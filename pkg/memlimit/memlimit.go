@@ -47,10 +47,12 @@ const unlimited = "max"
 // A zero High or Max means that ceiling is unset, which cgroup v2 spells "max"
 // and which is a genuine absence rather than a limit of zero.
 type Limits struct {
-	// High is memory.high in bytes: the throttle-and-reclaim watermark.
+	// High is memory.high in bytes: the throttle-and-reclaim watermark. It is
+	// the tightest one on the path from this process's cgroup to the root,
+	// since an ancestor's watermark throttles every cgroup beneath it.
 	High int64 `json:"high_bytes"`
 	// Max is memory.max in bytes: the hard limit, past which the cgroup is
-	// OOM-killed.
+	// OOM-killed. Like High, it is the tightest on the path to the root.
 	Max int64 `json:"max_bytes"`
 	// Applied is the byte value handed to debug.SetMemoryLimit, or 0 when no
 	// limit was derived.
@@ -112,10 +114,7 @@ func Detect(root string, getenv func(string) string) (Limits, error) {
 		return l, nil
 	}
 
-	if l.High, err = readBytes(filepath.Join(dir, "memory.high")); err != nil {
-		return l, err
-	}
-	if l.Max, err = readBytes(filepath.Join(dir, "memory.max")); err != nil {
+	if l.High, l.Max, err = effectiveCeilings(dir, filepath.Join(root, cgroupMount)); err != nil {
 		return l, err
 	}
 
@@ -147,6 +146,46 @@ func Apply(l Limits) {
 	debug.SetMemoryLimit(l.Applied)
 }
 
+// cgroupMount is where the cgroup v2 hierarchy is mounted, under root.
+const cgroupMount = "/sys/fs/cgroup"
+
+// effectiveCeilings returns the tightest memory.high and memory.max on the
+// path from dir up to mount, inclusive; 0 for a ceiling set nowhere.
+//
+// A ceiling on an ancestor binds every cgroup beneath it, and the kernel
+// enforces whichever on the path is reached first. Reading only the process's
+// own cgroup reported "no ceiling" for a process whose cgroup is unlimited
+// under a limited parent -- a container whose processes sit in a child such
+// as /init, a service inside a slice with MemoryMax -- and left the runtime
+// growing toward a limit it did not know was there.
+func effectiveCeilings(dir, mount string) (high, max int64, err error) {
+	for {
+		h, err := readBytes(filepath.Join(dir, "memory.high"))
+		if err != nil {
+			return 0, 0, err
+		}
+		m, err := readBytes(filepath.Join(dir, "memory.max"))
+		if err != nil {
+			return 0, 0, err
+		}
+		high, max = tighter(high, h), tighter(max, m)
+
+		parent := filepath.Dir(dir)
+		if dir == mount || !strings.HasPrefix(parent, mount) {
+			return high, max, nil
+		}
+		dir = parent
+	}
+}
+
+// tighter returns the lower of two ceilings, where 0 means no ceiling.
+func tighter(a, b int64) int64 {
+	if a == 0 || (b != 0 && b < a) {
+		return b
+	}
+	return a
+}
+
 // cgroupDir resolves the directory holding this process's cgroup v2 interface
 // files, or "" when the process is not under cgroup v2.
 func cgroupDir(root string) (string, error) {
@@ -170,7 +209,7 @@ func cgroupDir(root string) (string, error) {
 		if !ok {
 			continue
 		}
-		return filepath.Join(root, "/sys/fs/cgroup", rest), nil
+		return filepath.Join(root, cgroupMount, rest), nil
 	}
 	return "", nil
 }

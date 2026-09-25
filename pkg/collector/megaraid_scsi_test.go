@@ -228,9 +228,9 @@ func TestLogPageParameter_FindsALaterParameter(t *testing.T) {
 	}
 }
 
-// TestErrSCSIResponse_SaysWhichCommand keeps the message useful: a decoder
+// TestSCSIResponseError_SaysWhichCommand keeps the message useful: a decoder
 // error that does not name the command is a line in a log nobody can act on.
-func TestErrSCSIResponse_SaysWhichCommand(t *testing.T) {
+func TestSCSIResponseError_SaysWhichCommand(t *testing.T) {
 	_, err := parseInformationalExceptions([]byte{0x0D, 0x00, 0x00, 0x00})
 	if err == nil {
 		t.Fatal("wrong page accepted")

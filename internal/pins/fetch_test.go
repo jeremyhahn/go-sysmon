@@ -155,8 +155,13 @@ func TestRun_FailureCarriesStderr(t *testing.T) {
 
 func TestRun_OnlyKnownCommands(t *testing.T) {
 	_, err := Run(context.Background(), "sh", "-c", "true")
-	if !errors.Is(err, ErrUnknownCommand) {
-		t.Fatalf("Run(sh) error = %v, want ErrUnknownCommand", err)
+	var unknown *UnknownCommandError
+	if !errors.As(err, &unknown) {
+		t.Fatalf("Run(sh) error = %v, want an *UnknownCommandError", err)
+	}
+	var cerr *CommandError
+	if !errors.As(err, &cerr) || cerr.Command != "sh" {
+		t.Fatalf("Run(sh) error = %v, want a *CommandError naming sh", err)
 	}
 }
 

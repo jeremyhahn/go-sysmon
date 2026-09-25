@@ -107,7 +107,7 @@ func watchReloadSignals(mgr *config.Manager, done <-chan struct{}, logger *slog.
 				// configuration is already live for every component that
 				// accepted it. Reporting "kept the previous settings" here
 				// would send an operator hunting for a change that did happen.
-				var applyErr *config.ErrApply
+				var applyErr *config.ApplyError
 				if err != nil && !errors.As(err, &applyErr) {
 					logger.Warn("config: SIGHUP reload failed, keeping previous settings", "error", err)
 					continue

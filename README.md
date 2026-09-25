@@ -262,7 +262,7 @@ make lint            # gofmt, go vet, golangci-lint, check-pins, and the Playwri
 make check-latest    # online: fail when any pin (Go, tools, Node.js, base images, actions) is behind its latest release
 make vulncheck       # govulncheck: dependencies and the standard library
 make audit           # npm audit for the frontend
-make coverage-collector   # per-package coverage (also -cli, -monitor, -server, -types)
+make coverage-collector   # one package's coverage; every package has coverage-<pkg>
 ```
 
 `make ci` runs exactly what the GitHub workflow runs, in the same order, so the
@@ -289,7 +289,7 @@ pkg/prom/            Remote write and range queries: the optional history path
 pkg/server/          HTTP server, event streaming and TLS
 pkg/cli/             Terminal rendering
 pkg/types/           Shared data structures and typed errors
-test/integration/    Containerised end-to-end CLI tests
+test/integration/    End-to-end tests, run in build/docker/devcontainer
 extensions/          Cinnamon applet
 ```
 

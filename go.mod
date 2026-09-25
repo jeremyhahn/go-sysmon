@@ -5,7 +5,6 @@ go 1.27.1
 require (
 	fyne.io/systray v1.12.2
 	github.com/NVIDIA/go-nvml v0.13.3-1
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/golang/snappy v1.0.0
 	github.com/jaypipes/ghw v0.25.0
 	github.com/shirou/gopsutil/v4 v4.26.7
@@ -22,6 +21,7 @@ require (
 	git.sr.ht/~jackmordaunt/go-toast/v2 v2.0.3 // indirect
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/ebitengine/purego v0.10.2 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect

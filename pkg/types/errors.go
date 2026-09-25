@@ -123,6 +123,14 @@ func (e *ServerStartError) Unwrap() error {
 	return e.Cause
 }
 
+// NoListenerError indicates a server that has no bound listener, so there is
+// no address to reach it on.
+type NoListenerError struct{}
+
+func (e *NoListenerError) Error() string {
+	return "no listener bound"
+}
+
 // GUIUnavailableError indicates the desktop GUI is not available.
 type GUIUnavailableError struct{}
 

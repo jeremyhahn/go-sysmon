@@ -135,7 +135,6 @@ var arrayKeys = map[string]string{
 	"memory.dimms":                  "index",
 	"networks":                      "name",
 	"processes.process_list":        "pid",
-	"sensors.core_temps":            "core_id",
 	"sensors.thermal_zones":         "name",
 	"virtualization.containers":     "id",
 	"virtualization.runtime.images": "id",
@@ -157,7 +156,7 @@ func Decode(raw []byte) (Tree, error) {
 	dec.UseNumber()
 	var tree Tree
 	if err := dec.Decode(&tree); err != nil {
-		return nil, &ErrDecode{Err: err}
+		return nil, &DecodeError{Err: err}
 	}
 	return tree, nil
 }
@@ -270,7 +269,7 @@ func diffKeyed(before, after []any, path, key string) (*Patch, bool, error) {
 		}
 		raw, err := json.Marshal(element)
 		if err != nil {
-			return nil, false, &ErrEncode{Path: elementPath, Err: err}
+			return nil, false, &EncodeError{Path: elementPath, Err: err}
 		}
 		if patch.New == nil {
 			patch.New = make(map[string]json.RawMessage)
@@ -424,7 +423,7 @@ func orderIfChanged(before, after []any, key string) ([]string, bool) {
 func replace(value any) (*Patch, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		return nil, &ErrEncode{Err: err}
+		return nil, &EncodeError{Err: err}
 	}
 	return &Patch{Replace: json.RawMessage(raw)}, nil
 }

@@ -388,12 +388,19 @@ exist.** Both had happened here before #196: fifteen unchecked
   are no exclusion rules: production code is held to the same bar as tests
   (#207). The only excluded functions are the `fmt.Fprint` family, whose
   errors `pkg/cli`'s `errWriter` records.
-- **Every test file is linted.** golangci-lint runs once untagged and once
-  with `prometheus,nvml,integration`, since a file behind a tag is invisible to
+- **Every test file is linted.** golangci-lint runs in every shape listed in
+  [build-shapes.md](build-shapes.md), since a file behind a tag is invisible to
   a run without it.
-- **`//nolint` cannot silence errcheck anywhere.** `make check-errcheck-nolint`
-  rejects, in any Go file, a directive naming `errcheck` or `all`, or naming
-  no linter at all.
+- **Every error is a named type.** The `errname` linter fails any type that
+  implements `error` without the `Error` suffix (`PeerNameError`, never
+  `ErrPeerName`). `forbidigo` fails any `errors.New` or `fmt.Errorf` in
+  production code, so there are no sentinel values and no inline errors: a
+  failure a caller can meet has a type it can match with `errors.As` (#194).
+  Test files may still build a throwaway cause with `errors.New`, as the
+  handbook permits.
+- **`//nolint` cannot silence the guards.** `make check-nolint` rejects, in
+  any Go file, a directive naming `errcheck`, `errname`, `forbidigo` or `all`,
+  or naming no linter at all.
 - **Every frontend source file is type-checked.** `npm run check`
   (svelte-check, run by `make build-frontend`) covers `src/` and the
   verbatim scripts in `public/` through the application's `tsconfig.json`,

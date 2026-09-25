@@ -8,7 +8,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 
-const { loadApplet, eventLines } = require("./harness/cinnamon.js");
+const { loadApplet, eventLines, CLUTTER_PRIORITY_REDRAW } = require("./harness/cinnamon.js");
 // The web dashboard's Playwright fixture is the single source of truth for a
 // representative snapshot; sharing it keeps the two suites from drifting.
 const fixture = require("../../cmd/sysmon/frontend/tests/fixtures/snapshot.json");
@@ -43,22 +43,49 @@ test("the applet pushes its configured interval over REST", () => {
     );
 });
 
-test("a snapshot event populates the applet and refreshes the menu", () => {
+// sectionItems lists the popup's section submenus.
+function sectionItems(applet) {
+    return applet.menu.items.filter((i) => i.menu !== undefined);
+}
+
+// sectionRows lists the rows of the section whose title starts with title.
+function sectionRows(applet, title) {
+    return sectionItems(applet).find((i) => i.label.get_text().startsWith(title)).menu.items;
+}
+
+// withHostname is the fixture as a later snapshot that renamed the host.
+function withHostname(name) {
+    return Object.assign({}, fixture, { host: Object.assign({}, fixture.host, { hostname: name }) });
+}
+
+// pushSnapshot delivers a snapshot on the open stream and applies it.
+function pushSnapshot(harness, snapshot) {
+    for (const line of eventLines(snapshot)) {
+        harness.streams[0].push(line);
+    }
+    assert.strictEqual(harness.runIdle(), 1, "the snapshot was not applied");
+}
+
+test("a snapshot event populates the applet and, once opened, the menu", () => {
     const { applet } = loadApplet({ lines: eventLines(fixture) });
 
     assert.ok(applet.snapshot, "no snapshot was stored");
     assert.strictEqual(applet.snapshot.host.hostname, fixture.host.hostname);
 
+    applet.on_applet_clicked({});
+
     // Every section should now have a submenu in the popup.
-    const submenus = applet.menu.items.filter((i) => i.menu !== undefined);
+    const submenus = sectionItems(applet);
     assert.strictEqual(submenus.length, 10, "expected one submenu per section");
     assert.ok(submenus[0].label.get_text().startsWith("Host"));
 });
 
 test("the submenus are filled with rows, not left empty", () => {
     const { applet } = loadApplet({ lines: eventLines(fixture) });
+    applet.on_applet_clicked({});
 
-    const submenus = applet.menu.items.filter((i) => i.menu !== undefined);
+    const submenus = sectionItems(applet);
+    assert.strictEqual(submenus.length, 10);
     for (const submenu of submenus) {
         assert.ok(
             submenu.menu.items.length > 0,
@@ -71,23 +98,109 @@ test("a second snapshot refreshes the menu without duplicating sections", () => 
     // A menu that grows a fresh set of submenus per snapshot is unusable
     // within a minute of running.
     const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
+    applet.on_applet_clicked({});
 
     const before = applet.menu.items.length;
-    for (const line of eventLines(fixture)) {
-        harness.streams[0].push(line);
-    }
+    pushSnapshot(harness, fixture);
 
     assert.strictEqual(applet.menu.items.length, before);
 });
 
+// Issue #233: every snapshot rebuilt every row of every submenu, popup open or
+// not -- tens of milliseconds of the compositor thread per snapshot. These
+// fail on that code.
+test("a closed popup is not filled on each snapshot", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
+    pushSnapshot(harness, withHostname("second"));
+
+    assert.strictEqual(sectionItems(applet).length, 0, "a closed popup was filled");
+});
+
+test("opening the popup fills it with the latest snapshot before it is laid out", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
+    pushSnapshot(harness, withHostname("latest"));
+
+    applet.on_applet_clicked({});
+
+    assert.strictEqual(applet.menu.isOpen, true);
+    assert.strictEqual(
+        applet.menu.itemsAtOpen.filter((i) => i.menu !== undefined).length, 10,
+        "the popup opened before its sections were filled");
+    assert.ok(
+        sectionRows(applet, "Host").some((r) => r.label.get_text() === "Hostname:  latest"),
+        "the popup does not show the latest snapshot");
+});
+
+test("an open popup follows each snapshot", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
+    applet.on_applet_clicked({});
+
+    pushSnapshot(harness, withHostname("renamed"));
+
+    assert.ok(sectionRows(applet, "Host").some((r) => r.label.get_text() === "Hostname:  renamed"));
+});
+
+test("an open popup updates its rows in place and leaves unchanged ones alone", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
+    applet.on_applet_clicked({});
+    const before = sectionRows(applet, "Host").slice();
+    const setsBefore = before.map((r) => r.label.sets);
+
+    pushSnapshot(harness, withHostname("renamed"));
+
+    const after = sectionRows(applet, "Host");
+    assert.strictEqual(after.length, before.length);
+    after.forEach((row, i) => assert.strictEqual(row, before[i], `row ${i} was replaced`));
+    const changed = after.filter((row, i) => row.label.sets !== setsBefore[i]);
+    assert.deepStrictEqual(changed.map((r) => r.label.get_text()), ["Hostname:  renamed"]);
+});
+
+test("rows are added and removed as a section grows and shrinks, in order", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
+    applet.on_applet_clicked({});
+    const full = sectionRows(applet, "CPU").map((r) => r.label.get_text());
+
+    pushSnapshot(harness, Object.assign({}, fixture, { cpus: fixture.cpus.slice(0, 1) }));
+    const shrunk = sectionRows(applet, "CPU").map((r) => r.label.get_text());
+    pushSnapshot(harness, fixture);
+    const regrown = sectionRows(applet, "CPU");
+
+    assert.ok(shrunk.length < full.length, "the section did not shrink");
+    assert.deepStrictEqual(regrown.map((r) => r.label.get_text()), full);
+    assert.ok(regrown.every((r) => !r.destroyed), "a destroyed row is still listed");
+    const headers = regrown.filter((r) => r.actor.styleClasses.includes("popup-subtitle-menu-item"));
+    assert.deepStrictEqual(headers.map((r) => r.label.get_text()),
+        full.filter((t) => t === "Per-core" || t.startsWith("Flags")));
+});
+
+test("reopening without a new snapshot does not refill the popup", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
+    applet.on_applet_clicked({});
+    applet.on_applet_clicked({});
+    const sets = sectionRows(applet, "Host").map((r) => r.label.sets);
+
+    applet.on_applet_clicked({});
+
+    assert.deepStrictEqual(sectionRows(applet, "Host").map((r) => r.label.sets), sets);
+});
+
 test("the applet queues a repaint when a snapshot arrives", () => {
-    const { applet } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
 
     assert.ok(applet.drawingArea.repaints > 0, "no repaint was queued");
 });
 
 test("the tooltip summarises the snapshot", () => {
-    const { applet } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
 
     assert.match(applet.tooltip, /CPU: /);
     assert.match(applet.tooltip, /RAM: /);
@@ -123,7 +236,8 @@ test("the gauge has a size before its first paint, so it can be painted", () => 
 });
 
 test("a snapshot sizes the gauge to fit it before it is painted", () => {
-    const { applet } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
 
     // Bars, memory, network text and disk: wider than the empty placeholder,
     // and settled without any paint having happened.
@@ -134,6 +248,7 @@ test("a snapshot sizes the gauge to fit it before it is painted", () => {
 
 test("hiding a gauge narrows the area before the next paint", () => {
     const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
     const before = applet.drawingArea.width;
 
     applet.showCpu = false;
@@ -144,7 +259,8 @@ test("hiding a gauge narrows the area before the next paint", () => {
 });
 
 test("the drawing fits inside the width the gauge was given", () => {
-    const { applet } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
 
     const ctx = applet.drawingArea.repaint();
     const rightEdges = ctx.ops
@@ -263,6 +379,7 @@ test("changing the server address reconnects to the new host", () => {
 
 test("toggling a gauge setting only queues a repaint", () => {
     const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
 
     const before = applet.drawingArea.repaints;
     const streamsBefore = harness.requests.filter((r) => r.uri.indexOf("/api/events") !== -1).length;
@@ -280,6 +397,7 @@ test("toggling a gauge setting only queues a repaint", () => {
 
 test("hiding every gauge still produces a drawable panel", () => {
     const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    harness.runIdle();
 
     for (const key of ["show-cpu", "show-memory", "show-network", "show-disk"]) {
         applet[harness.settingsBindings[key].property] = false;
@@ -317,7 +435,7 @@ test("removal from the panel cancels timers and closes the stream", () => {
     const timerId = harness.timeouts[0].id;
     applet.on_applet_removed_from_panel();
 
-    assert.deepStrictEqual(harness.removedTimeouts, [timerId]);
+    assert.deepStrictEqual(harness.removedSources, [timerId]);
     assert.ok(harness.streams[0].closed, "the stream was left open");
     assert.strictEqual(applet.settings, null, "settings were not finalised");
 });
@@ -340,4 +458,68 @@ test("receiving data resets the backoff so a healthy server reconnects quickly",
     const { harness } = loadApplet({ lines: eventLines(fixture) });
 
     assert.strictEqual(harness.timeouts[0].ms, 3000);
+});
+
+// Issue #232: the applet applied each snapshot -- tooltip, gauge and a rebuilt
+// popup -- inside the stream's read callback, at the default priority. Clutter
+// paints at a lower one (CLUTTER_PRIORITY_REDRAW), so a host that took longer
+// than the interval to apply a snapshot kept Cinnamon's main loop busy with
+// nothing else, and no frame was painted for as long as that lasted. These
+// fail on that code.
+test("a snapshot is applied from an idle source below Clutter's redraw, not in the stream callback", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+
+    assert.strictEqual(applet.snapshot, null, "the snapshot was applied inside the stream callback");
+    assert.strictEqual(applet.drawingArea.repaints, 0);
+    assert.strictEqual(harness.idles.length, 1, "no idle source was scheduled to apply the snapshot");
+    assert.ok(harness.idles[0].priority > CLUTTER_PRIORITY_REDRAW,
+        `the snapshot is applied at priority ${harness.idles[0].priority}, which pre-empts Clutter's redraw`);
+
+    harness.runIdle();
+
+    assert.strictEqual(applet.snapshot.host.hostname, fixture.host.hostname);
+    assert.ok(applet.drawingArea.repaints > 0, "applying the snapshot queued no repaint");
+    assert.match(applet.tooltip, /CPU: /);
+});
+
+test("snapshots that arrive faster than they are applied are coalesced to the newest", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    const newer = Object.assign({}, fixture, { host: Object.assign({}, fixture.host, { hostname: "newer" }) });
+
+    for (const line of eventLines(newer)) {
+        harness.streams[0].push(line);
+    }
+
+    assert.strictEqual(harness.idles.length, 1, "each snapshot queued its own application");
+    assert.strictEqual(harness.runIdle(), 1);
+    assert.strictEqual(applet.snapshot.host.hostname, "newer");
+});
+
+test("a stream that ends shows its last snapshot, then says it disconnected", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture) });
+
+    assert.strictEqual(applet.snapshot.host.hostname, fixture.host.hostname);
+    assert.strictEqual(harness.idles.length, 0, "the ended stream left an application pending");
+    assert.match(applet.tooltip, /Disconnected/);
+});
+
+test("a bye shows the last snapshot, then says the server stopped", () => {
+    const { applet, harness } = loadApplet({
+        lines: eventLines(fixture).concat(["event: bye", "data: monitor stopped", ""]),
+    });
+
+    assert.strictEqual(applet.snapshot.host.hostname, fixture.host.hostname);
+    assert.strictEqual(harness.idles.length, 0, "the ended stream left an application pending");
+    assert.match(applet.tooltip, /stopped/i);
+});
+
+test("removal from the panel drops a snapshot not yet applied", () => {
+    const { applet, harness } = loadApplet({ lines: eventLines(fixture), keepOpen: true });
+    const applyId = harness.idles[0].id;
+
+    applet.on_applet_removed_from_panel();
+
+    assert.ok(harness.removedSources.includes(applyId), "the idle source outlived the applet");
+    assert.strictEqual(harness.idles.length, 0);
+    assert.strictEqual(applet.snapshot, null, "a removed applet applied a snapshot");
 });

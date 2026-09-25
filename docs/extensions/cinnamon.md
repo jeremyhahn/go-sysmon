@@ -82,13 +82,32 @@ server, not just this applet — there is one poll loop behind all of them.
 The gauge toggles only affect drawing, so changing one repaints the panel.
 Changing the server address reconnects.
 
+Cinnamon keeps these in `~/.config/cinnamon/spices/sysmon-go@sysmon/sysmon-go@sysmon.json`.
+The applet allows one instance (`"max-instances": 1`), so Cinnamon names the
+file after the UUID rather than the numeric instance id.
+
 ## How it works
 
 1. On init it opens `GET http://<server-address>/api/events`, a server-sent
    events stream.
 2. It `POST`s the configured rate to `/api/interval`.
 3. Each `snapshot` event repaints the Cairo drawing area, updates the tooltip
-   and refreshes the popup sections.
+   and refreshes the popup sections. The stream callback only parses the
+   snapshot; it is applied from an idle source at `G_PRIORITY_DEFAULT_IDLE`,
+   below Clutter's redraw priority, and a snapshot that arrives before the
+   last one was applied replaces it. Applying snapshots in the stream callback
+   used to starve Cinnamon's frame clock on a host too slow to apply one per
+   interval, and the desktop stopped painting (#232). A stream that ends shows
+   its last snapshot before reporting the disconnect.
+   The popup is only brought up to date while it is open. A snapshot that
+   arrives while it is closed marks it stale, and the popup catches up just
+   before it opens: in `open()`, before Cinnamon sizes and positions it, which
+   covers a click, the keyboard and the menu manager alike. Rows are updated
+   in place, so an unchanged row is not touched and items are only created or
+   destroyed when a section grows or shrinks. Rebuilding every row on every
+   snapshot cost about 59 ms of the compositor thread per snapshot with the
+   popup closed and 123 ms with every section open; it is now 0.4 ms and
+   2 ms (#233).
 4. The drawing area sizes itself to whichever gauges are enabled.
 5. Left-clicking opens the popup; the last item launches the `sysmon` GUI.
 

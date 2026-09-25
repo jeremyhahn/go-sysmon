@@ -1,18 +1,18 @@
 //go:build integration
 
-package integration
+package fleet
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+
+	"github.com/jeremyhahn/go-sysmon/test/integration/harness"
 )
 
 // A fleet tree of real `sysmon serve` processes (#190): two leaves, a child
@@ -23,11 +23,7 @@ import (
 // holding body, and returns the address it bound, ready to serve.
 func startServerWithConfig(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "sysmon.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	return startServe(t, "--config", path)
+	return harness.Serve(t, harness.ServeOptions{Config: body}).Addr
 }
 
 func fleetConfig(local string, peers map[string]string) string {
@@ -97,7 +93,7 @@ func TestFleetTree_ThreeLevelsOfRealProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("drill-in: %v", err)
 	}
-	closeOnCleanup(t, "the drill-in response", resp.Body)
+	harness.CloseOnCleanup(t, "the drill-in response", resp.Body)
 	var peer struct {
 		Reachable bool `json:"reachable"`
 		Snapshot  struct {

@@ -24,7 +24,7 @@ Two more are compiled but ship nothing:
 | Shape | Tags | Why |
 |---|---|---|
 | `nomegaraid` | `nomegaraid` | Stands in for a target without the RAID passthrough, which cannot otherwise be compiled on this host |
-| `integration` | `integration` | The integration suite. Vetted here; it runs in its container (`make integration-test`) |
+| `integration` | `integration` | The integration suite. Vetted here; it runs in the devcontainer, `build/docker/devcontainer` (`make integration-test`) |
 
 ## What runs where
 

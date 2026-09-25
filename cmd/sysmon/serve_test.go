@@ -247,6 +247,10 @@ func TestSelfRequest_NoListener(t *testing.T) {
 	err := selfRequest(srv)(context.Background())
 	var startErr *types.ServerStartError
 	if !errors.As(err, &startErr) {
-		t.Errorf("selfRequest probe = %v, want *types.ServerStartError", err)
+		t.Fatalf("selfRequest probe = %v, want *types.ServerStartError", err)
+	}
+	var noListener *types.NoListenerError
+	if !errors.As(err, &noListener) {
+		t.Errorf("selfRequest probe = %v, want a *types.NoListenerError cause", err)
 	}
 }

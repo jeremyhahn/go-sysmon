@@ -182,3 +182,8 @@
   aria-label={unitLabel(unit) ? `History chart in ${unitLabel(unit)}` : "History chart"}
   style="width:100%;height:{height};"
 ></div>
+{#if series.length > 1}
+  <ul class="sr-only" aria-label="Chart lines">
+    {#each series as s, i (i)}<li>{s.name}</li>{/each}
+  </ul>
+{/if}

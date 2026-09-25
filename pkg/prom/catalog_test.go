@@ -41,14 +41,14 @@ func TestLookup(t *testing.T) {
 		t.Errorf("Lookup(cpu).Name = %q", m.Name)
 	}
 
-	var unknown *ErrUnknownMetric
+	var unknown *UnknownMetricError
 	if _, err := Lookup("sysmon_cpu_usage_percent"); !errors.As(err, &unknown) {
 		// The key is not the metric name, deliberately: several keys share a
 		// metric and differ only by matcher.
-		t.Fatalf("Lookup by metric name = %v, want *ErrUnknownMetric", err)
+		t.Fatalf("Lookup by metric name = %v, want *UnknownMetricError", err)
 	}
 	if _, err := Lookup(""); !errors.As(err, &unknown) {
-		t.Fatalf("Lookup(\"\") = %v, want *ErrUnknownMetric", err)
+		t.Fatalf("Lookup(\"\") = %v, want *UnknownMetricError", err)
 	}
 }
 
@@ -100,9 +100,9 @@ func TestMetric_Expr_RejectsInjection(t *testing.T) {
 		if got, err := m.Expr(instance, testStep, testSampleInterval); err == nil {
 			t.Errorf("Expr(%q) = %q, want a rejection", instance, got)
 		} else {
-			var invalid *ErrInvalidInstance
+			var invalid *InvalidInstanceError
 			if !errors.As(err, &invalid) {
-				t.Errorf("Expr(%q) = %v, want *ErrInvalidInstance", instance, err)
+				t.Errorf("Expr(%q) = %v, want *InvalidInstanceError", instance, err)
 			}
 			// The rejection is logged and returned to a caller, so it must not
 			// echo the payload unescaped.
@@ -196,9 +196,9 @@ func TestLabelValueEscaper(t *testing.T) {
 	}
 }
 
-// TestErrInvalidInstance_StatesTheRule. The history endpoint returns this text
+// TestInvalidInstanceError_StatesTheRule. The history endpoint returns this text
 // as its 400, so it has to say what a usable name looks like.
-func TestErrInvalidInstance_StatesTheRule(t *testing.T) {
+func TestInvalidInstanceError_StatesTheRule(t *testing.T) {
 	m, err := Lookup("cpu")
 	if err != nil {
 		t.Fatal(err)
@@ -243,20 +243,22 @@ func TestCatalog_GaugeQueriesAreUnchanged(t *testing.T) {
 		"disk_temperature": `sysmon_disk_temperature_celsius{instance="mon0"}`,
 		"net_rx":           `sysmon_network_receive_bytes_rate{instance="mon0"}`,
 		"net_tx":           `sysmon_network_transmit_bytes_rate{instance="mon0"}`,
-		"cpu_temperature":  `sysmon_cpu_temperature_celsius{instance="mon0"}`,
-		"power":            `sysmon_power_watts{instance="mon0"}`,
-		"cpu_power":        `sum(sysmon_power_watts{instance="mon0",source=~"cpu:.*"})`,
-		"gpu_power":        `sysmon_power_watts{instance="mon0",source=~"gpu:.*"}`,
-		"gpu_util":         `sysmon_gpu_utilization_percent{instance="mon0"}`,
-		"gpu_memory":       `sysmon_gpu_memory_percent{instance="mon0"}`,
-		"gpu_temperature":  `sysmon_gpu_temperature_celsius{instance="mon0"}`,
-		"npu_power":        `sysmon_power_watts{instance="mon0",source=~"npu:.*"}`,
-		"npu_residency":    `sysmon_npu_residency_percent{instance="mon0"}`,
-		"npu_util":         `sysmon_npu_utilization_percent{instance="mon0"}`,
-		"npu_temperature":  `sysmon_npu_temperature_celsius{instance="mon0"}`,
-		"npu_clients":      `sysmon_npu_clients{instance="mon0"}`,
-		"alerts_critical":  `sysmon_alerts_firing{instance="mon0",severity="critical"}`,
-		"alerts_warning":   `sysmon_alerts_firing{instance="mon0",severity="warning"}`,
+		// Changed deliberately with the package label: a series without one
+		// cannot say which package it was, and is not charted.
+		"cpu_temperature": `sysmon_cpu_temperature_celsius{instance="mon0",package!=""}`,
+		"power":           `sysmon_power_watts{instance="mon0"}`,
+		"cpu_power":       `sum(sysmon_power_watts{instance="mon0",source=~"cpu:.*"})`,
+		"gpu_power":       `sysmon_power_watts{instance="mon0",source=~"gpu:.*"}`,
+		"gpu_util":        `sysmon_gpu_utilization_percent{instance="mon0"}`,
+		"gpu_memory":      `sysmon_gpu_memory_percent{instance="mon0"}`,
+		"gpu_temperature": `sysmon_gpu_temperature_celsius{instance="mon0"}`,
+		"npu_power":       `sysmon_power_watts{instance="mon0",source=~"npu:.*"}`,
+		"npu_residency":   `sysmon_npu_residency_percent{instance="mon0"}`,
+		"npu_util":        `sysmon_npu_utilization_percent{instance="mon0"}`,
+		"npu_temperature": `sysmon_npu_temperature_celsius{instance="mon0"}`,
+		"npu_clients":     `sysmon_npu_clients{instance="mon0"}`,
+		"alerts_critical": `sysmon_alerts_firing{instance="mon0",severity="critical"}`,
+		"alerts_warning":  `sysmon_alerts_firing{instance="mon0",severity="warning"}`,
 	}
 
 	gauges := 0
@@ -368,9 +370,9 @@ func TestMetric_Selector(t *testing.T) {
 	if want := `sysmon_swap_out_pages_total{instance="mon0"}`; got != want {
 		t.Errorf("Selector() = %q, want %q", got, want)
 	}
-	var invalid *ErrInvalidInstance
+	var invalid *InvalidInstanceError
 	if _, err := m.Selector(`mon0"}`); !errors.As(err, &invalid) {
-		t.Errorf("Selector(injection) = %v, want *ErrInvalidInstance", err)
+		t.Errorf("Selector(injection) = %v, want *InvalidInstanceError", err)
 	}
 }
 
@@ -395,16 +397,16 @@ func TestMetric_Expr_CounterRejectsUnusableWindows(t *testing.T) {
 	}
 	for _, c := range cases {
 		got, err := m.Expr("mon0", c.step, c.gap)
-		var bad *ErrInvalidRange
+		var bad *InvalidRangeError
 		if !errors.As(err, &bad) {
-			t.Errorf("%s: Expr() = %q, %v; want *ErrInvalidRange", c.name, got, err)
+			t.Errorf("%s: Expr() = %q, %v; want *InvalidRangeError", c.name, got, err)
 		}
 	}
 
 	// The node name is still checked first, and still with its own error.
-	var invalid *ErrInvalidInstance
+	var invalid *InvalidInstanceError
 	if _, err := m.Expr(`mon0"}`, time.Minute, 15*time.Second); !errors.As(err, &invalid) {
-		t.Errorf("Expr(injection) on a counter = %v, want *ErrInvalidInstance", err)
+		t.Errorf("Expr(injection) on a counter = %v, want *InvalidInstanceError", err)
 	}
 }
 
@@ -513,9 +515,9 @@ func TestMetric_Lookback(t *testing.T) {
 	if got, err := counter.Lookback(time.Minute, 15*time.Second); err != nil || got != 75*time.Second {
 		t.Errorf("counter Lookback = %v, %v; want 75s", got, err)
 	}
-	var bad *ErrInvalidRange
+	var bad *InvalidRangeError
 	if _, err := counter.Lookback(0, 15*time.Second); !errors.As(err, &bad) {
-		t.Errorf("counter Lookback at step 0 = %v, want *ErrInvalidRange", err)
+		t.Errorf("counter Lookback at step 0 = %v, want *InvalidRangeError", err)
 	}
 }
 

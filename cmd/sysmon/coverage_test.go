@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/cli"
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -517,8 +519,9 @@ func TestRunDoctorCmd_ReportsWriteFailures(t *testing.T) {
 		cmd := newTestCmd(nil)
 		cmd.SetOut(&failAfterWriter{ok: ok})
 
-		if err := runDoctorCmd(cmd, nil); err == nil {
-			t.Errorf("runDoctorCmd() = nil after %d successful writes, want an error", ok)
+		var renderErr *cli.RenderError
+		if err := runDoctorCmd(cmd, nil); !errors.As(err, &renderErr) || renderErr.Function != "doctor" {
+			t.Errorf("runDoctorCmd() = %v after %d successful writes, want a *cli.RenderError naming doctor", err, ok)
 		}
 	}
 }
@@ -812,4 +815,71 @@ func cgroupFixture(t *testing.T, high, max string) string {
 		}
 	}
 	return root
+}
+
+// TestCheckResourceLimits_OperatorGOMEMLIMIT verifies an operator's own
+// GOMEMLIMIT is reported as theirs, not as a limit derived from the cgroup.
+func TestCheckResourceLimits_OperatorGOMEMLIMIT(t *testing.T) {
+	root := cgroupFixture(t, "1073741824", "max")
+	env := func(k string) string { return map[string]string{"GOMEMLIMIT": "512MiB"}[k] }
+
+	got := checkResourceLimits(root, env)
+
+	if got.Status != "ok" || !strings.Contains(got.Detail, "GOMEMLIMIT set by the environment") {
+		t.Errorf("check = %+v, want ok and the environment named as the source", got)
+	}
+}
+
+// TestHumanBytes_UsesTheSystemdUnits verifies the doctor's sizes read the way
+// MemoryHigh= and MemoryMax= are written: whole gibibytes as G, otherwise
+// mebibytes as M, and anything under a mebibyte in bytes.
+func TestHumanBytes_UsesTheSystemdUnits(t *testing.T) {
+	for n, want := range map[int64]string{
+		2 << 30:           "2G",
+		(2 << 30) + 1<<20: "2049M",
+		768 << 20:         "768M",
+		(1 << 20) - 1:     "1048575B",
+		0:                 "0B",
+	} {
+		if got := humanBytes(n); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// TestCheckMemoryInventory_SaysHowToGrantAccess covers the three answers the
+// SMBIOS table gives: readable, absent (a virtual machine's firmware), and
+// refused -- the only one with a remedy, since go-sysmon never escalates to
+// read it and the grant is the administrator's.
+func TestCheckMemoryInventory_SaysHowToGrantAccess(t *testing.T) {
+	orig := smbiosAccess
+	t.Cleanup(func() { smbiosAccess = orig })
+	tests := []struct {
+		name    string
+		err     error
+		status  string
+		wantFix bool
+	}{
+		{"readable", nil, "ok", false},
+		{"absent", &types.SysfsReadError{Path: "DMI", Cause: fs.ErrNotExist}, "unavailable", false},
+		{"refused", &types.SysfsReadError{Path: "DMI", Cause: fs.ErrPermission}, "degraded", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			smbiosAccess = func() error { return tt.err }
+			got := checkMemoryInventory()
+			if got.Status != tt.status {
+				t.Errorf("Status = %q, want %q (%s)", got.Status, tt.status, got.Detail)
+			}
+			if tt.wantFix {
+				for _, want := range []string{"run as root", "CAP_DAC_READ_SEARCH", "tmpfiles.d"} {
+					if !strings.Contains(got.Fix, want) {
+						t.Errorf("Fix = %q, want it to offer %q", got.Fix, want)
+					}
+				}
+			} else if got.Fix != "" {
+				t.Errorf("Fix = %q, want none: there is nothing to grant", got.Fix)
+			}
+		})
+	}
 }

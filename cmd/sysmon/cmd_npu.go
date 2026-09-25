@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -41,7 +40,7 @@ func runNPUCmd(cmd *cobra.Command, _ []string) error {
 			})
 		}
 		if err := cli.RenderNPU(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render npu: %w", err)
+			return &cli.RenderError{Function: "npu", Cause: err}
 		}
 		return nil
 	})

@@ -18,10 +18,22 @@ readonly UUID="sysmon-go@sysmon"
 readonly SERVER_ADDR="localhost:8080"
 readonly X_DISPLAY=":99"
 
+# The applet's update interval, set through its settings file, and the
+# interval the server starts at. They differ, and both differ from the
+# schema's default (1000), so the server only runs at APPLET_INTERVAL_MS if
+# Cinnamon read the file and the applet pushed what it read (#234).
+readonly APPLET_INTERVAL_MS=500
+readonly SERVER_START_INTERVAL_MS=2000
+
 # Overridable so extensions/tests/desktop-runner.test.js can drive this script
 # against stand-in tools in a scratch directory. In the container they keep
 # their defaults.
-readonly CINNAMON_LOG="${CINNAMON_LOG:-/tmp/cinnamon.log}"
+#
+# LOG_DIR holds every log the session writes, and outlives the run: the
+# scratch directory is removed on exit, and `make test-extensions-desktop`
+# copies LOG_DIR out of the container so a failure's logs can be read (#225).
+readonly LOG_DIR="${LOG_DIR:-/var/log/sysmon-desktop}"
+readonly CINNAMON_LOG="${CINNAMON_LOG:-${LOG_DIR}/cinnamon.log}"
 readonly STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-90}"
 readonly DATA_TIMEOUT="${DATA_TIMEOUT:-30}"
 readonly XORG_CONFIG="${XORG_CONFIG:-/etc/X11/xorg-dummy.conf}"
@@ -335,6 +347,7 @@ trap cleanup EXIT
 # it happened to leave behind.
 
 SCRATCH="$(mktemp -d)"
+mkdir -p "$LOG_DIR" || abort "could not create the log directory ${LOG_DIR}"
 
 # What the desktop stack logs depends on the DRM devices it can see, so a host
 # GPU showing through changes the log -- a CI runner with no usable GPU logged
@@ -345,7 +358,7 @@ if [[ ! -d "$DRM_CLASS_DIR" ]] || [[ -n "$(ls -A "$DRM_CLASS_DIR")" ]]; then
 fi
 
 echo "== starting sysmon server =="
-sysmon-server serve --addr "$SERVER_ADDR" --interval 500 &
+sysmon-server serve --addr "$SERVER_ADDR" --interval "$SERVER_START_INTERVAL_MS" &
 SERVER_PID=$!
 
 # server_answers reports whether the sysmon server serves a snapshot.
@@ -371,7 +384,7 @@ echo "== starting the X server =="
 # assuming. A server that dies first closes the pipe and the read fails.
 mkfifo "${SCRATCH}/displayfd"
 Xorg "$X_DISPLAY" -config "$XORG_CONFIG" -noreset -nolisten tcp \
-    -logfile "${SCRATCH}/xorg.log" -displayfd 3 3>"${SCRATCH}/displayfd" &
+    -logfile "${LOG_DIR}/xorg.log" -displayfd 3 3>"${SCRATCH}/displayfd" &
 XORG_PID=$!
 read -r -t 30 display_number <"${SCRATCH}/displayfd" ||
     abort "the X server never reported that ${X_DISPLAY} was ready"
@@ -407,14 +420,14 @@ echo "== starting the system bus and its services =="
 # warning. polkitd, which udisksd asks for authorisation, is started by the bus
 # itself through D-Bus activation.
 mkdir -p "$SYSTEM_BUS_DIR"
-SYSTEM_BUS_PID="$(dbus-daemon --system --fork --print-pid 2>"${SCRATCH}/system-bus.log")" ||
-    abort "the system bus did not start: $(cat "${SCRATCH}/system-bus.log")"
+SYSTEM_BUS_PID="$(dbus-daemon --system --fork --print-pid 2>"${LOG_DIR}/system-bus.log")" ||
+    abort "the system bus did not start: $(cat "${LOG_DIR}/system-bus.log")"
 # The bus complains about its own configuration on stderr, for instance a
 # policy naming a user that does not exist. That is the same kind of gap as a
 # warning in cinnamon.log, so it fails the run the same way.
-[[ ! -s "${SCRATCH}/system-bus.log" ]] ||
-    abort "the system bus reported a problem: $(cat "${SCRATCH}/system-bus.log")"
-"$UDISKSD" >"${SCRATCH}/udisksd.log" 2>&1 &
+[[ ! -s "${LOG_DIR}/system-bus.log" ]] ||
+    abort "the system bus reported a problem: $(cat "${LOG_DIR}/system-bus.log")"
+"$UDISKSD" >"${LOG_DIR}/udisksd.log" 2>&1 &
 UDISKSD_PID=$!
 
 # system_bus_has_owner reports whether a name is owned on the system bus.
@@ -467,23 +480,33 @@ gsettings set org.cinnamon.desktop.keybindings.media-keys pause "[]" ||
 # Cinnamon's own setting rather than exempted from the log check.
 gsettings set org.cinnamon enable-polkit-agent false ||
     abort "could not disable Cinnamon's polkit agent"
-# The server deliberately listens on the applet's default address, so the test
-# does not depend on Cinnamon's settings plumbing to make a connection. The
-# settings file is still written -- to both the historical and the current
-# location -- so the configured path is exercised too.
-for dir in "${HOME}/.cinnamon/configs/${UUID}" "${HOME}/.config/cinnamon/spices/${UUID}"; do
-    mkdir -p "$dir"
-    cat > "${dir}/0.json" <<EOF
+# The applet's settings, written where Cinnamon 6.4 reads them
+# (js/ui/settings.js, XletSettingsBase): ~/.config/cinnamon/spices/<uuid>/,
+# in a file named after the instance id -- and an applet whose metadata says
+# "max-instances": 1 is keyed by its UUID, not by the numeric id in
+# enabled-applets. The file this runner used to write, 0.json, was never read:
+# Cinnamon installed the schema defaults beside it, and the applet ran at
+# 1000 ms while nothing checked (#234). The legacy ~/.cinnamon/configs path is
+# read only when this one is absent, so it is not written.
+#
+# The file carries values only. With no __md5__ of the schema in it, Cinnamon
+# upgrades it on load, keeping every value that passes its sanity check --
+# what happens to a user's settings when the applet is updated.
+#
+# The server deliberately listens on the applet's default address, so the
+# connection does not depend on this file; the interval checks below do.
+readonly SETTINGS_DIR="${HOME}/.config/cinnamon/spices/${UUID}"
+mkdir -p "$SETTINGS_DIR" || abort "could not create ${SETTINGS_DIR}"
+cat > "${SETTINGS_DIR}/${UUID}.json" <<EOF || abort "could not write the applet's settings file"
 {
   "server-address": { "type": "entry", "default": "localhost:8080", "value": "${SERVER_ADDR}" },
-  "update-interval": { "type": "spinbutton", "default": 1000, "value": 500 },
+  "update-interval": { "type": "spinbutton", "default": 1000, "value": ${APPLET_INTERVAL_MS} },
   "show-cpu": { "type": "switch", "default": true, "value": true },
   "show-memory": { "type": "switch", "default": true, "value": true },
   "show-network": { "type": "switch", "default": true, "value": true },
   "show-disk": { "type": "switch", "default": true, "value": true }
 }
 EOF
-done
 
 echo "== starting Cinnamon =="
 cinnamon --replace >"$CINNAMON_LOG" 2>&1 &
@@ -589,6 +612,41 @@ else
     log "server reachable: $(curl -so /dev/null -w '%{http_code}' "http://${SERVER_ADDR}/api/snapshot")"
 fi
 
+# The settings file is the one route to these values: the schema's defaults
+# are localhost:8080 and 1000 ms.
+assert_eval "the applet uses the settings file" \
+    "(function () { var applet = ${APPLET_JS}; return 'interval: ' + applet.updateInterval + ' ms, server: ' + applet.serverAddress; })()" \
+    "interval: ${APPLET_INTERVAL_MS} ms, server: ${SERVER_ADDR}"
+
+# server_interval prints the interval the server polls at, from GET
+# /api/interval.
+server_interval() {
+    local body
+    body="$(curl -sf "http://${SERVER_ADDR}/api/interval")" || return 1
+    [[ "$body" =~ \"interval_ms\":([0-9]+) ]] || return 1
+    printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# server_at_applet_interval reports whether the server runs at the applet's
+# interval yet.
+# shellcheck disable=SC2317 # invoked through wait_until
+server_at_applet_interval() {
+    [[ "$(server_interval)" == "$APPLET_INTERVAL_MS" ]]
+}
+
+# The effective interval is the server's: the applet pushes its setting with
+# POST /api/interval once its stream connects, and the server started at a
+# different one, so this passes only once that push has landed.
+if (( session_proven == 0 )); then
+    inconclusive "the server runs at the applet's interval (not run: the session was never proven)"
+elif wait_until "$DATA_TIMEOUT" server_at_applet_interval; then
+    pass "the server runs at the applet's interval"
+    log "interval: $(server_interval) ms"
+else
+    fail "the server runs at the applet's interval"
+    log "interval: $(server_interval || printf 'unreadable') ms, expected ${APPLET_INTERVAL_MS} ms"
+fi
+
 assert_eval "snapshot carries a hostname" \
     "String(${APPLET_JS}.snapshot.host.hostname.length > 0)" \
     "true"
@@ -602,21 +660,84 @@ assert_eval "tooltip reports CPU usage" \
 echo
 echo "== popup menu =="
 
+# The applet fills the popup only while it is open (#233), so open it the way a
+# click on the panel does: on_applet_clicked -> toggle() -> open().
+readonly SECTION_ITEMS="${APPLET_JS}.menu._getMenuItems().filter(function (i) { return i.menu !== undefined; })"
+readonly POPUP_ROWS="${SECTION_ITEMS}.reduce(function (rows, i) { return rows.concat(i.menu._getMenuItems()); }, [])"
+
+assert_eval "a click opens the popup" \
+    "(function () { var applet = ${APPLET_JS}; applet.on_applet_clicked(null); return 'open: ' + applet.menu.isOpen; })()" \
+    "open: true"
+
 # Counted twice on purpose -- here against a real Cinnamon session, and in
 # extensions/tests/applet.test.js against the harness. Adding a section to
 # SECTION_BUILDERS means updating BOTH; the NPU section (2026-09-16) was caught
 # by this one after the harness count had already been raised.
 assert_eval "popup has one submenu per section" \
-    "String(${APPLET_JS}.menu._getMenuItems().filter(function (i) { return i.menu !== undefined; }).length)" \
+    "String(${SECTION_ITEMS}.length)" \
     "10"
 
 assert_eval "submenus are populated" \
-    "String(${APPLET_JS}.menu._getMenuItems().filter(function (i) { return i.menu !== undefined; }).every(function (i) { return i.menu._getMenuItems().length > 0; }))" \
+    "String(${SECTION_ITEMS}.every(function (i) { return i.menu._getMenuItems().length > 0; }))" \
     "true"
 
 assert_eval "no row renders undefined" \
-    "String(${APPLET_JS}.menu._getMenuItems().filter(function (i) { return i.menu !== undefined; }).some(function (i) { return i.label.get_text().indexOf('undefined') !== -1; }))" \
+    "String(${SECTION_ITEMS}.concat(${POPUP_ROWS}).some(function (i) { return i.label.get_text().indexOf('undefined') !== -1; }))" \
     "false"
+
+# Issue #233: every snapshot rebuilt every row of the popup, open or not --
+# tens of milliseconds of the compositor thread per snapshot, for rows nobody
+# could see. A closed popup must now be left alone: the same row actors, and
+# not one text change, while snapshots are applied.
+#
+# Applications are counted through a stand-in own property on the instance,
+# which the last step deletes. Each snapshot is applied from an idle source
+# bound when it arrives, so the stand-in sees every snapshot after this point.
+assert_eval "a click closes the popup" \
+    "(function () { var applet = ${APPLET_JS}; applet.on_applet_clicked(null); return 'closed: ' + !applet.menu.isOpen; })()" \
+    "closed: true"
+
+assert_eval "the closed popup's rows can be watched" \
+    "(function () { var applet = ${APPLET_JS}; var apply = applet._applySnapshot; applet._sysmonTestApplies = 0; applet._applySnapshot = function () { var result = apply.apply(applet, arguments); applet._sysmonTestApplies++; return result; }; applet._sysmonTestTextChanges = 0; ${POPUP_ROWS}.forEach(function (row) { row._sysmonTestWatched = true; row.label.clutter_text.connect('notify::text', function () { applet._sysmonTestTextChanges++; }); }); return 'watching'; })()" \
+    "watching"
+
+readonly CLOSED_POPUP_STATE="(function () { var applet = ${APPLET_JS}; var rows = ${POPUP_ROWS}; return 'snapshots applied: ' + applet._sysmonTestApplies + ', rows: ' + rows.length + ', replaced: ' + rows.filter(function (row) { return !row._sysmonTestWatched; }).length + ', text changes: ' + applet._sysmonTestTextChanges; })()"
+
+if (( session_proven == 0 )); then
+    inconclusive "a closed popup is left alone while snapshots arrive (not run: the session was never proven)"
+elif ! wait_for_eval "String(${APPLET_JS}._sysmonTestApplies >= 2)" "true" "$DATA_TIMEOUT"; then
+    fail "a closed popup is left alone while snapshots arrive (no snapshot was applied)"
+    log "$(eval_value "$(cinnamon_eval "$CLOSED_POPUP_STATE")")"
+elif check_eval "a closed popup is left alone while snapshots arrive" \
+    "(function () { var applet = ${APPLET_JS}; var rows = ${POPUP_ROWS}; return String(rows.length > 0 && rows.every(function (row) { return row._sysmonTestWatched; }) && applet._sysmonTestTextChanges === 0); })()" \
+    "true"; then
+    log "$(eval_value "$(cinnamon_eval "$CLOSED_POPUP_STATE")")"
+else
+    log "$(eval_value "$(cinnamon_eval "$CLOSED_POPUP_STATE")")"
+fi
+
+# Opening a popup that fell behind has to catch it up before Cinnamon lays it
+# out: open() sizes and positions the popup, and only then emits
+# open-state-changed. Mark a row stale, let a snapshot arrive, and record what
+# the row said when that signal fired. The applet compares each row with the
+# snapshot, so it must have rewritten the marked one by then.
+assert_eval "a row of the closed popup can be marked stale" \
+    "(function () { var applet = ${APPLET_JS}; applet._sysmonTestStaleAfter = applet._sysmonTestApplies; ${POPUP_ROWS}[0].label.set_text('sysmon-test-stale'); applet._sysmonTestStaleAtOpen = 'not opened'; applet.menu.connect('open-state-changed', function (menu, open) { if (open && applet._sysmonTestStaleAtOpen === 'not opened') { applet._sysmonTestStaleAtOpen = String(${POPUP_ROWS}.some(function (row) { return row.label.get_text() === 'sysmon-test-stale'; })); } }); return 'marked'; })()" \
+    "marked"
+
+if (( session_proven == 0 )); then
+    inconclusive "opening the popup brings it up to date before it is shown (not run: the session was never proven)"
+elif ! wait_for_eval "String(${APPLET_JS}._sysmonTestApplies > ${APPLET_JS}._sysmonTestStaleAfter)" "true" "$DATA_TIMEOUT"; then
+    fail "opening the popup brings it up to date before it is shown (no snapshot was applied)"
+else
+    check_eval "opening the popup brings it up to date before it is shown" \
+        "(function () { var applet = ${APPLET_JS}; applet.on_applet_clicked(null); return 'open: ' + applet.menu.isOpen + ', stale when shown: ' + applet._sysmonTestStaleAtOpen; })()" \
+        "open: true, stale when shown: false"
+fi
+
+assert_eval "the popup closes and the watch is removed" \
+    "(function () { var applet = ${APPLET_JS}; if (applet.menu.isOpen) { applet.on_applet_clicked(null); } delete applet._applySnapshot; return String(!applet.menu.isOpen && !Object.prototype.hasOwnProperty.call(applet, '_applySnapshot')); })()" \
+    "true"
 
 echo
 echo "== panel rendering =="
@@ -650,20 +771,56 @@ fi
 
 # Count the paints Clutter delivers from here on, queue one, and wait for it.
 # The counter's handler is connected after the applet's own, so when it has
-# run, the applet's drawing has too.
+# run, the applet's drawing has too. The stage's frames are counted beside it,
+# so a gauge that was not painted says whether Clutter painted nothing at all
+# or painted the stage without it.
 assert_eval "a repaint can be queued" \
-    "(function () { var area = ${APPLET_JS}.drawingArea; area._sysmonTestPaints = 0; area.connect('repaint', function () { area._sysmonTestPaints++; }); area.queue_repaint(); return 'queued'; })()" \
+    "(function () { var area = ${APPLET_JS}.drawingArea; var stage = global.stage; stage._sysmonTestFrames = 0; stage.connect('after-paint', function () { stage._sysmonTestFrames++; }); area._sysmonTestPaints = 0; area.connect('repaint', function () { area._sysmonTestPaints++; }); area.queue_repaint(); return 'queued'; })()" \
     "queued"
+
+# What the paint checks report whether they pass or fail: the gauge's paints,
+# the stage's frames, and whether the gauge was on screen to be painted.
+readonly GAUGE_PAINT_STATE="(function () { var area = ${APPLET_JS}.drawingArea; return 'paints: ' + area._sysmonTestPaints + ', stage frames: ' + global.stage._sysmonTestFrames + ', mapped: ' + area.mapped + ', visible: ' + area.visible; })()"
 
 if (( session_proven == 0 )); then
     inconclusive "Clutter painted the panel gauge (not run: the session was never proven)"
 elif wait_for_eval "String(${APPLET_JS}.drawingArea._sysmonTestPaints > 0)" "true" "$DATA_TIMEOUT"; then
     pass "Clutter painted the panel gauge"
-    log "paints: $(eval_value "$(cinnamon_eval "String(${APPLET_JS}.drawingArea._sysmonTestPaints)")")"
+    log "$(eval_value "$(cinnamon_eval "$GAUGE_PAINT_STATE")")"
 else
     fail "Clutter painted the panel gauge"
-    log "paints: $(eval_value "$(cinnamon_eval "String(${APPLET_JS}.drawingArea._sysmonTestPaints)")")"
+    log "$(eval_value "$(cinnamon_eval "$GAUGE_PAINT_STATE")")"
 fi
+
+# Issue #232: the applet applied each snapshot -- rebuilding the popup above
+# all -- in the stream's read callback, at GLib's default priority. Clutter
+# paints at a lower one, so on a host that took longer than the interval to
+# apply a snapshot the main loop never ran out of snapshots to apply: Eval
+# still answered, a second late, and not one frame was painted. On CI that
+# happened once in 56 runs.
+#
+# Make it happen on purpose: every popup rebuild now also spins for twice the
+# interval, so the applet can never keep up. The gauge must still be painted
+# after each snapshot it applies. The applet's own methods are untouched; the
+# stand-in is an own property on the instance, and deleting it restores them.
+readonly SLOW_APPLIES=3
+assert_eval "applying a snapshot can be made slower than the interval" \
+    "(function () { var applet = ${APPLET_JS}; var refresh = applet._refreshMenu; applet._sysmonTestSlowApplies = 0; applet._sysmonTestPaintsBefore = applet.drawingArea._sysmonTestPaints; applet._refreshMenu = function () { var end = Date.now() + 2 * applet.updateInterval; while (Date.now() < end) { } refresh.apply(applet, arguments); applet._sysmonTestSlowApplies++; }; return 'slowed'; })()" \
+    "slowed"
+
+if (( session_proven == 0 )); then
+    inconclusive "the gauge is painted while snapshots are slower to apply than the interval (not run: the session was never proven)"
+elif wait_for_eval "(function () { var applet = ${APPLET_JS}; return String(applet._sysmonTestSlowApplies >= ${SLOW_APPLIES} && applet.drawingArea._sysmonTestPaints - applet._sysmonTestPaintsBefore >= ${SLOW_APPLIES}); })()" "true" "$DATA_TIMEOUT"; then
+    pass "the gauge is painted while snapshots are slower to apply than the interval"
+    log "$(eval_value "$(cinnamon_eval "$GAUGE_PAINT_STATE")")"
+else
+    fail "the gauge is painted while snapshots are slower to apply than the interval"
+    log "$(eval_value "$(cinnamon_eval "$GAUGE_PAINT_STATE")")"
+fi
+
+assert_eval "applying a snapshot is fast again" \
+    "(function () { var applet = ${APPLET_JS}; delete applet._refreshMenu; return String(!Object.prototype.hasOwnProperty.call(applet, '_refreshMenu')); })()" \
+    "true"
 
 echo
 echo "== the log, after the run =="

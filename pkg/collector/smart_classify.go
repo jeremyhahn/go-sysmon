@@ -209,11 +209,11 @@ func (r refusal) reason() string {
 // classifyRefusal reports whether err bottoms out in the kernel refusing the
 // caller rather than the hardware declining to answer, and at which step.
 func classifyRefusal(err error) refusal {
-	var hidden *ErrSMARTDeviceHidden
+	var hidden *SMARTDeviceHiddenError
 	if errors.As(err, &hidden) {
 		return hiddenByNamespace
 	}
-	var perm *ErrSMARTPermission
+	var perm *SMARTPermissionError
 	if errors.As(err, &perm) {
 		return refusedAtOpen
 	}
@@ -246,7 +246,7 @@ var probeATASMARTSupported = ataSMARTSupported
 // this to check EACCES alone is what fails.
 func smartOpenError(devPath string, err error) error {
 	if errors.Is(err, os.ErrPermission) {
-		return &ErrSMARTPermission{DevPath: devPath}
+		return &SMARTPermissionError{DevPath: devPath}
 	}
 	// A node that is not there is not a refusal -- but it is not nothing
 	// either, and reporting "we do not know" for it was leaving a diagnosable
@@ -254,12 +254,12 @@ func smartOpenError(devPath string, err error) error {
 	// private tmpfs, the node is hidden from this process rather than gone
 	// from the machine, and that has a remedy nobody could guess from silence.
 	if errors.Is(err, fs.ErrNotExist) && deviceHiddenFromNamespace(devPath) {
-		return &ErrSMARTDeviceHidden{DevPath: devPath}
+		return &SMARTDeviceHiddenError{DevPath: devPath}
 	}
 	return err
 }
 
-// ErrSMARTDeviceHidden is returned when the device node is absent from this
+// SMARTDeviceHiddenError is returned when the device node is absent from this
 // process's mount namespace while sysfs still lists the disk.
 //
 // It is deliberately NOT a permission error. There is no file to be refused:
@@ -267,11 +267,11 @@ func smartOpenError(devPath string, err error) error {
 // -- group membership, capabilities, running as root -- is inapplicable, and
 // offering one costs an operator a privilege change on production that buys
 // nothing.
-type ErrSMARTDeviceHidden struct {
+type SMARTDeviceHiddenError struct {
 	DevPath string
 }
 
-func (e *ErrSMARTDeviceHidden) Error() string {
+func (e *SMARTDeviceHiddenError) Error() string {
 	return fmt.Sprintf("SMART data unavailable for %s: the device node is not "+
 		"present in this process's mount namespace", e.DevPath)
 }
@@ -355,7 +355,7 @@ func readDevIsPrivateTmpfs() bool {
 // at all.
 //
 // It deliberately does NOT claim the drive answered, and the difference is not
-// pedantry: ErrSMARTEmptySector exists precisely because an all-zero payload is
+// pedantry: SMARTEmptySectorError exists precisely because an all-zero payload is
 // what a bridge returns when it answers the command WITHOUT asking the drive,
 // and a short transfer proves the transfer completed, not who filled it. The
 // only thing this predicate is used to decide is whether a RAID controller's
@@ -363,10 +363,10 @@ func readDevIsPrivateTmpfs() bool {
 // out: bytes came back, so the controller was not what stood in the way.
 func transportCompleted(err error) bool {
 	var (
-		checksum *ErrSMARTChecksum
-		empty    *ErrSMARTEmptySector
-		short    *ErrSMARTShortTransfer
-		noAttrs  *ErrSMARTNoAttributes
+		checksum *SMARTChecksumError
+		empty    *SMARTEmptySectorError
+		short    *SMARTShortTransferError
+		noAttrs  *SMARTNoAttributesError
 	)
 	return errors.As(err, &checksum) ||
 		errors.As(err, &empty) ||

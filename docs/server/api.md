@@ -405,8 +405,13 @@ The monitor's current polling interval.
 `200 OK`, `Content-Type: application/json`:
 
 ```json
-{ "interval_ms": 1000 }
+{ "interval_ms": 1000, "fleet_interval_ms": 1000 }
 ```
+
+`fleet_interval_ms` is the cadence peers are refreshed at, after the floor and
+the configuration are resolved. It is omitted when the server has no fleet
+poller, which is only the case for an application embedding `pkg/server`
+without one: `sysmon serve` always runs one, peers or not.
 
 ## POST /api/interval
 
@@ -419,8 +424,20 @@ curl -X POST http://localhost:8080/api/interval \
 ```
 
 Allowed values: 250, 500, 1000, 5000, 10000, 15000, 30000, 60000. Anything else
-is `400 Bad Request` and the current interval is left alone. The response
-echoes the interval now in force.
+is `400 Bad Request` and the current interval is left alone, as is a body that
+is not JSON or is over 1 KiB. The response echoes the intervals now in force.
+
+`scope` says which poller the value is for. Empty or `"local"` is this node's
+own monitor. `"fleet"` is the peer refresh cadence, which is floored at one
+second: a request for 250ms is answered `"fleet_interval_ms": 1000`, the
+cadence actually in force. `"fleet"` on a server with no fleet poller, and any
+other scope, is `400`.
+
+```bash
+curl -X POST http://localhost:8080/api/interval \
+     -H 'Content-Type: application/json' \
+     -d '{"interval_ms": 5000, "scope": "fleet"}'
+```
 
 Two things to know. The interval is shared by every connected client, because
 there is one poll loop behind all of them — this endpoint changes the rate for
@@ -599,7 +616,9 @@ Answers one metric over one date range, for one node.
 know the step cannot tell a gap in the data from the space between samples.
 
 Series carry only the label that separates them from each other — the device,
-the interface, the GPU. The rest of a Prometheus label set is either constant
+the interface, the GPU. A CPU core is named `package:core` (`"1:0"`), because
+every package numbers its cores from 0; a series written before cores carried
+their package cannot say which package it was, and is not returned. The rest of a Prometheus label set is either constant
 across the response or the operator's own labelling, and forwarding it would
 publish the fleet's Prometheus configuration to any browser that can reach the
 dashboard.

@@ -51,9 +51,9 @@ func TestWriter_RefusesRedirectOffTheConfiguredHost(t *testing.T) {
 		t.Fatal("Write() = nil; the samples were delivered to a host that was never configured")
 	}
 
-	var redirect *outbound.ErrRedirect
+	var redirect *outbound.RedirectError
 	if !errors.As(err, &redirect) {
-		t.Fatalf("Write() = %v, want an *outbound.ErrRedirect", err)
+		t.Fatalf("Write() = %v, want an *outbound.RedirectError", err)
 	}
 	if redirect.Reason != "redirect leaves the configured host" {
 		t.Errorf("Reason = %q", redirect.Reason)
@@ -81,9 +81,9 @@ func TestQuerier_RefusesRedirectOffTheConfiguredHost(t *testing.T) {
 		t.Fatal("QueryRange() = nil; history was read from a host that was never configured")
 	}
 
-	var redirect *outbound.ErrRedirect
+	var redirect *outbound.RedirectError
 	if !errors.As(err, &redirect) {
-		t.Fatalf("QueryRange() = %v, want an *outbound.ErrRedirect", err)
+		t.Fatalf("QueryRange() = %v, want an *outbound.RedirectError", err)
 	}
 }
 
@@ -96,9 +96,9 @@ func TestOutboundClients_RefuseAnHTTPSDowngrade(t *testing.T) {
 		mustRequest(t, "http://prom.internal:9090/api/v1/write"),
 		[]*http.Request{mustRequest(t, "https://prom.internal:9090/api/v1/write")},
 	)
-	var redirect *outbound.ErrRedirect
+	var redirect *outbound.RedirectError
 	if !errors.As(err, &redirect) {
-		t.Fatalf("Check() = %v, want an *outbound.ErrRedirect", err)
+		t.Fatalf("Check() = %v, want an *outbound.RedirectError", err)
 	}
 
 	// And an upgrade on the same host is allowed: that is an ingress enforcing
@@ -163,9 +163,9 @@ func TestWriter_RefusesASameHostRedirectThatDropsTheBody(t *testing.T) {
 			landingMethod.Load(), landingBody.Load())
 	}
 
-	var redirect *outbound.ErrRedirect
+	var redirect *outbound.RedirectError
 	if !errors.As(err, &redirect) {
-		t.Fatalf("Write() = %v, want an *outbound.ErrRedirect", err)
+		t.Fatalf("Write() = %v, want an *outbound.RedirectError", err)
 	}
 	if got := landingMethod.Load(); got != nil {
 		t.Errorf("the redirect target was requested with %v; it should not have been requested at all", got)

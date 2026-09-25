@@ -51,7 +51,7 @@ runs for real; only the toolkit underneath is substituted.
 That is enough to drive the things that matter:
 
 - the applet constructs and opens the stream
-- a snapshot populates the panel, the tooltip and all nine popup sections
+- a snapshot populates the panel and the tooltip, and all ten popup sections once the popup opens
 - a second snapshot refreshes the menu instead of duplicating it
 - malformed data is ignored rather than crashing the applet
 - end of stream, a non-200 response, a failed connect and a `bye` event each
@@ -67,6 +67,23 @@ desktop the gauge was never drawn (#184). The fake used to call the handler
 whatever the size, so no test saw it. The applet now sets the width from the
 gauge's segments whenever the snapshot or a gauge setting changes, before any
 paint.
+
+It also models the main loop's idle sources, with their priorities, because
+when the applet does its work matters as much as what it does. The applet used
+to apply each snapshot inside the stream's read callback, at GLib's default
+priority. Clutter paints at `CLUTTER_PRIORITY_REDRAW` (`G_PRIORITY_HIGH_IDLE +
+50`), a lower one, so on a host that took longer than the interval to apply a
+snapshot the main loop never got to a frame, and the whole desktop stopped
+painting (#232). The tests now require a snapshot to be applied from an idle
+source below that priority, only the newest of several to be applied, and the
+last snapshot of an ended stream to be shown before the disconnect.
+
+The harness menus follow Cinnamon's where the applet depends on them: menus
+construct through `_init`, `toggle()` goes through `open()`, `open()` records
+what the menu held as it opened (Cinnamon sizes the popup there), and an item's
+`destroy()` removes it from its menu. The popup tests require a closed popup to
+be left alone as snapshots arrive, an opening one to be filled first, and an
+open one to update its rows in place (#233).
 
 The harness emulates one thing carefully: Cinnamon's applet base classes come
 from GJS's legacy class system, where construction dispatches to `_init` rather
@@ -105,9 +122,28 @@ D-Bus Eval assertions as regression locks.
 What only this tier can prove:
 
 - Cinnamon's `require()` resolves the shared modules
+- the applet takes its settings from its settings file, and the server ends up
+  polling at the interval set there. The runner writes the file where Cinnamon
+  6.4 reads it, `~/.config/cinnamon/spices/<uuid>/<uuid>.json` (a
+  single-instance applet's file is named after its UUID), with a 500 ms
+  interval, and starts the server at 2000 ms. The schema default is 1000 ms,
+  so the server reports 500 ms only if Cinnamon read the file and the applet
+  pushed what it read. The runner used to write `0.json`, which Cinnamon never
+  read, and the applet quietly ran on its defaults (#234)
 - the GObject Introspection calls are real, not just plausible
-- the popup builds against the actual `PopupMenu` implementation
+- the popup builds against the actual `PopupMenu` implementation, opened by a
+  click as a user would open it
+- a closed popup is left alone while snapshots arrive: the same row actors and
+  no text change on any of them. Opening it then brings it up to date before
+  Cinnamon lays it out; the runner marks a row stale and checks it was
+  rewritten by the time `open-state-changed` fired (#233)
 - the panel gauge gets a non-zero allocation and Clutter actually paints it
+- the gauge keeps being painted while every snapshot takes twice the interval
+  to apply. The runner slows the applet's popup rebuild down on purpose, so the
+  starved frame clock of #232 is produced on every run rather than once in
+  fifty on a loaded CI runner. Each paint check logs the gauge's paints, the
+  stage's frames, and whether the gauge is mapped and visible, so a failure
+  says whether Clutter painted nothing or painted around the gauge.
 - the applet reaches a real server over a real event stream
 
 ### The session gate
@@ -234,6 +270,16 @@ CRITICAL.
   are the only ones not compared. The rest is compared byte for byte. Any
   other XApp line fails the run, including the same text at another level or
   with another message.
+
+### The session's logs
+
+The runner writes every session log to `/var/log/sysmon-desktop` in the
+container (`LOG_DIR`): `cinnamon.log`, `xorg.log`, `system-bus.log` and
+`udisksd.log`. `make test-extensions-desktop` copies that directory to
+`test-logs/desktop/` on the host, with the runner's own output beside it as
+`run.log`, whether the run passed or failed. When the nightly workflow fails it
+uploads the directory as the `desktop-session-logs` artifact; see
+[CI failure artifacts](ci-artifacts.md).
 
 ### Why it is not in `make ci`
 

@@ -5,6 +5,7 @@
 package metrics
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
@@ -55,23 +56,18 @@ func TestCatalogMatchesWhatIsExported(t *testing.T) {
 			t.Errorf("catalog key %q splits %q by %q, a label it never carries; "+
 				"every line in the legend would be unnamed", m.Key, m.Name, m.SplitBy)
 		}
+		if m.Within != "" && !labels[m.Name][m.Within] {
+			t.Errorf("catalog key %q numbers %q within %q, a label it never carries; "+
+				"every series would be named for an empty %s", m.Key, m.SplitBy, m.Within, m.Within)
+		}
 		for _, matcher := range m.Matchers {
-			label := matcher[:indexOf(matcher, '=')]
+			label := matcher[:strings.IndexAny(matcher, "=!~")]
 			if !labels[m.Name][label] {
 				t.Errorf("catalog key %q matches on %q, a label %q never carries; "+
 					"the query would select nothing", m.Key, label, m.Name)
 			}
 		}
 	}
-}
-
-func indexOf(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return len(s)
 }
 
 // TestReservedLabelsCoverWhatIsExported keeps config's reserved-label list in

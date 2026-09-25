@@ -23,14 +23,14 @@ test.describe('fleet paging arithmetic', () => {
   });
 
   test('the request carries the bounds, and the search only when there is one', () => {
-    expect(fleetPageUrl({ search: '', page: 0, pageSize: 25 })).toBe('/api/fleet?offset=0&limit=25');
-    expect(fleetPageUrl({ search: '   ', page: 2, pageSize: 50 })).toBe('/api/fleet?offset=100&limit=50');
+    expect(fleetPageUrl({ search: '', page: 0, pageSize: 25 })).toBe('api/fleet?offset=0&limit=25');
+    expect(fleetPageUrl({ search: '   ', page: 2, pageSize: 50 })).toBe('api/fleet?offset=100&limit=50');
     // Trimmed as the server trims, and encoded: a search is user text.
     expect(fleetPageUrl({ search: ' a&b=c ', page: 1, pageSize: 25 })).toBe(
-      '/api/fleet?q=a%26b%3Dc&offset=25&limit=25'
+      'api/fleet?q=a%26b%3Dc&offset=25&limit=25'
     );
     expect(fleetPageUrl({ search: 'db', page: 0, pageSize: 25, anchor: 'db' })).toBe(
-      '/api/fleet?q=db&offset=0&limit=25&anchor=db'
+      'api/fleet?q=db&offset=0&limit=25&anchor=db'
     );
   });
 

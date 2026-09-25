@@ -220,10 +220,10 @@ func TestParseSenseKey_BothFormats(t *testing.T) {
 	}
 }
 
-// TestErrSCSIStatus_SaysWhatTheDriveSaid keeps the message actionable. A status
+// TestSCSIStatusError_SaysWhatTheDriveSaid keeps the message actionable. A status
 // byte alone does not tell an operator which drive is dying or why.
-func TestErrSCSIStatus_SaysWhatTheDriveSaid(t *testing.T) {
-	withSense := &ErrSCSIStatus{
+func TestSCSIStatusError_SaysWhatTheDriveSaid(t *testing.T) {
+	withSense := &SCSIStatusError{
 		Op: "LOG SENSE 0x2F", DeviceID: 7, Status: 0x02,
 		Sense: senseKey{Key: 0x01, ASC: 0x5D, ASCQ: 0x10, Valid: true},
 	}
@@ -236,7 +236,7 @@ func TestErrSCSIStatus_SaysWhatTheDriveSaid(t *testing.T) {
 
 	// Undecodable sense says so rather than printing zeroes that read as
 	// "no error" on a command that failed.
-	bare := &ErrSCSIStatus{Op: "INQUIRY", DeviceID: 3, Status: 0x08}
+	bare := &SCSIStatusError{Op: "INQUIRY", DeviceID: 3, Status: 0x08}
 	if !strings.Contains(bare.Error(), "no decodable sense") {
 		t.Errorf("error %q should say the sense could not be decoded", bare.Error())
 	}
@@ -278,9 +278,9 @@ func TestCheckSCSIStatus_ADriveThatAnsweredErrorDidNotAnswer(t *testing.T) {
 			t.Errorf("SCSI status 0x%02X was accepted as a successful reading", status)
 			continue
 		}
-		var scsiErr *ErrSCSIStatus
+		var scsiErr *SCSIStatusError
 		if !errors.As(err, &scsiErr) {
-			t.Errorf("status 0x%02X produced %T, want *ErrSCSIStatus", status, err)
+			t.Errorf("status 0x%02X produced %T, want *SCSIStatusError", status, err)
 			continue
 		}
 		// The drive's own account has to survive into the error, or the log
@@ -320,9 +320,9 @@ func TestBuildPassthroughPacket_RefusesAnUnaddressableDevice(t *testing.T) {
 				deviceID, pkt[iocFrame+pthruTargetID])
 			continue
 		}
-		var unaddressable *ErrMegaRAIDUnaddressable
+		var unaddressable *MegaRAIDUnaddressableError
 		if !errors.As(err, &unaddressable) {
-			t.Errorf("device %d produced %T, want *ErrMegaRAIDUnaddressable", deviceID, err)
+			t.Errorf("device %d produced %T, want *MegaRAIDUnaddressableError", deviceID, err)
 			continue
 		}
 		if unaddressable.DeviceID != deviceID {

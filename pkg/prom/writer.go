@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,7 +64,7 @@ func (w *Writer) Write(ctx context.Context, series []Series) error {
 	body := snappy.Encode(nil, encodeWriteRequest(series))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(body))
 	if err != nil {
-		return &ErrRequest{URL: w.url, Err: err}
+		return &RequestError{URL: w.url, Err: err}
 	}
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	req.Header.Set("Content-Encoding", "snappy")
@@ -72,7 +73,7 @@ func (w *Writer) Write(ctx context.Context, series []Series) error {
 
 	resp, err := w.client.Do(req)
 	if err != nil {
-		return &ErrRequest{URL: w.url, Err: err}
+		return &RequestError{URL: w.url, Err: err}
 	}
 	// Draining before closing lets the connection go back to the pool instead
 	// of being torn down after every write.
@@ -83,7 +84,7 @@ func (w *Writer) Write(ctx context.Context, series []Series) error {
 		// fails partway still leaves the status to report, so the read error
 		// travels with it rather than replacing it.
 		detail, readErr := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
-		return &ErrRemoteWrite{
+		return &RemoteWriteError{
 			URL:     w.url,
 			Status:  resp.StatusCode,
 			Body:    strings.TrimSpace(string(detail)),
@@ -116,6 +117,9 @@ type Builder struct {
 	// does not require it; tests and log reading do.
 	order []string
 	count int
+	// collided holds the rendering of each series that was given a second
+	// sample at a timestamp it already had, since the last TakeCollisions.
+	collided []string
 }
 
 // NewBuilder returns a Builder that stamps every series with common.
@@ -132,6 +136,15 @@ func NewBuilder(common []Label) *Builder {
 // one description of a snapshot's metrics feeds both. A trailing name with no
 // value is ignored rather than producing an empty label.
 //
+// A label whose value is empty is left off. In Prometheus' data model an empty
+// value IS the label being absent -- a scrape of the same text exposition
+// stores resource="" as no resource label at all -- so leaving it off stores
+// exactly the same series. Sending it instead risks the whole request: a
+// receiver that rejects an empty label value rejects the write it came in, and
+// every other sample in the batch is lost with it. Host-wide alerts (CPU,
+// memory, load, swap) carry no resource, so on a busy host that was every
+// batch with an alert in it.
+//
 // A name appearing twice is resolved rather than emitted twice: Prometheus
 // rejects a series carrying a repeated label, and it would reject the whole
 // request, losing every other sample in the batch along with it. The metric's
@@ -147,7 +160,7 @@ func (b *Builder) Add(name string, value float64, timeMs int64, labels ...string
 	set = append(set, Label{Name: "__name__", Value: name})
 	seen["__name__"] = true
 	for i := 0; i+1 < len(labels); i += 2 {
-		if seen[labels[i]] {
+		if labels[i+1] == "" || seen[labels[i]] {
 			continue
 		}
 		seen[labels[i]] = true
@@ -169,8 +182,43 @@ func (b *Builder) Add(name string, value float64, timeMs int64, labels ...string
 		b.series[key] = s
 		b.order = append(b.order, key)
 	}
+	// Two samples of one series at one timestamp are two different things
+	// given the same identity -- a caller's labelling defect. Sent together
+	// they are a duplicate the receiver refuses, and it refuses the WHOLE
+	// request: one defect would cost every other series in the batch. The
+	// first sample stands, the collision is recorded for the caller to
+	// report, and the batch stays deliverable.
+	if n := len(s.Samples); n > 0 && s.Samples[n-1].TimeMs >= timeMs {
+		b.collided = append(b.collided, renderLabels(set))
+		return
+	}
 	s.Samples = append(s.Samples, Sample{Value: value, TimeMs: timeMs})
 	b.count++
+}
+
+// TakeCollisions returns the series that were given a sample at a timestamp
+// they already had since the last call, rendered as {name="value",...}, and
+// forgets them. Each such sample was dropped rather than sent.
+func (b *Builder) TakeCollisions() []string {
+	c := b.collided
+	b.collided = nil
+	return c
+}
+
+// renderLabels renders a sorted label set the way Prometheus prints one.
+func renderLabels(set []Label) string {
+	var sb strings.Builder
+	sb.WriteByte('{')
+	for i, l := range set {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(l.Name)
+		sb.WriteString("=")
+		sb.WriteString(strconv.Quote(l.Value))
+	}
+	sb.WriteByte('}')
+	return sb.String()
 }
 
 // Len reports how many samples have been added, which is the unit the batch
@@ -186,6 +234,7 @@ func (b *Builder) Drain() []Series {
 	b.series = make(map[string]*Series)
 	b.order = nil
 	b.count = 0
+	b.collided = nil
 	return out
 }
 

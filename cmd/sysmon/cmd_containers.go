@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -50,7 +49,7 @@ func runContainersCmd(cmd *cobra.Command, _ []string) error {
 			})
 		}
 		if err := cli.RenderContainers(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render containers: %w", err)
+			return &cli.RenderError{Function: "containers", Cause: err}
 		}
 		return nil
 	})

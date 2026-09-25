@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/cli"
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -424,8 +425,13 @@ func TestCommands_RenderFailurePropagates(t *testing.T) {
 			cmd.SetOut(brokenWriter{err: broken})
 			cmd.SetErr(brokenWriter{err: broken})
 
-			if err := tc.run(cmd, nil); err == nil {
-				t.Errorf("%s: error = nil, want the write failure to propagate", tc.name)
+			err := tc.run(cmd, nil)
+			var renderErr *cli.RenderError
+			if !errors.As(err, &renderErr) || renderErr.Function != tc.name {
+				t.Fatalf("%s: error = %v, want a *cli.RenderError naming %q", tc.name, err, tc.name)
+			}
+			if !errors.Is(err, broken) {
+				t.Errorf("%s: error = %v, want the write failure as its cause", tc.name, err)
 			}
 		})
 	}
@@ -738,8 +744,10 @@ func TestRunImagesCmd_RenderFailure(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
 	cmd.SetOut(brokenWriter{err: errors.New("write: broken pipe")})
 
-	if err := runImagesCmd(cmd, nil); err == nil {
-		t.Error("runImagesCmd() error = nil, want the write failure to propagate")
+	err := runImagesCmd(cmd, nil)
+	var renderErr *cli.RenderError
+	if !errors.As(err, &renderErr) || renderErr.Function != "images" {
+		t.Errorf("runImagesCmd() error = %v, want a *cli.RenderError naming images", err)
 	}
 }
 

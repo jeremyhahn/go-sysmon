@@ -70,9 +70,9 @@ func TestCheck(t *testing.T) {
 
 			err := Check(req(t, tc.to), via)
 			if tc.wantErr {
-				var redir *ErrRedirect
+				var redir *RedirectError
 				if !errors.As(err, &redir) {
-					t.Fatalf("Check() = %v, want an *ErrRedirect (%s)", err, tc.reason)
+					t.Fatalf("Check() = %v, want a *RedirectError (%s)", err, tc.reason)
 				}
 				return
 			}
@@ -93,9 +93,9 @@ func TestCheck_CapsTheChain(t *testing.T) {
 		via[i] = req(t, "http://peer:8081/api/snapshot")
 	}
 
-	var redir *ErrRedirect
+	var redir *RedirectError
 	if err := Check(req(t, "http://peer:8081/api/snapshot"), via); !errors.As(err, &redir) {
-		t.Fatalf("Check() at hop %d = %v, want an *ErrRedirect", maxRedirects, err)
+		t.Fatalf("Check() at hop %d = %v, want a *RedirectError", maxRedirects, err)
 	}
 }
 
@@ -133,10 +133,10 @@ func TestCheck_RefusesAHopThatChangesTheMethod(t *testing.T) {
 			via := []*http.Request{methodReq(t, tc.from, url)}
 			err := Check(methodReq(t, tc.to, url), via)
 
-			var redir *ErrRedirect
+			var redir *RedirectError
 			if tc.wantErr {
 				if !errors.As(err, &redir) {
-					t.Fatalf("Check() = %v, want an *ErrRedirect: the body is dropped on this hop", err)
+					t.Fatalf("Check() = %v, want a *RedirectError: the body is dropped on this hop", err)
 				}
 				return
 			}

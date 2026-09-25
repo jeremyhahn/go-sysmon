@@ -638,12 +638,12 @@ func TestManagerReload_ApplierErrorDoesNotDiscardTheReload(t *testing.T) {
 	}
 	deferred, err := mgr.Reload()
 
-	var applyErr *config.ErrApply
+	var applyErr *config.ApplyError
 	if !errors.As(err, &applyErr) {
-		t.Fatalf("Reload() error = %v, want a *config.ErrApply", err)
+		t.Fatalf("Reload() error = %v, want a *config.ApplyError", err)
 	}
 	if len(applyErr.Reasons) != 1 {
-		t.Errorf("ErrApply reasons = %v, want the one rejection", applyErr.Reasons)
+		t.Errorf("ApplyError reasons = %v, want the one rejection", applyErr.Reasons)
 	}
 	if !slices.Contains(deferred, "server.addr") {
 		t.Errorf("deferred = %v, want it to still name server.addr alongside the apply error", deferred)
@@ -679,9 +679,9 @@ func TestLoad_UnreadablePathIsAnError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Load() on an unreadable path = nil error, want one; got config %+v", cfg)
 	}
-	var unreadable *config.ErrConfigUnreadable
+	var unreadable *config.ConfigUnreadableError
 	if !errors.As(err, &unreadable) {
-		t.Fatalf("Load() error = %v (%T), want a *config.ErrConfigUnreadable", err, err)
+		t.Fatalf("Load() error = %v (%T), want a *config.ConfigUnreadableError", err, err)
 	}
 	if unreadable.Path != path {
 		t.Errorf("error path = %q, want %q", unreadable.Path, path)
@@ -760,12 +760,12 @@ fleet:
 	if err == nil {
 		t.Fatalf("Load() with duplicate peer names = nil error, want one; got %+v", cfg)
 	}
-	var dup *config.ErrDuplicatePeer
+	var dup *config.DuplicatePeerError
 	if !errors.As(err, &dup) {
-		t.Fatalf("Load() error = %v (%T), want a *config.ErrDuplicatePeer", err, err)
+		t.Fatalf("Load() error = %v (%T), want a *config.DuplicatePeerError", err, err)
 	}
 	if dup.Name != "fs" {
-		t.Errorf("ErrDuplicatePeer.Name = %q, want %q", dup.Name, "fs")
+		t.Errorf("DuplicatePeerError.Name = %q, want %q", dup.Name, "fs")
 	}
 	// The message has to name both addresses or the operator cannot tell which
 	// two lines of their file collide.
@@ -857,17 +857,17 @@ func TestLoad_RejectsPeerNameThatCannotBeAnInstance(t *testing.T) {
 	} {
 		path := writeConfig(t, "fleet:\n  peers:\n    - name: '"+name+"'\n      url: http://10.0.0.1:8081\n")
 		_, _, err := l(path).Load()
-		var bad *config.ErrPeerName
+		var bad *config.PeerNameError
 		if !errors.As(err, &bad) {
-			t.Errorf("Load() with peer name %q = %v, want a *config.ErrPeerName", name, err)
+			t.Errorf("Load() with peer name %q = %v, want a *config.PeerNameError", name, err)
 			continue
 		}
 		if bad.Name != name {
-			t.Errorf("ErrPeerName = %+v, want Name %q", bad, name)
+			t.Errorf("PeerNameError = %+v, want Name %q", bad, name)
 		}
-		var invalid *nodename.ErrInvalid
+		var invalid *nodename.InvalidError
 		if !errors.As(err, &invalid) {
-			t.Errorf("ErrPeerName does not unwrap to *nodename.ErrInvalid: %v", err)
+			t.Errorf("PeerNameError does not unwrap to *nodename.InvalidError: %v", err)
 		}
 		if !strings.Contains(err.Error(), nodename.Rule) {
 			t.Errorf("error %q does not state the rule it broke", err)
@@ -887,9 +887,9 @@ func TestLoad_ReloadKeepsRunningConfigOnBadPeerName(t *testing.T) {
 	if err := os.WriteFile(path, []byte("fleet:\n  peers:\n    - name: 'db 01'\n      url: http://10.0.0.1:8081\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var bad *config.ErrPeerName
+	var bad *config.PeerNameError
 	if _, err := mgr.Reload(); !errors.As(err, &bad) {
-		t.Fatalf("Reload() = %v, want a *config.ErrPeerName", err)
+		t.Fatalf("Reload() = %v, want a *config.PeerNameError", err)
 	}
 	if got := mgr.Current().Fleet.Peers[0].Name; got != "db-01" {
 		t.Errorf("running peer name = %q after a refused reload, want db-01", got)
@@ -1261,12 +1261,12 @@ fleet:
 	if err == nil {
 		t.Fatalf("Load() with credentials in a peer url = nil error, want one; got %+v", cfg)
 	}
-	var creds *config.ErrPeerCredentials
+	var creds *config.PeerCredentialsError
 	if !errors.As(err, &creds) {
-		t.Fatalf("Load() error = %v (%T), want a *config.ErrPeerCredentials", err, err)
+		t.Fatalf("Load() error = %v (%T), want a *config.PeerCredentialsError", err, err)
 	}
 	if creds.Name != "fs" {
-		t.Errorf("ErrPeerCredentials.Name = %q, want %q", creds.Name, "fs")
+		t.Errorf("PeerCredentialsError.Name = %q, want %q", creds.Name, "fs")
 	}
 
 	// The message reaches logs, which is precisely where a credential must not
@@ -1290,9 +1290,9 @@ fleet:
 // whatever a password-less form of the same mistake looks like.
 func TestLoad_PeerBareUsernameIsRejected(t *testing.T) {
 	path := writeConfig(t, "fleet:\n  peers:\n    - name: fs\n      url: https://onlyuser@10.0.0.1:8081\n")
-	var creds *config.ErrPeerCredentials
+	var creds *config.PeerCredentialsError
 	if _, _, err := l(path).Load(); !errors.As(err, &creds) {
-		t.Fatalf("Load() with a bare username = %v, want a *config.ErrPeerCredentials", err)
+		t.Fatalf("Load() with a bare username = %v, want a *config.PeerCredentialsError", err)
 	}
 }
 
@@ -1322,12 +1322,12 @@ fleet:
 func TestLoad_UnparseablePeerURLIsAnError(t *testing.T) {
 	path := writeConfig(t, "fleet:\n  peers:\n    - name: fs\n      url: \"://nohost\"\n")
 
-	var bad *config.ErrPeerURL
+	var bad *config.PeerURLError
 	if _, _, err := l(path).Load(); !errors.As(err, &bad) {
-		t.Fatalf("Load() with an unparseable url = %v, want a *config.ErrPeerURL", err)
+		t.Fatalf("Load() with an unparseable url = %v, want a *config.PeerURLError", err)
 	}
 	if bad.Reason == "" {
-		t.Error("ErrPeerURL.Reason is empty; the operator needs to know what is wrong")
+		t.Error("PeerURLError.Reason is empty; the operator needs to know what is wrong")
 	}
 	// The url.Error wrapper would have embedded the raw URL, which can itself
 	// hold a credential. Only the parser's explanation is reported.
@@ -1393,12 +1393,12 @@ func TestLoad_PeerURLMustBePollable(t *testing.T) {
 				return
 			}
 
-			var bad *config.ErrPeerURL
+			var bad *config.PeerURLError
 			if !errors.As(err, &bad) {
-				t.Fatalf("Load(%q) = %v (%T), want a *config.ErrPeerURL", tc.url, err, err)
+				t.Fatalf("Load(%q) = %v (%T), want a *config.PeerURLError", tc.url, err, err)
 			}
 			if bad.Reason == "" {
-				t.Error("ErrPeerURL.Reason is empty; the operator needs to know what is wrong")
+				t.Error("PeerURLError.Reason is empty; the operator needs to know what is wrong")
 			}
 		})
 	}
@@ -1422,11 +1422,11 @@ fleet:
 		t.Fatalf("Load(): %v", err)
 	}
 
-	var clash *config.ErrPeerIsLocalName
+	var clash *config.PeerIsLocalNameError
 	if err := cfg.ValidateLocalName(cfg.LocalName()); !errors.As(err, &clash) {
-		t.Fatalf("ValidateLocalName() = %v, want a *config.ErrPeerIsLocalName", err)
+		t.Fatalf("ValidateLocalName() = %v, want a *config.PeerIsLocalNameError", err)
 	} else if clash.Name != "aggregator" {
-		t.Errorf("ErrPeerIsLocalName.Name = %q, want %q", clash.Name, "aggregator")
+		t.Errorf("PeerIsLocalNameError.Name = %q, want %q", clash.Name, "aggregator")
 	}
 }
 
@@ -1454,9 +1454,9 @@ func TestLoad_DoesNotDependOnTheHostname(t *testing.T) {
 	}
 
 	// The collision is still caught -- just at the layer that knows the name.
-	var clash *config.ErrPeerIsLocalName
+	var clash *config.PeerIsLocalNameError
 	if err := cfg.ValidateLocalName(host); !errors.As(err, &clash) {
-		t.Errorf("ValidateLocalName(%q) = %v, want a *config.ErrPeerIsLocalName", host, err)
+		t.Errorf("ValidateLocalName(%q) = %v, want a *config.PeerIsLocalNameError", host, err)
 	}
 }
 
@@ -1483,17 +1483,17 @@ func TestLoad_RejectsLocalNameThatCannotBeAnInstance(t *testing.T) {
 	for _, name := range []string{"db 01", "http://db-01:8081", "-db01", "db01/"} {
 		path := writeConfig(t, "fleet:\n  local_name: '"+name+"'\n")
 		_, _, err := l(path).Load()
-		var bad *config.ErrLocalName
+		var bad *config.LocalNameError
 		if !errors.As(err, &bad) {
-			t.Errorf("Load() with local_name %q = %v, want a *config.ErrLocalName", name, err)
+			t.Errorf("Load() with local_name %q = %v, want a *config.LocalNameError", name, err)
 			continue
 		}
 		if bad.Name != name || bad.FromHostname {
-			t.Errorf("ErrLocalName = %+v, want Name %q from the file", bad, name)
+			t.Errorf("LocalNameError = %+v, want Name %q from the file", bad, name)
 		}
-		var invalid *nodename.ErrInvalid
+		var invalid *nodename.InvalidError
 		if !errors.As(err, &invalid) {
-			t.Errorf("ErrLocalName does not unwrap to *nodename.ErrInvalid: %v", err)
+			t.Errorf("LocalNameError does not unwrap to *nodename.InvalidError: %v", err)
 		}
 		if msg := err.Error(); !strings.Contains(msg, nodename.Rule) || !strings.Contains(msg, "fleet.local_name") {
 			t.Errorf("error %q does not name the setting and the rule", msg)
@@ -1512,9 +1512,9 @@ func TestLoad_ReloadKeepsRunningConfigOnBadLocalName(t *testing.T) {
 	if err := os.WriteFile(path, []byte("fleet:\n  local_name: 'agg regator'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var bad *config.ErrLocalName
+	var bad *config.LocalNameError
 	if _, err := mgr.Reload(); !errors.As(err, &bad) {
-		t.Fatalf("Reload() = %v, want a *config.ErrLocalName", err)
+		t.Fatalf("Reload() = %v, want a *config.LocalNameError", err)
 	}
 	if got := mgr.Current().LocalName(); got != "aggregator" {
 		t.Errorf("running local name = %q after a refused reload, want aggregator", got)
@@ -1529,12 +1529,12 @@ func TestLoad_ReloadKeepsRunningConfigOnBadLocalName(t *testing.T) {
 func TestValidateLocalName_RejectsUnusableHostname(t *testing.T) {
 	cfg := &config.Config{}
 	err := cfg.ValidateLocalName("my host")
-	var bad *config.ErrLocalName
+	var bad *config.LocalNameError
 	if !errors.As(err, &bad) {
-		t.Fatalf("ValidateLocalName(\"my host\") = %v, want a *config.ErrLocalName", err)
+		t.Fatalf("ValidateLocalName(\"my host\") = %v, want a *config.LocalNameError", err)
 	}
 	if !bad.FromHostname || bad.Name != "my host" {
-		t.Errorf("ErrLocalName = %+v, want the hostname %q", bad, "my host")
+		t.Errorf("LocalNameError = %+v, want the hostname %q", bad, "my host")
 	}
 	if msg := err.Error(); !strings.Contains(msg, "set fleet.local_name") || !strings.Contains(msg, nodename.Rule) {
 		t.Errorf("error %q does not say to set fleet.local_name and state the rule", msg)
@@ -1594,9 +1594,9 @@ func TestManagerReload_KeepsConfigWhenPeerTakesTheLocalName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var clash *config.ErrPeerIsLocalName
+	var clash *config.PeerIsLocalNameError
 	if _, err := mgr.Reload(); !errors.As(err, &clash) {
-		t.Fatalf("Reload() = %v, want a *config.ErrPeerIsLocalName", err)
+		t.Fatalf("Reload() = %v, want a *config.PeerIsLocalNameError", err)
 	}
 	peers := mgr.Current().Fleet.Peers
 	if len(peers) != 1 || peers[0].Name != "fs" {
@@ -1632,9 +1632,9 @@ func TestManagerReload_ValidatesAgainstTheIncomingLocalName(t *testing.T) {
 	if err := os.WriteFile(path, []byte(renameOntoPeer), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var clash *config.ErrPeerIsLocalName
+	var clash *config.PeerIsLocalNameError
 	if _, err := mgr.Reload(); !errors.As(err, &clash) {
-		t.Fatalf("renaming this node onto peer \"fs\": Reload() = %v, want a *config.ErrPeerIsLocalName", err)
+		t.Fatalf("renaming this node onto peer \"fs\": Reload() = %v, want a *config.PeerIsLocalNameError", err)
 	}
 
 	// The mirror image: a node renaming ITSELF away is free to hand its old
@@ -1762,11 +1762,11 @@ func TestManagerReload_ConcurrentReloadsStayConsistent(t *testing.T) {
 func TestLoad_PeerWithNoURLIsRejected(t *testing.T) {
 	path := writeConfig(t, "fleet:\n  peers:\n    - name: db-prod\n    - name: fs\n      url: http://10.0.0.1:8081\n")
 
-	var bad *config.ErrPeerURL
+	var bad *config.PeerURLError
 	if _, _, err := l(path).Load(); !errors.As(err, &bad) {
-		t.Fatalf("Load() with a peer missing its url = %v, want a *config.ErrPeerURL", err)
+		t.Fatalf("Load() with a peer missing its url = %v, want a *config.PeerURLError", err)
 	} else if bad.Name != "db-prod" {
-		t.Errorf("ErrPeerURL.Name = %q, want the peer named %q so the operator can find it", bad.Name, "db-prod")
+		t.Errorf("PeerURLError.Name = %q, want the peer named %q so the operator can find it", bad.Name, "db-prod")
 	}
 }
 
@@ -1785,9 +1785,9 @@ func TestManagerReload_KeepsConfigWhenPeerLosesItsURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var perr *config.ErrPeerURL
+	var perr *config.PeerURLError
 	if _, err := mgr.Reload(); !errors.As(err, &perr) {
-		t.Fatalf("Reload() = %v, want a *config.ErrPeerURL", err)
+		t.Fatalf("Reload() = %v, want a *config.PeerURLError", err)
 	}
 	if n := len(mgr.Current().Fleet.Peers); n != 2 {
 		t.Errorf("after a rejected reload the fleet has %d peers, want the previous 2", n)
@@ -1867,9 +1867,9 @@ func TestLoad_RetiredSwapKeyNamesItsReplacement(t *testing.T) {
 	if err == nil {
 		t.Fatal("a retired key loaded cleanly; the file would state a threshold the daemon does not apply")
 	}
-	var retired *config.ErrRetiredConfigKey
+	var retired *config.RetiredConfigKeyError
 	if !errors.As(err, &retired) {
-		t.Fatalf("err = %#v, want *config.ErrRetiredConfigKey", err)
+		t.Fatalf("err = %#v, want *config.RetiredConfigKeyError", err)
 	}
 	if retired.Key != "alerts.swap_pct" {
 		t.Errorf("Key = %q, want alerts.swap_pct", retired.Key)

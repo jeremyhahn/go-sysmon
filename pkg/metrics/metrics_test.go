@@ -508,3 +508,57 @@ func TestWrite_PageSizeOmittedWhenUnknown(t *testing.T) {
 		t.Errorf("an unknown page size was exported:\n%s", out)
 	}
 }
+
+// TestWrite_EverySeriesIsUnique writes a two-socket host with two of every
+// device and checks no two samples share a metric name and label set. Two that
+// did would be one series with two values at one time: a scrape keeps an
+// arbitrary one, and remote write sends a duplicate the receiver refuses with
+// the whole batch. The two packages' Core 0 was exactly that.
+func TestWrite_EverySeriesIsUnique(t *testing.T) {
+	snap := &types.Snapshot{
+		CPUs: []types.CPUInfo{{UsagePercent: 20, UsageAvailable: true}},
+		Sensors: types.SensorData{
+			CoreTemps: []types.CoreTemp{
+				{PackageID: 0, CoreID: 0, TempCelsius: 50}, {PackageID: 0, CoreID: 1, TempCelsius: 51},
+				{PackageID: 1, CoreID: 0, TempCelsius: 60}, {PackageID: 1, CoreID: 1, TempCelsius: 61},
+			},
+			PackagePower: []types.PackagePower{{PackageName: "package-0", PowerW: 90}, {PackageName: "package-1", PowerW: 95}},
+			PSI:          types.PSIData{Available: true},
+		},
+		GPUs: []types.GPUInfo{{Index: 0}, {Index: 1}},
+		NPUs: []types.NPUInfo{{Index: 0}, {Index: 1}},
+		Disks: []types.DiskInfo{
+			{Name: "nvme0n1", SMARTEnabled: true, TotalBytes: 1, Temperature: 40, WearLevelPercent: 1},
+			{Name: "nvme1n1", SMARTEnabled: true, TotalBytes: 1, Temperature: 41, WearLevelPercent: 2},
+			{Name: "sda", Members: []types.DiskMember{{Serial: "A", Temperature: 30}, {Serial: "B", Temperature: 31}}},
+			{Name: "md0", RAID: &types.RAIDInfo{Level: "raid1", SyncAction: "idle"}},
+		},
+		Networks: []types.NetworkInfo{{Name: "eth0", IsUp: true}, {Name: "eth1", IsUp: true}},
+		Alerts: []types.Alert{
+			{Rule: "cpu_temp", Severity: types.SeverityWarning, Category: "cpu"},
+			{Rule: "memory_high", Severity: types.SeverityWarning, Category: "memory"},
+			{Rule: "disk_full", Severity: types.SeverityCritical, Category: "storage", Resource: "nvme0n1"},
+			{Rule: "disk_full", Severity: types.SeverityCritical, Category: "storage", Resource: "nvme1n1"},
+		},
+	}
+
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(render(snap), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		series := line[:strings.LastIndexByte(line, ' ')]
+		if seen[series] {
+			t.Errorf("series %s is written twice", series)
+		}
+		seen[series] = true
+	}
+	for _, want := range []string{
+		`sysmon_cpu_temperature_celsius{package="0",core="0"}`,
+		`sysmon_cpu_temperature_celsius{package="1",core="0"}`,
+	} {
+		if !seen[want] {
+			t.Errorf("no series %s", want)
+		}
+	}
+}

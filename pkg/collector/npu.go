@@ -2,7 +2,6 @@ package collector
 
 import (
 	"bufio"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -163,7 +162,7 @@ func enumerateAccelDevices() ([]string, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read %s: %w", accelRoot, err)
+		return nil, &types.SysfsReadError{Path: accelRoot, Cause: err}
 	}
 	var devices []string
 	for _, e := range entries {

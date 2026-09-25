@@ -91,6 +91,11 @@ export interface MockOptions {
    * peer on a build that predates detection.
    */
   containerRuntime?: StackDetection;
+  /**
+   * Replaces the per-core temperature readings. Default: the fixture's one
+   * package. Given for a two-socket host, whose packages both have a Core 0.
+   */
+  coreTemps?: Snapshot["sensors"]["core_temps"];
   /** The node's hypervisor detection, for the Virtualization tab. Same default. */
   hypervisor?: StackDetection;
   /**
@@ -297,6 +302,7 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
 
   const payload: Snapshot = {
     ...snapshot,
+    ...(opts.coreTemps == null ? {} : { sensors: { ...snapshot.sensors, core_temps: opts.coreTemps } }),
     disks,
     gpus,
     npus,

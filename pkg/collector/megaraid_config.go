@@ -126,30 +126,30 @@ type megaraidConfig struct {
 	Volumes []megaraidVolume
 }
 
-// ErrMegaRAIDShortResponse reports a controller reply too small to hold the
+// MegaRAIDShortResponseError reports a controller reply too small to hold the
 // structure it claims to be.
 //
 // It lives with the pure decoders rather than with the ioctl transport because
 // that is what raises it, and because this file is compiled on every target --
 // a shared type that lived only in the 64-bit file was one of two symbols that
 // broke the unsupported build.
-type ErrMegaRAIDShortResponse struct {
+type MegaRAIDShortResponseError struct {
 	Op   string
 	Want int
 	Got  int
 }
 
-func (e *ErrMegaRAIDShortResponse) Error() string {
+func (e *MegaRAIDShortResponseError) Error() string {
 	return fmt.Sprintf("megaraid: %s returned %d bytes, need at least %d", e.Op, e.Got, e.Want)
 }
 
-// ErrMegaRAIDConfig reports a configuration reply that does not describe itself
+// MegaRAIDConfigError reports a configuration reply that does not describe itself
 // consistently.
-type ErrMegaRAIDConfig struct {
+type MegaRAIDConfigError struct {
 	Detail string
 }
 
-func (e *ErrMegaRAIDConfig) Error() string {
+func (e *MegaRAIDConfigError) Error() string {
 	return "megaraid: controller configuration is not self-consistent: " + e.Detail
 }
 
@@ -161,7 +161,7 @@ func (e *ErrMegaRAIDConfig) Error() string {
 // to describe, not one we read past the end of.
 func parseControllerConfig(reply []byte) (*megaraidConfig, error) {
 	if len(reply) < confHeaderLen {
-		return nil, &ErrMegaRAIDShortResponse{Op: "CFG_READ", Want: confHeaderLen, Got: len(reply)}
+		return nil, &MegaRAIDShortResponseError{Op: "CFG_READ", Want: confHeaderLen, Got: len(reply)}
 	}
 
 	// The declared length is bounded from BOTH ends before it is used to
@@ -176,7 +176,7 @@ func parseControllerConfig(reply []byte) (*megaraidConfig, error) {
 	// size memory before being checked against what is possible.
 	declared := int(binary.LittleEndian.Uint32(reply[confSize:]))
 	if declared < confHeaderLen || declared > len(reply) {
-		return nil, &ErrMegaRAIDConfig{Detail: fmt.Sprintf(
+		return nil, &MegaRAIDConfigError{Detail: fmt.Sprintf(
 			"declares %d bytes; %d were returned and %d is the smallest possible configuration",
 			declared, len(reply), confHeaderLen)}
 	}
@@ -188,14 +188,14 @@ func parseControllerConfig(reply []byte) (*megaraidConfig, error) {
 	ldSize := int(binary.LittleEndian.Uint16(reply[confLDSize:]))
 
 	if arraySize < arrayMembers || ldSize < volSpans+volSpanLen {
-		return nil, &ErrMegaRAIDConfig{Detail: fmt.Sprintf(
+		return nil, &MegaRAIDConfigError{Detail: fmt.Sprintf(
 			"entry sizes too small to hold their own fields (array %d, volume %d)", arraySize, ldSize)}
 	}
 
 	arraysEnd := confHeaderLen + arrayCount*arraySize
 	volumesEnd := arraysEnd + ldCount*ldSize
 	if volumesEnd > len(reply) {
-		return nil, &ErrMegaRAIDConfig{Detail: fmt.Sprintf(
+		return nil, &MegaRAIDConfigError{Detail: fmt.Sprintf(
 			"%d arrays and %d volumes need %d bytes, %d present", arrayCount, ldCount, volumesEnd, len(reply))}
 	}
 

@@ -299,13 +299,13 @@ func TestQuerier_SampleGap_PassesFailuresThrough(t *testing.T) {
 	q := querier(srv.URL, 5*time.Second)
 	start := time.UnixMilli(1788300000000)
 
-	var failed *ErrQuery
+	var failed *QueryError
 	if _, err := q.SampleGap(context.Background(), `x{instance="mon0"}`, start, start.Add(time.Hour)); !errors.As(err, &failed) {
-		t.Fatalf("SampleGap() = %v, want *ErrQuery", err)
+		t.Fatalf("SampleGap() = %v, want *QueryError", err)
 	}
-	var none *ErrNoQueryEndpoint
+	var none *NoQueryEndpointError
 	if _, err := querier("", time.Second).SampleGap(context.Background(), "x", start, start.Add(time.Hour)); !errors.As(err, &none) {
-		t.Fatalf("SampleGap() with no endpoint = %v, want *ErrNoQueryEndpoint", err)
+		t.Fatalf("SampleGap() with no endpoint = %v, want *NoQueryEndpointError", err)
 	}
 }
 
@@ -346,7 +346,7 @@ func TestRateGap_RejectsWhatItCannotMeasure(t *testing.T) {
 		t.Fatal("measured a span that should have been refused")
 		return 0, nil
 	}
-	var bad *ErrInvalidRange
+	var bad *InvalidRangeError
 	for _, c := range []struct {
 		name         string
 		step, budget time.Duration
@@ -357,7 +357,7 @@ func TestRateGap_RejectsWhatItCannotMeasure(t *testing.T) {
 		{"an extent past the budget", time.Hour, time.Hour},
 	} {
 		if _, err := rateGap(c.step, simLookback, c.budget, never); !errors.As(err, &bad) {
-			t.Errorf("%s: rateGap = %v, want *ErrInvalidRange", c.name, err)
+			t.Errorf("%s: rateGap = %v, want *InvalidRangeError", c.name, err)
 		}
 	}
 
@@ -368,7 +368,7 @@ func TestRateGap_RejectsWhatItCannotMeasure(t *testing.T) {
 		t.Errorf("rateGap over nothing = %v, %v; want 0, nil", gap, err)
 	}
 	// A failed measurement is passed through untouched.
-	failure := &ErrQuery{Query: "q", Type: "bad_data"}
+	failure := &QueryError{Query: "q", Type: "bad_data"}
 	if _, err := rateGap(time.Second, simLookback, time.Hour, func(time.Duration) (time.Duration, error) { return 0, failure }); !errors.Is(err, failure) {
 		t.Errorf("rateGap failure = %v, want the measurement's error", err)
 	}

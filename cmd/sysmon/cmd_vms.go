@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -44,7 +43,7 @@ func runVMsCmd(cmd *cobra.Command, _ []string) error {
 			}{VMs: snap.Virt.VMs, Hypervisor: snap.Virt.Hypervisor})
 		}
 		if err := cli.RenderVMs(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render vms: %w", err)
+			return &cli.RenderError{Function: "vms", Cause: err}
 		}
 		return nil
 	})

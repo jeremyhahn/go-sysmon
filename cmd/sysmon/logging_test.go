@@ -268,3 +268,23 @@ func TestCloseLogFile_ReportsACloseFailure(t *testing.T) {
 		t.Error("the handle was kept after a failed close")
 	}
 }
+
+func TestSetupLogging_RejectsBadLevel(t *testing.T) {
+	withLogFlags(t, "", "loud", "text")
+
+	var invalid *types.InvalidLogLevelError
+	if err := setupLogging(); !errors.As(err, &invalid) {
+		t.Errorf("setupLogging() = %v, want a *types.InvalidLogLevelError", err)
+	}
+}
+
+// TestSetupLogging_DirectoryAsLogFileReports verifies a --log-file that names
+// a directory is reported, not silently replaced by stderr.
+func TestSetupLogging_DirectoryAsLogFileReports(t *testing.T) {
+	withLogFlags(t, t.TempDir(), "info", "text")
+
+	var logErr *types.LogFileError
+	if err := setupLogging(); !errors.As(err, &logErr) {
+		t.Errorf("setupLogging() = %v, want a *types.LogFileError", err)
+	}
+}

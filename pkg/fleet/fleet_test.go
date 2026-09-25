@@ -226,15 +226,15 @@ func TestPeerSnapshot_Errors(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return cfg },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
 
-	var unknown *fleet.ErrUnknownPeer
+	var unknown *fleet.UnknownPeerError
 	if _, err := p.PeerSnapshot(context.Background(), "nope", time.Minute); !errors.As(err, &unknown) {
-		t.Errorf("PeerSnapshot(nope) = %v; want ErrUnknownPeer", err)
+		t.Errorf("PeerSnapshot(nope) = %v; want UnknownPeerError", err)
 	}
-	var noReading *fleet.ErrNoReading
+	var noReading *fleet.NoReadingError
 	if _, err := p.PeerSnapshot(context.Background(), "local", time.Minute); !errors.As(err, &noReading) {
-		t.Errorf("PeerSnapshot(local) before any collection = %v; want ErrNoReading", err)
+		t.Errorf("PeerSnapshot(local) before any collection = %v; want NoReadingError", err)
 	}
-	var status *fleet.ErrPeerStatus
+	var status *fleet.PeerStatusError
 	if _, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); !errors.As(err, &status) || status.Status != http.StatusInternalServerError {
 		t.Errorf("PeerSnapshot(omega) from a failing peer never read = %v; want its HTTP 500", err)
 	}
@@ -540,12 +540,12 @@ func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 		t.Fatal("PeerConfig() = nil error for a peer with no /api/config")
 	}
 
-	var status *fleet.ErrPeerStatus
+	var status *fleet.PeerStatusError
 	if !errors.As(err, &status) {
-		t.Fatalf("PeerConfig() = %v, want *ErrPeerStatus", err)
+		t.Fatalf("PeerConfig() = %v, want *PeerStatusError", err)
 	}
 	if status.Status != http.StatusNotFound || status.Endpoint != "/api/config" {
-		t.Fatalf("ErrPeerStatus = %+v, want a 404 on /api/config", status)
+		t.Fatalf("PeerStatusError = %+v, want a 404 on /api/config", status)
 	}
 
 	message := err.Error()
@@ -558,7 +558,7 @@ func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 
 	// Every other status keeps the plain wording. A 500 is a fault, and
 	// telling someone it is a version problem would send them the wrong way.
-	plain := (&fleet.ErrPeerStatus{Peer: "fs", Endpoint: "/api/config", Status: 500}).Error()
+	plain := (&fleet.PeerStatusError{Peer: "fs", Endpoint: "/api/config", Status: 500}).Error()
 	if strings.Contains(plain, "older") {
 		t.Errorf("a 500 is reported as a version problem: %s", plain)
 	}
@@ -569,7 +569,7 @@ func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 	// wrong peer URL or a proxy that does not forward the path -- never an old
 	// build. The version wording would send an operator to /api/version, which
 	// fails the same way for the same reason, and delays finding the cause.
-	core := (&fleet.ErrPeerStatus{Peer: "fs", Endpoint: "/api/snapshot", Status: 404}).Error()
+	core := (&fleet.PeerStatusError{Peer: "fs", Endpoint: "/api/snapshot", Status: 404}).Error()
 	if strings.Contains(core, "older") || strings.Contains(core, "/api/version") {
 		t.Errorf("a 404 on the core endpoint is reported as version skew: %s", core)
 	}

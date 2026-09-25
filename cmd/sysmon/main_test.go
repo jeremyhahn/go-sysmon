@@ -143,7 +143,7 @@ func TestSnapshotterAdapter_ReturnsPointer(t *testing.T) {
 }
 
 func TestSnapshotterAdapter_PropagatesError(t *testing.T) {
-	cause := &types.CollectorError{Collector: "cpu", Cause: testErr("forced")}
+	cause := &types.CollectorError{Collector: "cpu", Cause: testError("forced")}
 	a := &testableAdapter{fn: func() (types.Snapshot, error) { return types.Snapshot{}, cause }}
 
 	got, err := a.Snapshot()
@@ -155,10 +155,10 @@ func TestSnapshotterAdapter_PropagatesError(t *testing.T) {
 	}
 }
 
-// testErr is a minimal error type used only in this test file.
-type testErr string
+// testError is a minimal error type used only in this test file.
+type testError string
 
-func (e testErr) Error() string { return string(e) }
+func (e testError) Error() string { return string(e) }
 
 // ---- main -----------------------------------------------------------------
 

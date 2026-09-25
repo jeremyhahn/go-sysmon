@@ -55,18 +55,6 @@ func NewSensorCollector(logger *slog.Logger) *SensorCollector {
 	return c
 }
 
-// newSensorCollectorWithPaths creates a SensorCollector with custom base paths
-// for testing against fake sysfs trees.
-func newSensorCollectorWithPaths(logger *slog.Logger, hwmon, thermal, powercap, cpu, pressure string) *SensorCollector {
-	c := NewSensorCollector(logger)
-	c.hwmonBase = hwmon
-	c.thermalBase = thermal
-	c.powercapBase = powercap
-	c.cpuBase = cpu
-	c.pressureBase = pressure
-	return c
-}
-
 // Collect reads all sensor data from sysfs and procfs.
 func (c *SensorCollector) Collect() error {
 	data := types.SensorData{}
@@ -161,6 +149,7 @@ func (c *SensorCollector) collectCoreTemps() []types.CoreTemp {
 	}
 
 	var temps []types.CoreTemp
+	var amd []string
 
 	for _, entry := range entries {
 		hwmonPath := filepath.Join(c.hwmonBase, entry.Name())
@@ -170,10 +159,13 @@ func (c *SensorCollector) collectCoreTemps() []types.CoreTemp {
 		case "coretemp":
 			temps = append(temps, c.collectIntelCoreTemps(hwmonPath)...)
 		case "k10temp":
-			temps = append(temps, c.collectAMDCoreTemps(hwmonPath)...)
+			amd = append(amd, hwmonPath)
 		default:
 			c.logger.Debug("sensor: skipping hwmon device", "name", name, "path", hwmonPath)
 		}
+	}
+	for packageID, hwmonPath := range socketOrder(amd) {
+		temps = append(temps, c.collectAMDCoreTemps(hwmonPath, packageID)...)
 	}
 
 	sort.Slice(temps, func(i, j int) bool {
@@ -247,11 +239,40 @@ func (c *SensorCollector) collectIntelCoreTemps(hwmonPath string) []types.CoreTe
 	return temps
 }
 
-// collectAMDCoreTemps reads CCD temperatures from a k10temp hwmon device.
-// Tctl is the package-level die control temperature and is skipped.
-// Tccd{N} labels represent per-CCD temperatures and are returned as CoreTemp
-// entries with CoreID equal to N.
-func (c *SensorCollector) collectAMDCoreTemps(hwmonPath string) []types.CoreTemp {
+// socketOrder returns k10temp hwmon devices in socket order.
+//
+// k10temp reports no package id: unlike coretemp, it has no "Package id N"
+// label, and every socket's CCDs are numbered from Tccd1. It binds one device
+// per socket, to that socket's data-fabric function (0000:00:18.3 for the
+// first, 0000:00:19.3 for the second), and /sys/class/hwmon/hwmonN links to
+// the device's directory under it. So the devices' resolved paths, sorted,
+// are in socket order, and the position in that order is the package. Without
+// it both sockets' CCD 1 was one sensor, and their two readings one series.
+func socketOrder(hwmonPaths []string) []string {
+	type device struct{ hwmon, resolved string }
+	devices := make([]device, 0, len(hwmonPaths))
+	for _, p := range hwmonPaths {
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			// The device went away between listing and resolving it: it has
+			// no socket, and nothing left to read.
+			continue
+		}
+		devices = append(devices, device{hwmon: p, resolved: resolved})
+	}
+	sort.Slice(devices, func(i, j int) bool { return devices[i].resolved < devices[j].resolved })
+	ordered := make([]string, len(devices))
+	for i, d := range devices {
+		ordered[i] = d.hwmon
+	}
+	return ordered
+}
+
+// collectAMDCoreTemps reads CCD temperatures from a k10temp hwmon device, the
+// packageID'th socket. Tctl is the package-level die control temperature and
+// is skipped. Tccd{N} labels represent per-CCD temperatures and are returned
+// as CoreTemp entries with CoreID equal to N.
+func (c *SensorCollector) collectAMDCoreTemps(hwmonPath string, packageID int) []types.CoreTemp {
 	var temps []types.CoreTemp
 
 	for _, n := range hwmonSensorIndices(hwmonPath, "temp") {
@@ -281,7 +302,7 @@ func (c *SensorCollector) collectAMDCoreTemps(hwmonPath string) []types.CoreTemp
 		rawCrit := readSysfsUint64(filepath.Join(hwmonPath, tempFile(n, "crit")))
 
 		temps = append(temps, types.CoreTemp{
-			PackageID:   0,
+			PackageID:   packageID,
 			CoreID:      ccdID,
 			Label:       label,
 			TempCelsius: float64(rawInput) / 1000.0,

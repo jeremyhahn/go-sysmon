@@ -1,7 +1,27 @@
 version: "2"
 
 linters:
+  enable:
+    # errname holds the handbook's error naming (errors.md section 1): a type
+    # implementing error is named *Error, and a sentinel error value is named
+    # Err*. It is the guard that keeps an Err*-named struct type from coming
+    # back after #194 renamed them all.
+    - errname
+    # forbidigo keeps errors.New and fmt.Errorf out of production code. Every
+    # error there is a named type (CLAUDE.md), so there are no sentinel values
+    # and no inline errors: the one sentinel and the handful of fmt.Errorf
+    # wraps became types with the guard (#194). Test code may still build a
+    # throwaway cause inline, as the handbook permits (errors.md section 2);
+    # see the exclusion below.
+    - forbidigo
   settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^errors\.New$
+          msg: declare a named error type instead; production code has no sentinel or inline errors
+        - pattern: ^fmt\.Errorf$
+          msg: declare a named error type instead; production code has no sentinel or inline errors
     errcheck:
       # An error assigned to the blank identifier is still a discarded error:
       # `_ = f.Close()` and `v, _ := strconv.Atoi(s)` are reported like a bare
@@ -22,6 +42,12 @@ linters:
   exclusions:
     # Generated and vendored trees are not ours to lint.
     generated: lax
+    rules:
+      # A test may build a throwaway cause with errors.New or fmt.Errorf; the
+      # typed-error rule binds the code a caller receives errors from.
+      - path: _test\.go$
+        linters:
+          - forbidigo
     presets:
       - comments
     # NOT the std-error-handling preset. It exempts every Close, Flush,
@@ -29,8 +55,9 @@ linters:
     # unchecked `defer resp.Body.Close()` sat in the test suite unreported
     # (#196), and two dozen discarded errors in production code (#207).
     # errcheck has no exclusion rules at all: production and test code are
-    # held to the same bar, and scripts/check-errcheck-nolint.sh rejects the
-    # //nolint directive that would be the way around it.
+    # held to the same bar, and scripts/check-nolint.sh rejects the //nolint
+    # directive that would be the way around it (and around errname and
+    # forbidigo).
 
 issues:
   # golangci-lint caps its report by default: three findings of the same text,

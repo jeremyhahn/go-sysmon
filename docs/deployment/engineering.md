@@ -204,6 +204,10 @@ because no counter will.
 **`GOMEMLIMIT` is not configured anywhere.** The service derives it from the
 cgroup watermark at startup (`pkg/memlimit`, 90% of the ceiling) and logs what
 it derived, so there is no second number to keep in agreement with the first.
+The ceiling is the tightest `memory.high` and `memory.max` on the path from the
+service's cgroup up to the root, because a parent's limit binds every cgroup
+beneath it: a service in a slice, or a container started with `--memory`, has
+its limit on an ancestor and `max` on its own group.
 An explicit `GOMEMLIMIT` in the environment still wins, and the service logs
 that it deferred to it.
 

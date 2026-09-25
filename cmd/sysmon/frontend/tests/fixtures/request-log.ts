@@ -37,12 +37,17 @@ export async function logRequests(page: Page, pattern: RegExp) {
       };
       const realFetch = window.fetch.bind(window);
       window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-        const url =
+        // Resolved against the page, as fetch does: the dashboard asks for
+        // relative URLs ("api/fleet"), so the raw argument has no leading
+        // slash to match on.
+        const url = new URL(
           typeof input === "string"
             ? input
             : input instanceof URL
               ? input.href
-              : input.url;
+              : input.url,
+          document.baseURI,
+        ).href;
         const call = realFetch(input, init);
         if (!matches.test(url)) return call;
 

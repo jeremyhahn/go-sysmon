@@ -20,6 +20,10 @@
     color?: string;
     /** Optional formatter applied to Y-axis labels and tooltip. */
     formatter?: (v: number) => string;
+    /** The name of this series in the metric's history, when it is one of a
+     * split metric's: the historical line of that name takes this label, so a
+     * chart reads the same in both modes. */
+    historyName?: string;
   }
 
   interface Props {
@@ -178,3 +182,10 @@
 </script>
 
 <div bind:this={container} style="width:100%;height:{height};"></div>
+<!-- The canvas names its lines only in a hover tooltip, which neither a screen
+     reader nor a test can read; this list is what each line is called. -->
+{#if series.length > 1}
+  <ul class="sr-only" aria-label="Chart lines">
+    {#each series as s, i (i)}<li>{s.label}</li>{/each}
+  </ul>
+{/if}

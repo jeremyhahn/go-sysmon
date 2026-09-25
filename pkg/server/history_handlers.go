@@ -75,7 +75,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	// dashboard read the history of every machine in the database -- including
 	// hosts this one is not meant to show.
 	if !s.knownNode(node) {
-		http.Error(w, (&prom.ErrUnknownNode{Node: node}).Error(), http.StatusBadRequest)
+		http.Error(w, (&prom.UnknownNodeError{Node: node}).Error(), http.StatusBadRequest)
 		return
 	}
 	start, end, step, err := historyWindow(q)
@@ -88,8 +88,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		// A request this server will not serve is the caller's mistake, and
 		// the message is this package's own: it says what to ask for instead,
 		// and discloses nothing.
-		var badRange *prom.ErrInvalidRange
-		var badNode *prom.ErrInvalidInstance
+		var badRange *prom.InvalidRangeError
+		var badNode *prom.InvalidInstanceError
 		if errors.As(err, &badRange) || errors.As(err, &badNode) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -99,7 +99,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		// lookback (pkg/prom/lookback.go). It is said as such -- a fact about
 		// the database, not a failure of this request -- and without the
 		// database's address, which is kept to the log as below.
-		var unpublished *prom.ErrLookbackUnpublished
+		var unpublished *prom.LookbackUnpublishedError
 		if errors.As(err, &unpublished) {
 			slog.Warn("server: counter history unavailable", "metric", metric.Key, "node", node, "error", err)
 			http.Error(w, "counter history needs the time-series database's query lookback, "+
@@ -208,7 +208,7 @@ func (s *Server) readHistory(ctx context.Context, metric prom.Metric, node strin
 	// the subtraction cannot overflow, while a step near the largest duration
 	// makes a lookback that the addition would wrap negative -- and pass.
 	if lookback > maxHistoryWindow-end.Sub(start) {
-		return nil, &prom.ErrInvalidRange{
+		return nil, &prom.InvalidRangeError{
 			Message: "the range and its rate window exceed " + maxHistoryWindow.String() +
 				", the most that may be read at once; narrow the range or the step",
 		}
@@ -275,10 +275,10 @@ func historyWindow(q map[string][]string) (start, end time.Time, step time.Durat
 
 	start, end = time.UnixMilli(startMs), time.UnixMilli(endMs)
 	if !end.After(start) {
-		return time.Time{}, time.Time{}, 0, &prom.ErrInvalidRange{Message: "end must be after start"}
+		return time.Time{}, time.Time{}, 0, &prom.InvalidRangeError{Message: "end must be after start"}
 	}
 	if window := end.Sub(start); window > maxHistoryWindow {
-		return time.Time{}, time.Time{}, 0, &prom.ErrInvalidRange{
+		return time.Time{}, time.Time{}, 0, &prom.InvalidRangeError{
 			Message: "the range is " + window.Round(time.Hour).String() +
 				"; at most " + maxHistoryWindow.String() + " may be requested at once",
 		}
@@ -302,7 +302,7 @@ func msParam(q map[string][]string, name string, fallback int64) (int64, error) 
 	}
 	v, err := strconv.ParseInt(values[0], 10, 64)
 	if err != nil {
-		return 0, &prom.ErrInvalidRange{Message: name + " must be an integer number of milliseconds"}
+		return 0, &prom.InvalidRangeError{Message: name + " must be an integer number of milliseconds"}
 	}
 	return v, nil
 }
@@ -322,6 +322,9 @@ func toHistorySeries(m prom.Metric, series []prom.RangeSeries) []types.HistorySe
 		name := ""
 		if m.SplitBy != "" {
 			name = s.Labels[m.SplitBy]
+			if m.Within != "" {
+				name = s.Labels[m.Within] + ":" + name
+			}
 		}
 		points := make([]types.HistoryPoint, 0, len(s.Points))
 		for _, p := range s.Points {

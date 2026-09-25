@@ -87,10 +87,36 @@ cards do not implement the field, so an absent memory temperature is normal.
 
 ## DIMM temperatures
 
-Per-module temperatures need the `spd5118` (DDR5) or `jc42` (DDR4) driver bound
-to the SPD hub on the SMBus. On most systems it is not bound by default.
+Per-module temperatures need the `spd5118` (DDR5) or `jc42` (DDR3/DDR4) driver
+bound to the SPD hub on the SMBus. On most systems it is not bound by default.
 
-sysmon probes for these once per process, never per cycle. An earlier version
-ran `modprobe` and wrote to `/sys/bus/i2c/.../new_device` on every collection —
-once a second, forever, on a machine where it was never going to work. If the
-probe fails, that is logged once and the field stays empty.
+**go-sysmon only reads the sensors the kernel already exposes.** It never
+loads a kernel module, never writes to an SMBus adapter and never
+instantiates a device. Monitoring must not change the state of the hardware
+it watches, and binding a driver to a bus is the administrator's decision.
+Earlier versions ran `modprobe` and wrote to `/sys/bus/i2c/.../new_device` to
+make the sensors appear; that is gone. When no sensor is exposed, that is
+logged once and the field stays empty.
+
+To enable DIMM temperatures on a host, as root:
+
+1. Load the driver: `modprobe spd5118` for DDR5, or `modprobe jc42` for DDR4.
+   On a kernel built with `CONFIG_SENSORS_SPD5118_DETECT=y`, spd5118 then finds
+   the modules by itself, and you are done.
+2. Otherwise, instantiate the device for each module on the board's SMBus
+   adapter. Find the adapter in `/sys/bus/i2c/devices/i2c-*/name` (for example
+   `SMBus I801 adapter` or `SMBus PIIX4 adapter`). DDR5 SPD hubs sit at
+   addresses 0x50 to 0x57, one per populated slot:
+
+   ```sh
+   echo spd5118 0x50 > /sys/bus/i2c/devices/i2c-N/new_device
+   ```
+
+   Your board's documentation says which addresses are populated. Writing to
+   an address with no module can disturb other devices on the bus.
+3. Make it persistent: list the module in `/etc/modules-load.d/`, and repeat
+   the `new_device` writes from a boot-time unit.
+
+go-sysmon picks the sensors up on its next collection; nothing needs
+restarting. Which hwmon devices are DIMM sensors is re-checked on every cycle,
+so a sensor loaded later is noticed.

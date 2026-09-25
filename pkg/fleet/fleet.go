@@ -105,13 +105,13 @@ type Reading func(node string, snap *types.Snapshot)
 
 // HistoryGate decides whether one peer's history reading is written: record
 // or not, and the status the fleet card shows for it. summary is the peer's
-// latest account of itself -- nil when there is none -- and source how the
-// poller read it, which decides how the reading was relayed.
+// latest account of itself -- nil when there is none. A peer read by its whole
+// snapshot has a summary with no collection interval.
 //
 // It is consulted for every reading before the observer sees it, so it must
 // be quick and must not wait on anything: the poll and the history workers
 // call it.
-type HistoryGate func(peer string, summary *types.NodeSummary, source types.SummarySource) (record bool, status types.PeerHistory)
+type HistoryGate func(peer string, summary *types.NodeSummary) (record bool, status types.PeerHistory)
 
 // observer is a registered Reading and how often history wants a reading.
 type observer struct {
@@ -576,6 +576,13 @@ func (p *Poller) refresh(cfg config.Fleet) {
 	// A page's subtree summaries go with their child, and with age: one
 	// fetched longer ago than two intervals will never be reused.
 	p.forgetPages(urls, 2*p.detailReuse(current))
+	// And a relayed answer once its reuse is over. Each is kept under its
+	// relay's key -- the child, the endpoint with its query, the chain -- so
+	// every distinct history range, and every chain a drill-in arrived with,
+	// is a key of its own that no later request may ever ask for again. Left
+	// to be dropped only when its own key was next asked for, they
+	// accumulated for the life of the process.
+	p.relays.forget()
 }
 
 // historyCadence is how often history wants a reading from each peer, or zero
@@ -704,22 +711,21 @@ func (p *Poller) pollSnapshot(peer config.Peer, cfg config.Fleet, prev, st *peer
 	}
 	st.summary = &summary
 	st.source = types.SummarySourceSnapshot
-	if recording && p.admit(peer, st.summary, st.source) {
+	if recording && p.admit(peer, st.summary) {
 		p.deliver(peer.Name, &snap)
 	}
 	return nil
 }
 
 // admit asks the gate whether peer's history is written, and records the
-// decision for its card. summary and source are what the gate judges the peer
-// by: its latest account of itself, and how it was read. Without a gate
-// everything is admitted.
-func (p *Poller) admit(peer config.Peer, summary *types.NodeSummary, source types.SummarySource) bool {
+// decision for its card. summary is what the gate judges the peer by: its
+// latest account of itself. Without a gate everything is admitted.
+func (p *Poller) admit(peer config.Peer, summary *types.NodeSummary) bool {
 	gate := p.gate.Load()
 	if gate == nil {
 		return true
 	}
-	record, status := (*gate)(peer.Name, summary, source)
+	record, status := (*gate)(peer.Name, summary)
 	p.historyStatus.Store(peer.Name, historyDecision{url: peer.URL, status: status})
 	return record
 }
@@ -731,15 +737,15 @@ func (p *Poller) deliver(node string, snap *types.Snapshot) {
 	}
 }
 
-// peerSummary returns the latest summary of peer at its configured URL, and
-// how it was read; nil when no poll has read it there.
-func (p *Poller) peerSummary(peer config.Peer) (*types.NodeSummary, types.SummarySource) {
+// peerSummary returns the latest summary of peer at its configured URL; nil
+// when no poll has read it there.
+func (p *Poller) peerSummary(peer config.Peer) *types.NodeSummary {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if st := p.peers[peer.Name]; st != nil && st.url == peer.URL {
-		return st.summary, st.source
+		return st.summary
 	}
-	return nil, ""
+	return nil
 }
 
 // endpointNotServed reports whether a failed fetch of an endpoint this build
@@ -758,7 +764,7 @@ func endpointNotServed(err error) bool {
 
 // isNotFound reports whether err is a peer answering 404.
 func isNotFound(err error) bool {
-	var status *ErrPeerStatus
+	var status *PeerStatusError
 	return errors.As(err, &status) && status.Status == http.StatusNotFound
 }
 
@@ -827,7 +833,7 @@ func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet,
 
 	if resp.StatusCode == http.StatusLoopDetected {
 		drain(p, peer, resp)
-		return &ErrFleetRefused{Peer: peer.Name, Reason: resp.Header.Get(HeaderRefusal)}
+		return &FleetRefusedError{Peer: peer.Name, Reason: resp.Header.Get(HeaderRefusal)}
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Read what is left of a short error body before it is closed, so the
@@ -838,7 +844,7 @@ func (p *Poller) get(parent context.Context, peer config.Peer, cfg config.Fleet,
 		if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes)); err != nil {
 			p.logger.Debug("fleet: draining peer error body", "peer", peer.Name, "error", err)
 		}
-		return &ErrPeerStatus{Peer: peer.Name, Endpoint: endpoint, Status: resp.StatusCode}
+		return &PeerStatusError{Peer: peer.Name, Endpoint: endpoint, Status: resp.StatusCode}
 	}
 	if err := p.bodies.decode(bufferKey(peer.Name, bufferClass(endpoint)), resp.Body, limit, v); err != nil {
 		return &PeerRequestError{Peer: peer.Name, Cause: err}
@@ -858,7 +864,7 @@ func (p *Poller) do(parent context.Context, peer config.Peer, cfg config.Fleet, 
 
 	parsed, err := url.Parse(target)
 	if err != nil {
-		return nil, nil, &ErrPeerURL{Peer: peer.Name, Cause: err}
+		return nil, nil, &PeerURLError{Peer: peer.Name, Cause: err}
 	}
 	// The scheme is checked before the request is built, so a peer that should
 	// not be spoken to in the clear is refused here rather than after the
@@ -867,17 +873,17 @@ func (p *Poller) do(parent context.Context, peer config.Peer, cfg config.Fleet, 
 	case "https":
 	case "http":
 		if cfg.TLS.RequireTLS {
-			return nil, nil, &ErrPlaintextPeer{Peer: peer.Name}
+			return nil, nil, &PlaintextPeerError{Peer: peer.Name}
 		}
 	default:
-		return nil, nil, &ErrPeerScheme{Peer: peer.Name, Scheme: parsed.Scheme}
+		return nil, nil, &PeerSchemeError{Peer: peer.Name, Scheme: parsed.Scheme}
 	}
 
 	ctx, cancel := context.WithTimeout(parent, cfg.Timeout())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		cancel()
-		return nil, nil, &ErrPeerURL{Peer: peer.Name, Cause: err}
+		return nil, nil, &PeerURLError{Peer: peer.Name, Cause: err}
 	}
 	p.stampRequest(ctx, req)
 	resp, err := p.client.Do(req)
@@ -990,7 +996,7 @@ func (d *detailState) repoint(url string) {
 // plain success. Reachable and AgeSeconds describe the LATEST attempt, and they
 // are what stop stale readings from being displayed as current ones.
 //
-// The error is ErrUnknownPeer for a node that is not configured, ErrNoReading
+// The error is UnknownPeerError for a node that is not configured, NoReadingError
 // when there is nothing to serve, and otherwise the reason the peer could not
 // be read.
 func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Duration) (types.PeerSnapshot, error) {
@@ -1001,7 +1007,7 @@ func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Dura
 			// construction.
 			return types.PeerSnapshot{Snapshot: snap, Reachable: true}, nil
 		}
-		return types.PeerSnapshot{}, &ErrNoReading{Node: name}
+		return types.PeerSnapshot{}, &NoReadingError{Node: name}
 	case RouteSubtree:
 		// A node of a child's subtree, whose drill-in the child serves
 		// (#190).
@@ -1030,7 +1036,7 @@ func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Dura
 	// the peer while this request waited for it.
 	peer, cfg, ok := p.resolvePeer(name)
 	if !ok {
-		return types.PeerSnapshot{}, &ErrUnknownPeer{Peer: name}
+		return types.PeerSnapshot{}, &UnknownPeerError{Peer: name}
 	}
 	d.repoint(peer.URL)
 	if !d.triedAt.IsZero() && p.now().Sub(d.triedAt) < p.detailReuse(cfg) &&
@@ -1052,7 +1058,7 @@ func (p *Poller) PeerSnapshot(ctx context.Context, name string, budget time.Dura
 	// meanwhile, this answer is another machine's and is neither kept nor
 	// served under the name.
 	if now, _, ok := p.resolvePeer(name); !ok || now.URL != peer.URL {
-		return types.PeerSnapshot{}, &ErrPeerMoved{Peer: name}
+		return types.PeerSnapshot{}, &PeerMovedError{Peer: name}
 	}
 	d.err, d.triedAt = err, p.now()
 	if d.err == nil {
@@ -1308,25 +1314,25 @@ func sortedPeers(peers []config.Peer, states map[string]*peerState) ([]int, []*p
 	return order, aligned
 }
 
-// ErrPlaintextPeer reports a peer configured with an http URL on a fleet that
+// PlaintextPeerError reports a peer configured with an http URL on a fleet that
 // has switched plaintext off.
 //
 // It names the remedy, because the two ways out are not equivalent and an
 // operator reading this at three in the morning should not have to weigh them:
 // giving the peer an https URL is the fix, and turning allow_plaintext back on
 // is the retreat.
-type ErrPlaintextPeer struct {
+type PlaintextPeerError struct {
 	Peer string
 }
 
-func (e *ErrPlaintextPeer) Error() string {
+func (e *PlaintextPeerError) Error() string {
 	return fmt.Sprintf(
 		"peer %s is configured with a plaintext http URL and fleet.tls.require_tls is set; "+
 			"give it an https URL, or clear fleet.tls.require_tls to accept plaintext again",
 		e.Peer)
 }
 
-// ErrPeerScheme reports a peer URL whose scheme is neither http nor https.
+// PeerSchemeError reports a peer URL whose scheme is neither http nor https.
 //
 // Without this the request fails inside the HTTP client with a message about
 // an unsupported protocol and no mention of which peer caused it, which in a
@@ -1335,38 +1341,38 @@ func (e *ErrPlaintextPeer) Error() string {
 // The message does not quote the scheme. It is served in the fleet view, which
 // withholds every peer's address (#120), and the likeliest bad scheme is not a
 // scheme at all: "fs.lan:8081" parses as scheme "fs.lan", the peer's host.
-type ErrPeerScheme struct {
+type PeerSchemeError struct {
 	Peer   string
 	Scheme string
 }
 
-func (e *ErrPeerScheme) Error() string {
+func (e *PeerSchemeError) Error() string {
 	return "peer " + e.Peer + " has a URL that is neither http nor https; " +
 		"a peer written as host:port needs http:// or https:// in front"
 }
 
-// ErrPeerURL reports a peer URL that will not parse.
+// PeerURLError reports a peer URL that will not parse.
 //
 // The message names the peer and not the URL, nor the parse error, whose text
 // quotes the URL: it is served in the fleet view, which withholds every peer's
 // address (#120). The configuration holds the URL for anyone who may read it,
 // and Unwrap keeps the parse error for this node's log.
-type ErrPeerURL struct {
+type PeerURLError struct {
 	Peer  string
 	Cause error
 }
 
-func (e *ErrPeerURL) Error() string {
+func (e *PeerURLError) Error() string {
 	return "peer " + e.Peer + " has an unparseable URL; check its url in fleet.peers"
 }
 
-func (e *ErrPeerURL) Unwrap() error { return e.Cause }
+func (e *PeerURLError) Unwrap() error { return e.Cause }
 
-// ErrPeerStatus reports a peer that answered with a non-OK HTTP status.
+// PeerStatusError reports a peer that answered with a non-OK HTTP status.
 //
 // Endpoint is the path that was asked for, so the message can say what the
 // node could not do rather than only what it returned.
-type ErrPeerStatus struct {
+type PeerStatusError struct {
 	Peer     string
 	Endpoint string
 	Status   int
@@ -1390,7 +1396,7 @@ var endpointsAddedLater = map[string]bool{
 	endpointHistory: true,
 }
 
-func (e *ErrPeerStatus) Error() string {
+func (e *PeerStatusError) Error() string {
 	// A 404 from a node that is otherwise answering CAN be a version statement
 	// rather than a fault: the endpoint was added after the build it is
 	// running. Saying "returned HTTP 404" leaves an operator looking for a
@@ -1443,7 +1449,7 @@ func (p *Poller) PeerConfig(ctx context.Context, name string) (*types.ConfigView
 		}
 	}
 	if url == "" {
-		return nil, &ErrUnknownPeer{Peer: name}
+		return nil, &UnknownPeerError{Peer: name}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout())
@@ -1451,7 +1457,7 @@ func (p *Poller) PeerConfig(ctx context.Context, name string) (*types.ConfigView
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, &ErrPeerURL{Peer: name, Cause: err}
+		return nil, &PeerURLError{Peer: name, Cause: err}
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -1464,7 +1470,7 @@ func (p *Poller) PeerConfig(ctx context.Context, name string) (*types.ConfigView
 		}
 	}()
 	if resp.StatusCode != http.StatusOK {
-		return nil, &ErrPeerStatus{Peer: name, Endpoint: "/api/config", Status: resp.StatusCode}
+		return nil, &PeerStatusError{Peer: name, Endpoint: "/api/config", Status: resp.StatusCode}
 	}
 
 	var view types.ConfigView
@@ -1492,22 +1498,22 @@ func (p *Poller) resolvePeer(name string) (config.Peer, config.Fleet, bool) {
 	return config.Peer{}, cfg, false
 }
 
-// ErrPeerMoved reports a drill-in whose peer a reload removed or repointed
+// PeerMovedError reports a drill-in whose peer a reload removed or repointed
 // while it was being fetched. The answer belonged to the old address and is
 // discarded; asking again reaches the new one.
-type ErrPeerMoved struct{ Peer string }
+type PeerMovedError struct{ Peer string }
 
-func (e *ErrPeerMoved) Error() string {
+func (e *PeerMovedError) Error() string {
 	return "fleet node " + e.Peer + " was reconfigured while its snapshot was being fetched; ask again"
 }
 
-// ErrNoReading reports a node that is configured but has no reading to serve:
+// NoReadingError reports a node that is configured but has no reading to serve:
 // this node before its first collection.
-type ErrNoReading struct{ Node string }
+type NoReadingError struct{ Node string }
 
-func (e *ErrNoReading) Error() string { return "no reading yet from fleet node " + e.Node }
+func (e *NoReadingError) Error() string { return "no reading yet from fleet node " + e.Node }
 
-// ErrUnknownPeer reports a request for a node that is not configured.
-type ErrUnknownPeer struct{ Peer string }
+// UnknownPeerError reports a request for a node that is not configured.
+type UnknownPeerError struct{ Peer string }
 
-func (e *ErrUnknownPeer) Error() string { return "unknown fleet node " + e.Peer }
+func (e *UnknownPeerError) Error() string { return "unknown fleet node " + e.Peer }

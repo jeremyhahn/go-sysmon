@@ -88,33 +88,33 @@ type nvmeSmartLog struct {
 	// remaining bytes to pad to 512 are not needed
 }
 
-// ErrSMARTPermission is returned when the device cannot be opened due to
+// SMARTPermissionError is returned when the device cannot be opened due to
 // insufficient privileges.
-type ErrSMARTPermission struct {
+type SMARTPermissionError struct {
 	DevPath string
 }
 
-func (e *ErrSMARTPermission) Error() string {
+func (e *SMARTPermissionError) Error() string {
 	return fmt.Sprintf("SMART data unavailable for %s: permission denied "+
 		"(run with elevated privileges or add user to 'disk' group)", e.DevPath)
 }
 
-// ErrSMARTIoctl is returned when an ioctl call fails.
-type ErrSMARTIoctl struct {
+// SMARTIoctlError is returned when an ioctl call fails.
+type SMARTIoctlError struct {
 	DevPath string
 	Op      string
 	Errno   syscall.Errno
 }
 
-func (e *ErrSMARTIoctl) Error() string {
+func (e *SMARTIoctlError) Error() string {
 	return fmt.Sprintf("SMART ioctl %s on %s failed: %v", e.Op, e.DevPath, e.Errno)
 }
 
 // Unwrap exposes the errno so callers can ask errors.Is(err, syscall.EPERM)
 // through the wrappers rather than reaching into the struct. Without it, a
-// refusal deep under an ErrSMARTUnavailable is indistinguishable from a drive
+// refusal deep under an SMARTUnavailableError is indistinguishable from a drive
 // that simply declined to answer.
-func (e *ErrSMARTIoctl) Unwrap() error { return e.Errno }
+func (e *SMARTIoctlError) Unwrap() error { return e.Errno }
 
 // nvmeNameFromDisk returns the NVMe character device path for a disk name.
 // For a disk like "nvme0n1" the admin device is "/dev/nvme0".
@@ -167,7 +167,7 @@ func readNVMeSMART(devPath string, info *types.DiskInfo) error {
 		Cdw10: nvmeLogPageSMARTHealth | ((nvmeSmartLogSize/4 - 1) << 16),
 	}
 	if errno := nvmeIoctl(fd, &smartCmd); errno != 0 {
-		return &ErrSMARTIoctl{DevPath: devPath, Op: "GetLogPage(SMART)", Errno: errno}
+		return &SMARTIoctlError{DevPath: devPath, Op: "GetLogPage(SMART)", Errno: errno}
 	}
 
 	applyNVMeSMARTLog((*nvmeSmartLog)(unsafe.Pointer(&smartBuf[0])), info)

@@ -297,3 +297,88 @@ func TestLimits_Ceiling(t *testing.T) {
 		})
 	}
 }
+
+// writeCeiling writes one memory.* file for the cgroup at rel under root.
+func writeCeiling(t *testing.T, root, rel, name, text string) {
+	t.Helper()
+	dir := filepath.Join(root, "sys", "fs", "cgroup", rel)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(text+"\n"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+}
+
+// TestDetect_AnAncestorsCeilingBinds covers a process whose own cgroup is
+// unlimited under a limited parent -- a container's processes in a child such
+// as /init, a service in a slice with MemoryMax. The kernel enforces the
+// parent's ceiling, so that is the one derived from; and where both set one,
+// the tighter wins.
+func TestDetect_AnAncestorsCeilingBinds(t *testing.T) {
+	const gib = int64(1 << 30)
+	tests := []struct {
+		name     string
+		files    map[string]map[string]string
+		wantHigh int64
+		wantMax  int64
+		wantSrc  string
+	}{
+		{
+			name: "only the parent is limited",
+			files: map[string]map[string]string{
+				"system.slice":                   {"memory.high": "max", "memory.max": "6442450944"},
+				"system.slice/go-sysmon.service": {"memory.high": "max", "memory.max": "max"},
+			},
+			wantMax: 6 * gib, wantSrc: "memory.max",
+		},
+		{
+			name: "the child is tighter than the parent",
+			files: map[string]map[string]string{
+				"system.slice":                   {"memory.max": "6442450944"},
+				"system.slice/go-sysmon.service": {"memory.high": "536870912", "memory.max": "1073741824"},
+			},
+			wantHigh: gib / 2, wantMax: gib, wantSrc: "memory.high",
+		},
+		{
+			name: "the parent's watermark is above the child's hard limit",
+			files: map[string]map[string]string{
+				"":                               {"memory.high": "2147483648"},
+				"system.slice/go-sysmon.service": {"memory.max": "1073741824"},
+			},
+			wantHigh: 2 * gib, wantMax: gib, wantSrc: "memory.max",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := fakeRoot(t, v2Line, "", "")
+			for rel, files := range tt.files {
+				for name, text := range files {
+					writeCeiling(t, root, rel, name, text)
+				}
+			}
+
+			l, err := memlimit.Detect(root, noEnv)
+			if err != nil {
+				t.Fatalf("Detect: %v", err)
+			}
+			if l.High != tt.wantHigh || l.Max != tt.wantMax || l.Source != tt.wantSrc {
+				t.Errorf("Detect = high %d max %d from %q, want high %d max %d from %q",
+					l.High, l.Max, l.Source, tt.wantHigh, tt.wantMax, tt.wantSrc)
+			}
+		})
+	}
+}
+
+// TestDetect_AnUnreadableAncestorIsReported verifies a ceiling that cannot be
+// read anywhere on the path is an error, not an absent limit.
+func TestDetect_AnUnreadableAncestorIsReported(t *testing.T) {
+	root := fakeRoot(t, v2Line, "max", "max")
+	writeCeiling(t, root, "system.slice", "memory.max", "lots")
+
+	_, err := memlimit.Detect(root, noEnv)
+	var parseErr *types.CgroupParseError
+	if !errors.As(err, &parseErr) || parseErr.Value != "lots" {
+		t.Fatalf("Detect error = %v, want a *types.CgroupParseError for the parent's ceiling", err)
+	}
+}

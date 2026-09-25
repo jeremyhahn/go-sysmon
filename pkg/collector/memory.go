@@ -4,14 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"github.com/jaypipes/ghw"
@@ -255,28 +252,21 @@ func readSwapCounters(path string) (in, out uint64, ok bool) {
 	return in, out, true
 }
 
-// collectDIMMs reads DIMM information from the SMBIOS binary table, falling
-// back to ghw if the table cannot be read (e.g. missing root privileges).
+// collectDIMMs reads DIMM information from the SMBIOS binary table, and from
+// ghw when the table cannot be read.
+//
+// It reads only what the process may read. The table is 0400 root:root, and
+// go-sysmon never escalates to get at it -- no sudo, no setuid helper: granting
+// access is the administrator's decision, and `sysmon doctor` says how.
 func (c *MemoryCollector) collectDIMMs() []types.DIMMInfo {
-	// Attempt direct read first (succeeds when running as root).
 	data, err := os.ReadFile(smbiosTablePath)
-	if err != nil {
-		// Fall back to a privileged read. Report the original permission
-		// error if sudo is simply not installed -- which is the normal case
-		// in a container -- because "sudo: executable file not found"
-		// describes the fallback rather than the actual problem.
-		directErr := err
-		data, err = sudoReadFile(smbiosTablePath)
-		if err != nil && errors.Is(err, exec.ErrNotFound) {
-			err = directErr
-		}
-	}
 	if err != nil {
 		// Unreadable without root and unchanging for the process lifetime,
 		// so report it once rather than on every collection cycle.
 		warnOnce(c.logger, "memory:smbios",
-			"memory: cannot read SMBIOS table, falling back to ghw",
+			"memory: cannot read the SMBIOS table; module details come from ghw where it has them",
 			"path", smbiosTablePath, "error", err,
+			"hint", "run `sysmon doctor` for how to grant read access",
 			"note", "this is logged once per run")
 		return c.collectDIMMsViaGHW()
 	}
@@ -295,16 +285,16 @@ func (c *MemoryCollector) collectDIMMs() []types.DIMMInfo {
 // dimmTempDrivers lists the hwmon driver names that provide DIMM thermal data.
 var dimmTempDrivers = []string{"jc42", "spd5118"}
 
-// dimmTempModules lists kernel modules to attempt loading when no DIMM
-// temperature sensors are found in hwmon. Loading requires root privileges
-// and is best-effort; failure is silently ignored.
-var dimmTempModules = []string{"jc42", "spd5118"}
-
-// applyDIMMTemperatures scans hwmon for DIMM temperature sensors (jc42 or
-// spd5118 drivers) and assigns temperatures to DIMMs by index order.
-// These sensors appear at /sys/class/hwmon/hwmonN/ with name "jc42" or
-// "spd5118" and expose temp1_input in millidegrees Celsius.
-// Returns true if at least one DIMM thermal sensor was detected.
+// applyDIMMTemperatures reads the DIMM temperature sensors the kernel already
+// exposes in hwmon (the jc42 or spd5118 drivers) and assigns them to DIMMs by
+// index order. These sensors appear at /sys/class/hwmon/hwmonN/ with name
+// "jc42" or "spd5118" and expose temp1_input in millidegrees Celsius.
+// Returns true if at least one DIMM thermal sensor was found.
+//
+// It only reads. go-sysmon never loads a kernel module or instantiates an
+// SMBus device to make a sensor appear: monitoring must not change the state
+// of the hardware it watches. Enabling the sensors is the administrator's
+// decision; docs/collector/sensors.md says how.
 func applyDIMMTemperatures(dimms []types.DIMMInfo, logger *slog.Logger) bool {
 	if len(dimms) == 0 {
 		return false
@@ -312,24 +302,9 @@ func applyDIMMTemperatures(dimms []types.DIMMInfo, logger *slog.Logger) bool {
 
 	temps := scanDIMMHwmonTemps()
 	if len(temps) == 0 {
-		// No sensors found; attempt to load kernel modules, then instantiate
-		// spd5118 devices on SMBus adapters for DDR5 systems where the kernel
-		// lacks CONFIG_SENSORS_SPD5118_DETECT=y, and retry.
-		//
-		// This runs at most once per process. Memory is collected on the fast
-		// tier, so retrying meant forking modprobe and writing to every SMBus
-		// adapter once a second forever on a machine whose modules are simply
-		// not available. One attempt settles it: if the sensors do not appear,
-		// they will not appear on the ten-thousandth try either.
-		probeDIMMSensorsOnce(logger)
-		temps = scanDIMMHwmonTemps()
-	}
-
-	if len(temps) == 0 {
-		warnOnce(nil, "memory:no-dimm-temps",
-			"memory: no DIMM temperature sensors detected in hwmon",
-			"hint", "ensure jc42 (DDR3/DDR4) or spd5118 (DDR5) kernel modules are loaded; "+
-				"DDR5 may require CONFIG_SENSORS_SPD5118_DETECT=y in the kernel config",
+		warnOnce(logger, "memory:no-dimm-temps",
+			"memory: no DIMM temperature sensors are exposed in hwmon",
+			"hint", "load jc42 (DDR3/DDR4) or spd5118 (DDR5) to enable them; see docs/collector/sensors.md",
 			"note", "this is logged once per run")
 		return false
 	}
@@ -347,29 +322,6 @@ func applyDIMMTemperatures(dimms []types.DIMMInfo, logger *slog.Logger) bool {
 // hwmonClassRoot is the hwmon sysfs root. It is a variable so tests can point
 // the DIMM sensor scan at a synthetic tree.
 var hwmonClassRoot = "/sys/class/hwmon"
-
-// probeDIMMTempSensors loads the DIMM thermal kernel modules and instantiates
-// spd5118 devices. It is a variable because it mutates host state (modprobe
-// and i2c new_device writes), so tests replace it with a no-op.
-var probeDIMMTempSensors = func(logger *slog.Logger) {
-	loadDIMMTempModules(logger)
-	instantiateSPD5118Devices(logger)
-}
-
-// dimmProbeOnce guards the sensor probe so it runs at most once per process.
-var dimmProbeOnce sync.Once
-
-// probeDIMMSensorsOnce runs the sensor probe the first time it is called and
-// does nothing thereafter.
-func probeDIMMSensorsOnce(logger *slog.Logger) {
-	dimmProbeOnce.Do(func() { probeDIMMTempSensors(logger) })
-}
-
-// resetDIMMProbeOnce re-arms the probe. It exists for tests, which would
-// otherwise see the guard consumed by an earlier case.
-func resetDIMMProbeOnce() {
-	dimmProbeOnce = sync.Once{}
-}
 
 // scanDIMMHwmonTemps reads DIMM temperature values from hwmon sensors.
 func scanDIMMHwmonTemps() []float64 {
@@ -397,100 +349,6 @@ func scanDIMMHwmonTemps() []float64 {
 		temps = append(temps, float64(raw)/1000.0)
 	}
 	return temps
-}
-
-// loadDIMMTempModules attempts best-effort loading of DIMM thermal sensor
-// kernel modules. Requires root privileges; failures are logged at debug level.
-func loadDIMMTempModules(logger *slog.Logger) {
-	for _, mod := range dimmTempModules {
-		// #nosec G204 -- mod comes from the fixed dimmTempModules list in this
-		// package. There is no caller-supplied input on this path.
-		out, err := exec.Command("modprobe", mod).CombinedOutput()
-		if err != nil {
-			logger.Debug("memory: could not load kernel module",
-				"module", mod, "error", err, "output", strings.TrimSpace(string(out)))
-		}
-	}
-}
-
-// smbusAdapterNames contains substrings that identify SMBus host adapters in
-// the i2c device name file. Matching is case-insensitive.
-var smbusAdapterNames = []string{"smbus", "piix4", "i801", "nforce2"}
-
-// instantiateSPD5118Devices iterates over all i2c adapters in sysfs and, for
-// each SMBus adapter, attempts to instantiate spd5118 devices at the DDR5 SPD
-// EEPROM addresses (0x50–0x57). This is required on kernels built without
-// CONFIG_SENSORS_SPD5118_DETECT=y, where the driver will not probe the bus
-// automatically. Writing to new_device is best-effort; a write failure simply
-// means no DIMM is present at that address and is silently ignored.
-func instantiateSPD5118Devices(logger *slog.Logger) {
-	const i2cBusRoot = "/sys/bus/i2c/devices"
-
-	entries, err := os.ReadDir(i2cBusRoot)
-	if err != nil {
-		logger.Debug("memory: cannot read i2c devices directory", "error", err)
-		return
-	}
-
-	for _, e := range entries {
-		name := e.Name()
-		// Only consider i2c-N adapter directories (not individual devices like "7-0050").
-		if !strings.HasPrefix(name, "i2c-") {
-			continue
-		}
-		busNum := name[4:] // strip "i2c-" prefix
-
-		adapterPath := filepath.Join(i2cBusRoot, name)
-		adapterName := strings.ToLower(readSysfsString(filepath.Join(adapterPath, "name")))
-
-		isSMBus := false
-		for _, keyword := range smbusAdapterNames {
-			if strings.Contains(adapterName, keyword) {
-				isSMBus = true
-				break
-			}
-		}
-		if !isSMBus {
-			continue
-		}
-
-		logger.Debug("memory: found SMBus adapter, probing DDR5 SPD addresses",
-			"bus", busNum, "adapter", adapterName)
-
-		for addr := 0x50; addr <= 0x57; addr++ {
-			// Sysfs device directory name format: "{bus}-00{addr_hex}", e.g. "7-0050".
-			deviceDir := busNum + "-00" + itoh(addr)
-			devicePath := filepath.Join(adapterPath, deviceDir)
-
-			if _, statErr := os.Stat(devicePath); statErr == nil {
-				// Device already exists at this address; skip instantiation.
-				continue
-			}
-
-			newDevicePath := filepath.Join(adapterPath, "new_device")
-			payload := []byte("spd5118 0x" + itoh(addr) + "\n")
-
-			if writeErr := os.WriteFile(newDevicePath, payload, 0200); writeErr == nil {
-				logger.Debug("memory: instantiated spd5118 device",
-					"bus", busNum, "addr", "0x"+itoh(addr))
-			}
-			// Write errors are expected when no DIMM is present; silently ignored.
-		}
-	}
-}
-
-// itoh converts a non-negative integer to a zero-padded two-character
-// lowercase hexadecimal string (e.g. 0x50 → "50", 0x07 → "07").
-func itoh(n int) string {
-	const hex = "0123456789abcdef"
-	return string([]byte{hex[(n>>4)&0xf], hex[n&0xf]})
-}
-
-// sudoReadFile reads a file using sudo -n cat, used when direct access requires root.
-func sudoReadFile(path string) ([]byte, error) {
-	// #nosec G204 -- path is the package-level smbiosTablePath, a constant in
-	// every build; only tests reassign it, to a fixture under t.TempDir().
-	return exec.Command("sudo", "-n", "cat", path).Output()
 }
 
 // parseSMBIOSType17 walks the raw SMBIOS table data and returns one DIMMInfo
@@ -734,4 +592,19 @@ func (c *MemoryCollector) collectDIMMsViaGHW() []types.DIMMInfo {
 // Info returns the most recently collected MemoryInfo.
 func (c *MemoryCollector) Info() types.MemoryInfo {
 	return *c.info.Load()
+}
+
+// CheckSMBIOSAccess reports whether this process can read the SMBIOS table the
+// module inventory comes from: nil when it can, otherwise the error opening
+// it, which is fs.ErrPermission when access has not been granted and
+// fs.ErrNotExist on firmware that publishes no table.
+func CheckSMBIOSAccess() error {
+	f, err := os.Open(smbiosTablePath)
+	if err != nil {
+		return &types.SysfsReadError{Path: smbiosTablePath, Cause: err}
+	}
+	if err := f.Close(); err != nil {
+		return &types.SysfsReadError{Path: smbiosTablePath, Cause: err}
+	}
+	return nil
 }

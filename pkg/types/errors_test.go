@@ -266,6 +266,26 @@ func TestServerStartError_As(t *testing.T) {
 	}
 }
 
+// ---- NoListenerError ------------------------------------------------------
+
+func TestNoListenerError_Error(t *testing.T) {
+	e := &types.NoListenerError{}
+	if got, want := e.Error(), "no listener bound"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestNoListenerError_AsThroughServerStartError(t *testing.T) {
+	err := &types.ServerStartError{Cause: &types.NoListenerError{}}
+	var target *types.NoListenerError
+	if !errors.As(err, &target) {
+		t.Fatal("errors.As did not find NoListenerError under ServerStartError")
+	}
+	if errors.As(errSentinel, &target) {
+		t.Error("errors.As matched NoListenerError on an unrelated error")
+	}
+}
+
 // ---- GUIUnavailableError --------------------------------------------------
 
 func TestGUIUnavailableError_Error(t *testing.T) {

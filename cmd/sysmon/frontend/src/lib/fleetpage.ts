@@ -8,7 +8,8 @@
 
 import type { FleetPage } from "./types";
 
-export const FLEET_URL = "/api/fleet";
+// Relative to the page, like every API URL: see EVENTS_URL in transport.ts.
+export const FLEET_URL = "api/fleet";
 
 /** The page sizes the view offers. */
 export const PAGE_SIZE_OPTIONS = [25, 50, 100, 250];

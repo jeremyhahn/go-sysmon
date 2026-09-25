@@ -34,9 +34,9 @@ func TestValidateSubtree_DepthIsBounded(t *testing.T) {
 	for _, depth := range []int{MaxTreeDepth + 1, math.MaxInt} {
 		s := validChild()
 		s.Nodes[1].Depth = depth
-		var invalid *ErrSubtreeInvalid
+		var invalid *SubtreeInvalidError
 		if err := validateSubtree("mid", s); !errors.As(err, &invalid) {
-			t.Errorf("depth %d = %v, want ErrSubtreeInvalid", depth, err)
+			t.Errorf("depth %d = %v, want SubtreeInvalidError", depth, err)
 		}
 	}
 	s := validChild()
@@ -101,9 +101,9 @@ func TestValidateSubtree_TheRollupMustAddUp(t *testing.T) {
 	} {
 		s := validChild()
 		mutate(s)
-		var invalid *ErrSubtreeInvalid
+		var invalid *SubtreeInvalidError
 		if err := validateSubtree("mid", s); !errors.As(err, &invalid) {
-			t.Errorf("%s: %v, want ErrSubtreeInvalid", name, err)
+			t.Errorf("%s: %v, want SubtreeInvalidError", name, err)
 		}
 	}
 	if err := validateSubtree("mid", validChild()); err != nil {

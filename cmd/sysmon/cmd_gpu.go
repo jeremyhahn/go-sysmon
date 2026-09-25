@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -41,7 +40,7 @@ func runGPUCmd(cmd *cobra.Command, _ []string) error {
 			})
 		}
 		if err := cli.RenderGPU(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render gpu: %w", err)
+			return &cli.RenderError{Function: "gpu", Cause: err}
 		}
 		return nil
 	})

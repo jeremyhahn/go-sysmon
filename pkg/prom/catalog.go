@@ -43,6 +43,12 @@ type Metric struct {
 	// SplitBy is the label that distinguishes one returned series from another
 	// -- device, interface, gpu. Empty when a node yields a single series.
 	SplitBy string
+	// Within names the label SplitBy is numbered within, when SplitBy alone
+	// does not identify an element: a core number restarts on every package,
+	// so a core is "package:core". A series is then named
+	// "<Within value>:<SplitBy value>", and the selector requires Within to be
+	// present -- see Selector.
+	Within string
 	// Aggregate wraps the selector in a PromQL aggregation, "sum" being the
 	// only one used so far.
 	//
@@ -135,7 +141,13 @@ var catalog = []Metric{
 	{Key: "disk_temperature", Name: "sysmon_disk_temperature_celsius", Label: "Drive temperature", Unit: types.HistoryUnitCelsius, SplitBy: "device"},
 	{Key: "net_rx", Name: "sysmon_network_receive_bytes_rate", Label: "Network in", Unit: types.HistoryUnitBytesPerSecond, SplitBy: "interface"},
 	{Key: "net_tx", Name: "sysmon_network_transmit_bytes_rate", Label: "Network out", Unit: types.HistoryUnitBytesPerSecond, SplitBy: "interface"},
-	{Key: "cpu_temperature", Name: "sysmon_cpu_temperature_celsius", Label: "CPU temperature", Unit: types.HistoryUnitCelsius, SplitBy: "core"},
+	// A core is its package and its number within it: every package has a
+	// Core 0. Series written before the package label existed are not
+	// charted, since they cannot say which package they were.
+	{
+		Key: "cpu_temperature", Name: "sysmon_cpu_temperature_celsius", Matchers: []string{`package!=""`},
+		Label: "CPU temperature", Unit: types.HistoryUnitCelsius, SplitBy: "core", Within: "package",
+	},
 	{Key: "power", Name: "sysmon_power_watts", Label: "Power draw", Unit: types.HistoryUnitWatts, SplitBy: "source"},
 	// The same series, split the two ways the panels draw them. The regular
 	// expressions are literals from this file and never from a request, which
@@ -202,17 +214,17 @@ func Lookup(key string) (Metric, error) {
 			return m, nil
 		}
 	}
-	return Metric{}, &ErrUnknownMetric{Key: key}
+	return Metric{}, &UnknownMetricError{Key: key}
 }
 
-// ErrInvalidInstance reports a node name that cannot appear in a selector.
+// InvalidInstanceError reports a node name that cannot appear in a selector.
 // The rule it broke is pkg/nodename's, which is also what the configuration
 // loader holds every fleet peer name to.
-type ErrInvalidInstance struct {
+type InvalidInstanceError struct {
 	Instance string
 }
 
-func (e *ErrInvalidInstance) Error() string {
+func (e *InvalidInstanceError) Error() string {
 	return "prom: " + quote(e.Instance) + " is not a usable node name: " + nodename.Rule
 }
 
@@ -244,7 +256,7 @@ func (m Metric) Selector(instance string) (string, error) {
 // instanceMatcher is the validated, escaped instance="..." matcher.
 func instanceMatcher(instance string) (string, error) {
 	if err := nodename.Validate(instance); err != nil {
-		return "", &ErrInvalidInstance{Instance: instance}
+		return "", &InvalidInstanceError{Instance: instance}
 	}
 	return `instance="` + labelValueEscaper.Replace(instance) + `"`, nil
 }
@@ -338,13 +350,13 @@ const rateFloorGaps = 2
 // samples actually stored (Querier.SampleGap), so it already includes them.
 func RateWindow(step, gap time.Duration) (time.Duration, error) {
 	if step <= 0 {
-		return 0, &ErrInvalidRange{Message: "step must be greater than zero"}
+		return 0, &InvalidRangeError{Message: "step must be greater than zero"}
 	}
 	if gap <= 0 {
-		return 0, &ErrInvalidRange{Message: "the sample gap must be greater than zero"}
+		return 0, &InvalidRangeError{Message: "the sample gap must be greater than zero"}
 	}
 	if gap > math.MaxInt64/rateFloorGaps || step > math.MaxInt64-gap {
-		return 0, &ErrInvalidRange{Message: "the step is too large to take a rate over"}
+		return 0, &InvalidRangeError{Message: "the step is too large to take a rate over"}
 	}
 	return max(step+gap, rateFloorGaps*gap), nil
 }

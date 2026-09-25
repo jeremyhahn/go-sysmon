@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -37,7 +36,7 @@ func runNetworkCmd(cmd *cobra.Command, _ []string) error {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(snap.Networks)
 		}
 		if err := cli.RenderNetwork(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render network: %w", err)
+			return &cli.RenderError{Function: "network", Cause: err}
 		}
 		return nil
 	})

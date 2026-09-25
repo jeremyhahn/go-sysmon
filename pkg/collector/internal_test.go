@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -199,43 +200,43 @@ func TestReadNICDriver_Missing(t *testing.T) {
 
 // TestIsPermissionError_NonPermission verifies false for a non-permission error.
 func TestIsPermissionError_NonPermission(t *testing.T) {
-	var pe *ErrSMARTPermission
+	var pe *SMARTPermissionError
 	if isPermissionError(os.ErrNotExist, &pe) {
 		t.Error("expected isPermissionError to return false for os.ErrNotExist")
 	}
 }
 
-// TestIsPermissionError_Permission verifies true for *ErrSMARTPermission.
+// TestIsPermissionError_Permission verifies true for *SMARTPermissionError.
 func TestIsPermissionError_Permission(t *testing.T) {
-	var pe *ErrSMARTPermission
-	err := &ErrSMARTPermission{DevPath: "/dev/sda"}
+	var pe *SMARTPermissionError
+	err := &SMARTPermissionError{DevPath: "/dev/sda"}
 	if !isPermissionError(err, &pe) {
-		t.Error("expected isPermissionError to return true for *ErrSMARTPermission")
+		t.Error("expected isPermissionError to return true for *SMARTPermissionError")
 	}
 	if pe == nil {
-		t.Error("expected non-nil *ErrSMARTPermission after isPermissionError")
+		t.Error("expected non-nil *SMARTPermissionError after isPermissionError")
 	}
 }
 
-// TestErrSMARTPermission_Error verifies the error message contains the device path.
-func TestErrSMARTPermission_Error(t *testing.T) {
-	err := &ErrSMARTPermission{DevPath: "/dev/nvme0"}
+// TestSMARTPermissionError_Error verifies the error message contains the device path.
+func TestSMARTPermissionError_Error(t *testing.T) {
+	err := &SMARTPermissionError{DevPath: "/dev/nvme0"}
 	msg := err.Error()
 	if !strings.Contains(msg, "/dev/nvme0") {
-		t.Errorf("ErrSMARTPermission.Error() missing device path: %q", msg)
+		t.Errorf("SMARTPermissionError.Error() missing device path: %q", msg)
 	}
 }
 
-// TestErrSMARTIoctl_Error verifies the ErrSMARTIoctl error message contains
+// TestSMARTIoctlError_Error verifies the SMARTIoctlError error message contains
 // the device path and operation name.
-func TestErrSMARTIoctl_Error(t *testing.T) {
-	err := &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "HDIO_DRIVE_CMD(0xD0)", Errno: syscall.EPERM}
+func TestSMARTIoctlError_Error(t *testing.T) {
+	err := &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO_DRIVE_CMD(0xD0)", Errno: syscall.EPERM}
 	msg := err.Error()
 	if !strings.Contains(msg, "/dev/sda") {
-		t.Errorf("ErrSMARTIoctl.Error() missing device path: %q", msg)
+		t.Errorf("SMARTIoctlError.Error() missing device path: %q", msg)
 	}
 	if !strings.Contains(msg, "HDIO_DRIVE_CMD(0xD0)") {
-		t.Errorf("ErrSMARTIoctl.Error() missing op name: %q", msg)
+		t.Errorf("SMARTIoctlError.Error() missing op name: %q", msg)
 	}
 }
 
@@ -2156,5 +2157,66 @@ func TestShouldCollect_SlowTier(t *testing.T) {
 		if got != want {
 			t.Errorf("shouldCollect(%d, tierSlow) = %v, want %v", tick, got, want)
 		}
+	}
+}
+
+// TestCollectAMDCoreTemps_MultiSocket verifies a two-socket AMD host, where
+// k10temp numbers both sockets' CCDs from Tccd1 and reports no package id:
+// each socket's device is its data-fabric function, linked from hwmon, and
+// the sockets come out as packages 0 and 1 in that device order -- whatever
+// order the hwmon directory lists them in.
+func TestCollectAMDCoreTemps_MultiSocket(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	devices := filepath.Join(base, "devices", "pci0000:00")
+	class := filepath.Join(base, "class")
+	// hwmon0 is the SECOND socket's device, so listing order is not socket
+	// order.
+	for hwmon, fn := range map[string]string{"hwmon0": "0000:00:19.3", "hwmon1": "0000:00:18.3"} {
+		dev := filepath.Join(devices, fn, "hwmon", hwmon)
+		writeSysfsFile(t, filepath.Join(dev, "name"), "k10temp\n")
+		temp := "61000\n"
+		if fn == "0000:00:19.3" {
+			temp = "72000\n"
+		}
+		writeSysfsFile(t, filepath.Join(dev, "temp3_input"), temp)
+		writeSysfsFile(t, filepath.Join(dev, "temp3_label"), "Tccd1\n")
+		if err := os.MkdirAll(class, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(dev, filepath.Join(class, hwmon)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := newSensorCollectorWithPaths(slog.Default(), class, "", "", "", "")
+	temps := c.collectCoreTemps()
+
+	want := []types.CoreTemp{
+		{PackageID: 0, CoreID: 1, Label: "Tccd1", TempCelsius: 61},
+		{PackageID: 1, CoreID: 1, Label: "Tccd1", TempCelsius: 72},
+	}
+	if !reflect.DeepEqual(temps, want) {
+		t.Errorf("collectCoreTemps() = %+v, want %+v", temps, want)
+	}
+}
+
+// TestSocketOrder_SkipsADeviceThatWentAway verifies a hwmon entry whose link
+// no longer resolves -- the device was removed between listing and reading --
+// is left out rather than given a socket.
+func TestSocketOrder_SkipsADeviceThatWentAway(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	live := filepath.Join(base, "hwmon0")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(base, "hwmon1")
+	if err := os.Symlink(filepath.Join(base, "removed"), gone); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := socketOrder([]string{gone, live}); !reflect.DeepEqual(got, []string{live}) {
+		t.Errorf("socketOrder() = %v, want only the device that still resolves", got)
 	}
 }

@@ -156,8 +156,10 @@ jobs:
             "$b" version
           done
 
-      # See the note in ci.yml: artifact v4 is GitHub-only. The binaries are
-      # still built and verified on Gitea; they are just not uploaded.
+      # The hand-off to the publish job, which is GitHub-only because it talks
+      # to the GitHub Releases API. On Gitea nothing would download this, so it
+      # is not uploaded there: gitea-release below builds and publishes in one
+      # job. The binaries are still built and verified on Gitea.
       - uses: actions/upload-artifact@v7
         if: github.server_url == 'https://github.com'
         with:
@@ -174,8 +176,9 @@ jobs:
   image:
     name: Image (${{ matrix.arch }})
     # ghcr.io and its GITHUB_TOKEN credential only exist on GitHub, and the
-    # digest hand-off uses upload-artifact@v4, which refuses to run elsewhere.
-    # On Gitea this job is skipped rather than failing the release.
+    # buildx `type=gha` cache is unreachable from Gitea's job containers. On
+    # Gitea this job is skipped rather than failing the release; gitea-release
+    # pushes the image to Gitea's own registry instead.
     if: github.server_url == 'https://github.com'
     needs: verify
     runs-on: ${{ (github.server_url == 'https://github.com' && matrix.runner) || 'ubuntu-latest' }}
@@ -399,12 +402,16 @@ jobs:
 
   # The Gitea equivalent of build + image + publish, in one job.
   #
-  # It cannot reuse the jobs above: those hand artifacts between jobs, and
-  # upload-artifact refuses to run against a non-github.com server. So this
-  # builds, pushes and publishes in a single job instead.
+  # It cannot reuse the jobs above: they publish to ghcr.io and the GitHub
+  # Releases API, which Gitea does not have.
   #
-  # Single architecture, because there is one runner. GitHub produces amd64 and
-  # arm64 from native runners; here you get the runner's own architecture.
+  # Single architecture, because no Gitea runner advertises an arm64 label (see
+  # the build matrix above). GitHub produces amd64 and arm64 from native
+  # runners; here you get the runner's own architecture. With one architecture
+  # there is nothing to hand between jobs, so this builds, pushes and publishes
+  # in a single job and does not depend on the artifact service at all. Gitea's runners do carry artifacts
+  # (docs/testing/ci-artifacts.md), but only through each runner's cache
+  # server, so a release that needed them would fail whenever one is down.
   gitea-release:
     name: Gitea Release
     needs: verify

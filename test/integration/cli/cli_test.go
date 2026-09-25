@@ -1,172 +1,22 @@
 //go:build integration
 
-// Package integration contains end-to-end CLI integration tests for the sysmon
-// binary. Tests build the binary once via TestMain and exercise every subcommand,
-// asserting on both the human-readable text output and the --json output.
-package integration
+package cli
 
 import (
-	"bufio"
-	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/test/integration/harness"
 )
-
-// binaryPath is the path to the sysmon binary built once in TestMain.
-var binaryPath string
-
-// TestMain builds the sysmon binary into a temporary directory before running
-// any tests, and removes it when the suite finishes.
-func TestMain(m *testing.M) {
-	tmpDir, err := os.MkdirTemp("", "sysmon-integration-*")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create temp dir: %v\n", err)
-		os.Exit(1)
-	}
-	binaryPath = filepath.Join(tmpDir, "sysmon")
-
-	// Build without the desktop tag so the binary uses the stub GUI path and no
-	// Wails runtime is required. CGO must stay enabled: pkg/collector imports
-	// NVIDIA go-nvml, which does not compile with CGO_ENABLED=0.
-	cmd := exec.Command("go", "build", "-o", binaryPath, "../../cmd/sysmon")
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build failed: %v\n%s\n", err, out)
-		if rmErr := os.RemoveAll(tmpDir); rmErr != nil {
-			fmt.Fprintf(os.Stderr, "remove build dir %s: %v\n", tmpDir, rmErr)
-		}
-		os.Exit(1)
-	}
-
-	code := m.Run()
-	// A build directory that cannot be removed is leaked onto the host, which
-	// fails the run even when every test passed.
-	if err := os.RemoveAll(tmpDir); err != nil {
-		fmt.Fprintf(os.Stderr, "remove build dir %s: %v\n", tmpDir, err)
-		if code == 0 {
-			code = 1
-		}
-	}
-	os.Exit(code)
-}
-
-// runCmd executes the sysmon binary with the given args, suppressing any
-// display-server environment variables so the binary always takes the CLI path.
-// It returns the combined stdout+stderr output and the process exit code.
-func runCmd(t *testing.T, args ...string) (string, int) {
-	t.Helper()
-	stdout, stderr, code := runCmdStreams(t, args...)
-	return stdout + stderr, code
-}
-
-// runCmdStdout is like runCmd but returns only stdout. Use it for --json
-// assertions: diagnostics such as "NVML init failed" are written to stderr, and
-// merging the streams would corrupt otherwise valid JSON.
-func runCmdStdout(t *testing.T, args ...string) (string, int) {
-	t.Helper()
-	stdout, _, code := runCmdStreams(t, args...)
-	return stdout, code
-}
-
-// runCmdStreams executes the sysmon binary with stdout and stderr captured
-// separately, returning both along with the process exit code.
-func runCmdStreams(t *testing.T, args ...string) (string, string, int) {
-	t.Helper()
-	cmd := exec.Command(binaryPath, args...)
-	// Clear display vars to prevent the root command from attempting to launch
-	// the GUI and ensure the overview/subcommand path is exercised.
-	cmd.Env = append(os.Environ(), "DISPLAY=", "WAYLAND_DISPLAY=")
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	exitCode := 0
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			exitCode = ee.ExitCode()
-		}
-	}
-	return stdout.String(), stderr.String(), exitCode
-}
-
-// mustParseJSON unmarshals src into dst, failing the test immediately if
-// parsing fails.
-func mustParseJSON(t *testing.T, src string, dst any) {
-	t.Helper()
-	if err := json.Unmarshal([]byte(src), dst); err != nil {
-		t.Fatalf("JSON parse error: %v\nraw output:\n%s", err, src)
-	}
-}
-
-// closeOnCleanup closes c when the test ends, failing the test if the close
-// does. what names c in the failure.
-func closeOnCleanup(t *testing.T, what string, c io.Closer) {
-	t.Helper()
-	t.Cleanup(func() {
-		if err := c.Close(); err != nil {
-			t.Errorf("closing %s: %v", what, err)
-		}
-	})
-}
-
-// waitForPort polls addr (e.g. "localhost:18080") until a TCP connection
-// succeeds, failing the test if it has not within await.Timeout. The listener
-// belongs to another process, so polling it is the only way to observe it.
-func waitForPort(t *testing.T, addr string) {
-	t.Helper()
-	var dialer net.Dialer
-	await.Until(t, "sysmon serve to accept connections on "+addr, func(ctx context.Context) bool {
-		conn, err := dialer.DialContext(ctx, "tcp", addr)
-		if err != nil {
-			return false
-		}
-		if err := conn.Close(); err != nil {
-			t.Errorf("closing the probe connection to %s: %v", addr, err)
-		}
-		return true
-	})
-}
-
-// waitForSnapshot polls GET /api/snapshot until the server responds with HTTP
-// 200, indicating the monitor has completed its first collection cycle, and
-// fails the test if it has not within await.Timeout.
-func waitForSnapshot(t *testing.T, url string) {
-	t.Helper()
-	await.Until(t, "GET "+url+" to answer 200", func(ctx context.Context) bool {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			t.Fatalf("building the request for %s: %v", url, err)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return false
-		}
-		if err := resp.Body.Close(); err != nil {
-			t.Errorf("closing the %s response: %v", url, err)
-		}
-		return resp.StatusCode == http.StatusOK
-	})
-}
 
 // ── Overview ─────────────────────────────────────────────────────────────────
 
 func TestCLI_Overview(t *testing.T) {
-	out, code := runCmd(t, "overview")
+	out, code := harness.RunSysmon(t, "overview")
 
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
@@ -181,7 +31,7 @@ func TestCLI_Overview(t *testing.T) {
 }
 
 func TestCLI_Overview_ContainsAllSections(t *testing.T) {
-	out, code := runCmd(t, "overview")
+	out, code := harness.RunSysmon(t, "overview")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -195,7 +45,7 @@ func TestCLI_Overview_ContainsAllSections(t *testing.T) {
 }
 
 func TestCLI_Overview_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "overview", "--json")
+	out, code := harness.RunStdout(t, "overview", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -214,7 +64,7 @@ func TestCLI_Overview_JSON(t *testing.T) {
 		CPUs     []json.RawMessage `json:"cpus"`
 		Networks []json.RawMessage `json:"networks"`
 	}
-	mustParseJSON(t, out, &snap)
+	harness.MustParseJSON(t, out, &snap)
 
 	if snap.Timestamp.IsZero() {
 		t.Error("overview JSON: timestamp is zero")
@@ -233,7 +83,7 @@ func TestCLI_Overview_JSON(t *testing.T) {
 // ── Host ──────────────────────────────────────────────────────────────────────
 
 func TestCLI_Host(t *testing.T) {
-	out, code := runCmd(t, "host")
+	out, code := harness.RunSysmon(t, "host")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -246,7 +96,7 @@ func TestCLI_Host(t *testing.T) {
 }
 
 func TestCLI_Host_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "host", "--json")
+	out, code := harness.RunStdout(t, "host", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -257,7 +107,7 @@ func TestCLI_Host_JSON(t *testing.T) {
 		Uptime        uint64 `json:"uptime"`
 		OS            string `json:"os"`
 	}
-	mustParseJSON(t, out, &host)
+	harness.MustParseJSON(t, out, &host)
 
 	if host.Hostname == "" {
 		t.Error("host JSON: hostname is empty")
@@ -273,7 +123,7 @@ func TestCLI_Host_JSON(t *testing.T) {
 // ── CPU ───────────────────────────────────────────────────────────────────────
 
 func TestCLI_CPU(t *testing.T) {
-	out, code := runCmd(t, "cpu")
+	out, code := harness.RunSysmon(t, "cpu")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -286,7 +136,7 @@ func TestCLI_CPU(t *testing.T) {
 }
 
 func TestCLI_CPU_ContainsCoreCount(t *testing.T) {
-	out, code := runCmd(t, "cpu")
+	out, code := harness.RunSysmon(t, "cpu")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -301,7 +151,7 @@ func TestCLI_CPU_ContainsCoreCount(t *testing.T) {
 }
 
 func TestCLI_CPU_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "cpu", "--json")
+	out, code := harness.RunStdout(t, "cpu", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -312,7 +162,7 @@ func TestCLI_CPU_JSON(t *testing.T) {
 		} `json:"cpu_summary"`
 		CPUs []json.RawMessage `json:"cpus"`
 	}
-	mustParseJSON(t, out, &resp)
+	harness.MustParseJSON(t, out, &resp)
 
 	if resp.Summary.TotalCores <= 0 {
 		t.Errorf("cpu JSON: cpu_summary.total_cores = %d, want > 0", resp.Summary.TotalCores)
@@ -325,7 +175,7 @@ func TestCLI_CPU_JSON(t *testing.T) {
 // ── Memory ───────────────────────────────────────────────────────────────────
 
 func TestCLI_Memory(t *testing.T) {
-	out, code := runCmd(t, "memory")
+	out, code := harness.RunSysmon(t, "memory")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -338,7 +188,7 @@ func TestCLI_Memory(t *testing.T) {
 }
 
 func TestCLI_Memory_DIMMs(t *testing.T) {
-	out, code := runCmd(t, "memory")
+	out, code := harness.RunSysmon(t, "memory")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -354,7 +204,7 @@ func TestCLI_Memory_DIMMs(t *testing.T) {
 }
 
 func TestCLI_Memory_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "memory", "--json")
+	out, code := harness.RunStdout(t, "memory", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -365,7 +215,7 @@ func TestCLI_Memory_JSON(t *testing.T) {
 		AvailableBytes uint64  `json:"available_bytes"`
 		UsedPercent    float64 `json:"used_percent"`
 	}
-	mustParseJSON(t, out, &mem)
+	harness.MustParseJSON(t, out, &mem)
 
 	if mem.TotalBytes == 0 {
 		t.Error("memory JSON: total_bytes is 0")
@@ -378,7 +228,7 @@ func TestCLI_Memory_JSON(t *testing.T) {
 // ── Storage ───────────────────────────────────────────────────────────────────
 
 func TestCLI_Storage(t *testing.T) {
-	out, code := runCmd(t, "storage")
+	out, code := harness.RunSysmon(t, "storage")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -392,7 +242,7 @@ func TestCLI_Storage(t *testing.T) {
 }
 
 func TestCLI_Storage_SMART(t *testing.T) {
-	out, code := runCmd(t, "storage")
+	out, code := harness.RunSysmon(t, "storage")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -408,7 +258,7 @@ func TestCLI_Storage_SMART(t *testing.T) {
 }
 
 func TestCLI_Storage_NVMeHealth(t *testing.T) {
-	out, code := runCmd(t, "storage")
+	out, code := harness.RunSysmon(t, "storage")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -422,7 +272,7 @@ func TestCLI_Storage_NVMeHealth(t *testing.T) {
 }
 
 func TestCLI_Storage_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "storage", "--json")
+	out, code := harness.RunStdout(t, "storage", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -431,7 +281,7 @@ func TestCLI_Storage_JSON(t *testing.T) {
 		Name      string `json:"name"`
 		SizeBytes uint64 `json:"size_bytes"`
 	}
-	mustParseJSON(t, out, &disks)
+	harness.MustParseJSON(t, out, &disks)
 
 	if len(disks) == 0 {
 		t.Fatal("storage JSON: disks array is empty")
@@ -449,7 +299,7 @@ func TestCLI_Storage_JSON(t *testing.T) {
 // ── Network ───────────────────────────────────────────────────────────────────
 
 func TestCLI_Network(t *testing.T) {
-	out, code := runCmd(t, "network")
+	out, code := harness.RunSysmon(t, "network")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -473,7 +323,7 @@ func TestCLI_Network(t *testing.T) {
 }
 
 func TestCLI_Network_Loopback(t *testing.T) {
-	out, code := runCmd(t, "network")
+	out, code := harness.RunSysmon(t, "network")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -489,7 +339,7 @@ func TestCLI_Network_Loopback(t *testing.T) {
 }
 
 func TestCLI_Network_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "network", "--json")
+	out, code := harness.RunStdout(t, "network", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -498,7 +348,7 @@ func TestCLI_Network_JSON(t *testing.T) {
 		Name       string `json:"name"`
 		IsLoopback bool   `json:"is_loopback"`
 	}
-	mustParseJSON(t, out, &networks)
+	harness.MustParseJSON(t, out, &networks)
 
 	if len(networks) == 0 {
 		t.Fatal("network JSON: networks array is empty")
@@ -521,7 +371,7 @@ func TestCLI_Network_JSON(t *testing.T) {
 // ── Version ───────────────────────────────────────────────────────────────────
 
 func TestCLI_Version(t *testing.T) {
-	out, code := runCmd(t, "version")
+	out, code := harness.RunSysmon(t, "version")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -532,14 +382,14 @@ func TestCLI_Version(t *testing.T) {
 }
 
 func TestCLI_Version_ExitCode(t *testing.T) {
-	_, code := runCmd(t, "version")
+	_, code := harness.RunSysmon(t, "version")
 	if code != 0 {
 		t.Errorf("version: expected exit 0, got %d", code)
 	}
 }
 
 func TestCLI_Version_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "version", "--json")
+	out, code := harness.RunStdout(t, "version", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -549,7 +399,7 @@ func TestCLI_Version_JSON(t *testing.T) {
 		GitCommit string `json:"gitCommit"`
 		BuildDate string `json:"buildDate"`
 	}
-	mustParseJSON(t, out, &v)
+	harness.MustParseJSON(t, out, &v)
 
 	if v.Version == "" {
 		t.Error("version JSON: version field is empty")
@@ -561,115 +411,14 @@ func TestCLI_Version_JSON(t *testing.T) {
 
 // ── Serve ─────────────────────────────────────────────────────────────────────
 
-// serverListeningMsg is the log message the serve command emits once its
-// listener is bound. It carries the bound address, which is the only way to
-// learn the port when the server was started on port 0.
-const serverListeningMsg = "server listening"
-
-// startServer launches `sysmon serve` on a kernel-assigned port and returns the
-// address it bound, ready to serve. The process is killed by a t.Cleanup.
-//
-// The port is 0 rather than a constant on purpose. A fixed port made two CI
-// jobs on one runner collide by construction -- whichever bound second failed,
-// on a machine where nothing was wrong (issue #62). Asking the kernel for a
-// port cannot collide, and asking the server which port it got is exact,
-// where guessing a free one in advance is a race with every other process on
-// the host.
-func startServer(t *testing.T) string {
-	t.Helper()
-	return startServe(t)
-}
-
-// startServe is startServer with extra arguments to `sysmon serve`, such as a
-// configuration file.
-func startServe(t *testing.T, extra ...string) string {
-	t.Helper()
-	args := append([]string{"serve", "--addr", "127.0.0.1:0", "--interval", "200", "--log-format", "json"}, extra...)
-	cmd := exec.Command(binaryPath, args...)
-	cmd.Env = append(os.Environ(), "DISPLAY=", "WAYLAND_DISPLAY=")
-
-	logs, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatalf("failed to capture sysmon serve logs: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("failed to start sysmon serve: %v", err)
-	}
-	found, drained := watchLogs(logs)
-	t.Cleanup(func() {
-		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			t.Errorf("killing sysmon serve: %v", err)
-		}
-		// The log reader finishes before Wait, which closes the pipe: reading
-		// from it after that is the misuse os/exec documents. The process is
-		// dead, so its end of the pipe is closed and the reader meets EOF,
-		// which io.Copy reports as success -- any error here is a real one.
-		if err := await.Recv(t, "the sysmon serve log reader to finish", drained); err != nil {
-			t.Errorf("reading the sysmon serve logs: %v", err)
-		}
-		// Killed, it exits on the signal, which Wait reports as an ExitError;
-		// anything else is a failure to reap it.
-		var exited *exec.ExitError
-		if err := cmd.Wait(); err != nil && !errors.As(err, &exited) {
-			t.Errorf("reaping sysmon serve: %v", err)
-		}
-	})
-
-	addr := await.Recv(t, fmt.Sprintf("sysmon serve to report %q", serverListeningMsg), found)
-	if addr == "" {
-		t.Fatalf("sysmon serve's log ended without reporting %q", serverListeningMsg)
-	}
-	waitForPort(t, addr)
-	// Wait for the monitor to complete its first collection cycle so that
-	// /api/snapshot returns 200 rather than 503.
-	waitForSnapshot(t, "http://"+addr+"/api/snapshot")
-	return addr
-}
-
-// watchLogs reads the server's JSON log stream in the background. found
-// delivers the address its listener bound, once reported, and is closed empty
-// if the stream ends without it. The stream is then
-// drained to its end, so a server that logs steadily is never blocked by a
-// full pipe, and drained delivers how reading it ended: nil at end of stream,
-// otherwise the error that stopped it.
-func watchLogs(logs io.Reader) (found <-chan string, drained <-chan error) {
-	addr := make(chan string, 1)
-	done := make(chan error, 1)
-
-	go func() {
-		scanner := bufio.NewScanner(logs)
-		for scanner.Scan() {
-			var entry struct {
-				Msg  string `json:"msg"`
-				Addr string `json:"addr"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-				continue
-			}
-			if entry.Msg == serverListeningMsg && entry.Addr != "" {
-				addr <- entry.Addr
-				_, err := io.Copy(io.Discard, logs)
-				done <- err
-				return
-			}
-		}
-		// The stream ended without the address: closing found says so at
-		// once, rather than leaving the test to wait out its bound.
-		close(addr)
-		done <- scanner.Err()
-	}()
-
-	return addr, done
-}
-
 func TestCLI_Serve_StartsAndStops(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	resp, err := http.Get("http://" + addr + "/api/snapshot")
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
-	closeOnCleanup(t, "the response body", resp.Body)
+	harness.CloseOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /api/snapshot: expected 200, got %d", resp.StatusCode)
@@ -681,13 +430,13 @@ func TestCLI_Serve_StartsAndStops(t *testing.T) {
 }
 
 func TestCLI_Serve_APIReturnsSnapshot(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	resp, err := http.Get("http://" + addr + "/api/snapshot")
 	if err != nil {
 		t.Fatalf("GET /api/snapshot: %v", err)
 	}
-	closeOnCleanup(t, "the response body", resp.Body)
+	harness.CloseOnCleanup(t, "the response body", resp.Body)
 
 	var snap struct {
 		Timestamp time.Time `json:"timestamp"`
@@ -714,7 +463,7 @@ func TestCLI_Serve_APIReturnsSnapshot(t *testing.T) {
 }
 
 func TestCLI_Serve_EventStream(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	stream := dialEventStream(t, "http://"+addr+"/api/events", false)
 
@@ -746,7 +495,7 @@ func TestCLI_Serve_EventStream(t *testing.T) {
 // stream for a client that offers it. Consecutive snapshots barely differ, so
 // this is where the bandwidth saving lives.
 func TestCLI_Serve_EventStream_Gzip(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	stream := dialEventStream(t, "http://"+addr+"/api/events", true)
 
@@ -768,7 +517,7 @@ func TestCLI_Serve_EventStream_Gzip(t *testing.T) {
 // ── GPU ───────────────────────────────────────────────────────────────────────
 
 func TestCLI_GPU(t *testing.T) {
-	out, code := runCmd(t, "gpu")
+	out, code := harness.RunSysmon(t, "gpu")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -778,14 +527,14 @@ func TestCLI_GPU(t *testing.T) {
 }
 
 func TestCLI_GPU_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "gpu", "--json")
+	out, code := harness.RunStdout(t, "gpu", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
 	var result struct {
 		GPUs []json.RawMessage `json:"gpus"`
 	}
-	mustParseJSON(t, out, &result)
+	harness.MustParseJSON(t, out, &result)
 	// gpus must be a valid JSON array (may be empty if no GPUs on host)
 	if result.GPUs == nil {
 		t.Error("gpus field is nil; expected a JSON array")
@@ -793,14 +542,14 @@ func TestCLI_GPU_JSON(t *testing.T) {
 }
 
 func TestCLI_GPU_JSON_Structure(t *testing.T) {
-	out, code := runCmdStdout(t, "gpu", "--json")
+	out, code := harness.RunStdout(t, "gpu", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
 	var result struct {
 		GPUs []map[string]interface{} `json:"gpus"`
 	}
-	mustParseJSON(t, out, &result)
+	harness.MustParseJSON(t, out, &result)
 	if len(result.GPUs) == 0 {
 		t.Skip("no GPUs detected on this host")
 	}
@@ -820,7 +569,7 @@ func TestCLI_GPU_JSON_Structure(t *testing.T) {
 }
 
 func TestCLI_GPU_ContainsGPUDetails(t *testing.T) {
-	out, code := runCmd(t, "gpu")
+	out, code := harness.RunSysmon(t, "gpu")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -860,7 +609,7 @@ var gpuSectionRE = regexp.MustCompile(`GPU \d+:`)
 // ── Rate control over REST ────────────────────────────────────────────────────
 
 func TestServer_SetInterval(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	// A stream opened first must keep working across the rate change.
 	stream := dialEventStream(t, "http://"+addr+"/api/events", false)
@@ -871,7 +620,7 @@ func TestServer_SetInterval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
 	}
-	closeOnCleanup(t, "the response body", resp.Body)
+	harness.CloseOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST /api/interval status = %d, want 200", resp.StatusCode)
@@ -899,14 +648,14 @@ func TestServer_SetInterval(t *testing.T) {
 }
 
 func TestServer_SetInterval_Disallowed(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	resp, err := http.Post("http://"+addr+"/api/interval", "application/json",
 		strings.NewReader(`{"interval_ms":999}`)) //nolint:noctx
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
 	}
-	closeOnCleanup(t, "the response body", resp.Body)
+	harness.CloseOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for a disallowed interval", resp.StatusCode)
@@ -918,13 +667,13 @@ func TestServer_SetInterval_Disallowed(t *testing.T) {
 }
 
 func TestServer_GetInterval(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	resp, err := http.Get("http://" + addr + "/api/interval") //nolint:noctx
 	if err != nil {
 		t.Fatalf("GET /api/interval: %v", err)
 	}
-	closeOnCleanup(t, "the response body", resp.Body)
+	harness.CloseOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
@@ -944,13 +693,13 @@ func TestServer_GetInterval(t *testing.T) {
 // TestServer_WebSocketRouteRetired is the migration regression test: the old
 // endpoint must not stream, so a stale client fails loudly.
 func TestServer_WebSocketRouteRetired(t *testing.T) {
-	addr := startServer(t)
+	addr := harness.StartServer(t)
 
 	resp, err := http.Get("http://" + addr + "/ws") //nolint:noctx
 	if err != nil {
 		t.Fatalf("GET /ws: %v", err)
 	}
-	closeOnCleanup(t, "the response body", resp.Body)
+	harness.CloseOnCleanup(t, "the response body", resp.Body)
 
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		t.Error("GET /ws upgraded a connection; the WebSocket route should be gone")
@@ -963,7 +712,7 @@ func TestServer_WebSocketRouteRetired(t *testing.T) {
 // ── Error cases ───────────────────────────────────────────────────────────────
 
 func TestCLI_UnknownCommand(t *testing.T) {
-	_, code := runCmd(t, "foobar")
+	_, code := harness.RunSysmon(t, "foobar")
 	if code == 0 {
 		t.Error("unknown command 'foobar': expected non-zero exit, got 0")
 	}
@@ -972,7 +721,7 @@ func TestCLI_UnknownCommand(t *testing.T) {
 func TestCLI_NoDisplay_NoGUI(t *testing.T) {
 	// With DISPLAY and WAYLAND_DISPLAY both empty the root command must fall
 	// through to the overview path, not attempt to launch a GUI.
-	out, code := runCmd(t) // no subcommand, no display
+	out, code := harness.RunSysmon(t) // no subcommand, no display
 	if code != 0 {
 		t.Fatalf("expected exit 0 when DISPLAY is unset, got %d; output:\n%s", code, out)
 	}
@@ -984,7 +733,7 @@ func TestCLI_NoDisplay_NoGUI(t *testing.T) {
 // ── Virtualization ───────────────────────────────────────────────────────────
 
 func TestCLI_Containers(t *testing.T) {
-	out, code := runCmd(t, "containers")
+	out, code := harness.RunSysmon(t, "containers")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -994,7 +743,7 @@ func TestCLI_Containers(t *testing.T) {
 }
 
 func TestCLI_Containers_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "containers", "--json")
+	out, code := harness.RunStdout(t, "containers", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -1003,7 +752,7 @@ func TestCLI_Containers_JSON(t *testing.T) {
 		CgroupVersion string            `json:"cgroup_version"`
 		Containers    []json.RawMessage `json:"containers"`
 	}
-	mustParseJSON(t, out, &payload)
+	harness.MustParseJSON(t, out, &payload)
 
 	// Inside the test container the cgroup tree is present, so a version must
 	// be reported even when no nested containers are visible.
@@ -1013,7 +762,7 @@ func TestCLI_Containers_JSON(t *testing.T) {
 }
 
 func TestCLI_Containers_IndexOutOfRange(t *testing.T) {
-	out, code := runCmd(t, "containers", "--index", "9999")
+	out, code := harness.RunSysmon(t, "containers", "--index", "9999")
 	if code == 0 {
 		t.Errorf("expected a non-zero exit for an out-of-range index; output:\n%s", out)
 	}
@@ -1023,7 +772,7 @@ func TestCLI_Containers_IndexOutOfRange(t *testing.T) {
 }
 
 func TestCLI_VMs(t *testing.T) {
-	out, code := runCmd(t, "vms")
+	out, code := harness.RunSysmon(t, "vms")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -1033,7 +782,7 @@ func TestCLI_VMs(t *testing.T) {
 }
 
 func TestCLI_VMs_JSON(t *testing.T) {
-	out, code := runCmdStdout(t, "vms", "--json")
+	out, code := harness.RunStdout(t, "vms", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -1041,11 +790,11 @@ func TestCLI_VMs_JSON(t *testing.T) {
 	var payload struct {
 		VMs []json.RawMessage `json:"vms"`
 	}
-	mustParseJSON(t, out, &payload)
+	harness.MustParseJSON(t, out, &payload)
 }
 
 func TestCLI_VMs_IndexOutOfRange(t *testing.T) {
-	out, code := runCmd(t, "vms", "--index", "9999")
+	out, code := harness.RunSysmon(t, "vms", "--index", "9999")
 	if code == 0 {
 		t.Errorf("expected a non-zero exit for an out-of-range index; output:\n%s", out)
 	}
@@ -1054,7 +803,7 @@ func TestCLI_VMs_IndexOutOfRange(t *testing.T) {
 // TestCLI_Overview_IncludesVirtualization verifies the snapshot carries the
 // virtualization section so the GUI and API clients can rely on it.
 func TestCLI_Overview_IncludesVirtualization(t *testing.T) {
-	out, code := runCmdStdout(t, "overview", "--json")
+	out, code := harness.RunStdout(t, "overview", "--json")
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d; output:\n%s", code, out)
 	}
@@ -1066,7 +815,7 @@ func TestCLI_Overview_IncludesVirtualization(t *testing.T) {
 			VMs           []json.RawMessage `json:"vms"`
 		} `json:"virtualization"`
 	}
-	mustParseJSON(t, out, &snap)
+	harness.MustParseJSON(t, out, &snap)
 
 	if snap.Virt == nil {
 		t.Fatal("overview JSON is missing the virtualization section")

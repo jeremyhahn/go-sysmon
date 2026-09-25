@@ -22,6 +22,7 @@
   import HistoryChart from "./HistoryChart.svelte";
   import { history } from "$stores/history.svelte";
   import type { HistoryLine } from "$lib/history";
+  import { coreLabelForKey, multiPackageKeys } from "$lib/cores";
   import type { HistoryUnit } from "$lib/types";
 
   interface Props {
@@ -129,17 +130,25 @@
 
       // Naming: a chart drawing one line takes the label the live chart used,
       // so it reads the same in both modes. A chart drawing every element of a
-      // split metric -- all the cores, all the packages -- names them by what
-      // the split is, which is more use in a legend than a bare "0".
+      // split metric -- all the cores, all the packages -- names each line by
+      // the live series of the same history name when there is one, and
+      // otherwise by what the split is, which is more use in a legend than a
+      // bare "0".
       const splitBy = history.metric(key)?.split_by ?? "";
+      const multi = splitBy === "core" && multiPackageKeys(matching.map((s) => s.name));
       for (const s of matching) {
+        const live = series.find((c) => c.historyName === s.name);
         out.push({
           name:
             matching.length === 1
               ? label
-              : splitBy === ""
-                ? s.name
-                : `${splitBy} ${s.name}`,
+              : live != null
+                ? live.label
+                : splitBy === "core"
+                  ? coreLabelForKey(s.name, multi)
+                  : splitBy === ""
+                    ? s.name
+                    : `${splitBy} ${s.name}`,
           points: s.points,
           stepMs: loaded.step_ms,
         });

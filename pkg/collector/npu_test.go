@@ -3,6 +3,7 @@ package collector
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // withAccelRoot points the collector at a synthetic accel class tree so tests
@@ -106,8 +109,10 @@ func TestEnumerateAccelDevices_UnreadableRoot(t *testing.T) {
 	}
 	withAccelRoot(t, root)
 
-	if _, err := enumerateAccelDevices(); err == nil {
-		t.Error("expected an error reading a non-directory accel root")
+	_, err := enumerateAccelDevices()
+	var readErr *types.SysfsReadError
+	if !errors.As(err, &readErr) || readErr.Path != root {
+		t.Errorf("enumerateAccelDevices() error = %v, want a *types.SysfsReadError for %s", err, root)
 	}
 }
 

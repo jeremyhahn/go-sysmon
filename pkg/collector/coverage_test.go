@@ -1,9 +1,11 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -157,6 +159,27 @@ func TestBuildSummary_FallsBackWhenSysfsUnavailable(t *testing.T) {
 
 	if got.TotalThreads <= 0 {
 		t.Errorf("fallback produced no threads: %+v", got)
+	}
+}
+
+// TestSummaryFromGopsutil_TakesTheClockFromCPUInfo verifies the fallback for
+// a host with no sysfs CPU directory reports the clock /proc/cpuinfo gives,
+// as the sysfs path does when only cpufreq is missing, and none when
+// /proc/cpuinfo has none.
+func TestSummaryFromGopsutil_TakesTheClockFromCPUInfo(t *testing.T) {
+	dir := t.TempDir()
+	orig := procCPUInfoPath
+	t.Cleanup(func() { procCPUInfoPath = orig })
+
+	procCPUInfoPath = filepath.Join(dir, "cpuinfo")
+	writeSysfsFile(t, procCPUInfoPath, "processor\t: 0\ncpu MHz\t\t: 2450.5\n")
+	if got := summaryFromGopsutil(slog.Default()).MaxMHz; got != 2450.5 {
+		t.Errorf("MaxMHz = %v, want 2450.5 from /proc/cpuinfo", got)
+	}
+
+	procCPUInfoPath = filepath.Join(dir, "absent")
+	if got := summaryFromGopsutil(slog.Default()).MaxMHz; got != 0 {
+		t.Errorf("MaxMHz = %v with no /proc/cpuinfo, want 0", got)
 	}
 }
 
@@ -570,6 +593,50 @@ func TestCollectDIMMs_MultipleModules(t *testing.T) {
 		if d.Index != i {
 			t.Errorf("dimms[%d].Index = %d, want %d", i, d.Index, i)
 		}
+	}
+}
+
+// TestCollectDIMMs_AnUnreadableTableIsReportedOnceAndNeverEscalated covers a
+// table the process cannot read -- a directory stands in for it, which no
+// user, root included, can read as a file. The inventory comes from ghw, the
+// failure is logged once with the way to grant access, and nothing is retried
+// with privileges: the collector runs no program at all.
+func TestCollectDIMMs_AnUnreadableTableIsReportedOnceAndNeverEscalated(t *testing.T) {
+	orig := smbiosTablePath
+	smbiosTablePath = t.TempDir()
+	t.Cleanup(func() { smbiosTablePath = orig })
+	resetWarnOnce()
+	t.Cleanup(resetWarnOnce)
+	var logs bytes.Buffer
+	c := NewMemoryCollector(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	c.collectDIMMs()
+	c.collectDIMMs()
+
+	if n := strings.Count(logs.String(), "cannot read the SMBIOS table"); n != 1 {
+		t.Errorf("the unreadable table was logged %d times, want once:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), "sysmon doctor") {
+		t.Errorf("the log does not say where to learn how to grant access:\n%s", logs.String())
+	}
+}
+
+// TestCheckSMBIOSAccess_NamesWhyTheTableCannotBeRead verifies the access check
+// the doctor reports from: nil for a readable table, and the underlying cause
+// -- not found, or not a readable file -- for one that is not.
+func TestCheckSMBIOSAccess_NamesWhyTheTableCannotBeRead(t *testing.T) {
+	orig := smbiosTablePath
+	t.Cleanup(func() { smbiosTablePath = orig })
+
+	withSMBIOSTable(t, dimmBlob("DIMM_A1", 16384, 3200))
+	if err := CheckSMBIOSAccess(); err != nil {
+		t.Errorf("CheckSMBIOSAccess() on a readable table = %v, want nil", err)
+	}
+
+	smbiosTablePath = filepath.Join(t.TempDir(), "absent")
+	var readErr *types.SysfsReadError
+	if err := CheckSMBIOSAccess(); !errors.As(err, &readErr) || !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("CheckSMBIOSAccess() with no table = %v, want a *types.SysfsReadError wrapping fs.ErrNotExist", err)
 	}
 }
 

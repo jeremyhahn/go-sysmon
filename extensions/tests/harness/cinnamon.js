@@ -93,8 +93,14 @@ class FakeDrawingArea {
 // ---- PopupMenu -------------------------------------------------------------
 
 class FakeLabel {
-    constructor(text) { this.text = text || ""; }
-    set_text(text) { this.text = text; }
+    constructor(text) {
+        this.text = text || "";
+        this.sets = 0;
+    }
+    set_text(text) {
+        this.text = text;
+        this.sets++;
+    }
     get_text() { return this.text; }
 }
 
@@ -119,6 +125,16 @@ class FakeMenuItem {
         this.params = params || {};
         this.actor = new FakeActor();
         this.handlers = {};
+        this.menuParent = null;
+        this.destroyed = false;
+    }
+    /** destroy removes the item from the menu holding it, as Cinnamon's does. */
+    destroy() {
+        this.destroyed = true;
+        if (this.menuParent) {
+            this.menuParent.items = this.menuParent.items.filter((i) => i !== this);
+            this.menuParent = null;
+        }
     }
     connect(signal, handler) { this.handlers[signal] = handler; }
     activate() {
@@ -135,6 +151,9 @@ class FakeSeparator {
     }
 }
 
+// FakeMenuBase follows Cinnamon's PopupMenuBase where the applet depends on
+// it: toggle() goes through open() and close(), as every way of opening a
+// Cinnamon menu does, and removeAll() destroys the items.
 class FakeMenuBase {
     constructor() {
         this.items = [];
@@ -142,14 +161,35 @@ class FakeMenuBase {
     }
     get numMenuItems() { return this.items.length; }
     addMenuItem(item, position) {
+        item.menuParent = this;
         if (position === undefined || position === null || position >= this.items.length) {
             this.items.push(item);
         } else {
             this.items.splice(Math.max(0, position), 0, item);
         }
     }
-    removeAll() { this.items = []; }
-    toggle() { this.isOpen = !this.isOpen; }
+    removeAll() {
+        for (const item of this.items.slice()) {
+            if (typeof item.destroy === "function") {
+                item.destroy();
+            }
+        }
+        this.items = [];
+    }
+    // open records what the menu held as it opened: Cinnamon sizes and
+    // positions the popup there, before it tells anyone it is open.
+    open() {
+        this.itemsAtOpen = this.items.slice();
+        this.isOpen = true;
+    }
+    close() { this.isOpen = false; }
+    toggle() {
+        if (this.isOpen) {
+            this.close(true);
+        } else {
+            this.open(true);
+        }
+    }
 }
 
 class FakeSubMenuMenuItem extends FakeMenuItem {
@@ -229,7 +269,8 @@ function makeSandbox(options) {
     const harness = {
         streams: [],
         timeouts: [],
-        removedTimeouts: [],
+        idles: [],
+        removedSources: [],
         requests: [],
         spawned: [],
         settingsBindings: {},
@@ -295,19 +336,55 @@ function makeSandbox(options) {
 
     const GLib = {
         PRIORITY_DEFAULT: 0,
+        PRIORITY_HIGH_IDLE: 100,
+        PRIORITY_DEFAULT_IDLE: 200,
+        SOURCE_REMOVE: false,
         Bytes: class {
             constructor(data) { this.data = data; }
         },
         spawn_command_line_async(command) { harness.spawned.push(command); },
     };
 
+    // Sources share one id sequence, as GLib's do, so a removal names exactly
+    // one of them.
     const Mainloop = {
         timeout_add(ms, fn) {
             const id = harness.nextTimeoutId++;
             harness.timeouts.push({ id: id, ms: ms, fn: fn });
             return id;
         },
-        source_remove(id) { harness.removedTimeouts.push(id); },
+        // GJS's mainloop.idle_add: the priority defaults to
+        // G_PRIORITY_DEFAULT_IDLE.
+        idle_add(fn, priority) {
+            const id = harness.nextTimeoutId++;
+            harness.idles.push({
+                id: id,
+                priority: priority === undefined ? GLib.PRIORITY_DEFAULT_IDLE : priority,
+                fn: fn,
+            });
+            return id;
+        },
+        source_remove(id) {
+            harness.removedSources.push(id);
+            harness.idles = harness.idles.filter((idle) => idle.id !== id);
+        },
+    };
+
+    // runIdle stands in for the main loop going idle: it dispatches the
+    // pending idle sources, highest priority (lowest number) first, keeping
+    // the ones whose callback asks to run again, until none is left. It
+    // returns how many dispatches it made.
+    harness.runIdle = function () {
+        let dispatched = 0;
+        while (harness.idles.length > 0) {
+            harness.idles.sort((a, b) => a.priority - b.priority);
+            const idle = harness.idles.shift();
+            dispatched++;
+            if (idle.fn()) {
+                harness.idles.push(idle);
+            }
+        }
+        return dispatched;
     };
 
     const Applet = {
@@ -327,9 +404,14 @@ function makeSandbox(options) {
             }
             set_applet_tooltip(text) { this.tooltip = text; }
         },
+        // Legacy class system again: Cinnamon's menus construct through
+        // _init, and a subclass that overrides _init relies on it.
         AppletPopupMenu: class extends FakeMenuBase {
-            constructor(launcher, orientation) {
+            constructor(...args) {
                 super();
+                this._init(...args);
+            }
+            _init(launcher, orientation) {
                 this.launcher = launcher;
                 this.orientation = orientation;
             }
@@ -431,4 +513,10 @@ function eventLines(snapshot) {
     return ["retry: 3000", "", "event: snapshot", "data: " + JSON.stringify(snapshot), ""];
 }
 
-module.exports = { loadApplet, eventLines, recorder, APPLET_PATH };
+// CLUTTER_PRIORITY_REDRAW is the priority muffin's master clock paints the
+// stage at (G_PRIORITY_HIGH_IDLE + 50, clutter/clutter/clutter-main.h in muffin
+// 6.4.1). Work the applet schedules must run below it -- a larger number -- or
+// enough of it stops the desktop painting at all (#232).
+const CLUTTER_PRIORITY_REDRAW = 100 + 50;
+
+module.exports = { loadApplet, eventLines, recorder, APPLET_PATH, CLUTTER_PRIORITY_REDRAW };

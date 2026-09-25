@@ -1,7 +1,6 @@
 package pins
 
 import (
-	"errors"
 	"strconv"
 	"strings"
 )
@@ -190,8 +189,13 @@ func (e *CommandError) Error() string {
 
 func (e *CommandError) Unwrap() error { return e.Cause }
 
-// ErrUnknownCommand reports a request to run a program Run does not know.
-var ErrUnknownCommand = errors.New("pins: not a command this package runs")
+// UnknownCommandError reports a request to run a program Run does not know.
+// It is the Cause of the CommandError Run returns, which names the command.
+type UnknownCommandError struct{}
+
+func (e *UnknownCommandError) Error() string {
+	return "pins: not a command this package runs"
+}
 
 // RunnerLabelError reports a hosted runner label the runner-images table does
 // not list. GitHub offers no such runner, so there is no verdict to give, and

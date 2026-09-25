@@ -54,9 +54,40 @@ const MIN_WIDTH = 20;
 const FONT_SIZE = 9;
 const PADDING = 2;
 
+// APPLY_PRIORITY is the main-loop priority a received snapshot is applied at.
+// It must stay below Clutter's redraw, which muffin dispatches at
+// CLUTTER_PRIORITY_REDRAW (G_PRIORITY_HIGH_IDLE + 50, clutter-main.h), so a
+// queued frame is always painted before the next snapshot is applied. See
+// _onEvent.
+const APPLY_PRIORITY = GLib.PRIORITY_DEFAULT_IDLE;
+
 // Reconnect delay in milliseconds, used until the stream advertises its own.
 const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
+
+/**
+ * SysmonPopupMenu is the applet's popup. It calls beforeOpen before it opens,
+ * so the applet can bring its rows up to date first.
+ *
+ * Every way the popup opens -- a click through toggle(), the keyboard, or the
+ * menu manager moving between panel menus -- goes through open(). And open()
+ * works out the popup's size and position before it emits
+ * open-state-changed, so rows filled in from that signal would be laid out in
+ * a popup sized for the old ones.
+ */
+class SysmonPopupMenu extends Applet.AppletPopupMenu {
+    _init(launcher, orientation, beforeOpen) {
+        super._init(launcher, orientation);
+        this._beforeOpen = beforeOpen;
+    }
+
+    open(animate) {
+        if (!this.isOpen) {
+            this._beforeOpen();
+        }
+        super.open(animate);
+    }
+}
 
 /**
  * _usageColor returns the RGBA array for a usage fraction, using the shared
@@ -64,6 +95,40 @@ const MAX_RECONNECT_DELAY_MS = 30000;
  */
 function _usageColor(fraction) {
     return LEVEL_COLORS[snapshotLib.usageLevel(fraction)] || COLOR_GREEN;
+}
+
+/**
+ * _sectionLines flattens a section's blocks into the lines its submenu shows,
+ * in order: a header per titled block, then one line per row. A block with no
+ * rows shows nothing, not even its header.
+ */
+function _sectionLines(section) {
+    const lines = [];
+    for (const block of section.blocks) {
+        if (block.rows.length === 0) {
+            continue;
+        }
+        if (block.title) {
+            lines.push({ header: true, text: block.title });
+        }
+        for (const row of block.rows) {
+            lines.push({
+                header: false,
+                text: row.label ? row.label + ":  " + row.value : row.value,
+            });
+        }
+    }
+    return lines;
+}
+
+/**
+ * _setText sets a label's text only when it differs, so an unchanged row does
+ * not cost a relayout.
+ */
+function _setText(label, text) {
+    if (label.get_text() !== text) {
+        label.set_text(text);
+    }
 }
 
 class SysmonApplet extends Applet.TextIconApplet {
@@ -94,6 +159,10 @@ class SysmonApplet extends Applet.TextIconApplet {
         this.pending = "";
         this.reconnectTimer = null;
         this.reconnectDelay = RECONNECT_DELAY_MS;
+        // The newest received snapshot not yet applied, and the idle source
+        // that will apply it. See _onEvent.
+        this.pendingSnapshot = null;
+        this.applySource = null;
         this.stopped = false;
 
         // Cairo drawing area for gauge rendering. An St.DrawingArea has no
@@ -114,22 +183,26 @@ class SysmonApplet extends Applet.TextIconApplet {
     // ---- menu ------------------------------------------------------------
 
     /**
-     * _buildMenu creates the popup and its per-section submenus. The structure
-     * is stable across snapshots; only the contents are rebuilt, so the menu
-     * does not collapse while the user has it open.
+     * _buildMenu creates the popup. Its per-section submenus are created on
+     * the first refresh and kept from then on, so the menu does not collapse
+     * while the user has it open.
      */
     _buildMenu() {
         this.menuManager = new PopupMenu.PopupMenuManager(this);
-        this.menu = new Applet.AppletPopupMenu(this, this._orientation);
+        this.menu = new SysmonPopupMenu(this, this._orientation, Lang.bind(this, this._onMenuOpening));
         this.menuManager.addMenu(this.menu);
 
         this.statusItem = new PopupMenu.PopupMenuItem("Connecting...", { reactive: false });
         this.menu.addMenuItem(this.statusItem);
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
-        // One submenu per section, created once and refilled on each snapshot.
+        // One submenu per section, created once and updated in place. Each
+        // section's rows are kept as [{ item, header }] in display order.
         this.sectionMenus = {};
         this.sectionOrder = [];
+        this.sectionRows = {};
+        // Whether the popup shows an older snapshot than this.snapshot.
+        this.menuStale = false;
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
@@ -139,9 +212,39 @@ class SysmonApplet extends Applet.TextIconApplet {
     }
 
     /**
-     * _refreshMenu rebuilds the section submenus from the latest snapshot.
+     * _refreshMenu brings the popup up to the latest snapshot, but only while
+     * the user can see it. Filling hundreds of rows costs the compositor
+     * thread tens of milliseconds per snapshot (#233), which a closed popup
+     * would spend for nothing; it is marked stale instead, and _onMenuOpening
+     * catches it up before it opens.
      */
     _refreshMenu() {
+        if (!this.menu.isOpen) {
+            this.menuStale = true;
+            return;
+        }
+        this._fillMenu();
+    }
+
+    /**
+     * _onMenuOpening runs just before the popup opens, and fills it if a
+     * snapshot arrived while it was closed.
+     */
+    _onMenuOpening() {
+        if (this.menuStale) {
+            this._fillMenu();
+        }
+    }
+
+    /**
+     * _fillMenu updates the section submenus to the latest snapshot. Rows are
+     * updated in place: a row whose text is unchanged is not touched, and
+     * items are created or destroyed only where the number or kind of rows
+     * changed. That keeps an open popup's layout and scroll position steady
+     * while the numbers in it move.
+     */
+    _fillMenu() {
+        this.menuStale = false;
         const model = sections.buildSections(this.snapshot);
 
         for (let i = 0; i < model.length; i++) {
@@ -152,35 +255,40 @@ class SysmonApplet extends Applet.TextIconApplet {
                 entry = new PopupMenu.PopupSubMenuMenuItem(section.title);
                 this.sectionMenus[section.key] = entry;
                 this.sectionOrder.push(section.key);
+                this.sectionRows[section.key] = [];
                 // Insert before the trailing separator and dashboard item.
                 this.menu.addMenuItem(entry, this.menu.numMenuItems - 2);
             }
 
-            entry.label.set_text(section.title + "   " + section.summary);
+            _setText(entry.label, section.title + "   " + section.summary);
+            this._fillSection(entry.menu, this.sectionRows[section.key], _sectionLines(section));
+        }
+    }
 
-            // Rebuilding the submenu wholesale keeps the code simple; a menu
-            // the user has not opened is not realised, so this is cheap.
-            entry.menu.removeAll();
-            for (let b = 0; b < section.blocks.length; b++) {
-                const block = section.blocks[b];
-                if (block.rows.length === 0) {
-                    continue;
-                }
-                if (block.title) {
-                    const header = new PopupMenu.PopupMenuItem(block.title, { reactive: false });
-                    header.actor.add_style_class_name("popup-subtitle-menu-item");
-                    entry.menu.addMenuItem(header);
-                }
-                for (let r = 0; r < block.rows.length; r++) {
-                    const rowData = block.rows[r];
-                    const text = rowData.label
-                        ? rowData.label + ":  " + rowData.value
-                        : rowData.value;
-                    entry.menu.addMenuItem(
-                        new PopupMenu.PopupMenuItem(text, { reactive: false })
-                    );
-                }
+    /**
+     * _fillSection makes a submenu show lines, reusing the items in rows (the
+     * submenu's current rows, in order) wherever the kind of row matches, and
+     * updates rows to match.
+     */
+    _fillSection(submenu, rows, lines) {
+        let i = 0;
+        while (i < lines.length && i < rows.length && rows[i].header === lines[i].header) {
+            _setText(rows[i].item.label, lines[i].text);
+            i++;
+        }
+
+        // From the first row that cannot be reused, replace the rest. Rows are
+        // appended, so everything after it has to go to keep the order.
+        for (const row of rows.splice(i)) {
+            row.item.destroy();
+        }
+        for (; i < lines.length; i++) {
+            const item = new PopupMenu.PopupMenuItem(lines[i].text, { reactive: false });
+            if (lines[i].header) {
+                item.actor.add_style_class_name("popup-subtitle-menu-item");
             }
+            submenu.addMenuItem(item);
+            rows.push({ item: item, header: lines[i].header });
         }
     }
 
@@ -286,15 +394,18 @@ class SysmonApplet extends Applet.TextIconApplet {
     }
 
     /**
-     * _onEvent applies a dispatched server-sent event.
+     * _onEvent handles a dispatched server-sent event. A snapshot is only
+     * parsed here; _applySnapshot shows it.
      */
     _onEvent(event) {
         if (event.name === "bye") {
             // The monitor stopped. Reconnecting would only hammer a server
-            // that has said it is done, so wait for the user to act.
+            // that has said it is done, so wait for the user to act. Tear
+            // down first: that shows the stream's last snapshot, which must
+            // not then overwrite this.
+            this._teardownStream();
             this.set_applet_tooltip("System Monitor - Server stopped");
             this.statusItem.label.set_text("Server stopped");
-            this._teardownStream();
             this._scheduleReconnect();
             return;
         }
@@ -313,10 +424,62 @@ class SysmonApplet extends Applet.TextIconApplet {
         // otherwise be retried every three seconds forever.
         this.reconnectDelay = RECONNECT_DELAY_MS;
 
-        this.snapshot = parsed;
+        // Applying a snapshot can cost more than receiving it -- rebuilding
+        // the popup once took tens of milliseconds (#233) -- and this callback
+        // runs at the stream's
+        // default priority, above Clutter's redraw. Applying it here let a
+        // host that took longer than the interval to apply each snapshot keep
+        // Cinnamon's main loop busy with one after another, so the redraw never
+        // ran and the whole desktop, gauge included, stopped painting (#232).
+        // So keep only the newest snapshot and apply it from an idle source
+        // below the redraw priority: every queued frame is painted first, and a
+        // snapshot that arrives before the last one was applied replaces it
+        // rather than queueing behind it.
+        this.pendingSnapshot = parsed;
+        if (this.applySource === null) {
+            this.applySource = Mainloop.idle_add(Lang.bind(this, this._applySnapshot), APPLY_PRIORITY);
+        }
+    }
+
+    /**
+     * _applySnapshot shows the newest received snapshot in the gauge, the
+     * tooltip and the popup. It is the idle source _onEvent adds, and runs
+     * once per scheduling.
+     */
+    _applySnapshot() {
+        this.applySource = null;
+        this.snapshot = this.pendingSnapshot;
+        this.pendingSnapshot = null;
+
         this._queueRepaint();
         this._updateTooltip();
         this._refreshMenu();
+        return GLib.SOURCE_REMOVE;
+    }
+
+    /**
+     * _cancelApply removes the idle source that would apply the pending
+     * snapshot, and reports whether there was one.
+     */
+    _cancelApply() {
+        if (this.applySource === null) {
+            return false;
+        }
+        Mainloop.source_remove(this.applySource);
+        this.applySource = null;
+        return true;
+    }
+
+    /**
+     * _flushApply applies the pending snapshot now, if there is one. A stream
+     * that ends has delivered everything it will, so the last snapshot it sent
+     * is shown before the applet reports the stream's end -- the order the
+     * events arrived in -- rather than overwriting that report later.
+     */
+    _flushApply() {
+        if (this._cancelApply()) {
+            this._applySnapshot();
+        }
     }
 
     /**
@@ -333,10 +496,12 @@ class SysmonApplet extends Applet.TextIconApplet {
     }
 
     /**
-     * _teardownStream closes the current stream and session without touching
-     * the reconnect timer.
+     * _teardownStream applies the last snapshot the current stream delivered,
+     * then closes the stream and session without touching the reconnect
+     * timer.
      */
     _teardownStream() {
+        this._flushApply();
         if (this.cancellable) {
             this.cancellable.cancel();
             this.cancellable = null;
@@ -633,6 +798,9 @@ class SysmonApplet extends Applet.TextIconApplet {
     on_applet_removed_from_panel() {
         this.stopped = true;
 
+        // A removed applet has nothing left to show a snapshot on.
+        this._cancelApply();
+        this.pendingSnapshot = null;
         if (this.reconnectTimer) {
             Mainloop.source_remove(this.reconnectTimer);
             this.reconnectTimer = null;

@@ -70,7 +70,8 @@ measured, which takes the monitor's second collection.
 
 1. `startSystray` runs the tray in a goroutine via `fyne.io/systray`.
 2. It subscribes to the monitor.
-3. Each snapshot triggers `updateTrayItems`, which rewrites every menu title.
+3. Each snapshot triggers `trayMenu.update`, which rewrites every menu title
+   and adds an item for each GPU the first time it is reported.
 4. "Open Monitor" calls the Wails `WindowShow`.
 5. "Quit" calls the Wails `Quit`.
 6. On shutdown, `stopSystray` calls `systray.Quit()`.

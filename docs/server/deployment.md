@@ -65,11 +65,9 @@ see [build shapes](../testing/build-shapes.md).
 | Target                                             | Scope                          |
 |----------------------------------------------------|--------------------------------|
 | `make test`                                        | Everything, under `-race`      |
-| `make test-cli`, `-collector`, `-monitor`, `-server`, `-types`, `-cmd` | One package    |
-| `make coverage-cli`, `-collector`, `-monitor`, `-server`, `-types` | Coverage report |
-| `make bench-cli`, `-collector`, `-monitor`, `-server` | Benchmarks                  |
-| `make integration-test`                            | Full suite in a container      |
-| `make integration-test-cli`                        | CLI integration suite on the host |
+| `make test-<pkg>`, `coverage-<pkg>`, `integration-test-<pkg>`, `bench-<pkg>` | One package; see [coverage](../testing/coverage.md) |
+| `make coverage`                                    | Every package against the 90% floor |
+| `make integration-test`                            | Full suite in the devcontainer (`build/docker/devcontainer`) |
 | `make test-e2e`                                    | Playwright, against a real browser |
 
 The unit suite runs with the race detector because two genuine data races
@@ -333,6 +331,40 @@ server {
 The server already sends `X-Accel-Buffering: no`, which nginx honours on its
 own; the explicit `proxy_buffering off` is belt and braces, and documents the
 requirement for proxies that do not read that header.
+
+### Under a sub-path
+
+The dashboard can be mounted anywhere under another site, for example at
+`https://platform.example.com/sysmon/`. Every URL the page uses, for its
+scripts, stylesheet, event stream and API calls, is relative to the page, so
+under `/sysmon/` it asks for `/sysmon/assets/index.js` and
+`/sysmon/api/events`. Nothing needs configuring in sysmon. The proxy only has
+to strip the prefix, so sysmon sees the paths it serves at its own root:
+
+```nginx
+location = /sysmon {
+    return 301 /sysmon/;
+}
+
+location /sysmon/ {
+    # The trailing slash on both sides strips the prefix:
+    # /sysmon/api/events reaches sysmon as /api/events.
+    proxy_pass http://127.0.0.1:8080/;
+    proxy_http_version 1.1;
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_read_timeout 86400;
+}
+```
+
+The redirect from `/sysmon` to `/sysmon/` matters. Relative URLs resolve
+against the page's directory, and without the slash that directory is `/`, so
+the page would ask for `/api/events`, outside the prefix.
+
+The security headers need no change under a prefix. The Content-Security-Policy
+allows `'self'`, which is the origin, whatever the path. The browser suite
+checks this layout end to end (`tests/subpath.spec.ts`), through a real
+path-stripping proxy, with nothing mocked.
 
 ### Terminating TLS in sysmon instead
 

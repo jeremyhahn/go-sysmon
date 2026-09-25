@@ -352,7 +352,7 @@ func TestTree_UnreachableChildMakesItsSubtreeUnknown(t *testing.T) {
 	}
 	// Drill-in to a node of the lost subtree fails at the gateway, not as an
 	// unknown name: the node is known, its route is down.
-	var unknown *ErrUnknownPeer
+	var unknown *UnknownPeerError
 	if _, err := p.PeerSnapshot(context.Background(), "a", time.Second); err == nil || errors.As(err, &unknown) {
 		t.Errorf("drill-in through a down child = %v; want a request error", err)
 	}
@@ -504,9 +504,9 @@ func TestTree_ADuplicateOfThisNodesNameIsAConflict(t *testing.T) {
 		t.Errorf("self conflicted %v, %d conflicts, %d subtree errors; want true, 2, 0",
 			v.Self.NameConflict, v.Rollup.NameConflicts, v.Rollup.SubtreeErrors)
 	}
-	var conflict *ErrNameConflict
+	var conflict *NameConflictError
 	if _, err := p.PeerSnapshot(context.Background(), "local", time.Second); !errors.As(err, &conflict) {
-		t.Errorf("drill-in on the shared name = %v, want ErrNameConflict", err)
+		t.Errorf("drill-in on the shared name = %v, want NameConflictError", err)
 	}
 	if p.Has("local") {
 		t.Error("the shared name is still answered for")
@@ -536,12 +536,12 @@ func TestTree_ANameTwiceIsAConflictNotAMerge(t *testing.T) {
 	if v.Rollup.NameConflicts != 2 {
 		t.Errorf("name conflicts = %d, want 2", v.Rollup.NameConflicts)
 	}
-	var conflict *ErrNameConflict
+	var conflict *NameConflictError
 	if _, err := p.PeerSnapshot(context.Background(), "zz", time.Second); !errors.As(err, &conflict) {
-		t.Errorf("drill-in on a conflicted name = %v, want ErrNameConflict", err)
+		t.Errorf("drill-in on a conflicted name = %v, want NameConflictError", err)
 	}
 	if _, err := p.PeerConfig(context.Background(), "zz"); !errors.As(err, &conflict) {
-		t.Errorf("config of a conflicted name = %v, want ErrNameConflict", err)
+		t.Errorf("config of a conflicted name = %v, want NameConflictError", err)
 	}
 	if p.Has("zz") || p.Resolve("zz").Kind == RouteSubtree {
 		t.Error("a conflicted name is still treated as a node")
@@ -562,9 +562,9 @@ func TestTree_DrillInRoutesToTheOwner(t *testing.T) {
 	if err != nil || !snap.Reachable || snap.Snapshot.Host.Hostname != "a.lan" {
 		t.Errorf("drill-in on a = %+v, %v; want a's snapshot through mid", snap, err)
 	}
-	var unknown *ErrUnknownPeer
+	var unknown *UnknownPeerError
 	if _, err := p.PeerSnapshot(context.Background(), "nobody", time.Second); !errors.As(err, &unknown) {
-		t.Errorf("drill-in on nobody = %v, want ErrUnknownPeer", err)
+		t.Errorf("drill-in on nobody = %v, want UnknownPeerError", err)
 	}
 }
 
@@ -686,13 +686,13 @@ func TestTree_SettingsAndRelayRouteToTheOwner(t *testing.T) {
 	if err != nil || view.ConfigFile == "" {
 		t.Errorf("settings of a = %+v, %v; want mid's answer", view, err)
 	}
-	var unknown *ErrUnknownPeer
+	var unknown *UnknownPeerError
 	if _, err := p.PeerConfig(context.Background(), "gone"); !errors.As(err, &unknown) {
-		t.Errorf("settings of a node its child no longer knows = %v, want ErrUnknownPeer", err)
+		t.Errorf("settings of a node its child no longer knows = %v, want UnknownPeerError", err)
 	}
-	var conflict *ErrNameConflict
+	var conflict *NameConflictError
 	if _, err := p.PeerConfig(context.Background(), "twice"); !errors.As(err, &conflict) || !strings.Contains(err.Error(), "twice") {
-		t.Errorf("settings of a node its child finds in conflict = %v, want ErrNameConflict", err)
+		t.Errorf("settings of a node its child finds in conflict = %v, want NameConflictError", err)
 	}
 
 	got, err := p.RelayHistory(context.Background(), p.Resolve("a"), "a", "metric=cpu&node=a")
@@ -700,7 +700,7 @@ func TestTree_SettingsAndRelayRouteToTheOwner(t *testing.T) {
 		t.Errorf("relay = %+v, %v; want the child's range for a", got, err)
 	}
 	if _, err := p.RelayHistory(context.Background(), p.Resolve("nobody"), "nobody", "node=nobody"); !errors.As(err, &unknown) {
-		t.Errorf("relay for a name no child owns = %v, want ErrUnknownPeer", err)
+		t.Errorf("relay for a name no child owns = %v, want UnknownPeerError", err)
 	}
 	mid.srv.Close()
 	if _, err := p.RelayHistory(context.Background(), p.Resolve("a"), "a", "node=a&metric=mem"); err == nil {
@@ -729,11 +729,11 @@ func TestTree_PagesGoWithTheirChild(t *testing.T) {
 }
 
 func TestTreeErrors(t *testing.T) {
-	if !strings.Contains((&ErrNameConflict{Node: "dup"}).Error(), "dup") {
-		t.Error("ErrNameConflict does not name the node")
+	if !strings.Contains((&NameConflictError{Node: "dup"}).Error(), "dup") {
+		t.Error("NameConflictError does not name the node")
 	}
-	if !strings.Contains((&ErrRelayTooLarge{Limit: 10}).Error(), "10") {
-		t.Error("ErrRelayTooLarge does not say its limit")
+	if !strings.Contains((&RelayTooLargeError{Limit: 10}).Error(), "10") {
+		t.Error("RelayTooLargeError does not say its limit")
 	}
 }
 

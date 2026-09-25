@@ -31,7 +31,11 @@
     const series = loaded.series ?? [];
     const matching =
       hit.resource == null ? series : series.filter((s) => s.name === hit.resource);
-    return matching.map((s) => ({ name: s.name, points: s.points, stepMs: loaded.step_ms }));
+    return matching.map((s) => ({
+      name: hit.resourceName ?? s.name,
+      points: s.points,
+      stepMs: loaded.step_ms,
+    }));
   }
 
   function windowFor(hit: SearchHit): { startMs: number; endMs: number } {

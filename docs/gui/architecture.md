@@ -178,6 +178,26 @@ a series name in it is parsed as markup. The element sets its swatch colour
 through `element.style` and every name as text. `tests/csp.spec.ts` fails if a
 string formatter with inline style comes back.
 
+### Naming CPU cores
+
+Every package numbers its cores from 0, so a two-socket host has two "Core 0".
+`src/lib/cores.ts` names a core on every surface that names one: on a host
+with more than one package the label carries the package, numbered from 0 as
+the kernel does and as the CPU panel's Package column shows it ("P1 · Core 0");
+a single-package host keeps the driver's label ("Core 0", or k10temp's
+"Tccd1"). The CPU panel's temperature chart, its history lines and the history
+search all use it.
+
+A core's history series is named `package:core` ("1:0") by the server (see
+`GET /api/history` in the API reference). A chart matches each historical line
+to its live series through `SeriesConfig.historyName`, so a line keeps its live
+label when a range is picked. The search offers cores by the same key and
+titles them by name, so typing "P1" finds the second socket's cores.
+
+Charts list their lines' names in a visually hidden "Chart lines" list, which a
+screen reader reads and the specs assert against: the canvas has no text of
+its own.
+
 ## Theming
 
 `src/lib/theme.svelte.ts` owns the choice; the control is the `Theme` select in

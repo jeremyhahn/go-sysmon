@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -27,7 +26,7 @@ func runHostCmd(cmd *cobra.Command, _ []string) error {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(snap.Host)
 		}
 		if err := cli.RenderHost(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render host: %w", err)
+			return &cli.RenderError{Function: "host", Cause: err}
 		}
 		return nil
 	})

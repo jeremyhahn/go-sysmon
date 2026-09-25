@@ -274,9 +274,13 @@ func Write(m Sink, snap *types.Snapshot) {
 	}
 
 	// Temperatures
+	// A core is identified by its package and its number within it. Core
+	// numbers restart on every package, so "core" alone gives both sockets'
+	// Core 0 one label set on a two-socket host: two samples of one series at
+	// one timestamp, which a receiver refuses along with the whole batch.
 	for _, c := range snap.Sensors.CoreTemps {
 		m.Gauge("sysmon_cpu_temperature_celsius", "CPU core temperature.", c.TempCelsius,
-			"core", fmt.Sprintf("%d", c.CoreID))
+			"package", fmt.Sprintf("%d", c.PackageID), "core", fmt.Sprintf("%d", c.CoreID))
 	}
 
 	// Disks

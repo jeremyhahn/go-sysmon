@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	psprocess "github.com/shirou/gopsutil/v4/process"
+	"golang.org/x/sys/unix"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -43,14 +45,13 @@ var containerParentDirs = map[string]string{
 // creates it. Every mainstream runtime encodes its container ID in the cgroup
 // name, which is why container accounting needs no daemon socket.
 var containerScopePrefixes = map[string]string{
-	"docker-":          runtimeDocker,
-	"libpod-":          runtimePodman,
-	"crio-":            runtimeCRIO,
-	"cri-containerd-":  runtimeContainerd,
-	"containerd-":      runtimeContainerd,
-	"lxc-":             runtimeLXC,
-	"lxc.payload.":     runtimeLXC,
-	"kubepods-besteff": runtimeContainerd,
+	"docker-":         runtimeDocker,
+	"libpod-":         runtimePodman,
+	"crio-":           runtimeCRIO,
+	"cri-containerd-": runtimeContainerd,
+	"containerd-":     runtimeContainerd,
+	"lxc-":            runtimeLXC,
+	"lxc.payload.":    runtimeLXC,
 }
 
 // cgroupRoot is the cgroup filesystem mount point. It is a variable so tests
@@ -751,6 +752,11 @@ func parseHypervisorCmdline(cmdline string) types.VMInfo {
 			}
 		case "-uuid":
 			vm.UUID = next
+		case "-blockdev":
+			// Whatever the image's format or extension: qcow2, raw, .img,
+			// a block device. Only the argument after -blockdev is read,
+			// so a filename elsewhere on the command line is not a disk.
+			vm.DiskImages = appendDiskImage(vm.DiskImages, next)
 		case "-smp":
 			vm.VCPUs = parseSMP(next)
 		case "-m":
@@ -764,9 +770,6 @@ func parseHypervisorCmdline(cmdline string) types.VMInfo {
 			}
 		}
 
-		if strings.Contains(f, "filename") && strings.Contains(f, ".img") {
-			vm.DiskImages = appendDiskImage(vm.DiskImages, f)
-		}
 	}
 
 	for _, m := range macAddress.FindAllStringSubmatch(cmdline, -1) {
@@ -833,21 +836,41 @@ func parseQemuMemory(s string) uint64 {
 	return n * multiplier
 }
 
-// appendDiskImage pulls a disk path out of a qemu -blockdev JSON fragment.
-func appendDiskImage(images []string, field string) []string {
-	_, after, found := strings.Cut(field, "filename")
-	if !found {
+// appendDiskImage adds the disk image a qemu -blockdev argument names, if it
+// names one.
+func appendDiskImage(images []string, arg string) []string {
+	path := blockdevFilename(arg)
+	if path == "" {
 		return images
 	}
-	after = strings.TrimLeft(after, `":= `)
-	end := strings.IndexAny(after, `",}`)
-	if end > 0 {
-		after = after[:end]
+	return appendUnique(images, path)
+}
+
+// blockdevFilename returns the filename a -blockdev argument names, in either
+// of qemu's syntaxes: JSON ({"driver":"file","filename":"/x.img"}), which
+// libvirt writes, or key=value (driver=file,filename=/x.img). It returns ""
+// when the argument names no file -- a format layer refers to its file node by
+// name -- or does not parse.
+//
+// The JSON form is decoded rather than scanned for the text "filename": a
+// scan read `"filename":""` as the image "}" and matched the word inside
+// another field's value.
+func blockdevFilename(arg string) string {
+	if strings.HasPrefix(arg, "{") {
+		var spec struct {
+			Filename string `json:"filename"`
+		}
+		if err := json.Unmarshal([]byte(arg), &spec); err != nil {
+			return ""
+		}
+		return spec.Filename
 	}
-	if after == "" {
-		return images
+	for _, part := range strings.Split(arg, ",") {
+		if key, value, ok := strings.Cut(part, "="); ok && key == "filename" {
+			return value
+		}
 	}
-	return appendUnique(images, after)
+	return ""
 }
 
 // tapInterfacesForMACs returns the host tap devices whose MAC matches one of
@@ -1047,8 +1070,13 @@ func countHypervisorThreads(pid int32) (int, int) {
 	return vcpus, len(entries)
 }
 
-// sumDiskImageBytes stats each guest image and returns the total size. Images
-// owned by another user are skipped rather than failing the whole reading.
+// sysDevBlockRoot is where the kernel lists block devices by major:minor.
+var sysDevBlockRoot = "/sys/dev/block"
+
+// sumDiskImageBytes returns the total size of a guest's disks. An image file
+// counts its size on disk; a block device handed to the guest whole counts
+// its capacity, which stat reports as zero. A disk this user cannot stat or
+// size is skipped rather than failing the whole reading.
 func sumDiskImageBytes(paths []string) uint64 {
 	var total uint64
 	for _, p := range paths {
@@ -1056,9 +1084,29 @@ func sumDiskImageBytes(paths []string) uint64 {
 		if err != nil {
 			continue
 		}
-		total += uint64(st.Size())
+		if st.Mode()&os.ModeDevice == 0 || st.Mode()&os.ModeCharDevice != 0 {
+			total += uint64(st.Size())
+			continue
+		}
+		sys, ok := st.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+		total += blockDeviceBytes(uint64(sys.Rdev))
 	}
 	return total
+}
+
+// blockDeviceBytes returns the capacity of the block device numbered rdev,
+// from the sector count sysfs publishes, or 0 when it cannot be read. sysfs
+// counts in 512-byte sectors whatever the device's own block size.
+func blockDeviceBytes(rdev uint64) uint64 {
+	name := strconv.FormatUint(uint64(unix.Major(rdev)), 10) + ":" + strconv.FormatUint(uint64(unix.Minor(rdev)), 10)
+	sectors, err := strconv.ParseUint(readSysfsString(filepath.Join(sysDevBlockRoot, name, "size")), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return sectors * 512
 }
 
 // MergeNetworkIntoVMs attributes host tap-device throughput to the guest behind

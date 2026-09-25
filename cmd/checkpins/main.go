@@ -21,24 +21,30 @@ import (
 )
 
 func main() {
-	root := flag.String("root", ".", "repository root to scan")
-	nodeFile := flag.String("node-file", ".node-version", "file under root holding the Node.js release")
-	debian := flag.String("debian", "", "Debian release codename every Debian-based image uses")
-	ubuntu := flag.String("ubuntu", "", "Ubuntu release every Ubuntu image uses")
-	hostedRunner := flag.String("hosted-runner", "", "Ubuntu release of every versioned GitHub-hosted runner label")
-	flag.Parse()
-	os.Exit(run(*root, *nodeFile, *debian, *ubuntu, *hostedRunner, os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run checks the pins under root and returns the exit status: 0 when every
-// reference agrees with its pin, 1 otherwise.
-func run(root, nodeFile, debian, ubuntu, hostedRunner string, stdout, stderr io.Writer) int {
-	p, err := pins.ReadPins(root, nodeFile, debian, ubuntu, hostedRunner)
+// run parses args, checks the pins under -root and returns the exit status: 0
+// when every reference agrees with its pin, 1 when one does not or a pin
+// cannot be read, 2 for a malformed command line.
+func run(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("checkpins", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	root := fs.String("root", ".", "repository root to scan")
+	nodeFile := fs.String("node-file", ".node-version", "file under root holding the Node.js release")
+	debian := fs.String("debian", "", "Debian release codename every Debian-based image uses")
+	ubuntu := fs.String("ubuntu", "", "Ubuntu release every Ubuntu image uses")
+	hostedRunner := fs.String("hosted-runner", "", "Ubuntu release of every versioned GitHub-hosted runner label")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	p, err := pins.ReadPins(*root, *nodeFile, *debian, *ubuntu, *hostedRunner)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	n, err := pins.CheckAgreement(root, p)
+	n, err := pins.CheckAgreement(*root, p)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

@@ -158,7 +158,7 @@ type queryResponse struct {
 func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.Time, step time.Duration) ([]RangeSeries, error) {
 	o := q.opts()
 	if o.BaseURL == "" {
-		return nil, &ErrNoQueryEndpoint{}
+		return nil, &NoQueryEndpointError{}
 	}
 	if err := ValidateRange(start, end, step); err != nil {
 		return nil, err
@@ -179,13 +179,13 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+params.Encode(), http.NoBody)
 	if err != nil {
-		return nil, &ErrRequest{URL: endpoint, Err: err}
+		return nil, &RequestError{URL: endpoint, Err: err}
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := q.client.Do(req)
 	if err != nil {
-		return nil, &ErrRequest{URL: endpoint, Err: err}
+		return nil, &RequestError{URL: endpoint, Err: err}
 	}
 	defer releaseBody(resp.Body, endpoint, q.log)
 
@@ -194,10 +194,10 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 	// says what is wrong, and the status alone does not.
 	var parsed queryResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, responseBodyLimit)).Decode(&parsed); err != nil {
-		return nil, &ErrDecode{URL: endpoint, Err: err}
+		return nil, &DecodeError{URL: endpoint, Err: err}
 	}
 	if parsed.Status != "success" {
-		return nil, &ErrQuery{Query: expr, Type: parsed.ErrorType, Detail: parsed.Error}
+		return nil, &QueryError{Query: expr, Type: parsed.ErrorType, Detail: parsed.Error}
 	}
 	// The envelope is decoded first but it is not the last word. A body saying
 	// "success" under a 5xx did not come from a Prometheus that answered the
@@ -206,7 +206,7 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 	// presents whatever it contained, or an empty range, as this node's past.
 	// The envelope explains a 4xx; it cannot make a 5xx into an answer.
 	if resp.StatusCode/100 != 2 {
-		return nil, &ErrQuery{
+		return nil, &QueryError{
 			Query: expr,
 			Type:  "http_" + strconv.Itoa(resp.StatusCode),
 			Detail: "the endpoint answered " + strconv.Itoa(resp.StatusCode) +
@@ -218,9 +218,9 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 	// path -- and its result decodes into this shape as an empty series list,
 	// which draws as "no history" rather than as the error it is.
 	if parsed.Data.ResultType != "matrix" {
-		return nil, &ErrDecode{
+		return nil, &DecodeError{
 			URL: endpoint,
-			Err: &ErrUnexpectedResultType{Got: parsed.Data.ResultType},
+			Err: &UnexpectedResultTypeError{Got: parsed.Data.ResultType},
 		}
 	}
 
@@ -244,16 +244,16 @@ func (q *Querier) QueryRange(ctx context.Context, expr string, start, end time.T
 }
 
 // ValidateRange reports whether Prometheus will answer a range query over
-// start to end at step, as an *ErrInvalidRange saying what to change if not.
+// start to end at step, as an *InvalidRangeError saying what to change if not.
 // QueryRange checks it; a caller that queries anything else first -- a
 // counter's gap measurement -- checks it before, so a range that would be
 // refused is refused before any work is done for it.
 func ValidateRange(start, end time.Time, step time.Duration) error {
 	if !end.After(start) {
-		return &ErrInvalidRange{Message: "end must be after start"}
+		return &InvalidRangeError{Message: "end must be after start"}
 	}
 	if step <= 0 {
-		return &ErrInvalidRange{Message: "step must be greater than zero"}
+		return &InvalidRangeError{Message: "step must be greater than zero"}
 	}
 	// Points, not intervals. A range query returns a sample at start, at every
 	// step, AND at end -- so t=0 to t=10s at 1s is eleven points, not ten.
@@ -261,7 +261,7 @@ func ValidateRange(start, end time.Time, step time.Duration) error {
 	// Prometheus rejected it, which reached the dashboard as a 502 from a range
 	// this server had already decided was fine.
 	if points := int(end.Sub(start)/step) + 1; points > maxPoints {
-		return &ErrInvalidRange{
+		return &InvalidRangeError{
 			Message: "the range needs " + strconv.Itoa(points) + " points at this step; Prometheus returns at most " +
 				strconv.Itoa(maxPoints) + ", so widen the step or narrow the range",
 		}
@@ -338,7 +338,7 @@ func (q *Querier) RateGap(ctx context.Context, selector string, start, end time.
 	// caller's mistake before anything upstream is asked -- including
 	// whether the database publishes a lookback at all.
 	if step >= budget {
-		return 0, &ErrInvalidRange{Message: "the range and the rate window it needs exceed the " +
+		return 0, &InvalidRangeError{Message: "the range and the rate window it needs exceed the " +
 			"most that may be read at once; narrow the range or the step"}
 	}
 	lookback, err := q.Lookback(ctx)
@@ -352,7 +352,7 @@ func (q *Querier) RateGap(ctx context.Context, selector string, start, end time.
 		// held to the budget.
 		from := start.Add(-extent)
 		if start.Sub(alignedStart(from, end, gapResolution(end.Sub(from))))+lookback > budget {
-			return 0, &ErrInvalidRange{Message: "the range and the rate window it needs exceed the " +
+			return 0, &InvalidRangeError{Message: "the range and the rate window it needs exceed the " +
 				"most that may be read at once; narrow the range or the step"}
 		}
 		return q.SampleGap(ctx, selector, from, end)
@@ -363,15 +363,15 @@ func (q *Querier) RateGap(ctx context.Context, selector string, start, end time.
 // extent before the range's start.
 func rateGap(step, lookback, budget time.Duration, measure func(extent time.Duration) (time.Duration, error)) (time.Duration, error) {
 	if step <= 0 {
-		return 0, &ErrInvalidRange{Message: "step must be greater than zero"}
+		return 0, &InvalidRangeError{Message: "step must be greater than zero"}
 	}
 	if lookback <= 0 || lookback > (math.MaxInt64-step)/2 {
-		return 0, &ErrInvalidRange{Message: "the step is too large to take a rate over"}
+		return 0, &InvalidRangeError{Message: "the step is too large to take a rate over"}
 	}
 	extent := step + 2*lookback
 	for {
 		if extent > budget {
-			return 0, &ErrInvalidRange{Message: "the range and the rate window it needs exceed the " +
+			return 0, &InvalidRangeError{Message: "the range and the rate window it needs exceed the " +
 				"most that may be read at once; narrow the range or the step"}
 		}
 		gap, err := measure(extent)

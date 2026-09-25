@@ -314,7 +314,8 @@ func RenderCPU(w io.Writer, snap *types.Snapshot) error {
 	if len(s.CoreTemps) > 0 {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "CPU Temperatures:")
-		fmt.Fprintf(w, "  %4s  %4s  %-10s  %8s  %8s  %8s\n", "Pkg", "Core", "Label", "Temp", "High", "Crit")
+		fmt.Fprintf(w, "  %4s  %4s  %-13s  %8s  %8s  %8s\n", "Pkg", "Core", "Label", "Temp", "High", "Crit")
+		multi := multiPackage(s.CoreTemps)
 		for _, t := range s.CoreTemps {
 			highStr := "-"
 			critStr := "-"
@@ -324,8 +325,8 @@ func RenderCPU(w io.Writer, snap *types.Snapshot) error {
 			if t.CritCelsius > 0 {
 				critStr = fmt.Sprintf("%.1f°C", t.CritCelsius)
 			}
-			fmt.Fprintf(w, "  %4d  %4d  %-10s  %7.1f°C  %8s  %8s\n",
-				t.PackageID, t.CoreID, t.Label, t.TempCelsius, highStr, critStr)
+			fmt.Fprintf(w, "  %4d  %4d  %-13s  %7.1f°C  %8s  %8s\n",
+				t.PackageID, t.CoreID, CoreLabel(t, multi), t.TempCelsius, highStr, critStr)
 		}
 	}
 
@@ -1397,4 +1398,31 @@ func RenderImages(w io.Writer, snap *types.Snapshot) error {
 	fmt.Fprintln(w, "the reclaimable estimate is capped at the deduplicated size on disk.")
 
 	return ew.Err()
+}
+
+// CoreLabel names one core's temperature reading the way every surface names
+// it. A core number restarts on every package -- a two-socket host has two
+// "Core 0" -- so on a host with more than one package the label carries the
+// package, numbered from 0 as the kernel does: "P1 · Core 0". The driver's own
+// label is kept ("Core 3" from coretemp, "Tccd1" from k10temp, where the
+// number is a chiplet), and a single-package host keeps it unchanged.
+func CoreLabel(t types.CoreTemp, multiPackage bool) string {
+	base := t.Label
+	if base == "" {
+		base = fmt.Sprintf("Core %d", t.CoreID)
+	}
+	if multiPackage {
+		return fmt.Sprintf("P%d · %s", t.PackageID, base)
+	}
+	return base
+}
+
+// multiPackage reports whether the readings span more than one package.
+func multiPackage(temps []types.CoreTemp) bool {
+	for _, t := range temps {
+		if t.PackageID != temps[0].PackageID {
+			return true
+		}
+	}
+	return false
 }

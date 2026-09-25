@@ -376,7 +376,8 @@ func readProcCPUInfoMHz() float64 {
 	return 0
 }
 
-// summaryFromGopsutil builds a best-effort CPUSummary using gopsutil counts.
+// summaryFromGopsutil builds a best-effort CPUSummary using gopsutil counts,
+// and the clock /proc/cpuinfo reports.
 func summaryFromGopsutil(logger *slog.Logger) types.CPUSummary {
 	logical, lerr := pscpu.Counts(true)
 	physical, perr := pscpu.Counts(false)
@@ -399,5 +400,8 @@ func summaryFromGopsutil(logger *slog.Logger) types.CPUSummary {
 		ThreadsPerCore: threadsPerCore,
 		TotalCores:     physical,
 		TotalThreads:   logical,
+		// With no sysfs there is no cpufreq either; /proc/cpuinfo's clock is
+		// the one left, as it is for a host with topology but no cpufreq.
+		MaxMHz: readProcCPUInfoMHz(),
 	}
 }

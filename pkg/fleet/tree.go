@@ -89,22 +89,22 @@ type childTree struct {
 	aggregatorsAt time.Time
 }
 
-// ErrNameConflict reports a request for a name that two nodes in the tree
+// NameConflictError reports a request for a name that two nodes in the tree
 // carry. Neither is the answer, so neither is routed to.
-type ErrNameConflict struct{ Node string }
+type NameConflictError struct{ Node string }
 
-func (e *ErrNameConflict) Error() string {
+func (e *NameConflictError) Error() string {
 	return "fleet node " + e.Node + " is named twice in the fleet tree; rename one so every name is unique"
 }
 
-// ErrSubtreeInvalid reports a child's subtree that does not hold together: it
+// SubtreeInvalidError reports a child's subtree that does not hold together: it
 // is not composed, as a read failure is not.
-type ErrSubtreeInvalid struct {
+type SubtreeInvalidError struct {
 	Peer   string
 	Reason string
 }
 
-func (e *ErrSubtreeInvalid) Error() string {
+func (e *SubtreeInvalidError) Error() string {
 	return "fleet node " + e.Peer + " sent an invalid subtree: " + e.Reason
 }
 
@@ -119,7 +119,7 @@ func (p *Poller) pollSubtree(peer config.Peer, cfg config.Fleet, prev, st *peerS
 	if err == nil {
 		err = validateSubtree(peer.Name, &sub)
 	}
-	var refused *ErrFleetRefused
+	var refused *FleetRefusedError
 	switch {
 	case errors.As(err, &refused):
 		st.tree = &childTree{refused: refused.Error()}
@@ -182,7 +182,7 @@ func (p *Poller) refusal(child string, sub *types.FleetSubtree) string {
 // and clamps the lists in it to their bounds. A child is another process on
 // the network, and nothing it sends is trusted to be the size it should be.
 func validateSubtree(child string, sub *types.FleetSubtree) error {
-	invalid := func(reason string) error { return &ErrSubtreeInvalid{Peer: child, Reason: reason} }
+	invalid := func(reason string) error { return &SubtreeInvalidError{Peer: child, Reason: reason} }
 	if sub.Rollup == nil {
 		return invalid("no roll-up")
 	}

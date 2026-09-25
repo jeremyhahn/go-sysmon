@@ -72,7 +72,7 @@ var failureRules = []failureRule{
 // relayTooLarge is a relayed answer this node would not pass on; its words
 // are this package's own and carry no address.
 func relayTooLarge(err error) (string, bool) {
-	var large *ErrRelayTooLarge
+	var large *RelayTooLargeError
 	if errors.As(err, &large) {
 		return large.Error(), true
 	}

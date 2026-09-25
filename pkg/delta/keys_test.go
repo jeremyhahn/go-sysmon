@@ -63,7 +63,13 @@ func populatedSnapshot() *types.Snapshot {
 			Processes: []types.ProcessDetail{{PID: 1}, {PID: 2}},
 		},
 		Sensors: types.SensorData{
-			CoreTemps:    []types.CoreTemp{{CoreID: 0}, {CoreID: 1}},
+			// A two-socket host: each package numbers its cores from zero,
+			// so core_id repeats and cannot key this array. Any key added
+			// here must be unique across packages, not only within one.
+			CoreTemps: []types.CoreTemp{
+				{PackageID: 0, CoreID: 0}, {PackageID: 0, CoreID: 1},
+				{PackageID: 1, CoreID: 0}, {PackageID: 1, CoreID: 1},
+			},
 			ThermalZones: []types.ThermalZone{{Name: "acpitz"}, {Name: "x86_pkg_temp"}},
 		},
 		Virt: types.VirtInfo{

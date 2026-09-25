@@ -158,6 +158,9 @@ type Exporter struct {
 	// scratch sizes a reading that is dropped rather than written, so the
 	// loss is counted in samples like every other drop.
 	scratch *Builder
+	// collided holds every series already reported as colliding, so the
+	// warning is given once per series rather than once per collection.
+	collided map[string]bool
 
 	// submitted carries samples produced outside the exporter's own cadence --
 	// the aggregator writing a peer's reading as it arrives. A channel rather
@@ -385,6 +388,25 @@ func (e *Exporter) record(m Measurement) {
 	}
 	e.marks[m.Source] = watermark{writtenMs: m.TimeMs, offeredMs: m.TimeMs}
 	m.Write(e.builder, m.TimeMs)
+	e.reportCollisions(m.Source)
+}
+
+// reportCollisions says, once per series, that a reading gave one series two
+// samples at the same timestamp. The second was dropped so the batch could be
+// delivered; the warning is what makes the labelling defect visible.
+func (e *Exporter) reportCollisions(source string) {
+	for _, series := range e.builder.TakeCollisions() {
+		e.dropped.Add(1)
+		if e.collided == nil {
+			e.collided = make(map[string]bool)
+		}
+		if e.collided[series] {
+			continue
+		}
+		e.collided[series] = true
+		e.log.Warn("prom: a reading gave one series two samples at the same time; the second is dropped",
+			"source", source, "series", series)
+	}
 }
 
 // samplesIn counts the samples a reading would have written.
@@ -503,7 +525,7 @@ func (e *Exporter) flush(o Options) {
 		// held: keeping it would block every later batch behind a request that
 		// is guaranteed to fail, so one bad sample set would stop history
 		// altogether.
-		var rw *ErrRemoteWrite
+		var rw *RemoteWriteError
 		if errors.As(err, &rw) && !rw.Retryable() {
 			e.pending = e.pending[1:]
 			n := sampleCount(batch)

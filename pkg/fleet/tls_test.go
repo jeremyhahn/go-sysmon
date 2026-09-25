@@ -181,18 +181,18 @@ func TestFetch_PlaintextPeer(t *testing.T) {
 		if err == nil {
 			t.Fatalf("fetch() = %+v, want an error", snap)
 		}
-		var plain *ErrPlaintextPeer
+		var plain *PlaintextPeerError
 		if !errors.As(err, &plain) {
-			t.Fatalf("fetch() error = %T (%v), want *ErrPlaintextPeer", err, err)
+			t.Fatalf("fetch() error = %T (%v), want *PlaintextPeerError", err, err)
 		}
 		if plain.Peer != "peer" {
-			t.Errorf("ErrPlaintextPeer.Peer = %q, want %q", plain.Peer, "peer")
+			t.Errorf("PlaintextPeerError.Peer = %q, want %q", plain.Peer, "peer")
 		}
 		// The message has to name the peer and both ways out, because it is
 		// read by someone whose fleet view just went blank.
 		for _, want := range []string{"peer", "https", "require_tls"} {
 			if !strings.Contains(plain.Error(), want) {
-				t.Errorf("ErrPlaintextPeer message %q does not mention %q", plain.Error(), want)
+				t.Errorf("PlaintextPeerError message %q does not mention %q", plain.Error(), want)
 			}
 		}
 	})
@@ -203,12 +203,12 @@ func TestFetch_RejectsUnusableURLs(t *testing.T) {
 
 	t.Run("scheme that is neither http nor https", func(t *testing.T) {
 		_, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: "ftp://example.invalid"}, plaintextAllowed())
-		var scheme *ErrPeerScheme
+		var scheme *PeerSchemeError
 		if !errors.As(err, &scheme) {
-			t.Fatalf("fetch() error = %T (%v), want *ErrPeerScheme", err, err)
+			t.Fatalf("fetch() error = %T (%v), want *PeerSchemeError", err, err)
 		}
 		if scheme.Peer != "peer" || scheme.Scheme != "ftp" {
-			t.Errorf("ErrPeerScheme = %+v, want peer=peer scheme=ftp", scheme)
+			t.Errorf("PeerSchemeError = %+v, want peer=peer scheme=ftp", scheme)
 		}
 	})
 
@@ -226,12 +226,12 @@ func TestFetch_RejectsUnusableURLs(t *testing.T) {
 
 	t.Run("unparseable", func(t *testing.T) {
 		_, err := fetchSnapshot(p, config.Peer{Name: "peer", URL: "http://[::1"}, plaintextAllowed())
-		var bad *ErrPeerURL
+		var bad *PeerURLError
 		if !errors.As(err, &bad) {
-			t.Fatalf("fetch() error = %T (%v), want *ErrPeerURL", err, err)
+			t.Fatalf("fetch() error = %T (%v), want *PeerURLError", err, err)
 		}
 		if bad.Unwrap() == nil {
-			t.Error("ErrPeerURL.Unwrap() = nil, want the parse error underneath")
+			t.Error("PeerURLError.Unwrap() = nil, want the parse error underneath")
 		}
 	})
 }

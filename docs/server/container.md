@@ -187,6 +187,49 @@ spec:
     - { name: cgroup, hostPath: { path: /sys/fs/cgroup } }
 ```
 
+### Configuration from a ConfigMap
+
+Mount a ConfigMap over the config directory and the service reloads it when the
+ConfigMap changes, with no restart. `/etc/go-sysmon/sysmon.yaml` is the default
+path, so no `--config` flag is needed; `server.watch` turns the file watcher on.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: go-sysmon
+data:
+  sysmon.yaml: |
+    server:
+      watch: true
+    alerts:
+      cpu_pct: 90
+---
+# In the DaemonSet above:
+      volumeMounts:
+        - { name: config, mountPath: /etc/go-sysmon, readOnly: true }
+  volumes:
+    - { name: config, configMap: { name: go-sysmon } }
+```
+
+The kubelet does not rewrite `sysmon.yaml` in place. It writes the new contents
+into a fresh timestamped directory and swaps the `..data` symlink onto it, so
+the file the service names is a symlink that never changes. The watcher follows
+every symlink on the config path and reloads when any of them is swapped; see
+[what the file watcher reloads](alerting-fleet-config.md#what-the-file-watcher-reloads-and-when).
+
+Two Kubernetes behaviours to know:
+
+- **Do not mount the file with `subPath`.** A `subPath` mount is a bind mount of
+  the file as it was when the pod started, and the kubelet never updates it. Mount
+  the whole ConfigMap as a directory, as above.
+- **Updates are not instant.** The kubelet applies a changed ConfigMap on its
+  next sync of the pod, typically within a minute. The service reloads as soon
+  as the swap lands.
+
+Settings consumed at startup (`server.addr`, the TLS files, `server.watch`
+itself) still need the pod restarted; a reload reports them as deferred.
+
 ## Building it yourself
 
 ```bash

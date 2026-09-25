@@ -214,7 +214,7 @@ func readATASMART(devPath string, info *types.DiskInfo) error {
 		// No decodable attribute means we learned nothing about this drive.
 		// Applying the empty set would set SMARTEnabled and SMARTHealthy from
 		// an absence of evidence and quietly suppress the unhealthy alert.
-		return &ErrSMARTNoAttributes{DevPath: devPath}
+		return &SMARTNoAttributesError{DevPath: devPath}
 	}
 
 	applyATASMARTAttrs(attrs, info)
@@ -229,7 +229,7 @@ func readATASMART(devPath string, info *types.DiskInfo) error {
 // ones the drive sent.
 func validateSMARTSector(devPath string, data []byte) error {
 	if len(data) != smartDataSize {
-		return &ErrSMARTShortTransfer{DevPath: devPath, Op: "SMART READ DATA", Want: smartDataSize, Got: len(data)}
+		return &SMARTShortTransferError{DevPath: devPath, Op: "SMART READ DATA", Want: smartDataSize, Got: len(data)}
 	}
 
 	var sum byte
@@ -241,37 +241,37 @@ func validateSMARTSector(devPath string, data []byte) error {
 		}
 	}
 	if allZero {
-		return &ErrSMARTEmptySector{DevPath: devPath}
+		return &SMARTEmptySectorError{DevPath: devPath}
 	}
 	if sum != 0 {
-		return &ErrSMARTChecksum{DevPath: devPath, Sum: sum}
+		return &SMARTChecksumError{DevPath: devPath, Sum: sum}
 	}
 	return nil
 }
 
-// ErrSMARTNoAttributes reports a structurally valid sector that decoded to no
+// SMARTNoAttributesError reports a structurally valid sector that decoded to no
 // attributes, which tells us nothing about the drive's health.
-type ErrSMARTNoAttributes struct{ DevPath string }
+type SMARTNoAttributesError struct{ DevPath string }
 
-func (e *ErrSMARTNoAttributes) Error() string {
+func (e *SMARTNoAttributesError) Error() string {
 	return "smart: no attributes decoded from " + e.DevPath
 }
 
-// ErrSMARTEmptySector reports an all-zero payload: a transfer that completed
+// SMARTEmptySectorError reports an all-zero payload: a transfer that completed
 // without the drive ever answering.
-type ErrSMARTEmptySector struct{ DevPath string }
+type SMARTEmptySectorError struct{ DevPath string }
 
-func (e *ErrSMARTEmptySector) Error() string {
+func (e *SMARTEmptySectorError) Error() string {
 	return "smart: empty SMART sector from " + e.DevPath
 }
 
-// ErrSMARTChecksum reports a payload whose trailing checksum does not clear.
-type ErrSMARTChecksum struct {
+// SMARTChecksumError reports a payload whose trailing checksum does not clear.
+type SMARTChecksumError struct {
 	DevPath string
 	Sum     byte
 }
 
-func (e *ErrSMARTChecksum) Error() string {
+func (e *SMARTChecksumError) Error() string {
 	return fmt.Sprintf("smart: SMART sector from %s failed its checksum (sum %d, want 0)", e.DevPath, e.Sum)
 }
 
@@ -295,20 +295,20 @@ func ataReadSMARTData(fd uintptr, devPath string, subCmd uint8) ([]byte, ataSMAR
 		return buf, ataSGIOCommand, nil
 	}
 
-	return nil, nil, &ErrSMARTUnavailable{DevPath: devPath, HDIOErr: hdioErr, SGIOErr: sgErr}
+	return nil, nil, &SMARTUnavailableError{DevPath: devPath, HDIOErr: hdioErr, SGIOErr: sgErr}
 }
 
-// ErrSMARTUnavailable reports that both ATA SMART transports failed for a
+// SMARTUnavailableError reports that both ATA SMART transports failed for a
 // device: the legacy HDIO_DRIVE_CMD ioctl and the SG_IO ATA PASS-THROUGH(16)
 // fallback. Both underlying errors are retained and unwrappable so callers can
-// inspect either (e.g. errors.As for *ErrSMARTIoctl or *ErrSMARTPassthrough).
-type ErrSMARTUnavailable struct {
+// inspect either (e.g. errors.As for *SMARTIoctlError or *SMARTPassthroughError).
+type SMARTUnavailableError struct {
 	DevPath string
 	HDIOErr error
 	SGIOErr error
 }
 
-func (e *ErrSMARTUnavailable) Error() string {
+func (e *SMARTUnavailableError) Error() string {
 	return fmt.Sprintf("smart: no ATA transport succeeded on %s (hdio: %v; sg_io: %v)",
 		e.DevPath, e.HDIOErr, e.SGIOErr)
 }
@@ -322,7 +322,7 @@ func (e *ErrSMARTUnavailable) Error() string {
 // paired with an SG_IO failure of any other kind was then invisible, and a
 // device we were refused would have been reported as one that declined to
 // answer. Returning both is what makes the sentence above true.
-func (e *ErrSMARTUnavailable) Unwrap() []error { return []error{e.HDIOErr, e.SGIOErr} }
+func (e *SMARTUnavailableError) Unwrap() []error { return []error{e.HDIOErr, e.SGIOErr} }
 
 // applyATASMARTAttrs translates decoded ATA attributes into the disk record,
 // lifting the well-known IDs into their dedicated fields. It is separate from
@@ -387,7 +387,7 @@ func ataHDIOCommand(fd uintptr, devPath string, subCmd uint8) ([]byte, error) {
 		uintptr(unsafe.Pointer(&buf[0])),
 	)
 	if errno != 0 {
-		return nil, &ErrSMARTIoctl{
+		return nil, &SMARTIoctlError{
 			DevPath: devPath,
 			Op:      fmt.Sprintf("HDIO_DRIVE_CMD(0x%02X)", subCmd),
 			Errno:   errno,

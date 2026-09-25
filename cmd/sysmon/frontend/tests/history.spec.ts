@@ -101,8 +101,12 @@ async function countPeerPolls(page: Page, peer: string) {
     };
     const realFetch = window.fetch.bind(window);
     window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-      const url =
-        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      // Resolved against the page, as fetch does: the dashboard asks for
+      // relative URLs ("api/fleet"), so the raw argument has no leading slash.
+      const url = new URL(
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
+        document.baseURI,
+      ).href;
       const call = realFetch(input, init);
       if (!url.includes(`/api/fleet/${name}/snapshot`)) return call;
       polls.started++;

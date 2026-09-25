@@ -189,8 +189,7 @@ func (r *recorder) record(ctx context.Context, peer config.Peer) {
 	// Judged before the fetch, from the summary already held: a peer whose
 	// reading would be refused is not asked for it, so a refused peer costs
 	// neither the payload nor one of the fetch slots.
-	summary, source := r.p.peerSummary(peer)
-	if !r.p.admit(peer, summary, source) {
+	if !r.p.admit(peer, r.p.peerSummary(peer)) {
 		return
 	}
 	select {
@@ -225,8 +224,7 @@ func (r *recorder) record(ctx context.Context, peer config.Peer) {
 	if !r.current(peer) {
 		return
 	}
-	summary, source = r.p.peerSummary(peer)
-	if !r.p.admit(peer, summary, source) {
+	if !r.p.admit(peer, r.p.peerSummary(peer)) {
 		return
 	}
 	r.p.deliver(peer.Name, &snap)

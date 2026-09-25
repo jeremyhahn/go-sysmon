@@ -215,9 +215,9 @@ func TestCadenceWatch_AReachableViolationIsFoundAtOnce(t *testing.T) {
 	}
 	x.until(t, cadenceOK)
 	cadenceConfig(t, path, db, 90000)
-	var refused *config.ErrHistoryCadence
+	var refused *config.HistoryCadenceError
 	if _, err := x.mgr.Reload(); !errors.As(err, &refused) {
-		t.Fatalf("Reload back to the violation = %v, want *ErrHistoryCadence", err)
+		t.Fatalf("Reload back to the violation = %v, want *HistoryCadenceError", err)
 	}
 }
 
@@ -245,7 +245,7 @@ func TestCadenceWatch_AnUnreachableDatabaseDoesNotClearAViolation(t *testing.T) 
 	alerts, status := alert.New(), &serviceStatus{}
 	w := &cadenceWatch{alerts: alerts, status: status, log: log}
 	cfg := &config.Config{}
-	violation := &config.ErrHistoryCadence{Key: "prometheus.sample_interval_ms + server.interval_ms",
+	violation := &config.HistoryCadenceError{Key: "prometheus.sample_interval_ms + server.interval_ms",
 		IntervalMs: 340000, LookbackMs: 300000}
 
 	w.apply(cfg, cadenceResult{state: cadenceViolated, reason: violation.Error(), violation: violation})
@@ -341,13 +341,13 @@ func TestPeerHistoryGate(t *testing.T) {
 
 	// 15s sampling + 2 x 5s fetch timeout + 10s write timeout + 60s
 	// collection = 95s: recorded.
-	if ok, h := gate("fs", withInterval(time.Minute), types.SummarySourceSummary); !ok || h.State != types.PeerHistoryRecorded {
+	if ok, h := gate("fs", withInterval(time.Minute)); !ok || h.State != types.PeerHistoryRecorded {
 		t.Errorf("a peer collecting every minute: %v %+v, want recorded", ok, h)
 	}
 
 	// A peer collecting every ten minutes: 15s + 10s + 10s + 10m, past 5m.
 	// Refused, and the card says why, with the figures.
-	ok, h := gate("slow", withInterval(10*time.Minute), types.SummarySourceSummary)
+	ok, h := gate("slow", withInterval(10*time.Minute))
 	if ok || h.State != types.PeerHistoryRefused {
 		t.Fatalf("a peer collecting every 10m: %v %+v, want refused", ok, h)
 	}
@@ -358,11 +358,11 @@ func TestPeerHistoryGate(t *testing.T) {
 	}
 
 	// Just past the bound: 15s + 10s + 10s + 4m26s = 5m1s.
-	if ok, _ := gate("edge", withInterval(4*time.Minute+26*time.Second), types.SummarySourceSummary); ok {
+	if ok, _ := gate("edge", withInterval(4*time.Minute+26*time.Second)); ok {
 		t.Error("a gap of 5m1s against a 5m lookback was recorded")
 	}
 	// Exactly at it: 15s + 10s + 10s + 4m25s = 5m.
-	if ok, _ := gate("edge", withInterval(4*time.Minute+25*time.Second), types.SummarySourceSummary); !ok {
+	if ok, _ := gate("edge", withInterval(4*time.Minute+25*time.Second)); !ok {
 		t.Error("a gap of exactly 5m against a 5m lookback was refused")
 	}
 }
@@ -374,26 +374,10 @@ func TestPeerHistoryGate(t *testing.T) {
 func TestPeerHistoryGate_AnOldPeerIsUnverified(t *testing.T) {
 	gate := gateFixture(t, "5m", "")
 	for _, s := range []*types.NodeSummary{nil, withInterval(0)} {
-		ok, h := gate("old", s, types.SummarySourceSnapshot)
+		ok, h := gate("old", s)
 		if !ok || h.State != types.PeerHistoryUnverified || !strings.Contains(h.Reason, "collection interval") {
 			t.Errorf("an old peer (%+v): %v %+v, want written and unverified", s, ok, h)
 		}
-	}
-}
-
-// TestPeerHistoryGate_ASnapshotPeerIsRelayedAtThePoll. A peer read by its
-// snapshot is relayed by the poll, not by a history worker: the tick is the
-// poll -- never less than the 60s the dashboard can set it to -- plus four
-// fetch timeouts (two refreshes of two requests) and the write timeout.
-// 60s + 20s + 10s + 4m = 5m30s: refused, where the same peer read by its
-// summary (15s + 10s + 10s + 4m = 4m35s) would not be.
-func TestPeerHistoryGate_ASnapshotPeerIsRelayedAtThePoll(t *testing.T) {
-	gate := gateFixture(t, "5m", "")
-	if ok, _ := gate("p", withInterval(4*time.Minute), types.SummarySourceSnapshot); ok {
-		t.Error("a snapshot-relayed peer at 5m5s was recorded")
-	}
-	if ok, _ := gate("p", withInterval(4*time.Minute), types.SummarySourceSummary); !ok {
-		t.Error("a summary-relayed peer at 4m20s was refused")
 	}
 }
 
@@ -411,7 +395,7 @@ func TestPeerHistoryGate_AnUnknownLookbackIsUnverified(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := peerHistoryGate(mgr, newCadenceQuerier())
-	ok, h := gate("fs", withInterval(10*time.Minute), types.SummarySourceSummary)
+	ok, h := gate("fs", withInterval(10*time.Minute))
 	if !ok || h.State != types.PeerHistoryUnverified || !strings.Contains(h.Reason, "not been read yet") {
 		t.Errorf("%v %+v, want written and unverified until the lookback is known", ok, h)
 	}
@@ -431,11 +415,11 @@ func TestPeerHistoryGate_FetchQueueingCounts(t *testing.T) {
 		peers.WriteString("    - name: p" + strconv.Itoa(i) + "\n      url: http://p" + strconv.Itoa(i) + ":8081\n")
 	}
 	crowded := gateFixture(t, "5m", peers.String())
-	if ok, h := crowded("p0", withInterval(4*time.Minute+20*time.Second), types.SummarySourceSummary); ok {
+	if ok, h := crowded("p0", withInterval(4*time.Minute+20*time.Second)); ok {
 		t.Errorf("with nine peers queueing: %+v, want refused at 5m15s", h)
 	}
 	alone := gateFixture(t, "5m", "")
-	if ok, _ := alone("p0", withInterval(4*time.Minute+20*time.Second), types.SummarySourceSummary); !ok {
+	if ok, _ := alone("p0", withInterval(4*time.Minute+20*time.Second)); !ok {
 		t.Error("with no queue, 4m55s against 5m was refused")
 	}
 }
@@ -459,7 +443,7 @@ func TestPeerHistoryGate_HoldsARefusalWhileTheDatabaseIsDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	gate := peerHistoryGate(mgr, q)
-	if ok, _ := gate("slow", withInterval(10*time.Minute), types.SummarySourceSummary); ok {
+	if ok, _ := gate("slow", withInterval(10*time.Minute)); ok {
 		t.Fatal("a 10m peer was recorded against a 5m lookback")
 	}
 
@@ -467,7 +451,7 @@ func TestPeerHistoryGate_HoldsARefusalWhileTheDatabaseIsDown(t *testing.T) {
 	if _, err := q.LookbackAt(context.Background(), db.srv.URL); err == nil {
 		t.Fatal("the refresh of a database that is down succeeded")
 	}
-	if ok, h := gate("slow", withInterval(10*time.Minute), types.SummarySourceSummary); ok {
+	if ok, h := gate("slow", withInterval(10*time.Minute)); ok {
 		t.Errorf("with the refresh failing: %+v, want the refusal to stand", h)
 	}
 }
@@ -501,16 +485,14 @@ func TestPeerHistoryGate_ReasonsNameNoAddress(t *testing.T) {
 	for _, c := range []struct {
 		gate    fleet.HistoryGate
 		summary *types.NodeSummary
-		source  types.SummarySource
 	}{
-		{read, withInterval(10 * time.Minute), types.SummarySourceSummary},  // refused
-		{read, withInterval(10 * time.Minute), types.SummarySourceSnapshot}, // refused
-		{read, withInterval(0), types.SummarySourceSnapshot},                // no interval
-		{read, nil, types.SummarySourceSummary},                             // no summary
-		{unread, withInterval(time.Minute), types.SummarySourceSummary},     // lookback unread
-		{read, withInterval(time.Second), types.SummarySourceSummary},       // recorded
+		{read, withInterval(10 * time.Minute)}, // refused
+		{read, withInterval(0)},                // no interval
+		{read, nil},                            // no summary
+		{unread, withInterval(time.Minute)},    // lookback unread
+		{read, withInterval(time.Second)},      // recorded
 	} {
-		_, h := c.gate("fs", c.summary, c.source)
+		_, h := c.gate("fs", c.summary)
 		reasons = append(reasons, h.Reason)
 	}
 
@@ -525,20 +507,6 @@ func TestPeerHistoryGate_ReasonsNameNoAddress(t *testing.T) {
 	}
 }
 
-// TestRelayTick_ASnapshotPeerSpansTwoSlowRefreshes. A refresh waits for its
-// slowest peer, so a snapshot peer's reading can open a refresh another peer
-// holds for two requests and its next close the refresh after the sleep:
-// poll + 4 timeouts + the write, not poll + 2.
-func TestRelayTick_ASnapshotPeerSpansTwoSlowRefreshes(t *testing.T) {
-	c := config.Defaults()
-	c.Fleet.PollIntervalMs = 90000
-	c.Fleet.TimeoutMs = 5000
-	c.Prometheus.TimeoutMs = 10000
-	if got, want := relayTick(&c, types.SummarySourceSnapshot), 90*time.Second+20*time.Second+10*time.Second; got != want {
-		t.Errorf("snapshot relay tick = %v, want %v", got, want)
-	}
-}
-
 // TestPeerHistoryGate_AMalformedIntervalCannotWrap. A peer reporting an
 // interval too large to convert -- math.MaxInt64 milliseconds would wrap to
 // about -1ms and, plus a relay tick, look like a small gap -- is refused,
@@ -546,9 +514,21 @@ func TestRelayTick_ASnapshotPeerSpansTwoSlowRefreshes(t *testing.T) {
 func TestPeerHistoryGate_AMalformedIntervalCannotWrap(t *testing.T) {
 	gate := gateFixture(t, "5m", "")
 	for _, ms := range []int64{math.MaxInt64, math.MaxInt64 / 1000, math.MaxInt64 / int64(time.Millisecond), (5 * time.Minute).Milliseconds() + 1} {
-		ok, h := gate("bad", &types.NodeSummary{CollectionIntervalMs: ms}, types.SummarySourceSummary)
+		ok, h := gate("bad", &types.NodeSummary{CollectionIntervalMs: ms})
 		if ok || h.State != types.PeerHistoryRefused {
 			t.Errorf("interval %dms: %v %+v, want refused", ms, ok, h)
+		}
+	}
+}
+
+// TestCadenceState_String names each state in the log, and a value outside
+// the set by its number rather than as one of the three.
+func TestCadenceState_String(t *testing.T) {
+	for state, want := range map[cadenceState]string{
+		cadenceOK: "ok", cadencePending: "pending", cadenceViolated: "violated", cadenceState(42): "cadenceState(42)",
+	} {
+		if got := state.String(); got != want {
+			t.Errorf("cadenceState(%d).String() = %q, want %q", int(state), got, want)
 		}
 	}
 }

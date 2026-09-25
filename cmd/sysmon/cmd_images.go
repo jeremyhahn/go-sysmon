@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -73,7 +72,7 @@ func runImagesCmd(cmd *cobra.Command, _ []string) error {
 		}{snap.Virt.Runtime, snap.Virt.ContainerRuntime})
 	}
 	if err := cli.RenderImages(cmd.OutOrStdout(), snap); err != nil {
-		return fmt.Errorf("render images: %w", err)
+		return &cli.RenderError{Function: "images", Cause: err}
 	}
 	return nil
 }

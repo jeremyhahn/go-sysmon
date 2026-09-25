@@ -9,10 +9,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/pins"
 )
@@ -213,6 +215,33 @@ func TestRun_FilerMisconfigurationFailsBeforeChecking(t *testing.T) {
 	}
 }
 
+// TestNewFiler_NamesWhatIsMissing verifies each misconfiguration is its own
+// error type, so the missing flags and the missing token are told apart.
+func TestNewFiler_NamesWhatIsMissing(t *testing.T) {
+	base := options{api: "http://gitea.invalid/api/v1", repo: "jeremyhahn/go-sysmon", token: "t"}
+
+	noAPI := base
+	noAPI.api = ""
+	_, err := newFiler(noAPI, http.DefaultClient)
+	var flagsErr *filerFlagsError
+	if !errors.As(err, &flagsErr) {
+		t.Errorf("newFiler(no -gitea-api) error = %v, want a *filerFlagsError", err)
+	}
+
+	noToken := base
+	noToken.token = ""
+	_, err = newFiler(noToken, http.DefaultClient)
+	var tokenErr *noTokenError
+	if !errors.As(err, &tokenErr) {
+		t.Errorf("newFiler(no token) error = %v, want a *noTokenError", err)
+	}
+
+	filer, err := newFiler(base, http.DefaultClient)
+	if err != nil || filer == nil {
+		t.Errorf("newFiler(complete) = %v, %v, want a filer and no error", filer, err)
+	}
+}
+
 func fileOptions(t *testing.T, srv *httptest.Server, stdout, stderr *bytes.Buffer) options {
 	o := newOptions(t, stdout, stderr)
 	o.fileIssue = true
@@ -316,5 +345,157 @@ func TestRun_UnreadableWorkflowExitsTwo(t *testing.T) {
 
 	if code := run(context.Background(), o, fakeSources("v2.14.0", nil, &calls), http.DefaultClient); code != exitUnchecked {
 		t.Fatalf("run() = %d, want %d", code, exitUnchecked)
+	}
+}
+
+// TestRun_WorkflowRunnerLabelIsChecked verifies a runner label a workflow
+// names is judged as well as the pinned release's two labels: a job asking for
+// a runner GitHub no longer offers waits forever, so the run has no verdict.
+func TestRun_WorkflowRunnerLabelIsChecked(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	calls := 0
+	o := newOptions(t, &stdout, &stderr)
+	workflow := "jobs:\n  a:\n    runs-on: ubuntu-20.04\n    steps:\n      - uses: actions/checkout@v7\n"
+	if err := os.WriteFile(filepath.Join(o.root, ".github", "workflows", "ci.yml"), []byte(workflow), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := run(context.Background(), o, fakeSources("v2.14.0", nil, &calls), http.DefaultClient); code != exitUnchecked {
+		t.Fatalf("run() = %d, want %d; stdout: %s", code, exitUnchecked, stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `runner label "ubuntu-20.04"`) {
+		t.Errorf("stderr = %q, want the unlisted workflow label named", stderr.String())
+	}
+}
+
+func TestParseOptions_ReadsEveryFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	env := map[string]string{"MY_TOKEN": "secret"}
+	args := []string{
+		"-root", "/repo", "-node-file", ".nvmrc", "-debian", "trixie", "-ubuntu", "26.04",
+		"-hosted-runner", "26.04", "-tool", "golangci-lint=" + lintModule + "@v2.14.0",
+		"-tool", "gosec=github.com/securego/gosec/v2@v2.29.0", "-timeout", "90s",
+		"-file-issue", "-dry-run", "-gitea-api", "https://gitea.example/api/v1",
+		"-repo", "o/r", "-token-env", "MY_TOKEN", "-run-url", "https://ci.example/run/1",
+		"-go-releases-url", "https://mirror.example/go/VERSION",
+		"-node-index-url", "https://mirror.example/node/index.json",
+		"-debian-dists-url", "http://mirror.example/debian/dists",
+		"-ubuntu-series-url", "https://mirror.example/ubuntu/series",
+		"-runner-images-url", "https://mirror.example/runner-images/README.md",
+		"-actions-base-url", "file:///srv/mirror/actions",
+	}
+
+	o, timeout, err := parseOptions(args, func(k string) string { return env[k] }, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if timeout != 90*time.Second {
+		t.Errorf("timeout = %v, want 90s", timeout)
+	}
+	want := options{
+		root: "/repo", nodeFile: ".nvmrc", debian: "trixie", ubuntu: "26.04", hostedRunner: "26.04",
+		tools: []pins.Tool{
+			{Name: "golangci-lint", Module: lintModule, Version: "v2.14.0"},
+			{Name: "gosec", Module: "github.com/securego/gosec/v2", Version: "v2.29.0"},
+		},
+		fileIssue: true, dryRun: true, api: "https://gitea.example/api/v1", repo: "o/r",
+		token: "secret", runURL: "https://ci.example/run/1",
+		urls: sourceURLs{
+			goReleases:   "https://mirror.example/go/VERSION",
+			nodeIndex:    "https://mirror.example/node/index.json",
+			debianDists:  "http://mirror.example/debian/dists",
+			ubuntuSeries: "https://mirror.example/ubuntu/series",
+			runnerImages: "https://mirror.example/runner-images/README.md",
+			actionsBase:  "file:///srv/mirror/actions",
+		},
+		stdout: &stdout, stderr: &stderr,
+	}
+	if !reflect.DeepEqual(o, want) {
+		t.Errorf("options = %+v, want %+v", o, want)
+	}
+}
+
+func TestParseOptions_RejectsAMalformedCommandLine(t *testing.T) {
+	for name, args := range map[string][]string{
+		"unknown flag":   {"-no-such-flag"},
+		"malformed tool": {"-tool", "golangci-lint"},
+		"bad timeout":    {"-timeout", "soon"},
+		// A source URL must be absolute, with a host, on a scheme the
+		// source can be fetched over.
+		"relative source URL":         {"-go-releases-url", "go.dev/VERSION"},
+		"source URL with no host":     {"-node-index-url", "https:///index.json"},
+		"unparsable source URL":       {"-debian-dists-url", "http://[::1"},
+		"file URL for an HTTP source": {"-ubuntu-series-url", "file:///srv/series"},
+		"ftp runner images":           {"-runner-images-url", "ftp://mirror.example/README.md"},
+		"ssh actions base":            {"-actions-base-url", "ssh://git@github.com"},
+		"file actions base, no path":  {"-actions-base-url", "file://"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if _, _, err := parseOptions(args, func(string) string { return "" }, &stdout, &stderr); err == nil {
+				t.Fatal("parseOptions() error = nil, want the malformed command line rejected")
+			}
+			if !strings.Contains(stderr.String(), "Usage of checklatest") {
+				t.Errorf("stderr = %q, want the usage printed", stderr.String())
+			}
+		})
+	}
+}
+
+// TestParseOptions_SourcesDefaultToThePublicURLs verifies a command line that
+// names no source fetches from the public ones.
+func TestParseOptions_SourcesDefaultToThePublicURLs(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	o, _, err := parseOptions(nil, func(string) string { return "" }, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	want := sourceURLs{
+		goReleases: pins.GoVersionURL, nodeIndex: pins.NodeIndexURL, debianDists: pins.DebianDistsURL,
+		ubuntuSeries: pins.UbuntuSeriesURL, runnerImages: pins.RunnerImagesURL, actionsBase: pins.ActionsBaseURL,
+	}
+	if o.urls != want {
+		t.Errorf("urls = %+v, want the public sources %+v", o.urls, want)
+	}
+}
+
+// TestNewSources_FetchesFromTheNamedURL verifies a source flag is where the
+// source is actually fetched from, not merely parsed.
+func TestNewSources_FetchesFromTheNamedURL(t *testing.T) {
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/go/VERSION" {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := w.Write([]byte("go1.27.9\ntime 2026-09-01T00:00:00Z\n")); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(mirror.Close)
+
+	src := newSources(mirror.Client(), sourceURLs{goReleases: mirror.URL + "/go/VERSION", nodeIndex: mirror.URL + "/absent"})
+	got, err := src.goLatest(context.Background())
+	if err != nil || got != "go1.27.9" {
+		t.Errorf("goLatest() = %q, %v; want go1.27.9 from the mirror", got, err)
+	}
+	var fetchErr *pins.FetchResponseError
+	if _, err := src.nodeLTS(context.Background()); !errors.As(err, &fetchErr) || fetchErr.Status != http.StatusNotFound {
+		t.Errorf("nodeLTS() error = %v, want the mirror's 404", err)
+	}
+}
+
+// TestNewSources_WiresEverySource verifies every kind of pin has a live
+// source: a missing one would be a nil function the run calls.
+func TestNewSources_WiresEverySource(t *testing.T) {
+	src := newSources(http.DefaultClient, sourceURLs{})
+	wired := map[string]bool{
+		"go": src.goLatest != nil, "module": src.module != nil, "node": src.nodeLTS != nil,
+		"debian": src.debian != nil, "ubuntu": src.ubuntuLTS != nil, "tags": src.tags != nil,
+		"runners": src.runners != nil,
+	}
+	for name, ok := range wired {
+		if !ok {
+			t.Errorf("source %s is not wired", name)
+		}
 	}
 }

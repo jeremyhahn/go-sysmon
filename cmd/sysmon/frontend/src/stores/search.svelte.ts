@@ -6,7 +6,8 @@
 // depends on. Merging them would put a text box's state on the path every chart
 // re-reads.
 
-import { searchHistory, hitKey, type Resources, type SearchHit } from "$lib/search";
+import { searchHistory, hitKey, type ResourceLabels, type Resources, type SearchHit } from "$lib/search";
+import { coreKey, coreLabel, multiPackage } from "$lib/cores";
 import { history } from "$stores/history.svelte";
 import { monitor } from "$stores/monitor.svelte";
 
@@ -43,13 +44,24 @@ class SearchStore {
       device: (snap.disks ?? []).map((d) => d.name),
       interface: (snap.networks ?? []).map((n) => n.name),
       gpu: (snap.gpus ?? []).map((g) => String(g.index)),
-      core: (snap.cpus ?? []).map((c) => String(c.index)),
+      // A core's history is named by its package and core, not by the
+      // logical CPU index, which is a different number on most hosts.
+      core: (snap.sensors?.core_temps ?? []).map((t) => coreKey(t.package_id, t.core_id)),
+    };
+  }
+
+  /** The names of the resources whose value is not what a person calls them. */
+  get labels(): ResourceLabels {
+    const temps = monitor.snapshot?.sensors?.core_temps ?? [];
+    const multi = multiPackage(temps);
+    return {
+      core: Object.fromEntries(temps.map((t) => [coreKey(t.package_id, t.core_id), coreLabel(t, multi)])),
     };
   }
 
   /** The matches for the current query, best first. */
   get hits(): SearchHit[] {
-    return searchHistory(this.#query, history.metrics, this.resources);
+    return searchHistory(this.#query, history.metrics, this.resources, this.labels);
   }
 
   /** The series the user chose to chart. */

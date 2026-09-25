@@ -56,28 +56,28 @@ func (q Query) bounded() Query {
 	return q
 }
 
-// ErrInvalidQuery reports a fleet query parameter that cannot be honoured.
-type ErrInvalidQuery struct {
+// InvalidQueryError reports a fleet query parameter that cannot be honoured.
+type InvalidQueryError struct {
 	Param  string
 	Value  string
 	Reason string
 }
 
-func (e *ErrInvalidQuery) Error() string {
+func (e *InvalidQueryError) Error() string {
 	return "fleet: invalid " + e.Param + " " + strconv.Quote(e.Value) + ": " + e.Reason
 }
 
-// ErrMalformedQuery reports a query string that does not parse at all.
-type ErrMalformedQuery struct {
+// MalformedQueryError reports a query string that does not parse at all.
+type MalformedQueryError struct {
 	Raw   string
 	Cause error
 }
 
-func (e *ErrMalformedQuery) Error() string {
+func (e *MalformedQueryError) Error() string {
 	return "fleet: malformed query " + strconv.Quote(e.Raw) + ": " + e.Cause.Error()
 }
 
-func (e *ErrMalformedQuery) Unwrap() error { return e.Cause }
+func (e *MalformedQueryError) Unwrap() error { return e.Cause }
 
 // ParseQuery reads a fleet query from a request's raw query string. An absent
 // parameter takes its zero value; one that is present must be well formed, and
@@ -90,24 +90,24 @@ func (e *ErrMalformedQuery) Unwrap() error { return e.Cause }
 func ParseQuery(raw string) (Query, error) {
 	values, err := url.ParseQuery(raw)
 	if err != nil {
-		return Query{}, &ErrMalformedQuery{Raw: raw, Cause: err}
+		return Query{}, &MalformedQueryError{Raw: raw, Cause: err}
 	}
 	var q Query
 	for _, param := range []string{QueryParamSearch, QueryParamOffset, QueryParamLimit, QueryParamAnchor} {
 		if got := values[param]; len(got) > 1 {
-			return Query{}, &ErrInvalidQuery{Param: param, Value: strings.Join(got, ","), Reason: "given more than once"}
+			return Query{}, &InvalidQueryError{Param: param, Value: strings.Join(got, ","), Reason: "given more than once"}
 		}
 	}
 
 	search := values.Get(QueryParamSearch)
 	if !utf8.ValidString(search) {
-		return Query{}, &ErrInvalidQuery{Param: QueryParamSearch, Value: search, Reason: "not valid UTF-8"}
+		return Query{}, &InvalidQueryError{Param: QueryParamSearch, Value: search, Reason: "not valid UTF-8"}
 	}
 	q.Search = strings.TrimSpace(search)
 
 	q.Anchor = values.Get(QueryParamAnchor)
 	if !utf8.ValidString(q.Anchor) {
-		return Query{}, &ErrInvalidQuery{Param: QueryParamAnchor, Value: q.Anchor, Reason: "not valid UTF-8"}
+		return Query{}, &InvalidQueryError{Param: QueryParamAnchor, Value: q.Anchor, Reason: "not valid UTF-8"}
 	}
 
 	if q.Offset, err = parseBound(values, QueryParamOffset, 0); err != nil {
@@ -128,10 +128,10 @@ func parseBound(values url.Values, param string, least int) (int, error) {
 	raw := values.Get(param)
 	n, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, &ErrInvalidQuery{Param: param, Value: raw, Reason: "not an integer"}
+		return 0, &InvalidQueryError{Param: param, Value: raw, Reason: "not an integer"}
 	}
 	if n < least {
-		return 0, &ErrInvalidQuery{Param: param, Value: raw, Reason: "must be at least " + strconv.Itoa(least)}
+		return 0, &InvalidQueryError{Param: param, Value: raw, Reason: "must be at least " + strconv.Itoa(least)}
 	}
 	return n, nil
 }

@@ -597,6 +597,20 @@ identity and live state side by side: DIMM *topology* cannot change, a DIMM
 number — from the SMBIOS type-17 table, which firmware generates at boot and
 never rewrites. It is read in the constructor.
 
+The table, `/sys/firmware/dmi/tables/DMI`, is `0400 root:root`. go-sysmon
+reads it only when the process may read it, and never escalates to get at it:
+no `sudo`, no setuid helper. When it cannot read the table, the module list
+comes from ghw where ghw has the data, and otherwise the modules are
+unknown. `sysmon doctor` reports which of the three holds (readable, absent,
+refused) and, when access is refused, how to grant it:
+
+- run the service as root;
+- give the unit `AmbientCapabilities=CAP_DAC_READ_SEARCH`, knowing that the
+  capability bypasses every file read permission on the host (see
+  [deployment architecture](../deployment/architecture.md), "Privileges"); or
+- make the table readable by the service's group at boot, with a
+  `tmpfiles.d` line: `z /sys/firmware/dmi/tables/DMI 0440 root <group>`.
+
 | host | before | after | |
 |---|---|---|---|
 | gpu-host (1070 procs, 24 cores) | 8.32 ms | 2.72 ms | −67% |
@@ -616,9 +630,9 @@ reading goes to zero while the module stays; it fails if the copy is removed.
 **What is deliberately still re-scanned every tick:** which hwmon devices *are*
 DIMM sensors. That discovery is about a third of the collector and looks like
 the same kind of invariant — a `name` file under sysfs, read to decide what to
-read next. It is not one. Sensors appear *after* startup: this package's own
-probe runs `modprobe jc42`/`spd5118` and instantiates spd5118 i2c devices, and
-an operator can load a module by hand at any time. Caching the discovery would
+read next. It is not one. Sensors appear *after* startup: an operator can load
+`jc42` or `spd5118`, or instantiate an spd5118 device, at any time. go-sysmon
+itself never does; see sensors.md, "DIMM temperatures". Caching the discovery would
 mean a sensor appearing later is never noticed until a restart — the dashboard
 quietly ceasing to answer a question it promises to answer, and undetectably,
 because nobody notices a sensor that never shows up.

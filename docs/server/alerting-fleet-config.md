@@ -52,7 +52,7 @@ it at construction.
 | Path | How | Notes |
 |---|---|---|
 | **SIGHUP** | `systemctl reload go-sysmon` | Primary. `ExecReload` is in the unit. Adds no HTTP surface. |
-| **File watch** | `server.watch: true` | Watches the containing directory, so an editor that replaces the file still triggers it; debounced. |
+| **File watch** | `server.watch: true` | Watches the directories the config path resolves through (Linux inotify), so an editor that replaces the file, or a Kubernetes ConfigMap update, still triggers it. A file written in place reloads only once its writer closes it; see below. |
 
 **Those are the only two paths — there is no HTTP reload endpoint.** The
 service carries no authentication of its own and sits behind an authenticating
@@ -156,6 +156,75 @@ the reload response — or the `reload applied, but some settings were rejected`
 log line — is the signal that this happened, and it is the one case where the
 settings view can be ahead of the running service. No setting behaves this way
 today; the reloadable ones cannot be rejected.
+
+#### What the file watcher reloads, and when
+
+A half-saved file does not always fail to parse. A tool that rewrites the file
+in place truncates it and then writes it, and a file cut off at a line boundary
+is valid YAML: loading it would publish the lines already written and defaults
+for the rest. An empty file is valid too, and it means every default, which
+silently drops alert thresholds and fleet peers. So the watcher decides from the
+kernel's events, not from whether the file parses:
+
+| Event on the config file | Watcher does |
+|---|---|
+| Written or truncated (`IN_MODIFY`) | Holds: nothing is reloaded while a writer has the file open. |
+| Writer closes it (`IN_CLOSE_WRITE`) | Reloads, once. |
+| Renamed over or created (`IN_MOVED_TO`, `IN_CREATE`) | Reloads, once. A created file that is then written is held until closed, like any write. |
+| Removed or renamed away | Reloads: with no file the service runs on defaults, as it would have started. |
+| A symlink on the path is replaced or removed | Reloads the file the path now leads to, and moves the watches with it. |
+| The config file's own directory is deleted, moved or unmounted | Logs a warning and stops watching. `systemctl reload` still works. |
+
+**Symlinks are followed link by link.** When the config path is, or passes
+through, a symlink, the watcher resolves it one component at a time and watches
+the directory holding each link as well as the directory holding the file it
+ends at. That covers:
+
+- **A Kubernetes ConfigMap volume.** `sysmon.yaml -> ..data/sysmon.yaml`, and
+  the kubelet updates it by renaming a new `..data` link over the old one,
+  pointing at a new timestamped directory it has already written in full. The
+  swap reloads the new file; removing the old directory afterwards changes
+  nothing. See [the container guide](container.md#configuration-from-a-configmap).
+- **A link to a file kept elsewhere**, such as `/etc/go-sysmon/sysmon.yaml ->
+  /srv/config/sysmon.yaml`. Edits to the target are followed in its own
+  directory, under the same close-write rule as any other file.
+- **A switched release directory**, such as `/opt/sysmon/current ->
+  releases/v2`, swapped by renaming a new link over `current`.
+
+If a directory the path resolves through disappears without being replaced, the
+file is gone and the service runs on defaults until it comes back, as with a
+removed file. If the config path's own directory disappears, watching stops, as
+in the table.
+
+Events arriving within 250ms of each other are coalesced into one reload.
+Changes to other files in the directory, including an editor's swap file, are
+ignored.
+
+**An empty file is refused on a watcher reload** (whitespace only counts as
+empty): the watcher logs `config: reload failed, keeping previous settings`
+carrying a `ConfigEmptyError`, and keeps the running configuration. That covers
+a tool that truncates, closes and writes later, and the reload happens when the
+contents arrive. **Starting on an empty file, or `systemctl reload` of one, still
+runs on defaults**: there the operator asked for the file as it stands, while a
+file the watcher sees empty is far more likely a rewrite caught in the middle.
+
+**A writer that keeps the file open is held, and warned about.** The kernel
+reports a write as finished only when the writer closes the file, so a file
+still open for writing is never reloaded, however complete it looks. If it goes
+30 seconds with no change while still open, the watcher logs `config: file is
+still open for writing and has not changed; reload waits until it is closed` at
+warning level, with the path. `systemctl reload` applies the file at once, and
+closing it reloads it as usual.
+
+**A close is taken at its word.** A writer that closes the file partway through
+and reopens it more than 250ms later has its partial file reloaded, then the
+finished one when it closes again: when the close arrives, nothing yet shows
+that another write will follow. The reopen cannot be used to tell either. The
+kernel reports a reader's open exactly as it reports a writer's, so treating an
+open as the end of a write would let anyone reading the file mid-write (`cat`,
+a backup, the service's own reload) publish it half written. Write the file in
+one pass, or write a temp file beside it and rename it over (what editors and
+config-management tools do), and every reload sees a whole file.
 
 **A missing config file is fine; an unreadable one is fatal.** Running with no
 file at all is a supported deployment and starts on defaults. But a path that
@@ -1226,7 +1295,7 @@ last snapshot written forever, so a stopped node now shows as stopped.
 
 A cadence slower than the lookback would write history that is stale between
 its own samples, so **while `remote_write_url` is set, a configuration is
-refused** (`ErrHistoryCadence`) — on reload, once this node has read the lookback
+refused** (`HistoryCadenceError`) — on reload, once this node has read the lookback
 — if two stored samples could be further apart than the database's query
 lookback, read from the database itself (see [the history API](api.md#counters) for what each
 backend reports). A writer stores the newest reading each time it ticks, so
@@ -1247,14 +1316,14 @@ samples can be a tick **plus** a collection apart, and both are counted:
 
 **Each relayed peer is checked against the interval it reports.** Its summary
 carries `collection_interval_ms`, and two of its stored samples can be a relay
-tick plus that interval apart. The tick depends on how the peer is read: a peer
-that serves a summary has its history fetched by its own worker, at
-`sample_interval_ms` plus, for each round of the queue it can wait in (history
-fetches run four at a time: `ceil(peers / 4)` rounds), two timeouts — a history
-request and its fallback to the whole snapshot; a peer too old to serve one is
-relayed by the snapshot poll, at the larger of `fleet.poll_interval_ms` and
-60s, plus four timeouts (two refreshes of two requests). Either way `prometheus.timeout_ms` is added once, for
-the write that carries the reading to the database. The gate is asked before
+tick plus that interval apart. The tick is how a peer that serves a summary has
+its history fetched, by its own worker: `sample_interval_ms` plus, for each round
+of the queue it can wait in (history fetches run four at a time:
+`ceil(peers / 4)` rounds), two timeouts — a history request and its fallback to
+the whole snapshot — plus `prometheus.timeout_ms` once, for the write that
+carries the reading to the database. A peer too old to serve a summary is read
+by its snapshot, which reports no interval, so it is never judged by a tick: it
+is "history unverified", below. The gate is asked before
 the fetch and again before the reading is handed on, so an approval that went
 stale during the fetch is not acted on. If that gap exceeds the database's lookback, the peer's
 readings are **not written** — nor fetched: the check is made from the summary

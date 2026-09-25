@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -147,7 +146,7 @@ func enumerateDRMCards() ([]string, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read %s: %w", drmRoot, err)
+		return nil, &types.SysfsReadError{Path: drmRoot, Cause: err}
 	}
 	var cards []string
 	for _, e := range entries {

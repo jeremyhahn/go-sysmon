@@ -89,9 +89,9 @@ func (p *Poller) Resolve(name string) Route {
 func (r Route) err(name string) error {
 	switch r.Kind {
 	case RouteConflict:
-		return &ErrNameConflict{Node: name}
+		return &NameConflictError{Node: name}
 	case RouteUnknown:
-		return &ErrUnknownPeer{Peer: name}
+		return &UnknownPeerError{Peer: name}
 	}
 	return nil
 }
@@ -167,49 +167,49 @@ func (p *Poller) forwardConfig(ctx context.Context, name string, r Route) (*type
 // aggregator's: a child that no longer knows the node makes it unknown here
 // too, and one that finds its name in conflict makes it a conflict here.
 func relayedError(name string, err error) error {
-	var status *ErrPeerStatus
+	var status *PeerStatusError
 	if errors.As(err, &status) {
 		switch status.Status {
 		case http.StatusNotFound:
-			return &ErrUnknownPeer{Peer: name}
+			return &UnknownPeerError{Peer: name}
 		case http.StatusConflict:
-			return &ErrNameConflict{Node: name}
+			return &NameConflictError{Node: name}
 		}
 	}
 	return err
 }
 
-// ErrRelayTooLarge reports a child's relayed answer larger than this node will
+// RelayTooLargeError reports a child's relayed answer larger than this node will
 // pass on.
-type ErrRelayTooLarge struct{ Limit int }
+type RelayTooLargeError struct{ Limit int }
 
-func (e *ErrRelayTooLarge) Error() string {
+func (e *RelayTooLargeError) Error() string {
 	return "relayed answer is larger than " + strconv.Itoa(e.Limit) + " bytes"
 }
 
-// ErrRelayNotJSON reports a child's relayed answer that is not the JSON this
+// RelayNotJSONError reports a child's relayed answer that is not the JSON this
 // node asked for: a different content type, or a body that does not decode as
 // it. It is refused rather than passed on -- a child answering with HTML would
 // otherwise be served on this node's origin.
-type ErrRelayNotJSON struct {
+type RelayNotJSONError struct {
 	Peer   string
 	Reason string
 }
 
-func (e *ErrRelayNotJSON) Error() string {
+func (e *RelayNotJSONError) Error() string {
 	return "fleet node " + e.Peer + " answered a relayed request with " + e.Reason
 }
 
-// ErrRelayStatus reports a child that answered a relayed request with an
+// RelayStatusError reports a child that answered a relayed request with an
 // error status. Only the status comes back -- the server maps it onto its own
 // -- never the child's words: its body is the child's to write, and nothing a
 // child writes is served on this node's origin but JSON this node decoded.
-type ErrRelayStatus struct {
+type RelayStatusError struct {
 	Peer   string
 	Status int
 }
 
-func (e *ErrRelayStatus) Error() string {
+func (e *RelayStatusError) Error() string {
 	return "fleet node " + e.Peer + " answered the relayed request with status " + strconv.Itoa(e.Status)
 }
 
@@ -219,11 +219,11 @@ func (e *ErrRelayStatus) Error() string {
 // level), so the child's answer is the answer -- but it is decoded and served
 // by this node, never passed through: it must be application/json and decode
 // as node's history, and an error the child gives comes back as
-// ErrRelayStatus, its status only. A child that refuses the relay as a loop is
-// ErrFleetRefused.
+// RelayStatusError, its status only. A child that refuses the relay as a loop is
+// FleetRefusedError.
 func (p *Poller) RelayHistory(ctx context.Context, r Route, node, rawQuery string) (types.History, error) {
 	if r.Kind != RouteSubtree {
-		return types.History{}, &ErrUnknownPeer{Peer: node}
+		return types.History{}, &UnknownPeerError{Peer: node}
 	}
 	endpoint := "/api/history?" + rawQuery
 	v, err := p.relay(ctx, r, endpoint, func(work context.Context) (any, error) {
@@ -250,28 +250,28 @@ func (p *Poller) fetchHistory(ctx context.Context, r Route, node, endpoint strin
 	switch {
 	case resp.StatusCode == http.StatusLoopDetected:
 		drain(p, r.Peer, resp)
-		return types.History{}, &ErrFleetRefused{Peer: r.Peer.Name, Reason: resp.Header.Get(HeaderRefusal)}
+		return types.History{}, &FleetRefusedError{Peer: r.Peer.Name, Reason: resp.Header.Get(HeaderRefusal)}
 	case resp.StatusCode != http.StatusOK:
 		drain(p, r.Peer, resp)
-		return types.History{}, &ErrRelayStatus{Peer: r.Peer.Name, Status: resp.StatusCode}
+		return types.History{}, &RelayStatusError{Peer: r.Peer.Name, Status: resp.StatusCode}
 	}
 	if media, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err != nil || media != "application/json" {
 		drain(p, r.Peer, resp)
-		return types.History{}, &ErrRelayNotJSON{Peer: r.Peer.Name, Reason: "a content type other than application/json"}
+		return types.History{}, &RelayNotJSONError{Peer: r.Peer.Name, Reason: "a content type other than application/json"}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSnapshotBytes+1))
 	if err != nil {
 		return types.History{}, &PeerRequestError{Peer: r.Peer.Name, Cause: err}
 	}
 	if len(body) > maxSnapshotBytes {
-		return types.History{}, &PeerRequestError{Peer: r.Peer.Name, Cause: &ErrRelayTooLarge{Limit: maxSnapshotBytes}}
+		return types.History{}, &PeerRequestError{Peer: r.Peer.Name, Cause: &RelayTooLargeError{Limit: maxSnapshotBytes}}
 	}
 	var h types.History
 	if err := json.Unmarshal(body, &h); err != nil {
-		return types.History{}, &ErrRelayNotJSON{Peer: r.Peer.Name, Reason: "a body that is not a history range"}
+		return types.History{}, &RelayNotJSONError{Peer: r.Peer.Name, Reason: "a body that is not a history range"}
 	}
 	if h.Enabled && h.Node != node {
-		return types.History{}, &ErrRelayNotJSON{Peer: r.Peer.Name, Reason: "the history of another node"}
+		return types.History{}, &RelayNotJSONError{Peer: r.Peer.Name, Reason: "the history of another node"}
 	}
 	types.ReplaceNilSlices(&h)
 	return h, nil

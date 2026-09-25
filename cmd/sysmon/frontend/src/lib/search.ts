@@ -18,6 +18,13 @@ import type { HistoryMetric, HistoryUnit } from "$lib/types";
 /** A resource dimension and the values this node has for it. */
 export type Resources = Record<string, string[]>;
 
+/**
+ * ResourceLabels names resources whose value is not what a person calls them,
+ * by split label and value: a core's value is its history key, "1:0", and its
+ * name "P1 · Core 0". A resource with no entry is called by its value.
+ */
+export type ResourceLabels = Record<string, Record<string, string>>;
+
 /** One thing that can be charted: a metric, and the resource it is about. */
 export interface SearchHit {
   /** The catalog key to request. */
@@ -29,6 +36,9 @@ export interface SearchHit {
   splitBy: string;
   /** The value of that label, or null for an unsplit metric. */
   resource: string | null;
+  /** What the resource is called on screen: its value, unless the search was
+   * given a name for it ("P1 · Core 0" for the core "1:0"). */
+  resourceName: string | null;
   /** What the result is called on screen, and what makes it unique. */
   title: string;
 }
@@ -49,7 +59,8 @@ export const MAX_HITS = 24;
 export function searchHistory(
   query: string,
   metrics: HistoryMetric[],
-  resources: Resources
+  resources: Resources,
+  labels: ResourceLabels = {}
 ): SearchHit[] {
   const needle = query.trim().toLowerCase();
   if (needle === "") return [];
@@ -69,14 +80,17 @@ export function searchHistory(
     }
 
     const values = resources[metric.split_by] ?? [];
+    const names = labels[metric.split_by] ?? {};
     for (const value of values) {
-      const lowered = value.toLowerCase();
-      if (lowered === needle) {
-        exactResource.push(hit(metric, value));
-      } else if (lowered.includes(needle)) {
-        partialResource.push(hit(metric, value));
+      const name = names[value] ?? value;
+      const loweredValue = value.toLowerCase();
+      const loweredName = name.toLowerCase();
+      if (loweredValue === needle || loweredName === needle) {
+        exactResource.push(hit(metric, value, name));
+      } else if (loweredValue.includes(needle) || loweredName.includes(needle)) {
+        partialResource.push(hit(metric, value, name));
       } else if (named) {
-        metricMatch.push(hit(metric, value));
+        metricMatch.push(hit(metric, value, name));
       }
     }
 
@@ -92,14 +106,15 @@ export function searchHistory(
   return [...exactResource, ...partialResource, ...metricMatch].slice(0, MAX_HITS);
 }
 
-function hit(metric: HistoryMetric, resource: string | null): SearchHit {
+function hit(metric: HistoryMetric, resource: string | null, name: string | null = resource): SearchHit {
   return {
     metric: metric.key,
     label: metric.label,
     unit: metric.unit,
     splitBy: metric.split_by,
     resource,
-    title: resource == null ? metric.label : metric.label + " \u2014 " + resource,
+    resourceName: name,
+    title: resource == null ? metric.label : metric.label + " \u2014 " + name,
   };
 }
 

@@ -3,7 +3,6 @@ package collector
 import (
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -54,45 +53,6 @@ func TestShouldCollect_TierSchedule(t *testing.T) {
 	}
 	if !skippedSlow {
 		t.Error("tierSlow never skips a tick; tiering has no effect")
-	}
-}
-
-// ---- itoh -----------------------------------------------------------------
-
-// TestItoh_FormatsTwoHexDigits covers the two-digit hex helper used to build
-// i2c device addresses.
-func TestItoh_FormatsTwoHexDigits(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		in   int
-		want string
-	}{
-		{0, "00"},
-		{9, "09"},
-		{10, "0a"},
-		{15, "0f"},
-		{16, "10"},
-		{0x50, "50"},
-		{0x5f, "5f"},
-		{255, "ff"},
-	}
-
-	for _, tt := range tests {
-		if got := itoh(tt.in); got != tt.want {
-			t.Errorf("itoh(%d) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-// TestItoh_TruncatesBeyondOneByte documents that only the low byte is encoded,
-// so callers must not pass values above 0xff expecting more digits.
-func TestItoh_TruncatesBeyondOneByte(t *testing.T) {
-	t.Parallel()
-	if got := itoh(0x123); got != "23" {
-		t.Errorf("itoh(0x123) = %q, want %q (low byte only)", got, "23")
-	}
-	if got := itoh(-1); len(got) != 2 {
-		t.Errorf("itoh(-1) = %q, want a two-character result", got)
 	}
 }
 
@@ -170,19 +130,6 @@ func TestReadProcCPUInfoMHz_ReadsHostValue(t *testing.T) {
 	}
 	if got > 100000 {
 		t.Errorf("readProcCPUInfoMHz() = %f MHz, which is not a real clock", got)
-	}
-}
-
-// ---- sudoReadFile ---------------------------------------------------------
-
-// TestSudoReadFile_MissingPathFails verifies the helper surfaces an error
-// rather than returning empty content when the file cannot be read. It uses
-// sudo -n, so it never prompts and never modifies the host.
-func TestSudoReadFile_MissingPathFails(t *testing.T) {
-	t.Parallel()
-	out, err := sudoReadFile("/proc/definitely-not-a-real-file")
-	if err == nil && len(strings.TrimSpace(string(out))) > 0 {
-		t.Errorf("sudoReadFile() returned content %q for a missing path", out)
 	}
 }
 

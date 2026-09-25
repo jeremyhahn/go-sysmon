@@ -70,13 +70,13 @@ const (
 // have. Recording it as 255 °C would raise every thermal alert at once.
 const temperatureNotAvailable uint8 = 0xFF
 
-// ErrSCSIResponse reports a reply that is not the structure it should be.
-type ErrSCSIResponse struct {
+// SCSIResponseError reports a reply that is not the structure it should be.
+type SCSIResponseError struct {
 	Op     string
 	Detail string
 }
 
-func (e *ErrSCSIResponse) Error() string {
+func (e *SCSIResponseError) Error() string {
 	return fmt.Sprintf("scsi: %s response is unusable: %s", e.Op, e.Detail)
 }
 
@@ -108,7 +108,7 @@ func buildLogSenseCDB(page uint8, allocLen int) []byte {
 // parseInquiry decodes a standard INQUIRY response.
 func parseInquiry(data []byte) (vendor, product string, devType uint8, err error) {
 	if len(data) < inquiryLen {
-		return "", "", 0, &ErrSCSIResponse{
+		return "", "", 0, &SCSIResponseError{
 			Op:     "INQUIRY",
 			Detail: fmt.Sprintf("%d bytes, need %d", len(data), inquiryLen),
 		}
@@ -125,17 +125,17 @@ func parseInquiry(data []byte) (vendor, product string, devType uint8, err error
 // where it is plugged in rather than of the drive.
 func parseUnitSerial(data []byte) (string, error) {
 	if len(data) < 4 {
-		return "", &ErrSCSIResponse{Op: "INQUIRY VPD 0x80", Detail: "shorter than its own header"}
+		return "", &SCSIResponseError{Op: "INQUIRY VPD 0x80", Detail: "shorter than its own header"}
 	}
 	if data[1] != vpdUnitSerialNumber {
-		return "", &ErrSCSIResponse{
+		return "", &SCSIResponseError{
 			Op:     "INQUIRY VPD 0x80",
 			Detail: fmt.Sprintf("is page 0x%02x, not the unit serial number page", data[1]),
 		}
 	}
 	length := int(binary.BigEndian.Uint16(data[2:]))
 	if length == 0 || 4+length > len(data) {
-		return "", &ErrSCSIResponse{
+		return "", &SCSIResponseError{
 			Op:     "INQUIRY VPD 0x80",
 			Detail: fmt.Sprintf("declares %d bytes of serial, %d present", length, len(data)-4),
 		}
@@ -151,10 +151,10 @@ func parseUnitSerial(data []byte) (string, error) {
 func logPageParameter(data []byte, page uint8, param uint16) ([]byte, error) {
 	op := fmt.Sprintf("LOG SENSE 0x%02X", page)
 	if len(data) < logPageHeaderLen {
-		return nil, &ErrSCSIResponse{Op: op, Detail: "shorter than its own header"}
+		return nil, &SCSIResponseError{Op: op, Detail: "shorter than its own header"}
 	}
 	if got := data[logPageCode] & 0x3F; got != page {
-		return nil, &ErrSCSIResponse{
+		return nil, &SCSIResponseError{
 			Op:     op,
 			Detail: fmt.Sprintf("is page 0x%02x, not the one asked for", got),
 		}
@@ -170,7 +170,7 @@ func logPageParameter(data []byte, page uint8, param uint16) ([]byte, error) {
 		entry := data[off:end]
 		length := int(entry[logParamLength])
 		if logParamHeaderLen+length > len(entry) {
-			return nil, &ErrSCSIResponse{
+			return nil, &SCSIResponseError{
 				Op:     op,
 				Detail: fmt.Sprintf("parameter at offset %d declares %d bytes, %d remain", off, length, len(entry)-logParamHeaderLen),
 			}
@@ -182,7 +182,7 @@ func logPageParameter(data []byte, page uint8, param uint16) ([]byte, error) {
 		// zero-length parameter costs a wasted step and cannot stall the walk.
 		off += logParamHeaderLen + length
 	}
-	return nil, &ErrSCSIResponse{Op: op, Detail: fmt.Sprintf("has no parameter 0x%04x", param)}
+	return nil, &SCSIResponseError{Op: op, Detail: fmt.Sprintf("has no parameter 0x%04x", param)}
 }
 
 // scsiHealth is what a SAS drive says about itself.
@@ -204,7 +204,7 @@ func parseInformationalExceptions(data []byte) (scsiHealth, error) {
 		return scsiHealth{}, err
 	}
 	if len(value) < ieLen {
-		return scsiHealth{}, &ErrSCSIResponse{
+		return scsiHealth{}, &SCSIResponseError{
 			Op:     "LOG SENSE 0x2F",
 			Detail: fmt.Sprintf("informational exceptions parameter is %d bytes, need %d", len(value), ieLen),
 		}
@@ -226,7 +226,7 @@ func parseTemperatureLog(data []byte) (float64, error) {
 		return 0, err
 	}
 	if len(value) < 2 {
-		return 0, &ErrSCSIResponse{
+		return 0, &SCSIResponseError{
 			Op:     "LOG SENSE 0x0D",
 			Detail: fmt.Sprintf("temperature parameter is %d bytes, need 2", len(value)),
 		}

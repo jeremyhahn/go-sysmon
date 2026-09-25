@@ -137,7 +137,7 @@ func sgIODataIn(fd uintptr, devPath string, cdb [16]byte, op string) ([]byte, er
 		uintptr(unsafe.Pointer(&hdr)),
 	)
 	if errno != 0 {
-		return nil, &ErrSMARTIoctl{DevPath: devPath, Op: op, Errno: errno}
+		return nil, &SMARTIoctlError{DevPath: devPath, Op: op, Errno: errno}
 	}
 
 	// info's low bit reflects command status independently of errno; a set bit
@@ -145,7 +145,7 @@ func sgIODataIn(fd uintptr, devPath string, cdb [16]byte, op string) ([]byte, er
 	// returned, so report it as a failed passthrough rather than trusting the
 	// buffer.
 	if hdr.info&sgInfoOKMask != sgInfoOK {
-		return nil, &ErrSMARTPassthrough{
+		return nil, &SMARTPassthroughError{
 			DevPath:      devPath,
 			Op:           op,
 			HostStatus:   hdr.hostStatus,
@@ -160,7 +160,7 @@ func sgIODataIn(fd uintptr, devPath string, cdb [16]byte, op string) ([]byte, er
 	// into no attributes at all and would otherwise be applied as a healthy
 	// reading of a drive we never actually heard from.
 	if hdr.resid != 0 {
-		return nil, &ErrSMARTShortTransfer{
+		return nil, &SMARTShortTransferError{
 			DevPath: devPath,
 			Op:      op,
 			Want:    smartDataSize,
@@ -171,23 +171,23 @@ func sgIODataIn(fd uintptr, devPath string, cdb [16]byte, op string) ([]byte, er
 	return data, nil
 }
 
-// ErrSMARTShortTransfer reports a passthrough that succeeded at the command
+// SMARTShortTransferError reports a passthrough that succeeded at the command
 // level but moved fewer bytes than the sector it was asked for.
-type ErrSMARTShortTransfer struct {
+type SMARTShortTransferError struct {
 	DevPath string
 	Op      string
 	Want    int
 	Got     int
 }
 
-func (e *ErrSMARTShortTransfer) Error() string {
+func (e *SMARTShortTransferError) Error() string {
 	return fmt.Sprintf("smart: %s on %s returned %d of %d bytes", e.Op, e.DevPath, e.Got, e.Want)
 }
 
-// ErrSMARTPassthrough is returned when an SG_IO ATA passthrough completes at the
+// SMARTPassthroughError is returned when an SG_IO ATA passthrough completes at the
 // ioctl level but the drive or adapter reports a non-OK status, so the response
 // buffer holds no valid SMART data.
-type ErrSMARTPassthrough struct {
+type SMARTPassthroughError struct {
 	DevPath      string
 	Op           string
 	HostStatus   uint16
@@ -195,7 +195,7 @@ type ErrSMARTPassthrough struct {
 	Status       uint8
 }
 
-func (e *ErrSMARTPassthrough) Error() string {
+func (e *SMARTPassthroughError) Error() string {
 	return fmt.Sprintf("smart: %s on %s reported non-OK status (scsi=0x%02x host=0x%04x driver=0x%04x)",
 		e.Op, e.DevPath, e.Status, e.HostStatus, e.DriverStatus)
 }
@@ -267,23 +267,23 @@ func identifyWord(id []byte, n int) uint16 {
 // to stop.
 func identifySMARTSupported(id []byte) (bool, error) {
 	if len(id) < 2*(identifyWordCommandSets2+1) {
-		return false, &ErrSMARTShortTransfer{
+		return false, &SMARTShortTransferError{
 			Op:   "IDENTIFY DEVICE",
 			Want: 2 * (identifyWordCommandSets2 + 1),
 			Got:  len(id),
 		}
 	}
 	if identifyWord(id, identifyWordCommandSets2)&identifyValidMask != identifyValidValue {
-		return false, &ErrIdentifyIndeterminate{}
+		return false, &IdentifyIndeterminateError{}
 	}
 	return identifyWord(id, identifyWordCommandSets1)&identifySMARTSupportedBit != 0, nil
 }
 
-// ErrIdentifyIndeterminate reports an IDENTIFY DEVICE response whose command
+// IdentifyIndeterminateError reports an IDENTIFY DEVICE response whose command
 // set words are marked invalid, so it cannot say whether SMART is supported.
-type ErrIdentifyIndeterminate struct{}
+type IdentifyIndeterminateError struct{}
 
-func (e *ErrIdentifyIndeterminate) Error() string {
+func (e *IdentifyIndeterminateError) Error() string {
 	return "smart: IDENTIFY DEVICE reports its command set words as invalid; SMART support is indeterminate"
 }
 

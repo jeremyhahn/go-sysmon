@@ -780,7 +780,8 @@ type HistoryPoint struct {
 
 // HistorySeries is one line on a history chart. Name is the value of the
 // metric's splitting label -- the device, the interface, the GPU index -- and
-// is empty for a metric a node yields only one of.
+// is empty for a metric a node yields only one of. A CPU core is named
+// "package:core" ("1:0"), because every package numbers its cores from 0.
 type HistorySeries struct {
 	Name   string         `json:"name"`
 	Points []HistoryPoint `json:"points"`

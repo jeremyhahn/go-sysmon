@@ -15,6 +15,10 @@ function assetNames(asset: { names?: string[]; name?: string }): string[] {
 
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
+  // Every asset URL in the built index.html is relative ("./assets/index.js"),
+  // not root-absolute, so the dashboard loads when a reverse proxy serves it
+  // under a sub-path. The API URLs follow the same rule; see transport.ts.
+  base: "./",
   build: {
     outDir: "dist",
     emptyOutDir: true,

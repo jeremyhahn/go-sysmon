@@ -232,11 +232,20 @@ jobs:
           go test ./pkg/... ./cmd/... -coverprofile=coverage.out -covermode=atomic
           go tool cover -func=coverage.out | tail -20
 
-      # actions/upload-artifact@v7 refuses to run against any server that is
-      # not github.com -- it detects one and reports "not currently supported
-      # on GHES". Gitea presents as such, so this step is GitHub-only. The
-      # job's real work has already happened by this point; only the artifact
-      # is skipped.
+      # A failure's diagnostics, kept on both planes (#225). Gitea's runners
+      # open upload-artifact's GHES gate and forward the upload to Gitea's own
+      # artifact service, so this one pinned action serves github.com and Gitea
+      # alike. docs/testing/ci-artifacts.md says where to download it.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: unit-test-logs
+          path: test-logs/
+          retention-days: 7
+
+      # A passing run's output, so it is kept on github.com only: the Gitea
+      # plane stores what a failure leaves behind and nothing else (#225,
+      # docs/testing/ci-artifacts.md). The action itself runs on both planes.
       - uses: actions/upload-artifact@v7
         if: github.server_url == 'https://github.com'
         with:
@@ -301,11 +310,9 @@ jobs:
           ./bin/sysmon-server version
           ./bin/sysmon-server doctor || true
 
-      # actions/upload-artifact@v7 refuses to run against any server that is
-      # not github.com -- it detects one and reports "not currently supported
-      # on GHES". Gitea presents as such, so this step is GitHub-only. The
-      # job's real work has already happened by this point; only the artifact
-      # is skipped.
+      # A passing run's output, so it is kept on github.com only: the Gitea
+      # plane stores what a failure leaves behind and nothing else (#225,
+      # docs/testing/ci-artifacts.md). The action itself runs on both planes.
       - uses: actions/upload-artifact@v7
         if: github.server_url == 'https://github.com'
         with:
@@ -332,6 +339,17 @@ jobs:
       - name: Build and unit-test in FIPS mode
         run: make test-fips
 
+      # A failure's diagnostics, kept on both planes (#225). Gitea's runners
+      # open upload-artifact's GHES gate and forward the upload to Gitea's own
+      # artifact service, so this one pinned action serves github.com and Gitea
+      # alike. docs/testing/ci-artifacts.md says where to download it.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: fips-test-logs
+          path: test-logs/
+          retention-days: 7
+
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -354,6 +372,17 @@ jobs:
       # present, matching how the suite runs locally.
       - name: Run integration tests
         run: make integration-test
+
+      # A failure's diagnostics, kept on both planes (#225). Gitea's runners
+      # open upload-artifact's GHES gate and forward the upload to Gitea's own
+      # artifact service, so this one pinned action serves github.com and Gitea
+      # alike. docs/testing/ci-artifacts.md says where to download it.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: integration-test-logs
+          path: test-logs/
+          retention-days: 7
 
   e2e:
     name: Browser Tests
@@ -387,15 +416,16 @@ jobs:
       - name: Run Playwright suite
         run: make test-e2e
 
-      # actions/upload-artifact@v7 refuses to run against any server that is
-      # not github.com -- it detects one and reports "not currently supported
-      # on GHES". Gitea presents as such, so this step is GitHub-only. The
-      # job's real work has already happened by this point; only the artifact
-      # is skipped.
+      # test-results/ holds each failed test's screenshot, error-context.md and
+      # retry trace (playwright.config.ts).
+      # A failure's diagnostics, kept on both planes (#225). Gitea's runners
+      # open upload-artifact's GHES gate and forward the upload to Gitea's own
+      # artifact service, so this one pinned action serves github.com and Gitea
+      # alike. docs/testing/ci-artifacts.md says where to download it.
       - uses: actions/upload-artifact@v7
-        if: failure() && github.server_url == 'https://github.com'
+        if: failure()
         with:
-          name: playwright-report
+          name: playwright-results
           path: cmd/sysmon/frontend/test-results/
           retention-days: 7
 

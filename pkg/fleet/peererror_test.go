@@ -297,9 +297,9 @@ func TestPeerConfig_FailuresNameNoAddress(t *testing.T) {
 	assertPeerFailure(t, err, refused, "connection refused")
 
 	_, err = p.PeerConfig(context.Background(), "broken")
-	var bad *ErrPeerURL
+	var bad *PeerURLError
 	if !errors.As(err, &bad) {
-		t.Fatalf("PeerConfig(broken) error = %T (%v), want *ErrPeerURL", err, err)
+		t.Fatalf("PeerConfig(broken) error = %T (%v), want *PeerURLError", err, err)
 	}
 	if strings.Contains(err.Error(), "fd00::10") {
 		t.Errorf("PeerConfig(broken) error = %q carries the address", err)

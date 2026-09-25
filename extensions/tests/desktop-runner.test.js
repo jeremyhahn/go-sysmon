@@ -39,8 +39,15 @@ const FAKES = {
     "sysmon-server": `#!/bin/sh
 exec sleep 60 </dev/null >/dev/null 2>&1
 `,
+    // curl answers GET /api/interval with the interval the server runs at:
+    // the applet's 500 ms once its push has landed, or the schema default's
+    // 1000 ms when the applet never read its settings file.
     curl: `#!/bin/sh
 [ "$FAKE_SERVER" = "down" ] && exit 7
+for url; do :; done
+case "$url" in
+    */api/interval) printf '{"interval_ms":%s,"fleet_interval_ms":0}\n' "$FAKE_SERVER_INTERVAL" ;;
+esac
 exit 0
 `,
     Xorg: `#!/bin/sh
@@ -48,6 +55,7 @@ exit 0
 fd=""
 while [ $# -gt 0 ]; do
     [ "$1" = "-displayfd" ] && fd="$2"
+    [ "$1" = "-logfile" ] && echo "X.Org X Server 1.21.1" > "$2"
     shift
 done
 eval "printf '99\\n' >&$fd"
@@ -124,6 +132,23 @@ fi
 reply() { printf "(true, '%s')\\n" "$1"; exit 0; }
 case "$js" in
     "1+1") reply 2 ;;
+    # The popup checks (#233). FAKE_POPUP=rebuilt is an applet that refills
+    # the popup while it is closed; stale is one that opens before it
+    # catches up.
+    *"stale when shown: "*)
+        [ "$FAKE_POPUP" = "stale" ] && reply "open: true, stale when shown: true"
+        reply "open: true, stale when shown: false" ;;
+    *"return 'open: ' + applet.menu.isOpen; })()") reply "open: true" ;;
+    *"return 'closed: ' + !applet.menu.isOpen; })()") reply "closed: true" ;;
+    *"return 'watching'; })()") reply watching ;;
+    *"return 'marked'; })()") reply marked ;;
+    *"', text changes: '"*)
+        [ "$FAKE_POPUP" = "rebuilt" ] && reply "snapshots applied: 2, rows: 294, replaced: 294, text changes: 287"
+        reply "snapshots applied: 2, rows: 295, replaced: 0, text changes: 0" ;;
+    *"'interval: ' + applet.updateInterval"*)
+        [ "$FAKE_SERVER_INTERVAL" = "500" ] && reply "interval: 500 ms, server: localhost:8080"
+        reply "interval: $FAKE_SERVER_INTERVAL ms, server: localhost:8080" ;;
+    *"_sysmonTestTextChanges === 0"*) [ "$FAKE_POPUP" = "rebuilt" ] && reply false; reply true ;;
     *"runState === "*)
         echo $((polls + 1)) > "$count_file"
         reply "$running" ;;
@@ -138,13 +163,19 @@ case "$js" in
         reply 10 ;;
     *"indexOf('undefined')"*) reply false ;;
     *"get_text()") reply "CPU: 12%" ;;
+    *"_sysmonTestSlowApplies = 0"*) reply slowed ;;
+    *"_sysmonTestSlowApplies >= "*)
+        case "$FAKE_GAUGE" in zero-width|starved) reply false ;; esac
+        reply true ;;
     *"queue_repaint"*) reply queued ;;
     *"get_allocation_box"*"String("*) [ "$FAKE_GAUGE" = "zero-width" ] && reply false; reply true ;;
     *"get_allocation_box"*) [ "$FAKE_GAUGE" = "zero-width" ] && reply 0x40; reply 60x40 ;;
     *"_sysmonTestPaints > 0)")
         [ -n "$FAKE_PAINT_ERROR" ] && printf '%s\\n' "$FAKE_PAINT_ERROR" >> "$CINNAMON_LOG"
         [ "$FAKE_GAUGE" = "zero-width" ] && reply false; reply true ;;
-    *"_sysmonTestPaints)") [ "$FAKE_GAUGE" = "zero-width" ] && reply 0; reply 1 ;;
+    *"stage frames"*)
+        [ "$FAKE_GAUGE" = "zero-width" ] && reply "paints: 0, stage frames: 1, mapped: true, visible: true"
+        reply "paints: 1, stage frames: 1, mapped: true, visible: true" ;;
     *) reply true ;;
 esac
 `,
@@ -182,7 +213,8 @@ function runRunner(scenario = {}) {
                 HOME: dir,
                 TMPDIR: dir,
                 XDG_RUNTIME_DIR: path.join(dir, "run"),
-                CINNAMON_LOG: path.join(dir, "cinnamon.log"),
+                LOG_DIR: path.join(dir, "logs"),
+                CINNAMON_LOG: path.join(dir, "logs", "cinnamon.log"),
                 DRM_CLASS_DIR: drmDir,
                 SYSTEM_BUS_DIR: path.join(dir, "run-dbus"),
                 UDISKSD: path.join(bin, "udisksd"),
@@ -202,18 +234,27 @@ function runRunner(scenario = {}) {
                 FAKE_MISSING_SERVICE: scenario.missingService ?? "",
                 FAKE_SWITCHEROO: scenario.switcheroo ?? "absent",
                 FAKE_LATE_LOG: scenario.lateLog ?? "",
+                FAKE_POPUP: scenario.popup ?? "fresh",
+                FAKE_SERVER_INTERVAL: scenario.serverInterval ?? "500",
             },
         });
         assert.ifError(result.error);
 
         const lines = result.stdout.split("\n");
         const pollsFile = path.join(dir, "runstate-polls");
+        // What the run left in LOG_DIR, which make test-extensions-desktop
+        // copies out of the container once the runner has exited.
+        const logDir = path.join(dir, "logs");
+        const logs = fs.existsSync(logDir)
+            ? Object.fromEntries(fs.readdirSync(logDir).map((f) => [f, fs.readFileSync(path.join(logDir, f), "utf8")]))
+            : {};
         return {
             status: result.status,
             // How many times the runner asked whether Cinnamon had finished
             // starting: what its wait did, counted rather than timed.
             runStatePolls: fs.existsSync(pollsFile) ? Number(fs.readFileSync(pollsFile, "utf8").trim()) : 0,
             stdout: result.stdout,
+            logs,
             ok: lines.filter((l) => l.startsWith("ok   ")),
             failed: lines.filter((l) => l.startsWith("FAIL ")),
             notRun: lines.filter((l) => l.startsWith("n/a  ")),
@@ -229,8 +270,26 @@ test("a healthy session passes every check and exits zero", () => {
     assert.strictEqual(run.status, 0, run.stdout);
     assert.deepStrictEqual(run.failed, []);
     assert.deepStrictEqual(run.notRun, []);
-    assert.strictEqual(run.ok.length, 18, run.stdout);
+    assert.strictEqual(run.ok.length, 30, run.stdout);
     assert.match(run.stdout, /inconclusive: 0/);
+});
+
+// The session's logs are what a failed CI run uploads (#225). They used to be
+// written to the scratch directory, which the runner removes on exit, so every
+// one but cinnamon.log was gone before anything could copy it out.
+test("every session log outlives the run, in LOG_DIR", () => {
+    const run = runRunner();
+
+    assert.strictEqual(run.status, 0, run.stdout);
+    assert.deepStrictEqual(Object.keys(run.logs).sort(), ["cinnamon.log", "system-bus.log", "udisksd.log", "xorg.log"]);
+    assert.match(run.logs["xorg.log"], /X\.Org X Server/);
+});
+
+test("a failed run keeps the log that explains it", () => {
+    const run = runRunner({ systemBus: "complains" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.match(run.logs["system-bus.log"] ?? "", /Unknown username "whoopsie"/);
 });
 
 // Job 42277, 2026-09-03: Eval answered and the panel existed before
@@ -263,7 +322,7 @@ test("a session that never finishes starting passes nothing", () => {
     assert.deepStrictEqual(run.failed, [
         "FAIL Cinnamon never finished starting (runState did not reach RUNNING)",
     ]);
-    assert.strictEqual(run.notRun.length, 17, run.stdout);
+    assert.strictEqual(run.notRun.length, 29, run.stdout);
     // "Never" is a verdict on several observations, not on however few fit in
     // the timeout on a loaded host.
     assert.ok(run.runStatePolls >= 3, `the runner gave up after ${run.runStatePolls} polls`);
@@ -422,9 +481,58 @@ test("a gauge with no width that is never painted fails the run", () => {
     assert.deepStrictEqual(run.failed, [
         "FAIL the panel gauge has a non-zero allocation",
         "FAIL Clutter painted the panel gauge",
+        "FAIL the gauge is painted while snapshots are slower to apply than the interval",
     ]);
     assert.match(run.stdout, /allocation: 0x40/);
-    assert.match(run.stdout, /paints: 0/);
+    assert.match(run.stdout, /paints: 0, stage frames: 1, mapped: true, visible: true/);
+});
+
+// Issue #234: the runner wrote the applet's settings where Cinnamon never
+// looked, so the applet ran on the schema's defaults and pushed 1000 ms to the
+// server. Nothing noticed.
+test("an applet that never read its settings file fails the run", () => {
+    const run = runRunner({ serverInterval: "1000" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, [
+        "FAIL the applet uses the settings file",
+        "FAIL the server runs at the applet's interval",
+    ]);
+    assert.match(run.stdout, /got: +interval: 1000 ms, server: localhost:8080/);
+    assert.match(run.stdout, /interval: 1000 ms, expected 500 ms/);
+});
+
+// Issue #233: an applet that rebuilds its popup on every snapshot, open or
+// not, spends the compositor thread on rows nobody can see.
+test("a popup refilled while it is closed fails the run", () => {
+    const run = runRunner({ popup: "rebuilt" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL a closed popup is left alone while snapshots arrive"]);
+    assert.match(run.stdout, /replaced: 294, text changes: 287/);
+});
+
+// A popup that catches up only after Cinnamon has laid it out opens at the
+// wrong size.
+test("a popup shown before it caught up fails the run", () => {
+    const run = runRunner({ popup: "stale" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL opening the popup brings it up to date before it is shown"]);
+});
+
+// Issue #232: while each snapshot took longer than the interval to apply, the
+// applet kept Cinnamon's main loop busy above Clutter's redraw priority, and
+// nothing was painted. A gauge that paints once and then stops fails the run.
+test("a gauge that stops painting while snapshots are slow to apply fails the run", () => {
+    const run = runRunner({ gauge: "starved" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, [
+        "FAIL the gauge is painted while snapshots are slower to apply than the interval",
+    ]);
+    assert.ok(run.ok.includes("ok   Clutter painted the panel gauge"), run.stdout);
+    assert.ok(run.ok.includes("ok   applying a snapshot is fast again"), run.stdout);
 });
 
 // A handler that throws still lets later handlers run, so a paint counter alone

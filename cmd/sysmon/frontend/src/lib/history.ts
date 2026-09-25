@@ -12,8 +12,9 @@ import type {
   HistoryUnit,
 } from "$lib/types";
 
-const CATALOG_URL = "/api/history/metrics";
-const HISTORY_URL = "/api/history";
+// Relative to the page, like every API URL: see EVENTS_URL in transport.ts.
+const CATALOG_URL = "api/history/metrics";
+const HISTORY_URL = "api/history";
 
 /** A named window offered by the picker, in milliseconds. */
 export interface RangePreset {

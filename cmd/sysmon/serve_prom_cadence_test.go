@@ -214,9 +214,9 @@ func TestHistoryCadenceValidator_NeverAsksTheDatabase(t *testing.T) {
 	if _, err := q.LookbackAt(context.Background(), db.URL); err != nil {
 		t.Fatal(err)
 	}
-	var refused *config.ErrHistoryCadence
+	var refused *config.HistoryCadenceError
 	if err := validate(writing(db.URL+"/api/v1/write", db.URL, 240000)); !errors.As(err, &refused) {
-		t.Fatalf("with the lookback cached: %v, want *ErrHistoryCadence", err)
+		t.Fatalf("with the lookback cached: %v, want *HistoryCadenceError", err)
 	}
 	passing := writing(db.URL+"/api/v1/write", db.URL, 1000)
 	passing.Server.IntervalMs = 1000

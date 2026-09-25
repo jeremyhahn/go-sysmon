@@ -111,9 +111,9 @@ func TestWrite_RejectionWithUnreadableBody(t *testing.T) {
 	w := NewWriter(srv.URL, 5*time.Second, discardLog)
 	err := w.Write(context.Background(), []Series{{Labels: []Label{{Name: "__name__", Value: "up"}}, Samples: []Sample{{Value: 1, TimeMs: 1}}}})
 
-	var rw *ErrRemoteWrite
+	var rw *RemoteWriteError
 	if !errors.As(err, &rw) {
-		t.Fatalf("Write() = %v, want *ErrRemoteWrite", err)
+		t.Fatalf("Write() = %v, want *RemoteWriteError", err)
 	}
 	if rw.Status != http.StatusBadRequest {
 		t.Errorf("Status = %d, want 400", rw.Status)

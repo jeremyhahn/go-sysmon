@@ -66,55 +66,67 @@ func onTrayReady(mon *monitor.Monitor, showWindow func(), quit func(), stopCh <-
 	systray.SetIcon(trayIcon(drawTrayIcon(), slog.Default()))
 	systray.SetTooltip("System Monitor")
 
-	// Stat display items (read-only).
-	itemCPU := systray.AddMenuItem("CPU:  --", "CPU usage")
-	itemCPU.Disable()
+	menu := newTrayMenu()
+	go menu.serve(mon, mon.Subscribe(), showWindow, quit, stopCh)
+}
 
-	itemRAM := systray.AddMenuItem("RAM:  --", "Memory usage")
-	itemRAM.Disable()
+// trayMenu is the tray's menu: the read-only stat items, one item per GPU
+// once a snapshot has reported them, and the two actions.
+type trayMenu struct {
+	cpu, ram, swap, load *systray.MenuItem
+	gpus                 []*systray.MenuItem
+	show, quit           *systray.MenuItem
+}
 
-	itemSwap := systray.AddMenuItem("Swap: --", "Swap usage")
-	itemSwap.Disable()
-
-	itemLoad := systray.AddMenuItem("Load: --", "Load average (1m/5m/15m)")
-	itemLoad.Disable()
-
-	// GPU items are added dynamically on first snapshot; we track them here.
-	gpuItems := make([]*systray.MenuItem, 0)
-
+// newTrayMenu adds the menu's items to the tray. The stat items are disabled,
+// since there is nothing to do by clicking a reading, and read "--" until the
+// first snapshot arrives.
+func newTrayMenu() *trayMenu {
+	stat := func(title, tooltip string) *systray.MenuItem {
+		item := systray.AddMenuItem(title, tooltip)
+		item.Disable()
+		return item
+	}
+	m := &trayMenu{
+		cpu:  stat("CPU:  --", "CPU usage"),
+		ram:  stat("RAM:  --", "Memory usage"),
+		swap: stat("Swap: --", "Swap usage"),
+		load: stat("Load: --", "Load average (1m/5m/15m)"),
+	}
 	systray.AddSeparator()
-	mShow := systray.AddMenuItem("Open Monitor", "Show the monitor window")
+	m.show = systray.AddMenuItem("Open Monitor", "Show the monitor window")
 	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("Quit", "Quit the application")
+	m.quit = systray.AddMenuItem("Quit", "Quit the application")
+	return m
+}
 
-	sub := mon.Subscribe()
+// serve keeps the menu current from sub and answers its actions, until
+// stopCh is closed, the subscription ends, or Quit is clicked. It
+// unsubscribes from mon when it returns.
+func (m *trayMenu) serve(mon *monitor.Monitor, sub *monitor.Subscriber, showWindow, quit func(), stopCh <-chan struct{}) {
+	defer mon.Unsubscribe(sub.ID)
+	for {
+		select {
+		case <-stopCh:
+			return
 
-	go func() {
-		defer mon.Unsubscribe(sub.ID)
+		case <-sub.Done:
+			return
 
-		for {
-			select {
-			case <-stopCh:
-				return
-
-			case <-sub.Done:
-				return
-
-			case snap, ok := <-sub.Ch:
-				if !ok {
-					return
-				}
-				updateTrayItems(snap, itemCPU, itemRAM, itemSwap, itemLoad, &gpuItems)
-
-			case <-mShow.ClickedCh:
-				showWindow()
-
-			case <-mQuit.ClickedCh:
-				quit()
+		case snap, ok := <-sub.Ch:
+			if !ok {
 				return
 			}
+			m.update(snap)
+
+		case <-m.show.ClickedCh:
+			showWindow()
+
+		case <-m.quit.ClickedCh:
+			quit()
+			return
 		}
-	}()
+	}
 }
 
 // trayMenuTitles holds the title of every stat item in the tray menu for one
@@ -164,32 +176,23 @@ func newTrayMenuTitles(snap *types.Snapshot) trayMenuTitles {
 	return titles
 }
 
-// updateTrayItems refreshes the title of each stat menu item from snap.
-// gpuItems is grown on the first snapshot that contains GPUs; subsequent
-// calls update the existing items in-place.
-func updateTrayItems(
-	snap *types.Snapshot,
-	itemCPU, itemRAM, itemSwap, itemLoad *systray.MenuItem,
-	gpuItems *[]*systray.MenuItem,
-) {
+// update refreshes the title of each stat item from snap. A GPU item is
+// added the first time a snapshot reports that many GPUs, and updated in
+// place after that.
+func (m *trayMenu) update(snap *types.Snapshot) {
 	titles := newTrayMenuTitles(snap)
-	itemCPU.SetTitle(titles.CPU)
-	itemRAM.SetTitle(titles.RAM)
-	itemSwap.SetTitle(titles.Swap)
-	itemLoad.SetTitle(titles.Load)
+	m.cpu.SetTitle(titles.CPU)
+	m.ram.SetTitle(titles.RAM)
+	m.swap.SetTitle(titles.Swap)
+	m.load.SetTitle(titles.Load)
 
-	// Grow the GPU item slice to match the number of GPUs in this snapshot.
-	for i := len(*gpuItems); i < len(titles.GPUs); i++ {
-		item := systray.AddMenuItem(
-			fmt.Sprintf("GPU%d: --", i),
-			fmt.Sprintf("GPU %d usage", i),
-		)
+	for i := len(m.gpus); i < len(titles.GPUs); i++ {
+		item := systray.AddMenuItem(fmt.Sprintf("GPU%d: --", i), fmt.Sprintf("GPU %d usage", i))
 		item.Disable()
-		*gpuItems = append(*gpuItems, item)
+		m.gpus = append(m.gpus, item)
 	}
-
 	for i, title := range titles.GPUs {
-		(*gpuItems)[i].SetTitle(title)
+		m.gpus[i].SetTitle(title)
 	}
 }
 

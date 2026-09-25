@@ -53,7 +53,10 @@ const megasasIOCFirmware uintptr = 0xC1944D01
 // that path does not exist, and is smartctl's own synthetic naming for this
 // node. Following it is why `smartctl -d megaraid,0 /dev/sda` fails in a way
 // that reads as "this hardware cannot report".
-const megaraidIoctlNode = "/dev/megaraid_sas_ioctl_node"
+//
+// A variable so tests can point the session at a node that is absent, or at
+// one that refuses the controller command, without a controller on the host.
+var megaraidIoctlNode = "/dev/megaraid_sas_ioctl_node"
 
 // Layout of struct megasas_iocpacket, which is __packed. It is assembled as a
 // byte slice rather than as a Go struct because Go has no packed attribute and
@@ -133,36 +136,36 @@ const megaraidSenseLen = 32
 // megaraidTimeoutSeconds bounds one passthrough command at the firmware.
 const megaraidTimeoutSeconds uint16 = 10
 
-// ErrMegaRAIDStatus reports a passthrough the controller accepted and did not
+// MegaRAIDStatusError reports a passthrough the controller accepted and did not
 // complete. Status is the MFI command status.
-type ErrMegaRAIDStatus struct {
+type MegaRAIDStatusError struct {
 	Op       string
 	DeviceID uint16
 	Status   uint8
 }
 
-func (e *ErrMegaRAIDStatus) Error() string {
+func (e *MegaRAIDStatusError) Error() string {
 	return fmt.Sprintf("megaraid: %s for device %d returned MFI status 0x%02X", e.Op, e.DeviceID, e.Status)
 }
 
-// ErrMegaRAIDIoctl reports a failed MEGASAS_IOC_FIRMWARE call.
-type ErrMegaRAIDIoctl struct {
+// MegaRAIDIoctlError reports a failed MEGASAS_IOC_FIRMWARE call.
+type MegaRAIDIoctlError struct {
 	Op    string
 	Errno syscall.Errno
 }
 
-func (e *ErrMegaRAIDIoctl) Error() string {
+func (e *MegaRAIDIoctlError) Error() string {
 	return fmt.Sprintf("megaraid: MEGASAS_IOC_FIRMWARE (%s) failed: %v", e.Op, e.Errno)
 }
 
 // Unwrap exposes the errno so a refusal is visible to errors.Is.
-func (e *ErrMegaRAIDIoctl) Unwrap() error { return e.Errno }
+func (e *MegaRAIDIoctlError) Unwrap() error { return e.Errno }
 
 // megaraidMaxTargetID is the largest device ID the MFI passthrough frame can
 // carry: target_id is a single byte in the structure the driver reads.
 const megaraidMaxTargetID = 0xFF
 
-// ErrMegaRAIDUnaddressable reports a drive whose device ID does not fit the
+// MegaRAIDUnaddressableError reports a drive whose device ID does not fit the
 // frame field that must carry it.
 //
 // It exists so the alternative cannot happen. Narrowing a uint16 device ID to
@@ -178,12 +181,12 @@ const megaraidMaxTargetID = 0xFF
 // sibling's data.
 //
 // A width a device gave us is not ours to narrow silently.
-type ErrMegaRAIDUnaddressable struct {
+type MegaRAIDUnaddressableError struct {
 	Op       string
 	DeviceID uint16
 }
 
-func (e *ErrMegaRAIDUnaddressable) Error() string {
+func (e *MegaRAIDUnaddressableError) Error() string {
 	return fmt.Sprintf("megaraid: %s cannot address device %d: the passthrough frame carries an 8-bit target and %d does not fit",
 		e.Op, e.DeviceID, e.DeviceID)
 }
@@ -194,10 +197,10 @@ func (e *ErrMegaRAIDUnaddressable) Error() string {
 // It is pure apart from the two userspace pointers the caller patches in, which
 // is what lets the wire format be verified without a RAID controller to hand.
 // It returns an error rather than truncating a device ID that does not fit the
-// frame: see ErrMegaRAIDUnaddressable.
+// frame: see MegaRAIDUnaddressableError.
 func buildPassthroughPacket(hostNo, deviceID uint16, cdb []byte, dataLen int, op string) ([]byte, error) {
 	if deviceID > megaraidMaxTargetID {
-		return nil, &ErrMegaRAIDUnaddressable{Op: op, DeviceID: deviceID}
+		return nil, &MegaRAIDUnaddressableError{Op: op, DeviceID: deviceID}
 	}
 	pkt := make([]byte, iocPacketLen)
 	binary.LittleEndian.PutUint16(pkt[iocHostNo:], hostNo)
@@ -285,7 +288,7 @@ func megaraidIssue(fd uintptr, pkt []byte, statusOff int, data, sense []byte, op
 	keepAlive(sense)
 
 	if errno != 0 {
-		return 0, &ErrMegaRAIDIoctl{Op: op, Errno: errno}
+		return 0, &MegaRAIDIoctlError{Op: op, Errno: errno}
 	}
 	return pkt[iocFrame+statusOff], nil
 }
@@ -305,7 +308,7 @@ func megaraidSCSI(fd uintptr, hostNo, deviceID uint16, cdb []byte, dataLen int, 
 		return nil, issueErr
 	}
 	if status != mfiStatusOK {
-		return nil, &ErrMegaRAIDStatus{Op: op, DeviceID: deviceID, Status: status}
+		return nil, &MegaRAIDStatusError{Op: op, DeviceID: deviceID, Status: status}
 	}
 
 	// The MFI status says the CONTROLLER carried the command. The SCSI status
@@ -332,13 +335,13 @@ func megaraidSCSI(fd uintptr, hostNo, deviceID uint16, cdb []byte, dataLen int, 
 // "did the drive answer" is not something to leave untested.
 func checkSCSIStatus(pkt, sense []byte, op string, deviceID uint16) error {
 	if len(pkt) < iocFrame+pthruSCSIStatus+1 {
-		return &ErrMegaRAIDShortResponse{Op: op, Want: iocFrame + pthruSCSIStatus + 1, Got: len(pkt)}
+		return &MegaRAIDShortResponseError{Op: op, Want: iocFrame + pthruSCSIStatus + 1, Got: len(pkt)}
 	}
 	status := pkt[iocFrame+pthruSCSIStatus]
 	if status == scsiStatusGood {
 		return nil
 	}
-	return &ErrSCSIStatus{Op: op, DeviceID: deviceID, Status: status, Sense: parseSenseKey(sense)}
+	return &SCSIStatusError{Op: op, DeviceID: deviceID, Status: status, Sense: parseSenseKey(sense)}
 }
 
 // scsiStatusGood is SCSI status GOOD. Anything else -- CHECK CONDITION (0x02),
@@ -376,16 +379,16 @@ func parseSenseKey(sense []byte) senseKey {
 	return senseKey{}
 }
 
-// ErrSCSIStatus reports a command the controller delivered and the drive
+// SCSIStatusError reports a command the controller delivered and the drive
 // refused.
-type ErrSCSIStatus struct {
+type SCSIStatusError struct {
 	Op       string
 	DeviceID uint16
 	Status   uint8
 	Sense    senseKey
 }
 
-func (e *ErrSCSIStatus) Error() string {
+func (e *SCSIStatusError) Error() string {
 	if !e.Sense.Valid {
 		return fmt.Sprintf("megaraid: %s on device %d returned SCSI status 0x%02X with no decodable sense",
 			e.Op, e.DeviceID, e.Status)
@@ -405,7 +408,7 @@ func megaraidDCMD(fd uintptr, hostNo uint16, opcode uint32, mbox []byte, dataLen
 		return nil, err
 	}
 	if status != mfiStatusOK {
-		return nil, &ErrMegaRAIDStatus{Op: op, Status: status}
+		return nil, &MegaRAIDStatusError{Op: op, Status: status}
 	}
 	return data, nil
 }

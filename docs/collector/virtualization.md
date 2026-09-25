@@ -127,7 +127,7 @@ Guest configuration is parsed from the command line:
 | `memory_bytes` | `-m`, accepting `4096`, `4G` and `size=65536000k` |
 | `accelerator` | `-accel`, or `accel=` inside `-machine` |
 | `mac_addresses` | MACs in `-device` netdev arguments |
-| `disk_images` | `filename` in `-blockdev` arguments |
+| `disk_images` | the `filename` of every `-blockdev` argument, in qemu's JSON or `key=value` form, whatever the image's format: qcow2, raw, `.img`, or a host block device |
 | `rss_bytes` | the hypervisor process itself |
 | `cpu_percent` | CPU-time delta over the sampling window, as a percentage of one core. **Not** the process's lifetime average, which for a guest running for days understates current usage severalfold |
 
@@ -143,7 +143,7 @@ because guest memory is faulted in lazily.
 | `thread_count` | thread directory count | Every thread including I/O and emulation workers |
 | `uptime_seconds` | process start time | How long the guest has been running |
 | `net_rx_rate` / `net_tx_rate` | joined from the tap interfaces | The guest's real network throughput, measured from the host. **Reported from the guest's perspective**: traffic the host receives on the tap is traffic the guest sent |
-| `disk_image_bytes` | `stat` of the image files | On-disk size; 0 when the images are not readable by this user |
+| `disk_image_bytes` | `stat` of each image file; for a host block device, its capacity from `/sys/dev/block/<major>:<minor>/size` | On-disk size of the images plus the capacity of whole devices; a disk this user cannot stat adds 0 |
 
 The GUI compares total vCPUs against host threads and highlights the count
 when the guests are oversubscribed.

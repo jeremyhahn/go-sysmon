@@ -171,9 +171,9 @@ func TestView_LocalSwapRateFromConsecutiveSnapshots(t *testing.T) {
 	}
 }
 
-// TestErrNoReading_NamesTheNode: the 404 body says which node had nothing.
-func TestErrNoReading_NamesTheNode(t *testing.T) {
-	err := &fleet.ErrNoReading{Node: "mon0"}
+// TestNoReadingError_NamesTheNode: the 404 body says which node had nothing.
+func TestNoReadingError_NamesTheNode(t *testing.T) {
+	err := &fleet.NoReadingError{Node: "mon0"}
 	if got := err.Error(); got != "no reading yet from fleet node mon0" {
 		t.Errorf("Error() = %q", got)
 	}
@@ -198,7 +198,7 @@ func TestPeerSnapshot_ConcurrentDrillInsOfADeadPeerShareOneAttempt(t *testing.T)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var status *fleet.ErrPeerStatus
+			var status *fleet.PeerStatusError
 			if _, err := p.PeerSnapshot(context.Background(), "omega", time.Minute); !errors.As(err, &status) {
 				t.Errorf("PeerSnapshot(omega) = %v; want the peer's 503", err)
 			}
@@ -525,16 +525,16 @@ func TestPeerSnapshot_ARepointDuringTheFetchIsNotServed(t *testing.T) {
 	p := fleet.New(func() config.Fleet { return *cfg.Load() },
 		func() (*types.Snapshot, *types.Snapshot, time.Duration) { return nil, nil, 0 }, func() string { return "local" }, quiet())
 
-	var moved *fleet.ErrPeerMoved
+	var moved *fleet.PeerMovedError
 	if got, err := p.PeerSnapshot(context.Background(), "db", time.Minute); !errors.As(err, &moved) {
-		t.Fatalf("drill-in overtaken by a reload = %+v, %v; want ErrPeerMoved", got, err)
+		t.Fatalf("drill-in overtaken by a reload = %+v, %v; want PeerMovedError", got, err)
 	}
 	got, err := p.PeerSnapshot(context.Background(), "db", time.Minute)
 	if err != nil || got.Snapshot.Host.Hostname != "new-machine" {
 		t.Errorf("next drill-in = %+v, %v; want the new machine", got, err)
 	}
-	if (&fleet.ErrPeerMoved{Peer: "db"}).Error() == "" {
-		t.Error("ErrPeerMoved has no message")
+	if (&fleet.PeerMovedError{Peer: "db"}).Error() == "" {
+		t.Error("PeerMovedError has no message")
 	}
 }
 

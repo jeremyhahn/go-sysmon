@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -37,7 +36,7 @@ func runStorageCmd(cmd *cobra.Command, _ []string) error {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(snap.Disks)
 		}
 		if err := cli.RenderStorage(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render storage: %w", err)
+			return &cli.RenderError{Function: "storage", Cause: err}
 		}
 		return nil
 	})

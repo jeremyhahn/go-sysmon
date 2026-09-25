@@ -384,7 +384,7 @@ func (c *DiskCollector) applySMARTRead(devName string, info *types.DiskInfo, rea
 
 	classifySMARTFailure(devName, err, info)
 
-	var permErr *ErrSMARTPermission
+	var permErr *SMARTPermissionError
 	if isPermissionError(err, &permErr) {
 		// A privilege denial cannot resolve itself mid-run; warn once per
 		// device so the condition is visible without repeating.
@@ -397,10 +397,10 @@ func (c *DiskCollector) applySMARTRead(devName string, info *types.DiskInfo, rea
 	c.logger.Debug("disk: SMART read failed", "device", devName, "error", err)
 }
 
-// isPermissionError returns true when err is an *ErrSMARTPermission and
+// isPermissionError returns true when err is an *SMARTPermissionError and
 // populates dst.
-func isPermissionError(err error, dst **ErrSMARTPermission) bool {
-	if pe, ok := err.(*ErrSMARTPermission); ok {
+func isPermissionError(err error, dst **SMARTPermissionError) bool {
+	if pe, ok := err.(*SMARTPermissionError); ok {
 		*dst = pe
 		return true
 	}

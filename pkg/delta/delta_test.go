@@ -838,6 +838,28 @@ func TestDiff_FallsBackWhenIdentitiesAreUnusable(t *testing.T) {
 	}
 }
 
+// TestDiffApply_MultiSocketCoreTempsArePositional covers a two-socket host,
+// where both packages report a core 0. A change to one socket's core must reach
+// that core alone, by position, and never be matched to the other socket's.
+func TestDiffApply_MultiSocketCoreTempsArePositional(t *testing.T) {
+	before := tree(t, `{"sensors":{"core_temps":[`+
+		`{"package_id":0,"core_id":0,"temp_celsius":40},{"package_id":1,"core_id":0,"temp_celsius":50}]}}`)
+	after := tree(t, `{"sensors":{"core_temps":[`+
+		`{"package_id":0,"core_id":0,"temp_celsius":40},{"package_id":1,"core_id":0,"temp_celsius":71}]}}`)
+
+	patch, got := roundTrip(t, before, after)
+	if !reflect.DeepEqual(got, after) {
+		t.Fatalf("the patch did not reconstruct the change: got %v", got)
+	}
+	temps := patch.Object["sensors"].Object["core_temps"]
+	if temps.Keyed != nil {
+		t.Fatal("core_temps was keyed; core_id repeats across sockets and cannot identify a core")
+	}
+	if _, touched := temps.Index["0"]; touched || temps.Index["1"] == nil {
+		t.Fatalf("expected a patch to position 1 alone, got %+v", temps.Index)
+	}
+}
+
 // order wraps a literal for the pointer field. Order is a pointer because an
 // empty order is a real membership -- the array is now empty -- and a plain
 // slice with omitempty encodes that identically to "membership unchanged".

@@ -55,7 +55,7 @@ func Check(req *http.Request, via []*http.Request) error {
 		return nil
 	}
 	if len(via) >= maxRedirects {
-		return &ErrRedirect{
+		return &RedirectError{
 			From:   via[0].URL.String(),
 			To:     req.URL.String(),
 			Reason: fmt.Sprintf("more than %d redirects", maxRedirects),
@@ -66,34 +66,34 @@ func Check(req *http.Request, via []*http.Request) error {
 	prev := via[len(via)-1]
 	switch {
 	case req.URL.Scheme != "http" && req.URL.Scheme != "https":
-		return &ErrRedirect{From: orig.String(), To: req.URL.String(),
+		return &RedirectError{From: orig.String(), To: req.URL.String(),
 			Reason: fmt.Sprintf("scheme %q is not http or https", req.URL.Scheme)}
 	case orig.Scheme == "https" && req.URL.Scheme != "https":
-		return &ErrRedirect{From: orig.String(), To: req.URL.String(),
+		return &RedirectError{From: orig.String(), To: req.URL.String(),
 			Reason: "refuses to downgrade https to " + req.URL.Scheme}
 	case req.URL.Host != orig.Host:
-		return &ErrRedirect{From: orig.String(), To: req.URL.String(),
+		return &RedirectError{From: orig.String(), To: req.URL.String(),
 			Reason: "redirect leaves the configured host"}
 	// Last, so a hop that is both off-host and method-changing is reported as
 	// the off-host one. Either refusal is correct; naming the destination is
 	// more use to whoever reads the log than naming the verb.
 	case req.Method != prev.Method:
-		return &ErrRedirect{From: orig.String(), To: req.URL.String(),
+		return &RedirectError{From: orig.String(), To: req.URL.String(),
 			Reason: fmt.Sprintf("redirect rewrites the %s as a %s, discarding the request body",
 				prev.Method, req.Method)}
 	}
 	return nil
 }
 
-// ErrRedirect reports a redirect that would have moved a request off the
+// RedirectError reports a redirect that would have moved a request off the
 // configured endpoint. It names the hop, and is deliberately built only from
 // URLs the operator already configured or the endpoint itself returned.
-type ErrRedirect struct {
+type RedirectError struct {
 	From   string
 	To     string
 	Reason string
 }
 
-func (e *ErrRedirect) Error() string {
+func (e *RedirectError) Error() string {
 	return fmt.Sprintf("refusing redirect from %s to %s: %s", e.From, e.To, e.Reason)
 }

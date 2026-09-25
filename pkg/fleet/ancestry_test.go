@@ -28,16 +28,16 @@ func TestParseAncestry(t *testing.T) {
 	if chain, err := ParseAncestry(id + "," + newInstanceID()); err != nil || len(chain) != 2 {
 		t.Errorf("two IDs = %v, %v", chain, err)
 	}
-	var invalid *ErrInvalidAncestry
+	var invalid *InvalidAncestryError
 	for _, bad := range []string{"x", id + ",", "abc" + id[3:], id + " "} {
 		if _, err := ParseAncestry(bad); !errors.As(err, &invalid) || !strings.Contains(err.Error(), HeaderAncestry) {
-			t.Errorf("ParseAncestry(%q) = %v, want ErrInvalidAncestry", bad, err)
+			t.Errorf("ParseAncestry(%q) = %v, want InvalidAncestryError", bad, err)
 		}
 	}
 	long := strings.TrimSuffix(strings.Repeat(id+",", MaxTreeDepth+2), ",")
-	var deep *ErrTreeTooDeep
+	var deep *TreeTooDeepError
 	if _, err := ParseAncestry(long); !errors.As(err, &deep) {
-		t.Errorf("a chain past the depth limit = %v, want ErrTreeTooDeep", err)
+		t.Errorf("a chain past the depth limit = %v, want TreeTooDeepError", err)
 	}
 }
 
@@ -46,17 +46,17 @@ func TestParseAncestry(t *testing.T) {
 // too deep. Both are refused, and neither is a name conflict.
 func TestCheckAncestry(t *testing.T) {
 	p, _ := treePoller(t)
-	var loop *ErrFleetLoop
+	var loop *FleetLoopError
 	if err := p.CheckAncestry([]string{newInstanceID(), p.InstanceID()}); !errors.As(err, &loop) || err.Error() == "" {
-		t.Errorf("own ID in the chain = %v, want ErrFleetLoop", err)
+		t.Errorf("own ID in the chain = %v, want FleetLoopError", err)
 	}
 	chain := make([]string, MaxTreeDepth+1)
 	for i := range chain {
 		chain[i] = newInstanceID()
 	}
-	var deep *ErrTreeTooDeep
+	var deep *TreeTooDeepError
 	if err := p.CheckAncestry(chain); !errors.As(err, &deep) || !strings.Contains(err.Error(), strconv.Itoa(MaxTreeDepth)) {
-		t.Errorf("a chain of %d = %v, want ErrTreeTooDeep", len(chain), err)
+		t.Errorf("a chain of %d = %v, want TreeTooDeepError", len(chain), err)
 	}
 	if err := p.CheckAncestry(chain[:MaxTreeDepth]); err != nil {
 		t.Errorf("a chain of %d = %v, want admitted", MaxTreeDepth, err)
@@ -115,11 +115,11 @@ func TestParseBudget(t *testing.T) {
 	}
 }
 
-func TestErrFleetRefused(t *testing.T) {
-	if !strings.Contains((&ErrFleetRefused{Peer: "m", Reason: RefusalDepth}).Error(), "deeper") {
+func TestFleetRefusedError(t *testing.T) {
+	if !strings.Contains((&FleetRefusedError{Peer: "m", Reason: RefusalDepth}).Error(), "deeper") {
 		t.Error("a depth refusal does not say so")
 	}
-	if !strings.Contains((&ErrFleetRefused{Peer: "m", Reason: RefusalLoop}).Error(), "loop") {
+	if !strings.Contains((&FleetRefusedError{Peer: "m", Reason: RefusalLoop}).Error(), "loop") {
 		t.Error("a loop refusal does not say so")
 	}
 }

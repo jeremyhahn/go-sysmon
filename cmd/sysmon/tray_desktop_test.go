@@ -10,9 +10,14 @@ import (
 	"image/png"
 	"log/slog"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"fyne.io/systray"
+	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/pkg/monitor"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
@@ -205,5 +210,156 @@ func TestTrayIcon_EncodeFailureFallsBack(t *testing.T) {
 func TestTrayRunning_FalseBeforeStart(t *testing.T) {
 	if trayRunning() {
 		t.Error("trayRunning() = true before startSystray")
+	}
+}
+
+// title reads a menu item's title through the only accessor systray offers,
+// its String form: MenuItem[<id>, "<title>"].
+func title(t *testing.T, item *systray.MenuItem) string {
+	t.Helper()
+	s := item.String()
+	start := strings.Index(s, `"`)
+	if start < 0 || !strings.HasSuffix(s, `"]`) {
+		t.Fatalf("unexpected MenuItem form %q", s)
+	}
+	unquoted, err := strconv.Unquote(s[start : len(s)-1])
+	if err != nil {
+		t.Fatalf("unquote %q: %v", s, err)
+	}
+	return unquoted
+}
+
+// TestNewTrayMenu_StartsWithPlaceholders verifies a fresh menu shows "--"
+// readings that cannot be clicked, and actions that can. systray keeps the
+// menu in memory and only emits it over D-Bus when a session is connected, so
+// this runs without one.
+func TestNewTrayMenu_StartsWithPlaceholders(t *testing.T) {
+	m := newTrayMenu()
+
+	for want, item := range map[string]*systray.MenuItem{
+		"CPU:  --": m.cpu, "RAM:  --": m.ram, "Swap: --": m.swap, "Load: --": m.load,
+	} {
+		if got := title(t, item); got != want {
+			t.Errorf("title = %q, want %q", got, want)
+		}
+		if !item.Disabled() {
+			t.Errorf("%q is clickable, want a read-only reading", want)
+		}
+	}
+	if m.show.Disabled() || m.quit.Disabled() {
+		t.Error("an action item is disabled")
+	}
+	if len(m.gpus) != 0 {
+		t.Errorf("a new menu has %d GPU items, want none before a snapshot", len(m.gpus))
+	}
+}
+
+// TestTrayMenuUpdate_AddsGPUItemsOnceAndReusesThem verifies GPU lines appear
+// with the first snapshot that reports the GPUs, are rewritten in place after
+// that, and grow when more GPUs appear -- never duplicated.
+func TestTrayMenuUpdate_AddsGPUItemsOnceAndReusesThem(t *testing.T) {
+	m := newTrayMenu()
+	oneGPU := &types.Snapshot{GPUs: []types.GPUInfo{{GPUUtilPercent: 10, MemoryPercent: 20}}}
+
+	m.update(oneGPU)
+	first := m.gpus
+	if len(first) != 1 || title(t, first[0]) != "GPU0: 10.0%  mem 20.0%" {
+		t.Fatalf("after one GPU: %d items, want one titled with its usage", len(first))
+	}
+	if got := title(t, m.load); got != "Load: 0.00 / 0.00 / 0.00" {
+		t.Errorf("load = %q, want the snapshot's load", got)
+	}
+
+	oneGPU.GPUs[0].GPUUtilPercent = 55
+	m.update(oneGPU)
+	if len(m.gpus) != 1 || m.gpus[0] != first[0] {
+		t.Fatal("a second snapshot with the same GPUs added items instead of reusing them")
+	}
+	if got := title(t, m.gpus[0]); got != "GPU0: 55.0%  mem 20.0%" {
+		t.Errorf("GPU0 = %q, want it rewritten in place", got)
+	}
+
+	m.update(&types.Snapshot{GPUs: []types.GPUInfo{{}, {GPUUtilPercent: 1}}})
+	if len(m.gpus) != 2 || m.gpus[0] != first[0] || !m.gpus[1].Disabled() {
+		t.Fatalf("a newly reported GPU did not get one new read-only item: %d items", len(m.gpus))
+	}
+}
+
+// serveMenu runs menu.serve against a subscription of an unstarted monitor,
+// whose channel the test feeds directly. done is closed when serve returns.
+func serveMenu(t *testing.T, stopCh <-chan struct{}) (m *trayMenu, sub *monitor.Subscriber, shown <-chan struct{}, quit <-chan struct{}, done <-chan struct{}) {
+	t.Helper()
+	mon, err := monitor.New(serveStub{}, time.Second)
+	if err != nil {
+		t.Fatalf("monitor.New: %v", err)
+	}
+	m = newTrayMenu()
+	sub = mon.Subscribe()
+	// Unbuffered, where the monitor's is buffered: a send completes only when
+	// serve has taken the snapshot, so a click sent after it is handled after
+	// the update. The monitor is not started and never sends on it.
+	sub.Ch = make(chan *types.Snapshot)
+	showCh, quitCh, doneCh := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		m.serve(mon, sub,
+			func() { showCh <- struct{}{} },
+			func() { close(quitCh) },
+			stopCh)
+	}()
+	return m, sub, showCh, quitCh, doneCh
+}
+
+// TestTrayMenuServe_UpdatesAndOpensTheWindow verifies a snapshot rewrites the
+// menu and "Open Monitor" shows the window, while the loop keeps running.
+func TestTrayMenuServe_UpdatesAndOpensTheWindow(t *testing.T) {
+	stop := make(chan struct{})
+	m, sub, shown, _, done := serveMenu(t, stop)
+
+	await.Send(t, "a snapshot to reach the tray", sub.Ch, &types.Snapshot{LoadAvg: types.LoadAverage{Load1: 1.5}})
+	// serve handles one channel at a time and took the snapshot before the
+	// click could be sent, so once the window is shown the update is done.
+	await.Send(t, "the Open Monitor click to be taken", m.show.ClickedCh, struct{}{})
+	await.Recv(t, "the window to be shown", shown)
+	if got := title(t, m.load); got != "Load: 1.50 / 0.00 / 0.00" {
+		t.Errorf("load = %q, want the snapshot's reading", got)
+	}
+
+	close(stop)
+	await.Recv(t, "the tray loop to stop", done)
+	await.Recv(t, "the tray to unsubscribe", sub.Done)
+}
+
+// TestTrayMenuServe_EndsOnEachStop verifies every way the loop ends -- Quit,
+// the tray stopping, the subscription ending, the channel closing -- returns
+// and leaves the monitor unsubscribed; Quit also quits the application.
+func TestTrayMenuServe_EndsOnEachStop(t *testing.T) {
+	tests := map[string]func(t *testing.T, m *trayMenu, sub *monitor.Subscriber, stop chan struct{}){
+		"quit clicked": func(t *testing.T, m *trayMenu, _ *monitor.Subscriber, _ chan struct{}) {
+			await.Send(t, "the Quit click to be taken", m.quit.ClickedCh, struct{}{})
+		},
+		"tray stopped":        func(_ *testing.T, _ *trayMenu, _ *monitor.Subscriber, stop chan struct{}) { close(stop) },
+		"subscription closed": func(_ *testing.T, _ *trayMenu, sub *monitor.Subscriber, _ chan struct{}) { close(sub.Ch) },
+	}
+	for name, end := range tests {
+		t.Run(name, func(t *testing.T) {
+			stop := make(chan struct{})
+			m, sub, _, quit, done := serveMenu(t, stop)
+
+			end(t, m, sub, stop)
+			await.Recv(t, "the tray loop to return", done)
+			await.Recv(t, "the tray to unsubscribe", sub.Done)
+
+			select {
+			case <-quit:
+				if name != "quit clicked" {
+					t.Error("the application was quit by something other than Quit")
+				}
+			default:
+				if name == "quit clicked" {
+					t.Error("Quit did not quit the application")
+				}
+			}
+		})
 	}
 }

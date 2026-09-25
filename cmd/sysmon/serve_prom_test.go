@@ -4,6 +4,8 @@ package main
 
 import (
 	"errors"
+	"os"
+	"reflect"
 	"testing"
 	"time"
 
@@ -182,5 +184,73 @@ func TestHistoryCadence_FollowsRemoteWrite(t *testing.T) {
 				t.Errorf("historyCadence() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestPromOptions_LabelsEverySeriesWithTheFleetName verifies the exporter's
+// settings come from the config, and that every series carries this node's
+// fleet name as instance and go-sysmon as job, plus the operator's labels.
+func TestPromOptions_LabelsEverySeriesWithTheFleetName(t *testing.T) {
+	withServeConfig(t, "fleet:\n  local_name: rack-7\nprometheus:\n"+
+		"  remote_write_url: \"http://prom.example:9090/api/v1/write\"\n"+
+		"  sample_interval_ms: 5000\n  flush_interval_ms: 20000\n  batch_size: 250\n  timeout_ms: 3000\n"+
+		"  external_labels:\n    site: dc1\n")
+	mgr, err := loadServeConfig(nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+
+	got := promOptions(mgr)()
+	want := prom.Options{
+		RemoteWriteURL: "http://prom.example:9090/api/v1/write",
+		SampleInterval: 5 * time.Second,
+		FlushInterval:  20 * time.Second,
+		BatchSize:      250,
+		Timeout:        3 * time.Second,
+		Labels:         []prom.Label{{Name: "instance", Value: "rack-7"}, {Name: "job", Value: jobLabel}, {Name: "site", Value: "dc1"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("promOptions() =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// TestPromOptions_OperatorLabelsCannotDisplaceIdentity verifies the invariant
+// promOptions relies on: a config whose external_labels name instance, job or
+// a reserved __ label is refused at load, so an operator label can never merge
+// this node's history with another machine's.
+func TestPromOptions_OperatorLabelsCannotDisplaceIdentity(t *testing.T) {
+	for _, label := range []string{"instance", "job", "__name__"} {
+		t.Run(label, func(t *testing.T) {
+			withServeConfig(t, "prometheus:\n  external_labels:\n    "+label+": impostor\n")
+			if _, err := loadServeConfig(nil); err == nil {
+				t.Fatalf("loadServeConfig() accepted external_labels.%s, want it refused", label)
+			}
+		})
+	}
+}
+
+// TestPromQueryOptions_FollowsTheConfig verifies the history endpoint's
+// settings are read from the config on every call, so a reload retargets it.
+func TestPromQueryOptions_FollowsTheConfig(t *testing.T) {
+	path := withServeConfig(t, "prometheus:\n  query_url: \"http://prom.example:9090\"\n  timeout_ms: 4000\n")
+	mgr, err := loadServeConfig(nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+	options := promQueryOptions(mgr)
+
+	if got, want := options(), (prom.QueryOptions{BaseURL: "http://prom.example:9090", Timeout: 4 * time.Second}); got != want {
+		t.Errorf("promQueryOptions() = %+v, want %+v", got, want)
+	}
+
+	// Query switched off by a reload: the same function now says so.
+	if err := os.WriteFile(path, []byte("server:\n  addr: \":8081\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Reload(); err != nil {
+		t.Fatalf("Reload(): %v", err)
+	}
+	if got := options().BaseURL; got != "" {
+		t.Errorf("BaseURL after the reload = %q, want none", got)
 	}
 }

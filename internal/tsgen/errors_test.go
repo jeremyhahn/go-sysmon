@@ -2,8 +2,6 @@ package tsgen
 
 import (
 	"errors"
-	"go/ast"
-	"go/parser"
 	"strings"
 	"testing"
 )
@@ -71,48 +69,6 @@ func TestUnknownRootError(t *testing.T) {
 func TestUnknownRootError_Empty(t *testing.T) {
 	if got := (&UnknownRootError{}).Error(); !strings.Contains(got, "root type") {
 		t.Errorf("Error() = %q, want it to still say what kind of name is missing", got)
-	}
-}
-
-// TestExprString covers the forms that reach an UnsupportedTypeError message.
-// They only ever appear in a failed build, which is exactly when a message
-// reading "unrecognised type expression" for a map would waste someone's time.
-func TestExprString(t *testing.T) {
-	cases := map[string]string{
-		"string":            "string",
-		"time.Time":         "time.Time",
-		"*Detail":           "*Detail",
-		"[]Item":            "[]Item",
-		"[]*Item":           "[]*Item",
-		"map[string]int":    "map[string]int",
-		"interface{}":       "interface{}",
-		"map[string][]byte": "map[string][]byte",
-	}
-	for src, want := range cases {
-		t.Run(src, func(t *testing.T) {
-			expr, err := parser.ParseExpr(src)
-			if err != nil {
-				t.Fatalf("ParseExpr(%q): %v", src, err)
-			}
-			if got := exprString(expr); got != want {
-				t.Errorf("exprString(%q) = %q, want %q", src, got, want)
-			}
-		})
-	}
-}
-
-// TestExprString_Unrecognised is the fallback. It must name itself rather than
-// render as an empty string, which in a message reads as a missing type.
-func TestExprString_Unrecognised(t *testing.T) {
-	expr, err := parser.ParseExpr("func(int) int")
-	if err != nil {
-		t.Fatalf("ParseExpr: %v", err)
-	}
-	if _, ok := expr.(*ast.FuncType); !ok {
-		t.Fatalf("expected a func type, got %T", expr)
-	}
-	if got := exprString(expr); got != "unrecognised type expression" {
-		t.Errorf("exprString of a func type = %q", got)
 	}
 }
 

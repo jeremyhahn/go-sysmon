@@ -65,7 +65,7 @@
 
   onMount(async () => {
     try {
-      const r = await fetch("/api/version");
+      const r = await fetch("api/version");
       if (r.ok) {
         const v = await r.json();
         buildVersion = v.version ?? "";

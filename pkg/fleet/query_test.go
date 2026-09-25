@@ -64,9 +64,9 @@ func TestParseQuery_RejectsWhatItCannotHonour(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := ParseQuery(tt.query)
-			var invalid *ErrInvalidQuery
+			var invalid *InvalidQueryError
 			if !errors.As(err, &invalid) {
-				t.Fatalf("ParseQuery(%q) error = %v, want *ErrInvalidQuery", tt.query, err)
+				t.Fatalf("ParseQuery(%q) error = %v, want *InvalidQueryError", tt.query, err)
 			}
 			if invalid.Param != tt.param {
 				t.Errorf("ParseQuery(%q) blamed %q, want %q", tt.query, invalid.Param, tt.param)
@@ -83,9 +83,9 @@ func TestParseQuery_RejectsWhatItCannotHonour(t *testing.T) {
 func TestParseQuery_RejectsAStringThatDoesNotParse(t *testing.T) {
 	for _, raw := range []string{"limit=25;offset=0", "q=%zz", "limit=%"} {
 		_, err := ParseQuery(raw)
-		var malformed *ErrMalformedQuery
+		var malformed *MalformedQueryError
 		if !errors.As(err, &malformed) {
-			t.Errorf("ParseQuery(%q) error = %v, want *ErrMalformedQuery", raw, err)
+			t.Errorf("ParseQuery(%q) error = %v, want *MalformedQueryError", raw, err)
 		}
 	}
 }

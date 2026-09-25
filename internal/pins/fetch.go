@@ -229,7 +229,7 @@ var commands = map[string][]string{
 func Run(ctx context.Context, command string, args ...string) ([]byte, error) {
 	env, ok := commands[command]
 	if !ok {
-		return nil, &CommandError{Command: command, Cause: ErrUnknownCommand}
+		return nil, &CommandError{Command: command, Cause: &UnknownCommandError{}}
 	}
 	// #nosec G204 -- the program is one of the fixed names in commands; args
 	// reach it as argv with no shell, and callers pass only fixed queries plus

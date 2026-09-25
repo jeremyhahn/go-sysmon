@@ -268,9 +268,9 @@ func TestValidateSubtree(t *testing.T) {
 	} {
 		s := good()
 		mutate(s)
-		var invalid *ErrSubtreeInvalid
+		var invalid *SubtreeInvalidError
 		if err := validateSubtree("mid", s); !errors.As(err, &invalid) || !strings.Contains(err.Error(), "mid") {
-			t.Errorf("%s: %v, want ErrSubtreeInvalid", name, err)
+			t.Errorf("%s: %v, want SubtreeInvalidError", name, err)
 		}
 	}
 
@@ -405,23 +405,23 @@ func TestRelayHistory_OnlyItsOwnJSONIsServed(t *testing.T) {
 		check  func(error) bool
 	}{
 		"html": {`<script>alert(1)</script>`, "text/html", 0, func(err error) bool {
-			var e *ErrRelayNotJSON
+			var e *RelayNotJSONError
 			return errors.As(err, &e)
 		}},
 		"json that is not a range": {`[1,2,3]`, "", 0, func(err error) bool {
-			var e *ErrRelayNotJSON
+			var e *RelayNotJSONError
 			return errors.As(err, &e)
 		}},
 		"another node's range": {`{"enabled":true,"node":"b","series":[]}`, "", 0, func(err error) bool {
-			var e *ErrRelayNotJSON
+			var e *RelayNotJSONError
 			return errors.As(err, &e) && strings.Contains(err.Error(), "another node")
 		}},
 		"too large": {strings.Repeat("x", maxSnapshotBytes+1), "", 0, func(err error) bool {
-			var e *ErrRelayTooLarge
+			var e *RelayTooLargeError
 			return errors.As(err, &e) && !strings.Contains(err.Error(), "127.0.0.1")
 		}},
 		"an error, with markup": {"bad range <b>x</b>", "text/html", http.StatusBadRequest, func(err error) bool {
-			var e *ErrRelayStatus
+			var e *RelayStatusError
 			return errors.As(err, &e) && e.Status == http.StatusBadRequest && !strings.Contains(err.Error(), "<b>")
 		}},
 	} {
@@ -438,5 +438,26 @@ func TestRelayHistory_OnlyItsOwnJSONIsServed(t *testing.T) {
 	p, _ := treePoller(t)
 	if _, err := p.RelayHistory(context.Background(), p.Resolve("x"), "x", "node=x"); err == nil {
 		t.Error("relay to a name that is not a subtree node was attempted")
+	}
+}
+
+// TestRefresh_ForgetsRelayedAnswersPastTheirReuse: a relayed answer is kept
+// only for its reuse. Every distinct history range and every chain a relay
+// arrives with is a key no later request may ask for again, so a refresh drops
+// the expired ones -- left alone they accumulated for the life of the process
+// -- and keeps those still inside their reuse.
+func TestRefresh_ForgetsRelayedAnswersPastTheirReuse(t *testing.T) {
+	mid := newFakeChild(t, "mid", entry("a", types.NodeStatusHealthy))
+	p, cfg := treePoller(t, mid)
+	p.relays.done.Store("expired", &reused{expires: time.Now().Add(-time.Second)})
+	p.relays.done.Store("current", &reused{expires: time.Now().Add(time.Hour)})
+
+	p.refresh(cfg)
+
+	if _, ok := p.relays.done.Load("expired"); ok {
+		t.Error("a relayed answer past its reuse survived a refresh")
+	}
+	if _, ok := p.relays.done.Load("current"); !ok {
+		t.Error("a relayed answer still inside its reuse was dropped")
 	}
 }

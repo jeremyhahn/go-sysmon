@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -37,7 +36,7 @@ func runMemoryCmd(cmd *cobra.Command, _ []string) error {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(snap.Memory)
 		}
 		if err := cli.RenderMemory(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render memory: %w", err)
+			return &cli.RenderError{Function: "memory", Cause: err}
 		}
 		return nil
 	})

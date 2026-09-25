@@ -370,11 +370,18 @@ to a specific failure with `errors.As` instead of matching on message text —
 which is how `runRoot` knows a GUI launch failed because the build has no GUI,
 and falls back to the CLI overview rather than exiting.
 
+Every package names its errors the same way (handbook `errors.md` §1): a type
+that implements `error` ends in `Error` (`CollectorError`, `config.PeerNameError`,
+`fleet.InvalidQueryError`). There are no sentinel error values: production code
+never calls `errors.New` or `fmt.Errorf`, so every failure has a type to match.
+The `errname` and `forbidigo` linters in `make lint` enforce both.
+
 | Type                        | Description                                    |
 |-----------------------------|------------------------------------------------|
 | `GUIUnavailableError`       | GUI cannot launch (stub build, no display)     |
 | `TrayIconEncodeError`       | Tray icon could not be encoded as a PNG        |
 | `ServerStartError`          | HTTP server failed to start                    |
+| `NoListenerError`           | Server has no bound listener to reach it on    |
 | `CollectorError`            | A sub-collector encountered an error           |
 | `InvalidIntervalError`      | Polling interval is zero or negative           |
 | `MonitorAlreadyRunningError`| `Start()` called on a running monitor          |

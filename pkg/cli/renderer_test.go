@@ -1283,3 +1283,65 @@ func TestRenderCPU_WithTemperature(t *testing.T) {
 		}
 	})
 }
+
+// TestRenderCPU_CoreLabels pins the temperature table for a single-package
+// host, unchanged, and for a two-socket host, where both packages have a Core
+// 0 and each line must say which package it is.
+func TestRenderCPU_CoreLabels(t *testing.T) {
+	t.Parallel()
+	table := func(t *testing.T, temps []types.CoreTemp) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := RenderCPU(&buf, &types.Snapshot{Sensors: types.SensorData{CoreTemps: temps}}); err != nil {
+			t.Fatalf("RenderCPU: %v", err)
+		}
+		out := buf.String()
+		return out[strings.Index(out, "CPU Temperatures:"):]
+	}
+
+	single := table(t, []types.CoreTemp{
+		{PackageID: 0, CoreID: 0, Label: "Core 0", TempCelsius: 45, HighCelsius: 80, CritCelsius: 100},
+		{PackageID: 0, CoreID: 1, Label: "Core 1", TempCelsius: 47},
+	})
+	wantSingle := "CPU Temperatures:\n" +
+		"   Pkg  Core  Label              Temp      High      Crit\n" +
+		"     0     0  Core 0            45.0°C    80.0°C   100.0°C\n" +
+		"     0     1  Core 1            47.0°C         -         -\n"
+	if single != wantSingle {
+		t.Errorf("single-package table =\n%s\nwant\n%s", single, wantSingle)
+	}
+
+	dual := table(t, []types.CoreTemp{
+		{PackageID: 0, CoreID: 0, Label: "Core 0", TempCelsius: 50},
+		{PackageID: 1, CoreID: 0, Label: "Core 0", TempCelsius: 60},
+		{PackageID: 1, CoreID: 1, Label: "", TempCelsius: 61},
+	})
+	wantDual := "CPU Temperatures:\n" +
+		"   Pkg  Core  Label              Temp      High      Crit\n" +
+		"     0     0  P0 · Core 0       50.0°C         -         -\n" +
+		"     1     0  P1 · Core 0       60.0°C         -         -\n" +
+		"     1     1  P1 · Core 1       61.0°C         -         -\n"
+	if dual != wantDual {
+		t.Errorf("two-package table =\n%s\nwant\n%s", dual, wantDual)
+	}
+}
+
+// TestCoreLabel keeps the driver's own label -- a k10temp chiplet is not a
+// core -- and adds the package only on a host with more than one.
+func TestCoreLabel(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		temp  types.CoreTemp
+		multi bool
+		want  string
+	}{
+		{types.CoreTemp{PackageID: 0, CoreID: 3, Label: "Core 3"}, false, "Core 3"},
+		{types.CoreTemp{PackageID: 1, CoreID: 3, Label: "Core 3"}, true, "P1 · Core 3"},
+		{types.CoreTemp{PackageID: 1, CoreID: 1, Label: "Tccd1"}, true, "P1 · Tccd1"},
+		{types.CoreTemp{PackageID: 0, CoreID: 5}, false, "Core 5"},
+	} {
+		if got := CoreLabel(tt.temp, tt.multi); got != tt.want {
+			t.Errorf("CoreLabel(%+v, %v) = %q, want %q", tt.temp, tt.multi, got, tt.want)
+		}
+	}
+}

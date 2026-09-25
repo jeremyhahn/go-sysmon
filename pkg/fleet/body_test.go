@@ -195,7 +195,7 @@ func TestBodyBuffers_ConcurrentDecodesOfOnePeer(t *testing.T) {
 					return
 				}
 				if snap.Host.Hostname != hosts[i] {
-					errs <- &hostMismatch{got: snap.Host.Hostname, want: hosts[i]}
+					errs <- &hostMismatchError{got: snap.Host.Hostname, want: hosts[i]}
 					return
 				}
 			}
@@ -208,9 +208,9 @@ func TestBodyBuffers_ConcurrentDecodesOfOnePeer(t *testing.T) {
 	}
 }
 
-type hostMismatch struct{ got, want string }
+type hostMismatchError struct{ got, want string }
 
-func (e *hostMismatch) Error() string {
+func (e *hostMismatchError) Error() string {
 	return "decoded hostname " + e.got + ", want " + e.want + ": a buffer was shared between decodes"
 }
 

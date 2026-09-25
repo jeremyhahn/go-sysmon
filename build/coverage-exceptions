@@ -1,0 +1,64 @@
+# Integration coverage exceptions (#167).
+#
+# `make integration-test` holds every package to the 90% integration-coverage
+# floor (scripts/pkgtest.sh integration). This file names the only code
+# excepted from that floor. Unit coverage has no exceptions: every file below
+# is still covered by its unit tests and fixtures, which `make coverage` holds
+# to the same 90%.
+#
+# One entry per line, four fields separated by " | ":
+#
+#   path | category | reason | approval
+#
+# path is a Go file, whose statements are left out of its package's integration
+# coverage, or a package directory ending in "/", which is exempt from the
+# integration floor: its coverage is still measured and reported, and never
+# fails the gate. category is one of:
+#
+#   hardware       needs a device the devcontainer does not have
+#   host-hardware  reaches what the host's hardware allows, so the same suite
+#                  covers different amounts on different runners
+#   host           would have to modify the host to reach
+#   gui            needs a desktop session
+#   defensive      branches no well-behaved client, peer or host produces
+#                  (refusals of malformed input, write failures, kernel output
+#                  that does not occur), all unit-covered
+#   test-helper    ships nothing; exists only for tests
+#
+# An entry is added only with the owner's approval, recorded in its last field.
+# Keep the list as small as the evidence allows.
+
+pkg/collector/megaraid_linux.go | hardware | MegaRAID controller session: ioctls to /dev/megaraid_sas_ioctl_node, which exists only with a Broadcom MegaRAID controller | approved by owner 2026-09-24
+pkg/collector/megaraid_config.go | hardware | decodes the MegaRAID controller configuration, which only a controller returns | approved by owner 2026-09-24
+pkg/collector/megaraid_scsi.go | hardware | SCSI pass-through to drives behind a MegaRAID controller | approved by owner 2026-09-24
+pkg/collector/megaraid_members_linux.go | hardware | reads the member drives of a MegaRAID volume through the controller | approved by owner 2026-09-24
+pkg/collector/raid_linux.go | host | md software RAID status: an md array is a kernel-global device, and creating one to test would modify the host | approved by owner 2026-09-24
+pkg/collector/smart_ata.go | hardware | ATA SMART attributes, answered only by a SATA drive over HDIO | approved by owner 2026-09-24
+pkg/collector/smart_ata_sgio.go | hardware | ATA SMART over SG_IO pass-through, answered only by a SATA drive | approved by owner 2026-09-24
+pkg/collector/smart_classify.go | hardware | explains a missing SMART reading per device class (device-mapper, PERC volume, BOSS card, CAP_SYS_RAWIO refusal); each explanation needs that class of device | approved by owner 2026-09-24
+pkg/collector/smart_nvme.go | host-hardware | NVMe SMART log: coverage depends on host hardware (an NVMe drive) | approved by owner 2026-09-24
+pkg/collector/gpu.go | host-hardware | GPU enumeration: coverage depends on host hardware | approved by owner 2026-09-24
+pkg/collector/gpu_amd.go | host-hardware | AMD GPU sysfs: coverage depends on host hardware | approved by owner 2026-09-24
+pkg/collector/gpu_intel.go | host-hardware | Intel GPU sysfs: coverage depends on host hardware | approved by owner 2026-09-24
+pkg/collector/gpu_nonvml.go | host-hardware | GPU reading without NVML: coverage depends on host hardware | approved by owner 2026-09-24
+pkg/collector/gpu_nvml.go | host-hardware | NVIDIA NVML: coverage depends on host hardware | approved by owner 2026-09-24
+pkg/collector/npu.go | host-hardware | accelerator (NPU) sysfs: coverage depends on host hardware | approved by owner 2026-09-24
+pkg/collector/npu_intel.go | host-hardware | Intel NPU attributes: coverage depends on host hardware | approved by owner 2026-09-24
+pkg/collector/npu_clients.go | host-hardware | per-process accelerator use from fdinfo: coverage depends on host hardware | approved by owner 2026-09-24
+cmd/sysmon/bindings.go | gui | Wails bindings, reached only from launchGUI in a desktop session; 100% unit-covered | approved explicitly by owner 2026-09-24
+internal/await/ | test-helper | test synchronisation helpers; ships in no binary | approved by owner 2026-09-24
+internal/deadpeer/ | test-helper | dead-peer socket helper for tests; ships in no binary | approved by owner 2026-09-24
+pkg/types/typestest/ | test-helper | JSON null-slice checker for tests; ships in no binary | approved by owner 2026-09-24
+
+# Packages below the floor, by owner ruling 2026-09-24: the code is not to be
+# reorganised to raise the number, so each is measured, reported and kept
+# under the floor with its reason. The figure is what the suites reached when
+# the ruling was applied (devcontainer on gpu-host, the files above excepted).
+pkg/collector/ | hardware | 85.0% (2397/2819): what remains needs hardware or host views a container cannot give -- DIMM temperature sensors, SATA drives, AMD k10temp, wifi, Xen, the host's initial PID namespace; unit-covered | approved by owner 2026-09-24
+pkg/alert/ | hardware | 65.0% (180/277): its rules for RAID, SMART, NVMe wear, disk temperature and fullness, swap paging, GPUs and containers fire only on host state a healthy container host does not have; unit-covered | approved by owner 2026-09-24
+pkg/delta/ | defensive | 76.0% (187/246): refusals of malformed patches, which only a corrupted client sends, and encode failures; unit-covered | approved by owner 2026-09-24
+pkg/server/ | defensive | 88.4% (850/962): write failures on dropped connections (which write fails is random), race-window guards, the 30s keepalive, encode failures; unit-covered | approved by owner 2026-09-24
+pkg/memlimit/ | defensive | 80.8% (59/73): errors for cgroup files the kernel never writes malformed, and a v1-only host; unit-covered | approved by owner 2026-09-24
+pkg/types/ | defensive | 67.2% (86/128): Error methods of failures a healthy host does not produce (SMART, RAPL, PSI, sysfs and /proc parse errors), and nil-slice walking of shapes no snapshot holds; unit-covered | approved by owner 2026-09-24
+cmd/sysmon/ | defensive | 89.1% (934/1048): the watchdog self-probe and shutdown failure paths, notification-socket failures, and doctor's SMART-degraded report, which needs a drive refusing SMART; unit-covered | approved by owner 2026-09-24
+pkg/cli/ | host-hardware | 90.2% (953/1056) on gpu-host, which has a GPU and an NPU: the CLI renders the host's real devices, so its GPU and NPU report sections (about 140 statements) are reached only where that hardware is, about 77% on a runner without it; unit-covered | approved by owner 2026-09-24

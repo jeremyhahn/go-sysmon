@@ -28,20 +28,20 @@ const Rule = "a node name must start with a letter or digit and contain only " +
 // selector built from it cannot be turned into a different query.
 var pattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$`)
 
-// ErrInvalid reports a name that breaks Rule.
-type ErrInvalid struct {
+// InvalidError reports a name that breaks Rule.
+type InvalidError struct {
 	Name string
 }
 
-func (e *ErrInvalid) Error() string {
+func (e *InvalidError) Error() string {
 	return "nodename: " + Quote(e.Name) + " is not a usable node name: " + Rule
 }
 
-// Validate reports whether name can identify a node, returning *ErrInvalid when
+// Validate reports whether name can identify a node, returning *InvalidError when
 // it cannot.
 func Validate(name string) error {
 	if !pattern.MatchString(name) {
-		return &ErrInvalid{Name: name}
+		return &InvalidError{Name: name}
 	}
 	return nil
 }

@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-sysmon/pkg/cli"
 	"github.com/jeremyhahn/go-sysmon/pkg/collector"
 	"github.com/jeremyhahn/go-sysmon/pkg/memlimit"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -47,6 +50,7 @@ func runDoctorCmd(cmd *cobra.Command, _ []string) error {
 		checkBuildFlavour(),
 		checkDesktopGUI(),
 		checkSMART(),
+		checkMemoryInventory(),
 		checkCgroups(),
 		checkRuntimeSocket(),
 		checkResourceLimits("", os.Getenv),
@@ -58,7 +62,16 @@ func runDoctorCmd(cmd *cobra.Command, _ []string) error {
 		}{Checks: results})
 	}
 
-	w := cmd.OutOrStdout()
+	if err := writeDoctorReport(cmd.OutOrStdout(), results); err != nil {
+		// Named like every other report's write failure, so `sysmon doctor >
+		// file` on a full disk says which report was lost, not only why.
+		return &cli.RenderError{Function: "doctor", Cause: err}
+	}
+	return nil
+}
+
+// writeDoctorReport renders the checks as the human-readable report.
+func writeDoctorReport(w io.Writer, results []checkResult) error {
 	if _, err := fmt.Fprintln(w, "sysmon doctor"); err != nil {
 		return err
 	}
@@ -243,6 +256,38 @@ func (t *smartTally) commonest() (string, int) {
 		}
 	}
 	return best, len(t.order) - 1
+}
+
+// memoryCheckName is the memory-module inventory check's name.
+const memoryCheckName = "memory modules"
+
+// smbiosAccess reports whether the SMBIOS table can be read. It is a variable
+// so tests can present the outcomes one host cannot: readable, absent, and
+// refused.
+var smbiosAccess = collector.CheckSMBIOSAccess
+
+// checkMemoryInventory reports whether the memory modules' details -- maker,
+// part number, serial -- can be read. They come from the SMBIOS table, which
+// is 0400 root:root; go-sysmon never escalates to read it, so the remedy is
+// the administrator's, and this is where it is given.
+func checkMemoryInventory() checkResult {
+	err := smbiosAccess()
+	switch {
+	case err == nil:
+		return checkResult{Name: memoryCheckName, Status: "ok", Detail: "SMBIOS table readable; module details reported"}
+	case errors.Is(err, fs.ErrNotExist):
+		return checkResult{Name: memoryCheckName, Status: "unavailable",
+			Detail: "this firmware publishes no SMBIOS table (common in virtual machines); module details come from ghw where it has them"}
+	default:
+		return checkResult{
+			Name:   memoryCheckName,
+			Status: "degraded",
+			Detail: "SMBIOS table unreadable (" + err.Error() + "); module details come from ghw where it has them",
+			Fix: "grant read access to /sys/firmware/dmi/tables/DMI: run as root; or give the unit " +
+				"AmbientCapabilities=CAP_DAC_READ_SEARCH (it bypasses every file read permission); or make the " +
+				"table group-readable at boot with a tmpfiles.d line `z /sys/firmware/dmi/tables/DMI 0440 root <group>`",
+		}
+	}
 }
 
 // checkSMART reports whether disk health data is readable.

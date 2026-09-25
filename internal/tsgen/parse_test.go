@@ -232,6 +232,26 @@ type Root struct {
 	}
 }
 
+// TestParseSource_UnsupportedTypeNamesTheGoType covers the message a refused
+// field produces: it spells the Go type exactly, whatever its form, so the
+// build log says what to change. A fixed-size array keeps its length, which
+// is the reason it is refused, and a channel or a function reads as itself.
+func TestParseSource_UnsupportedTypeNamesTheGoType(t *testing.T) {
+	for _, goType := range []string{"chan int", "func(int) int", "[3]int", "map[string][]byte", "interface{}", "complex128"} {
+		t.Run(goType, func(t *testing.T) {
+			src := "package types\n\ntype Root struct {\n\tX " + goType + " `json:\"x\"`\n}\n"
+			_, err := ParseSource("x.go", src, []string{"Root"})
+			var unsupported *UnsupportedTypeError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("error = %T (%v), want *UnsupportedTypeError", err, err)
+			}
+			if unsupported.GoType != goType {
+				t.Errorf("GoType = %q, want %q", unsupported.GoType, goType)
+			}
+		})
+	}
+}
+
 // TestParseSource_UntaggedFieldKeepsItsGoName covers encoding/json's own
 // default. Emitting nothing for it would leave a key the server really does
 // send out of the schema.

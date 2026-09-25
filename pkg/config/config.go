@@ -11,9 +11,28 @@
 // every connected browser and empty the history buffers. Instead the settings
 // live behind an atomic pointer that Reload swaps, and long-lived components
 // read the current pointer each cycle.
+//
+// # Reload paths and an empty file
+//
+// There are three ways a configuration is loaded, and they differ in one
+// respect: what an existing but empty file (zero bytes, or only whitespace)
+// means.
+//
+//   - Startup (NewManager) reads an empty file as "run on defaults", exactly
+//     as it reads a missing one.
+//   - An explicit reload (Reload, which SIGHUP and `systemctl reload` call)
+//     does the same: the operator asked for the file as it stands.
+//   - The file watcher (Watch) refuses it with ConfigEmptyError and keeps the
+//     running configuration. A file seen empty on a change is far more likely a
+//     rewrite caught between truncate and write than a wish to drop every
+//     setting, and publishing it would silently discard alert thresholds and
+//     fleet peers. The reload happens when the contents arrive.
+//
+// The watcher also never reloads a file while a writer has it open: see Watch.
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -315,6 +334,11 @@ type Loader struct {
 	// per-key sources, which say "default" both for a host with no file and for
 	// a file that simply does not mention the key.
 	fileLoaded bool
+	// fileEmpty records whether the file the last Load read held nothing but
+	// whitespace. It describes the very bytes that were decoded, so a caller
+	// that must refuse an empty file cannot be fooled by the file changing
+	// between a check and the read.
+	fileEmpty bool
 }
 
 // NewLoader returns a Loader for the given config file path. An empty path
@@ -336,7 +360,6 @@ func (l *Loader) SetFlag(key, value string) {
 // Load produces the effective configuration and a per-key source map.
 func (l *Loader) Load() (*Config, map[string]types.ConfigSource, error) {
 	v := viper.New()
-	v.SetConfigFile(l.path)
 	v.SetConfigType("yaml")
 
 	def := Defaults()
@@ -353,17 +376,26 @@ func (l *Loader) Load() (*Config, map[string]types.ConfigSource, error) {
 	// would silently discard the TLS, listener, fleet and alert configuration
 	// while looking like a healthy boot, which is failing open on the file that
 	// configures the security-relevant behaviour.
-	fileLoaded := false
+	//
+	// The file is read once and those bytes are both decoded and checked for
+	// emptiness, so the two can never describe different versions of it.
+	fileLoaded, fileEmpty := false, false
 	switch _, err := os.Stat(l.path); {
 	case err == nil:
-		if err := v.ReadInConfig(); err != nil {
-			return nil, nil, &ErrConfigParse{Path: l.path, Err: err}
+		raw, err := os.ReadFile(l.path)
+		if err != nil {
+			return nil, nil, &ConfigParseError{Path: l.path, Err: err}
+		}
+		if err := v.ReadConfig(bytes.NewReader(raw)); err != nil {
+			return nil, nil, &ConfigParseError{Path: l.path, Err: err}
 		}
 		fileLoaded = true
+		fileEmpty = len(bytes.TrimSpace(raw)) == 0
 	case !errors.Is(err, fs.ErrNotExist):
-		return nil, nil, &ErrConfigUnreadable{Path: l.path, Err: err}
+		return nil, nil, &ConfigUnreadableError{Path: l.path, Err: err}
 	}
 	l.fileLoaded = fileLoaded
+	l.fileEmpty = fileEmpty
 
 	v.SetEnvPrefix(EnvPrefix)
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -386,13 +418,13 @@ func (l *Loader) Load() (*Config, map[string]types.ConfigSource, error) {
 	// replacement instead of leaving them to find it.
 	for key, guidance := range retiredKeys {
 		if fileLoaded && v.InConfig(key) {
-			return nil, nil, &ErrRetiredConfigKey{Path: l.path, Key: key, Guidance: guidance}
+			return nil, nil, &RetiredConfigKeyError{Path: l.path, Key: key, Guidance: guidance}
 		}
 	}
 
 	var cfg Config
 	if err := v.UnmarshalExact(&cfg); err != nil {
-		return nil, nil, &ErrConfigParse{Path: l.path, Err: err}
+		return nil, nil, &ConfigParseError{Path: l.path, Err: err}
 	}
 
 	// Attribute each scalar key. Viper cannot report provenance, so the sources
@@ -496,7 +528,7 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 	// and parsing must not, so ValidateLocalName covers that.
 	if c.Fleet.LocalName != "" {
 		if err := nodename.Validate(c.Fleet.LocalName); err != nil {
-			return &ErrLocalName{Name: c.Fleet.LocalName, Err: err}
+			return &LocalNameError{Name: c.Fleet.LocalName, Err: err}
 		}
 	}
 
@@ -533,18 +565,18 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 		// host unmonitored -- applies to this case most of all, because a
 		// missing url is the likeliest of these mistakes to be a typo.
 		if p.URL == "" {
-			return &ErrPeerURL{Name: p.Name, Reason: "no url; " + peerURLGuidance}
+			return &PeerURLError{Name: p.Name, Reason: "no url; " + peerURLGuidance}
 		}
 
-		// The URL is validated before anything copies it. ErrDuplicatePeer
+		// The URL is validated before anything copies it. DuplicatePeerError
 		// quotes URLs, so checking credentials first is what keeps a secret out
 		// of an error message and out of the settings view.
 		u, err := url.Parse(p.URL)
 		if err != nil {
-			return &ErrPeerURL{Name: p.Name, Reason: urlParseReason(err)}
+			return &PeerURLError{Name: p.Name, Reason: urlParseReason(err)}
 		}
 		if u.User != nil {
-			return &ErrPeerCredentials{Name: p.Name, Host: u.Host}
+			return &PeerCredentialsError{Name: p.Name, Host: u.Host}
 		}
 		// Parsing only proves the string is well-formed. "localhost:8081" parses
 		// happily as scheme "localhost", and the poller could never fetch it --
@@ -552,7 +584,7 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 		// clean start, which is the failure the operator is least likely to
 		// notice.
 		if reason := peerURLReason(u); reason != "" {
-			return &ErrPeerURL{Name: p.Name, Reason: reason}
+			return &PeerURLError{Name: p.Name, Reason: reason}
 		}
 
 		// A peer's name is its fleet-wide identity: the name that node calls
@@ -563,10 +595,10 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 		// request that 400s later or a chart that stays empty: the mistake is
 		// reported once, at the line that made it, naming the peer.
 		if err := nodename.Validate(p.Name); err != nil {
-			return &ErrPeerName{Name: p.Name, Host: u.Host, Err: err}
+			return &PeerNameError{Name: p.Name, Host: u.Host, Err: err}
 		}
 		if first, dup := seen[p.Name]; dup {
-			return &ErrDuplicatePeer{Name: p.Name, URLs: []string{first, p.URL}}
+			return &DuplicatePeerError{Name: p.Name, URLs: []string{first, p.URL}}
 		}
 		seen[p.Name] = p.URL
 		peers = append(peers, p)
@@ -602,11 +634,11 @@ func (c *Config) ValidateLocalName(local string) error {
 		return nil
 	}
 	if err := nodename.Validate(local); err != nil {
-		return &ErrLocalName{Name: local, FromHostname: c.Fleet.LocalName == "", Err: err}
+		return &LocalNameError{Name: local, FromHostname: c.Fleet.LocalName == "", Err: err}
 	}
 	for _, p := range c.Fleet.Peers {
 		if p.Name == local {
-			return &ErrPeerIsLocalName{Name: p.Name}
+			return &PeerIsLocalNameError{Name: p.Name}
 		}
 	}
 	return nil
@@ -668,6 +700,7 @@ var reservedLabels = map[string]bool{
 	"interface": true,
 	"level":     true,
 	"npu":       true,
+	"package":   true,
 	"resource":  true,
 	"rule":      true,
 	"severity":  true,
@@ -694,12 +727,12 @@ func checkExternalLabels(labels map[string]string) error {
 	for _, name := range sortedLabelNames(labels) {
 		switch {
 		case strings.HasPrefix(name, "__"):
-			return &ErrPrometheusLabel{Name: name, Reason: "names beginning __ are reserved by Prometheus"}
+			return &PrometheusLabelError{Name: name, Reason: "names beginning __ are reserved by Prometheus"}
 		case !labelNamePattern.MatchString(name):
-			return &ErrPrometheusLabel{Name: name,
+			return &PrometheusLabelError{Name: name,
 				Reason: "must match [a-zA-Z_][a-zA-Z0-9_]*"}
 		case reservedLabels[name]:
-			return &ErrPrometheusLabel{Name: name,
+			return &PrometheusLabelError{Name: name,
 				Reason: "go-sysmon sets this label itself; a series carrying it twice is rejected whole"}
 		}
 	}
@@ -725,14 +758,14 @@ func checkPromURL(key, raw string) error {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return &ErrPrometheusURL{Key: key, Reason: urlParseReason(err)}
+		return &PrometheusURLError{Key: key, Reason: urlParseReason(err)}
 	}
 	// Credentials first, before anything copies or quotes the URL.
 	if u.User != nil {
-		return &ErrPrometheusCredentials{Key: key, Host: u.Host}
+		return &PrometheusCredentialsError{Key: key, Host: u.Host}
 	}
 	if reason := peerURLReason(u); reason != "" {
-		return &ErrPrometheusURL{Key: key, Reason: reason}
+		return &PrometheusURLError{Key: key, Reason: reason}
 	}
 	return nil
 }
@@ -946,7 +979,7 @@ func (m *Manager) Path() string { return m.loader.Path() }
 //
 // Caveat: appliers run AFTER the swap, so a setting an applier rejects is
 // already reported as effective by Current and the settings view while the
-// component that rejected it keeps its previous value. The returned *ErrApply
+// component that rejected it keeps its previous value. The returned *ApplyError
 // is the only signal that this happened. That is tolerable today because the
 // one registered applier cannot fail -- normalize guarantees a positive
 // interval -- but an applier that genuinely can fail would need its rejected
@@ -959,6 +992,26 @@ func (m *Manager) Path() string { return m.loader.Path() }
 // "make the file true", and a transient UI preference is not something the file
 // knows about or should lose to.
 func (m *Manager) Reload() ([]string, error) {
+	return m.reload(emptyMeansDefaults)
+}
+
+// emptyFilePolicy says what a reload makes of a config file that exists but
+// holds nothing.
+type emptyFilePolicy int
+
+const (
+	// emptyMeansDefaults reads an empty file as "run on defaults", as startup
+	// does. SIGHUP uses it: an operator asked for the file as it stands.
+	emptyMeansDefaults emptyFilePolicy = iota
+	// emptyIsIncomplete refuses an empty file and keeps the running
+	// configuration. The file watcher uses it: a file seen empty on a change
+	// is far more likely a rewrite caught between truncate and write than an
+	// operator's wish to drop every setting.
+	emptyIsIncomplete
+)
+
+// reload is Reload with the empty-file policy chosen by the caller.
+func (m *Manager) reload(empty emptyFilePolicy) ([]string, error) {
 	// Held across load, publish and apply so that what Current() reports and
 	// what the running components were configured with always describe the same
 	// reload. SIGHUP, the file watcher and the HTTP endpoint can all land here
@@ -969,6 +1022,9 @@ func (m *Manager) Reload() ([]string, error) {
 	cfg, src, err := m.loader.Load()
 	if err != nil {
 		return nil, err
+	}
+	if empty == emptyIsIncomplete && m.loader.fileEmpty {
+		return nil, &ConfigEmptyError{Path: m.loader.Path()}
 	}
 
 	// Boot-only settings are reported as deferred and then pinned back to the
@@ -1044,7 +1100,7 @@ func (m *Manager) Reload() ([]string, error) {
 		}
 	}
 	if len(errs) > 0 {
-		return deferred, &ErrApply{Reasons: errs}
+		return deferred, &ApplyError{Reasons: errs}
 	}
 	return deferred, nil
 }
@@ -1130,7 +1186,7 @@ func CheckHistoryCadence(c *Config, lookback time.Duration) error {
 	}
 	for _, cadence := range cadences {
 		if cadence.ms > limit {
-			return &ErrHistoryCadence{Key: cadence.key, IntervalMs: cadence.ms, LookbackMs: limit}
+			return &HistoryCadenceError{Key: cadence.key, IntervalMs: cadence.ms, LookbackMs: limit}
 		}
 	}
 	return nil

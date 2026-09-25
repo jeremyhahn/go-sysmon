@@ -46,7 +46,7 @@ import (
 //     version string, so it cannot be told apart from anything else that
 //     answers 404 -- and none of them is given a number it did not publish.
 //
-// Anything that publishes no lookback is reported as *ErrLookbackUnpublished,
+// Anything that publishes no lookback is reported as *LookbackUnpublishedError,
 // and the callers say what they cannot do without one.
 
 // promqlDefaultLookback is the lookback the PromQL engine uses when its own is
@@ -111,7 +111,7 @@ func (q *Querier) Lookback(ctx context.Context) (time.Duration, error) {
 func (q *Querier) LookbackAt(ctx context.Context, base string) (time.Duration, error) {
 	base = strings.TrimRight(base, "/")
 	if base == "" {
-		return 0, &ErrNoQueryEndpoint{}
+		return 0, &NoQueryEndpointError{}
 	}
 	now := q.now()
 	if cached, ok := q.lookbacks.entries.Load(base); ok {
@@ -127,7 +127,7 @@ func (q *Querier) LookbackAt(ctx context.Context, base string) (time.Duration, e
 		select {
 		case <-other.done:
 		case <-ctx.Done():
-			return 0, &ErrRequest{URL: base + "/api/v1/status/flags", Err: ctx.Err()}
+			return 0, &RequestError{URL: base + "/api/v1/status/flags", Err: ctx.Err()}
 		}
 		if !other.cancelled {
 			return other.entry.value, other.entry.err
@@ -153,7 +153,7 @@ func (q *Querier) LookbackAt(ctx context.Context, base string) (time.Duration, e
 		return value, err
 	}
 	ttl := q.lookbackTTL
-	var unpublished *ErrLookbackUnpublished
+	var unpublished *LookbackUnpublishedError
 	if err != nil && !errors.As(err, &unpublished) {
 		ttl = q.lookbackRetry
 	}
@@ -198,12 +198,12 @@ func (q *Querier) fetchLookback(ctx context.Context, base string) (time.Duration
 		return 0, err
 	}
 	if !found {
-		return 0, &ErrLookbackUnpublished{Reason: "it does not serve /api/v1/status/flags"}
+		return 0, &LookbackUnpublishedError{Reason: "it does not serve /api/v1/status/flags"}
 	}
 	if raw, ok := flags["query.lookback-delta"]; ok {
-		d, err := parsePromDuration(raw)
-		if err != nil {
-			return 0, &ErrLookbackUnpublished{
+		d, ok := parsePromDuration(raw)
+		if !ok {
+			return 0, &LookbackUnpublishedError{
 				Reason: "its query.lookback-delta, " + strconv.Quote(raw) + ", is not a duration",
 			}
 		}
@@ -223,7 +223,7 @@ func (q *Querier) fetchLookback(ctx context.Context, base string) (time.Duration
 	if found && strings.Contains(build.Application, "Mimir") {
 		return mimirDefaultLookback, nil
 	}
-	return 0, &ErrLookbackUnpublished{Reason: "its /api/v1/status/flags does not list query.lookback-delta"}
+	return 0, &LookbackUnpublishedError{Reason: "its /api/v1/status/flags does not list query.lookback-delta"}
 }
 
 // statusGet reads one status endpoint's data into out. found is false when the
@@ -241,12 +241,12 @@ func (q *Querier) statusGet(ctx context.Context, endpoint string, out any) (foun
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
-		return false, &ErrRequest{URL: endpoint, Err: err}
+		return false, &RequestError{URL: endpoint, Err: err}
 	}
 	req.Header.Set("Accept", "application/json")
 	resp, err := q.client.Do(req)
 	if err != nil {
-		return false, &ErrRequest{URL: endpoint, Err: err}
+		return false, &RequestError{URL: endpoint, Err: err}
 	}
 	defer releaseBody(resp.Body, endpoint, q.log)
 	if resp.StatusCode == http.StatusNotFound {
@@ -260,17 +260,17 @@ func (q *Querier) statusGet(ctx context.Context, endpoint string, out any) (foun
 		Error     string          `json:"error"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, statusBodyLimit)).Decode(&envelope); err != nil {
-		return false, &ErrDecode{URL: endpoint, Err: err}
+		return false, &DecodeError{URL: endpoint, Err: err}
 	}
 	if resp.StatusCode/100 != 2 || envelope.Status != "success" {
-		return false, &ErrQuery{
+		return false, &QueryError{
 			Query:  endpoint,
 			Type:   "http_" + strconv.Itoa(resp.StatusCode),
 			Detail: envelope.Error,
 		}
 	}
 	if err := json.Unmarshal(envelope.Data, out); err != nil {
-		return false, &ErrDecode{URL: endpoint, Err: err}
+		return false, &DecodeError{URL: endpoint, Err: err}
 	}
 	return true, nil
 }
@@ -293,14 +293,15 @@ var promDurationUnits = []time.Duration{
 
 // parsePromDuration reads a duration in Prometheus' syntax -- "5m", "1h30m",
 // "0s" -- which is what status/flags reports. "0" alone is accepted, as
-// Prometheus accepts it.
-func parsePromDuration(s string) (time.Duration, error) {
+// Prometheus accepts it. It reports false for anything else; the caller says
+// which setting was not a duration.
+func parsePromDuration(s string) (time.Duration, bool) {
 	if s == "0" {
-		return 0, nil
+		return 0, true
 	}
 	m := promDurationPattern.FindStringSubmatch(s)
 	if s == "" || m == nil {
-		return 0, &ErrDuration{Value: s}
+		return 0, false
 	}
 	var d time.Duration
 	for i, unit := range promDurationUnits {
@@ -309,9 +310,9 @@ func parsePromDuration(s string) (time.Duration, error) {
 		}
 		n, err := strconv.ParseInt(m[i+1], 10, 64)
 		if err != nil || time.Duration(n) > (1<<63-1-d)/unit {
-			return 0, &ErrDuration{Value: s}
+			return 0, false
 		}
 		d += time.Duration(n) * unit
 	}
-	return d, nil
+	return d, true
 }

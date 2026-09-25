@@ -110,9 +110,9 @@ func TestLookback_WhatEachBackendAnswers(t *testing.T) {
 			s := newStatusServer(t, c.s)
 			got, err := querier(s.srv.URL, 5*time.Second).Lookback(context.Background())
 			if c.unpublished {
-				var unpublished *ErrLookbackUnpublished
+				var unpublished *LookbackUnpublishedError
 				if !errors.As(err, &unpublished) {
-					t.Fatalf("Lookback() = %v, %v; want *ErrLookbackUnpublished", got, err)
+					t.Fatalf("Lookback() = %v, %v; want *LookbackUnpublishedError", got, err)
 				}
 				return
 			}
@@ -129,19 +129,19 @@ func TestLookback_WhatEachBackendAnswers(t *testing.T) {
 func TestLookback_FailuresAreErrors(t *testing.T) {
 	s := newStatusServer(t, statusAnswers{flags: 500,
 		flagsBody: `{"status":"error","errorType":"internal","error":"boom"}`})
-	var failed *ErrQuery
+	var failed *QueryError
 	if _, err := querier(s.srv.URL, 5*time.Second).Lookback(context.Background()); !errors.As(err, &failed) {
-		t.Errorf("Lookback() on a 500 = %v, want *ErrQuery", err)
+		t.Errorf("Lookback() on a 500 = %v, want *QueryError", err)
 	}
 
-	var request *ErrRequest
+	var request *RequestError
 	if _, err := querier(deadpeer.URL(t), time.Second).Lookback(context.Background()); !errors.As(err, &request) {
-		t.Errorf("Lookback() on a refused connection = %v, want *ErrRequest", err)
+		t.Errorf("Lookback() on a refused connection = %v, want *RequestError", err)
 	}
 
-	var none *ErrNoQueryEndpoint
+	var none *NoQueryEndpointError
 	if _, err := querier("", time.Second).Lookback(context.Background()); !errors.As(err, &none) {
-		t.Errorf("Lookback() with no endpoint = %v, want *ErrNoQueryEndpoint", err)
+		t.Errorf("Lookback() with no endpoint = %v, want *NoQueryEndpointError", err)
 	}
 }
 
@@ -215,14 +215,13 @@ func TestParsePromDuration(t *testing.T) {
 		"1m30s500ms": 90*time.Second + 500*time.Millisecond,
 	}
 	for in, want := range good {
-		if got, err := parsePromDuration(in); err != nil || got != want {
-			t.Errorf("parsePromDuration(%q) = %v, %v; want %v", in, got, err, want)
+		if got, ok := parsePromDuration(in); !ok || got != want {
+			t.Errorf("parsePromDuration(%q) = %v, %v; want %v", in, got, ok, want)
 		}
 	}
 	for _, in := range []string{"", "5", "5 m", "m", "30m1h", "-5m", "1.5h", "5M", "999999999999y"} {
-		var bad *ErrDuration
-		if got, err := parsePromDuration(in); !errors.As(err, &bad) {
-			t.Errorf("parsePromDuration(%q) = %v, %v; want *ErrDuration", in, got, err)
+		if got, ok := parsePromDuration(in); ok {
+			t.Errorf("parsePromDuration(%q) = %v, accepted; want it refused", in, got)
 		}
 	}
 }

@@ -2,12 +2,14 @@ package main
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
+	"github.com/spf13/cobra"
 )
 
 // withServeConfig points the serve command at a temporary config file and
@@ -103,11 +105,11 @@ func TestLoadServeConfig_EmptyAddrFlagIsNotAValue(t *testing.T) {
 func TestLoadServeConfig_RejectsPeerNamedLikeThisNode(t *testing.T) {
 	withServeConfig(t, "fleet:\n  local_name: aggregator\n  peers:\n    - name: aggregator\n      url: http://10.0.0.1:8081\n")
 
-	var clash *config.ErrPeerIsLocalName
+	var clash *config.PeerIsLocalNameError
 	if _, err := loadServeConfig(nil); !errors.As(err, &clash) {
-		t.Fatalf("loadServeConfig() = %v, want a *config.ErrPeerIsLocalName", err)
+		t.Fatalf("loadServeConfig() = %v, want a *config.PeerIsLocalNameError", err)
 	} else if clash.Name != "aggregator" {
-		t.Errorf("ErrPeerIsLocalName.Name = %q, want %q", clash.Name, "aggregator")
+		t.Errorf("PeerIsLocalNameError.Name = %q, want %q", clash.Name, "aggregator")
 	}
 }
 
@@ -130,9 +132,9 @@ func TestLoadServeConfig_RejectsCollisionIntroducedByReload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var clash *config.ErrPeerIsLocalName
+	var clash *config.PeerIsLocalNameError
 	if _, err := mgr.Reload(); !errors.As(err, &clash) {
-		t.Fatalf("Reload() into a collision = %v, want a *config.ErrPeerIsLocalName", err)
+		t.Fatalf("Reload() into a collision = %v, want a *config.PeerIsLocalNameError", err)
 	}
 	if got := mgr.Current().LocalName(); got != "aggregator" {
 		t.Errorf("after a rejected reload LocalName() = %q, want the previous %q", got, "aggregator")
@@ -144,9 +146,9 @@ func TestLoadServeConfig_RejectsCollisionIntroducedByReload(t *testing.T) {
 func TestLoadServeConfig_RejectsUnusableLocalName(t *testing.T) {
 	withServeConfig(t, "fleet:\n  local_name: 'agg regator'\n")
 
-	var bad *config.ErrLocalName
+	var bad *config.LocalNameError
 	if _, err := loadServeConfig(nil); !errors.As(err, &bad) {
-		t.Fatalf("loadServeConfig() = %v, want a *config.ErrLocalName", err)
+		t.Fatalf("loadServeConfig() = %v, want a *config.LocalNameError", err)
 	}
 }
 
@@ -161,5 +163,87 @@ func TestLoadServeConfig_AcceptsAnOrdinaryFleet(t *testing.T) {
 	}
 	if n := len(mgr.Current().Fleet.Peers); n != 2 {
 		t.Errorf("peers = %d, want 2", n)
+	}
+}
+
+// TestLoadServeConfig_OnlyChangedFlagsReachTheFlagLayer drives the command
+// path: with a cobra command, a flag counts as supplied only when the user
+// changed it, so a value the command was merely registered with never
+// outranks the config file.
+func TestLoadServeConfig_OnlyChangedFlagsReachTheFlagLayer(t *testing.T) {
+	withServeConfig(t, "server:\n  addr: \":8081\"\n  interval_ms: 3000\n")
+	d := config.Defaults()
+	cmd := &cobra.Command{Use: "serve"}
+	cmd.Flags().StringVar(&serveAddr, "addr", ":9999", "")
+	cmd.Flags().IntVar(&serveIntervalMs, "interval", d.Server.IntervalMs, "")
+	cmd.Flags().StringVar(&serveTLSCert, "tls-cert", "", "")
+	cmd.Flags().StringVar(&serveTLSKey, "tls-key", "", "")
+	for flag, value := range map[string]string{"interval": "2000", "tls-cert": "/etc/sysmon/cert.pem", "tls-key": "/etc/sysmon/key.pem"} {
+		if err := cmd.Flags().Set(flag, value); err != nil {
+			t.Fatalf("set --%s: %v", flag, err)
+		}
+	}
+
+	mgr, err := loadServeConfig(cmd)
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+
+	got := mgr.Current().Server
+	if got.Addr != ":8081" {
+		t.Errorf("server.addr = %q, want the file's :8081 -- --addr was never typed", got.Addr)
+	}
+	if got.IntervalMs != 2000 || got.TLSCert != "/etc/sysmon/cert.pem" || got.TLSKey != "/etc/sysmon/key.pem" {
+		t.Errorf("server = %+v, want the three typed flags applied", got)
+	}
+	for _, key := range []string{"server.interval_ms", "server.tls_cert", "server.tls_key"} {
+		if src := mgr.Sources()[key]; src != types.ConfigSourceFlag {
+			t.Errorf("%s source = %q, want %q", key, src, types.ConfigSourceFlag)
+		}
+	}
+	if tls := serveTLSConfig(mgr.Current()); tls == nil || tls.CertFile != got.TLSCert || tls.KeyFile != got.TLSKey {
+		t.Errorf("serveTLSConfig() = %+v, want the flags' certificate and key", tls)
+	}
+}
+
+// TestServeTLSConfig_NilWithoutACertificate verifies plain HTTP is served
+// when neither TLS setting is given.
+func TestServeTLSConfig_NilWithoutACertificate(t *testing.T) {
+	d := config.Defaults()
+	if tls := serveTLSConfig(&d); tls != nil {
+		t.Errorf("serveTLSConfig(defaults) = %+v, want nil", tls)
+	}
+}
+
+// TestLocalNodeName_ConfiguredNameWins verifies the fleet name comes from
+// fleet.local_name when set, and falls back to the hostname without a config.
+func TestLocalNodeName_ConfiguredNameWins(t *testing.T) {
+	withServeConfig(t, "fleet:\n  local_name: rack-7\n")
+	mgr, err := loadServeConfig(nil)
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+	if got := localNodeName(mgr); got != "rack-7" {
+		t.Errorf("localNodeName() = %q, want the configured rack-7", got)
+	}
+
+	host, err := os.Hostname()
+	if err != nil {
+		t.Fatalf("hostname: %v", err)
+	}
+	if got := localNodeName(nil); got != host {
+		t.Errorf("localNodeName(nil) = %q, want the hostname %q", got, host)
+	}
+}
+
+// TestRunServeCmd_BrokenConfigIsAStartupError verifies a config file that
+// does not parse stops the service before anything starts.
+func TestRunServeCmd_BrokenConfigIsAStartupError(t *testing.T) {
+	previous := listenHook
+	t.Cleanup(func() { listenHook = previous })
+	listenHook = func(net.Addr) { t.Error("the service bound its listener despite a broken config") }
+
+	if err := runServeWithConfig(t, "server: [\n"); err == nil {
+		t.Fatal("runServeCmd() = nil, want the unparsable config reported")
 	}
 }

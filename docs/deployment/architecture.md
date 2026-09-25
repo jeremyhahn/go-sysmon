@@ -190,15 +190,15 @@ as unavailable there too, the grant is pure cost.
 
 **SMBIOS DIMM detail** (module manufacturer, part number, serial, speed, form
 factor). The collector reads `/sys/firmware/dmi/tables/DMI`, which is `0400
-root:root`, and when that fails it retries through `sudo -n cat`. Running as a
-service account with no sudo rights, that retry fails and the DIMM list is
-empty. On the reference target the fields are AMI placeholder strings
-(`Manufacturer00`, `SerNum00`) so nothing real is lost.
+root:root`, only when the process may; it never escalates (no `sudo`, no
+setuid helper). Running as the service account, the read fails and the
+module details come from ghw where it has them. On the reference target the
+fields are AMI placeholder strings (`Manufacturer00`, `SerNum00`) so nothing
+real is lost. `sysmon doctor` reports the state and how to grant access.
 
-Note that `NoNewPrivileges=yes` in the unit makes the `sudo` retry
-unconditionally impossible, by design — adding the service account to sudoers
-would not change the outcome. Recovering DIMM detail would take
-`AmbientCapabilities=CAP_DAC_READ_SEARCH`, and that capability bypasses **every**
+Recovering DIMM detail would take a `tmpfiles.d` rule making the table
+readable by the service's group, or `AmbientCapabilities=CAP_DAC_READ_SEARCH`,
+and that capability bypasses **every**
 file read permission on the host, including `/etc/shadow`. For an unauthenticated
 dashboard that already publishes process command lines, that is a bad trade for
 a placeholder string. It is the owner's call, not the deploying agent's.

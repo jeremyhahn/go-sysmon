@@ -553,6 +553,33 @@ func TestHandleHistory_LabelsAreNotForwarded(t *testing.T) {
 	}
 }
 
+// TestHandleHistory_CoresAreNamedByPackageAndCore: every package of a
+// two-socket host has a Core 0, so a core's series is named "package:core",
+// never by the core number alone that both sockets share.
+func TestHandleHistory_CoresAreNamedByPackageAndCore(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.body = `{"status":"success","data":{"resultType":"matrix","result":[
+	  {"metric":{"package":"0","core":"0","instance":"mon0"},"values":[[100,"50"]]},
+	  {"metric":{"package":"1","core":"0","instance":"mon0"},"values":[[100,"60"]]}]}}`
+
+	rec := get(t, historyServer(t, f.srv.URL), "/api/history?metric=cpu_temperature&node=mon0")
+	var resp types.History
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	var names []string
+	for _, s := range resp.Series {
+		names = append(names, s.Name)
+	}
+	if strings.Join(names, ",") != "0:0,1:0" {
+		t.Errorf("series names = %v, want 0:0 and 1:0", names)
+	}
+	query := f.seen.Get("query")
+	if !strings.Contains(query, `package!=""`) {
+		t.Errorf("query %q does not require the package label", query)
+	}
+}
+
 // TestHandleHistory_UnknownMetricIsRejected is the allowlist. Anything that is
 // not a catalog key must be a 400, never an expression forwarded upstream.
 func TestHandleHistory_UnknownMetricIsRejected(t *testing.T) {

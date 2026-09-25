@@ -4,6 +4,7 @@
   import GaugeChart from "./GaugeChart.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
+  import { coreKey, coreLabel, multiPackage } from "$lib/cores";
   import {
     formatPercent,
     formatMHz,
@@ -71,6 +72,9 @@
   const sensors = $derived(snapshot?.sensors ?? null);
 
   const hasCoreTempData = $derived((sensors?.core_temps?.length ?? 0) > 0);
+  // Every package numbers its cores from 0, so a core's label carries its
+  // package when there is more than one; see $lib/cores.
+  const coresMultiPackage = $derived(multiPackage(sensors?.core_temps ?? []));
   const hasCoreVoltageData = $derived((sensors?.core_voltages?.length ?? 0) > 0);
   const hasPackagePowerData = $derived((sensors?.package_power?.length ?? 0) > 0);
   const hasThrottleData = $derived((sensors?.thermal_throttle?.length ?? 0) > 0);
@@ -418,7 +422,8 @@
               <MetricChart
                 metrics={["cpu_temperature"]}
                 series={sensors.core_temps.map((ct, i) => ({
-                  label: ct.label || `Core ${ct.core_id}`,
+                  label: coreLabel(ct, coresMultiPackage),
+                  historyName: coreKey(ct.package_id, ct.core_id),
                   data: cpuTempHistory[i] ?? [],
                   formatter: (v) => `${v.toFixed(0)}°C`,
                 }))}

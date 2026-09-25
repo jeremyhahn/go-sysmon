@@ -30,12 +30,3 @@ func warnOnce(logger *slog.Logger, key, msg string, args ...any) {
 	}
 	logger.Warn(msg, args...)
 }
-
-// resetWarnOnce clears the recorded conditions. It exists for tests, which
-// would otherwise see state carried between cases.
-func resetWarnOnce() {
-	warnedConditions.Range(func(k, _ any) bool {
-		warnedConditions.Delete(k)
-		return true
-	})
-}

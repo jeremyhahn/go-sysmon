@@ -18,7 +18,6 @@ import (
 type gateCall struct {
 	peer     string
 	summary  *types.NodeSummary
-	source   types.SummarySource
 	interval int64
 }
 
@@ -27,10 +26,10 @@ type gateCall struct {
 func recordingGate(record bool, status types.PeerHistory) (HistoryGate, func() []gateCall) {
 	var mu sync.Mutex
 	var calls []gateCall
-	gate := func(peer string, summary *types.NodeSummary, source types.SummarySource) (bool, types.PeerHistory) {
+	gate := func(peer string, summary *types.NodeSummary) (bool, types.PeerHistory) {
 		mu.Lock()
 		defer mu.Unlock()
-		c := gateCall{peer: peer, summary: summary, source: source}
+		c := gateCall{peer: peer, summary: summary}
 		if summary != nil {
 			c.interval = summary.CollectionIntervalMs
 		}
@@ -87,7 +86,7 @@ func TestGateHistory_ARefusedPeerIsNotWrittenAndSaysWhy(t *testing.T) {
 		t.Errorf("%d readings written for a refused peer", n)
 	}
 	got := calls()
-	if len(got) != 1 || got[0].peer != "peer-00" || got[0].source != types.SummarySourceSummary ||
+	if len(got) != 1 || got[0].peer != "peer-00" ||
 		got[0].interval != (10*time.Minute).Milliseconds() {
 		t.Fatalf("gate calls = %+v, want one for peer-00 with its summary and reported interval", got)
 	}
@@ -139,8 +138,8 @@ func TestGateHistory_AnOldPeerIsJudgedByItsSnapshot(t *testing.T) {
 	p.refresh(*cfg.Load())
 
 	got := calls()
-	if len(got) != 1 || got[0].source != types.SummarySourceSnapshot || got[0].summary == nil || got[0].interval != 0 {
-		t.Fatalf("gate calls = %+v, want the snapshot source and no reported interval", got)
+	if len(got) != 1 || got[0].summary == nil || got[0].interval != 0 {
+		t.Fatalf("gate calls = %+v, want the snapshot's summary with no reported interval", got)
 	}
 	if readings.Load() != 1 {
 		t.Errorf("%d readings, want the unverified one written", readings.Load())
@@ -285,7 +284,7 @@ func TestGateHistory_AskedAgainBeforeDelivery(t *testing.T) {
 	cfg := fleetOf(5*time.Second, srv.URL)
 	p, readings := recordingPoller(t, cfg, cadenceOf(time.Hour))
 	var asked atomic.Int64
-	p.GateHistory(func(string, *types.NodeSummary, types.SummarySource) (bool, types.PeerHistory) {
+	p.GateHistory(func(string, *types.NodeSummary) (bool, types.PeerHistory) {
 		// Admitted before the fetch, refused after it.
 		if asked.Add(1) == 1 {
 			return true, types.PeerHistory{State: types.PeerHistoryRecorded}

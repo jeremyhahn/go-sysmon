@@ -60,19 +60,6 @@ TEST_SHAPES := $(BUILD_SHAPES) nomegaraid
 ALL_SHAPES := $(BUILD_SHAPES) nomegaraid integration
 
 PKG_ALL := ./...
-PKG_CLI := ./pkg/cli/...
-PKG_COLLECTOR := ./pkg/collector/...
-PKG_FLEET := ./pkg/fleet/...
-PKG_METRICS := ./pkg/metrics/...
-PKG_MONITOR := ./pkg/monitor/...
-PKG_SERVER := ./pkg/server/...
-PKG_TYPES := ./pkg/types/...
-PKG_TSGEN := ./internal/tsgen/...
-PKG_BUILDTAGS := ./internal/buildtags/...
-PKG_DEADPEER := ./internal/deadpeer/...
-PKG_PINS := ./internal/pins/...
-PKG_GITEA := ./internal/gitea/...
-PKG_CMD := ./cmd/sysmon/...
 
 FRONTEND_DIR := cmd/sysmon/frontend
 # Defined here, beside FRONTEND_DIR, and NOT next to the rule that builds it:
@@ -81,7 +68,29 @@ FRONTEND_DIR := cmd/sysmon/frontend
 # which silently left build-frontend with no prerequisites at all and no install
 # step, so a fresh checkout ran `npm run check` against an absent node_modules.
 FRONTEND_STAMP := $(FRONTEND_DIR)/node_modules/.install-stamp
-DOCKER_IMAGE := go-sysmon-test
+# DOCKER_IMAGE names the integration image built from DEVCONTAINER_DOCKERFILE.
+# Override it when several checkouts build at once on one Docker daemon, so
+# one does not run the image another just built.
+DOCKER_IMAGE ?= go-sysmon-test
+# DEVCONTAINER_DOCKERFILE is the one integration environment: every
+# integration run -- the whole suite and each package's -- happens inside it,
+# never on the host (CLAUDE.md). The suite's code lives in test/integration.
+DEVCONTAINER_DOCKERFILE := build/docker/devcontainer/Dockerfile
+
+# TEST_LOG_DIR keeps each Go suite's output as a file as well as on the
+# terminal: one log per test shape, one for FIPS mode and one for the
+# integration suite, plus the desktop session's own logs under desktop/. CI
+# uploads the directory when a job fails, so a failure's diagnostics can be
+# downloaded rather than scrolled for (#225). See docs/testing/ci-artifacts.md.
+TEST_LOG_DIR ?= test-logs
+DESKTOP_LOG_DIR := $(TEST_LOG_DIR)/desktop
+
+# The suites that tee their output into TEST_LOG_DIR run under bash with
+# pipefail, so a failing test fails the target and not only the tee that
+# follows it. Scoped to these targets: other recipes pipe into tail and head,
+# where a pipeline's status is meant to be the last command's.
+test-shape-% test-fips integration-test integration-test-% test-extensions-desktop: SHELL := /bin/bash
+test-shape-% test-fips integration-test integration-test-% test-extensions-desktop: .SHELLFLAGS := -o pipefail -c
 
 # Analysis tool versions. This is the ONLY place they are pinned: `make lint`,
 # `make vulncheck` and `make gosec` refuse a binary built at any other version,
@@ -167,13 +176,12 @@ DESKTOP_IMAGE := go-sysmon-desktop-test
 ADDR ?= :8081
 INTERVAL ?= 1000
 
-.PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report check-bundle-current frontend-deps test test-cli test-collector test-monitor \
-        test-server test-types test-metrics coverage-cli coverage-collector coverage-monitor coverage-server coverage-metrics \
-        bench-cli bench-collector bench-fleet bench-monitor bench-server integration-test integration-test-cli \
+.PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report check-bundle-current frontend-deps test \
+        coverage check-package-targets check-coverage-exceptions integration-test \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
-        build-both generate check-generated check-ts check-errcheck-nolint test-tsgen coverage-tsgen test-buildtags coverage-buildtags test-deadpeer coverage-deadpeer \
-        check-build-tags test-fips check-pins check-latest test-pins coverage-pins test-gitea coverage-gitea \
+        build-both generate check-generated check-ts check-nolint \
+        check-build-tags test-fips check-pins check-latest \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -301,7 +309,8 @@ test: $(addprefix test-shape-,$(TEST_SHAPES))
 # The desktop shapes link GTK and WebKit, so they need the packages `make deps`
 # installs; so do their vet and lint below.
 test-shape-%:
-	go test -tags "$(SHAPE_$*)" $(PKG_ALL) -race -count=1
+	@mkdir -p $(TEST_LOG_DIR)
+	go test -tags "$(SHAPE_$*)" $(PKG_ALL) -race -count=1 2>&1 | tee $(TEST_LOG_DIR)/unit-$*.log
 
 # test-fips runs the suite in FIPS 140-3 mode, in the shapes a FIPS consumer
 # embeds (go-quicbaas builds pkg/collector with CGO_ENABLED=0 GOFIPS140=latest,
@@ -310,10 +319,11 @@ test-shape-%:
 # (#100).
 FIPS_ENV := GOFIPS140=latest GODEBUG=fips140=on
 test-fips:
+	@mkdir -p $(TEST_LOG_DIR)
 	$(FIPS_ENV) go build $(PKG_ALL)
 	$(FIPS_ENV) go build -tags prometheus $(PKG_ALL)
-	$(FIPS_ENV) go test -count=1 -timeout=900s $(PKG_ALL)
-	$(FIPS_ENV) go test -tags prometheus -count=1 -timeout=900s $(PKG_ALL)
+	$(FIPS_ENV) go test -count=1 -timeout=900s $(PKG_ALL) 2>&1 | tee $(TEST_LOG_DIR)/fips.log
+	$(FIPS_ENV) go test -tags prometheus -count=1 -timeout=900s $(PKG_ALL) 2>&1 | tee $(TEST_LOG_DIR)/fips-prometheus.log
 
 # build-both compiles the two shapes without running anything, which is the
 # cheap half of the same guarantee.
@@ -321,104 +331,71 @@ build-both:
 	CGO_ENABLED=1 go build ./...
 	CGO_ENABLED=1 go build -tags "$(SERVER_TAGS)" ./...
 
-test-cli:
-	go test $(PKG_CLI) -v -count=1
+## Per-package targets
 
-test-collector:
-	go test $(PKG_COLLECTOR) -v -count=1
+# Every Go package gets test-<name>, coverage-<name> and integration-test-<name>,
+# and bench-<name> once it has a benchmark. They are generated from the package
+# list `go list` prints, so a new package gets its targets with no edit here,
+# and `make check-package-targets` (part of lint) fails if one ever does not.
+#
+# <name> is the package directory with a leading pkg/ or internal/ dropped and
+# each remaining slash a dash: pkg/collector is collector, internal/tsgen is
+# tsgen, pkg/types/typestest is types-typestest, cmd/sysmon is cmd-sysmon.
+#
+# test-<name> and coverage-<name> run the package in every test shape that
+# compiles it from a different set of files, since a file behind a tag is
+# only built -- and so only tested and measured -- in the shapes that set it.
+# coverage-<name> reports the union of those runs and fails below
+# COVERAGE_FLOOR; integration-test-<name> runs the integration suite in the
+# devcontainer and does the same for the package's integration coverage. See
+# docs/testing/coverage.md.
+COVERAGE_FLOOR := 90
+GO_PACKAGE_DIRS := $(shell go list -f '{{.Dir}}' ./... | sed 's|^$(CURDIR)/||')
+BENCH_PACKAGE_DIRS := $(sort $(foreach d,$(GO_PACKAGE_DIRS),$(if $(shell grep -lsE '^func Benchmark' $(d)/*_test.go),$(d))))
+pkg_name = $(subst /,-,$(patsubst internal/%,%,$(patsubst pkg/%,%,$(1))))
+PACKAGE_NAMES := $(foreach d,$(GO_PACKAGE_DIRS),$(call pkg_name,$(d)))
 
-test-monitor:
-	go test $(PKG_MONITOR) -v -count=1
+# TEST_SHAPE_TAGS quotes each test shape's tags, so the untagged shape
+# survives as "" rather than vanishing from the word list.
+TEST_SHAPE_TAGS := $(foreach s,$(TEST_SHAPES),"$(SHAPE_$(s))")
+PKGTEST := ./scripts/pkgtest.sh
 
-test-server:
-	go test $(PKG_SERVER) -v -count=1
+define PACKAGE_TARGETS
+.PHONY: test-$(call pkg_name,$(1)) coverage-$(call pkg_name,$(1)) integration-test-$(call pkg_name,$(1))
+test-$(call pkg_name,$(1)):
+	$(PKGTEST) test ./$(1) $(TEST_SHAPE_TAGS)
 
-test-types:
-	go test $(PKG_TYPES) -v -count=1
+coverage-$(call pkg_name,$(1)):
+	$(PKGTEST) coverage $(COVERAGE_FLOOR) ./$(1) $(TEST_SHAPE_TAGS)
 
-test-metrics:
-	go test $(PKG_METRICS) -v -count=1
+integration-test-$(call pkg_name,$(1)): docker-build
+	@mkdir -p $(TEST_LOG_DIR)
+	docker run --rm --privileged $(DOCKER_IMAGE) $(PKGTEST) integration $(COVERAGE_FLOOR) ./$(1) 2>&1 | tee $(TEST_LOG_DIR)/integration-$(call pkg_name,$(1)).log
+endef
 
-test-cmd:
-	go test $(PKG_CMD) -v -count=1
+define BENCH_TARGET
+.PHONY: bench-$(call pkg_name,$(1))
+bench-$(call pkg_name,$(1)):
+	go test ./$(1) -bench=. -benchmem -count=1 -run='^$$$$'
+endef
 
-test-tsgen:
-	go test $(PKG_TSGEN) -v -count=1
+$(foreach d,$(GO_PACKAGE_DIRS),$(eval $(call PACKAGE_TARGETS,$(d))))
+$(foreach d,$(BENCH_PACKAGE_DIRS),$(eval $(call BENCH_TARGET,$(d))))
 
-test-buildtags:
-	go test $(PKG_BUILDTAGS) -v -count=1
+# coverage holds every package to COVERAGE_FLOOR in one run, the gate CI runs.
+coverage: $(addprefix coverage-,$(PACKAGE_NAMES))
 
-test-deadpeer:
-	go test $(PKG_DEADPEER) -race -v -count=1
+# check-coverage-exceptions fails when build/coverage-exceptions holds an entry
+# that is malformed, unapproved, of an unknown category, or names a path that
+# no longer exists.
+check-coverage-exceptions:
+	@$(PKGTEST) check-exceptions
 
-test-pins:
-	go test $(PKG_PINS) -v -count=1
-
-test-gitea:
-	go test $(PKG_GITEA) -v -count=1
-
-## Coverage targets
-
-coverage-cli:
-	go test $(PKG_CLI) -coverprofile=/tmp/coverage-cli.out -count=1
-	go tool cover -func=/tmp/coverage-cli.out
-
-coverage-collector:
-	go test $(PKG_COLLECTOR) -coverprofile=/tmp/coverage-collector.out -count=1
-	go tool cover -func=/tmp/coverage-collector.out
-
-coverage-monitor:
-	go test $(PKG_MONITOR) -coverprofile=/tmp/coverage-monitor.out -count=1
-	go tool cover -func=/tmp/coverage-monitor.out
-
-coverage-server:
-	go test $(PKG_SERVER) -coverprofile=/tmp/coverage-server.out -count=1
-	go tool cover -func=/tmp/coverage-server.out
-
-coverage-types:
-	go test $(PKG_TYPES) -coverprofile=/tmp/coverage-types.out -count=1
-	go tool cover -func=/tmp/coverage-types.out
-
-coverage-tsgen:
-	go test $(PKG_TSGEN) -coverprofile=/tmp/coverage-tsgen.out -count=1
-	go tool cover -func=/tmp/coverage-tsgen.out
-
-coverage-buildtags:
-	go test $(PKG_BUILDTAGS) -coverprofile=/tmp/coverage-buildtags.out -count=1
-	go tool cover -func=/tmp/coverage-buildtags.out
-
-coverage-deadpeer:
-	go test $(PKG_DEADPEER) -coverprofile=/tmp/coverage-deadpeer.out -count=1
-	go tool cover -func=/tmp/coverage-deadpeer.out
-
-coverage-pins:
-	go test $(PKG_PINS) -coverprofile=/tmp/coverage-pins.out -count=1
-	go tool cover -func=/tmp/coverage-pins.out
-
-coverage-gitea:
-	go test $(PKG_GITEA) -coverprofile=/tmp/coverage-gitea.out -count=1
-	go tool cover -func=/tmp/coverage-gitea.out
-
-coverage-metrics:
-	go test $(PKG_METRICS) -coverprofile=/tmp/coverage-metrics.out -count=1
-	go tool cover -func=/tmp/coverage-metrics.out
-
-## Benchmark targets
-
-bench-cli:
-	go test $(PKG_CLI) -bench=. -benchmem -count=1 -run='^$$'
-
-bench-collector:
-	go test $(PKG_COLLECTOR) -bench=. -benchmem -count=1 -run='^$$'
-
-bench-fleet:
-	go test $(PKG_FLEET) -bench=. -benchmem -count=1 -run='^$$'
-
-bench-monitor:
-	go test $(PKG_MONITOR) -bench=. -benchmem -count=1 -run='^$$'
-
-bench-server:
-	go test $(PKG_SERVER) -bench=. -benchmem -count=1 -run='^$$'
+# check-package-targets fails when a package has no test-, coverage- or
+# integration-test- target, or has a benchmark and no bench- target, or when
+# two package directories map to one target name.
+check-package-targets:
+	@./scripts/check-package-targets.sh
 
 ## E2E tests
 
@@ -447,26 +424,38 @@ test-extensions:
 # The tmpfs over /sys/class/drm hides the host's GPUs, so the container sees the
 # same (empty) set of DRM devices on every host (#163). What Cinnamon logs at
 # startup depends on that set, and the runner refuses any other view.
+#
+# The session's logs (cinnamon.log, xorg.log, the bus and udisksd logs) live in
+# the container, so the container is created rather than run with --rm: they
+# are copied into DESKTOP_LOG_DIR whether the run passed or not, and then it is
+# removed. It is addressed by the ID docker create prints, never by a name --
+# CI jobs share one Docker daemon, and a fixed name would collide.
 test-extensions-desktop: desktop-docker-build
-	docker run --rm --shm-size=256m --mount type=tmpfs,destination=/sys/class/drm $(DESKTOP_IMAGE)
+	@rm -rf $(DESKTOP_LOG_DIR) && mkdir -p $(DESKTOP_LOG_DIR)
+	cid=$$(docker create --shm-size=256m --mount type=tmpfs,destination=/sys/class/drm $(DESKTOP_IMAGE)) || exit; \
+	docker start --attach $$cid 2>&1 | tee $(DESKTOP_LOG_DIR)/run.log; status=$$?; \
+	docker cp $$cid:/var/log/sysmon-desktop/. $(DESKTOP_LOG_DIR)/ || status=1; \
+	docker rm $$cid >/dev/null || status=1; \
+	exit $$status
 
 desktop-docker-build:
 	docker build -t $(DESKTOP_IMAGE) -f test/desktop/Dockerfile .
 
 ## Integration tests
 
-# integration-test-cli runs the CLI integration suite directly on the host.
-# The binary is built internally by TestMain; no pre-built binary is required.
-integration-test-cli:
-	CGO_ENABLED=0 go test -v -tags integration -count=1 -timeout 120s ./test/integration/...
-
-# integration-test builds the Docker image and runs the full suite inside a
-# container so that smartmontools and dmidecode are available.
+# integration-test builds the devcontainer and runs the full suite inside it,
+# where smartmontools and dmidecode are available and the host is untouched.
+#
+# The suite runs with every package instrumented and reports each package's
+# integration coverage (scripts/pkgtest.sh integration), and fails when any
+# package is below COVERAGE_FLOOR -- leaving out only what the owner-approved
+# build/coverage-exceptions names, whose figures are still reported (#167).
 integration-test: docker-build
-	docker run --rm --privileged $(DOCKER_IMAGE)
+	@mkdir -p $(TEST_LOG_DIR)
+	docker run --rm --privileged $(DOCKER_IMAGE) $(PKGTEST) integration $(COVERAGE_FLOOR) 2>&1 | tee $(TEST_LOG_DIR)/integration.log
 
 docker-build:
-	docker build -t $(DOCKER_IMAGE) -f test/integration/Dockerfile .
+	docker build -t $(DOCKER_IMAGE) -f $(DEVCONTAINER_DOCKERFILE) .
 
 # serve runs the web UI locally. Override the listen address and poll rate with
 # e.g. `make serve ADDR=:9090 INTERVAL=500`.
@@ -490,7 +479,7 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-pins check-errcheck-nolint check-ts \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-pins check-nolint check-package-targets check-coverage-exceptions check-ts \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
@@ -501,12 +490,13 @@ lint-shape-%:
 	@$(TOOL) check "$(GOLANGCI_LINT)" $(GOLANGCI_LINT_PKG) $(GOLANGCI_LINT_VERSION)
 	$(GOLANGCI_LINT) run --build-tags "$(SHAPE_$*)" $(PKG_ALL)
 
-# check-errcheck-nolint fails when any Go file silences errcheck with //nolint.
-# The linter checks every file in full -- tests since #196, production since
-# #207 -- and a directive is the one way around that it cannot report. See the
-# script for what counts.
-check-errcheck-nolint:
-	@./scripts/check-errcheck-nolint.sh
+# check-nolint fails when any Go file silences a guard linter -- errcheck,
+# errname or forbidigo -- with //nolint. Each holds a rule with no exceptions
+# (errcheck since #196/#207, the error-naming and typed-error rules since
+# #194), and a directive is the one way around it the linter cannot report.
+# See the script for what counts.
+check-nolint:
+	@./scripts/check-nolint.sh
 
 # check-ts type-checks the frontend TypeScript that svelte-check does not
 # cover: the Playwright specs and their fixtures (tests/tsconfig.json), and the
@@ -686,7 +676,7 @@ clean-dist:
 
 clean: clean-dist
 	go clean ./...
-	rm -rf bin/ /tmp/coverage-*.out
+	rm -rf bin/ /tmp/coverage-*.out $(TEST_LOG_DIR)
 	rm -rf $(FRONTEND_DIR)/dist $(FRONTEND_DIR)/node_modules
 
 ## Deployment

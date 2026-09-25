@@ -134,12 +134,12 @@ func TestQuerier_QueryRange_PrometheusError(t *testing.T) {
 	q := querier(srv.URL, time.Second)
 
 	_, err := q.QueryRange(context.Background(), "m", time.UnixMilli(0), time.UnixMilli(60000), time.Second)
-	var qerr *ErrQuery
+	var qerr *QueryError
 	if !errors.As(err, &qerr) {
-		t.Fatalf("QueryRange() = %v, want *ErrQuery", err)
+		t.Fatalf("QueryRange() = %v, want *QueryError", err)
 	}
 	if qerr.Type != "bad_data" || qerr.Detail == "" {
-		t.Fatalf("ErrQuery = %+v, want the errorType and error carried through", qerr)
+		t.Fatalf("QueryError = %+v, want the errorType and error carried through", qerr)
 	}
 }
 
@@ -151,9 +151,9 @@ func TestQuerier_QueryRange_NotPrometheus(t *testing.T) {
 	q := querier(srv.URL, time.Second)
 
 	_, err := q.QueryRange(context.Background(), "m", time.UnixMilli(0), time.UnixMilli(60000), time.Second)
-	var derr *ErrDecode
+	var derr *DecodeError
 	if !errors.As(err, &derr) {
-		t.Fatalf("QueryRange() = %v, want *ErrDecode", err)
+		t.Fatalf("QueryRange() = %v, want *DecodeError", err)
 	}
 }
 
@@ -182,9 +182,9 @@ func TestQuerier_QueryRange_Rejections(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := q.QueryRange(context.Background(), "m", tt.start, tt.end, tt.step)
-			var rangeErr *ErrInvalidRange
+			var rangeErr *InvalidRangeError
 			if !errors.As(err, &rangeErr) {
-				t.Fatalf("QueryRange() = %v, want *ErrInvalidRange", err)
+				t.Fatalf("QueryRange() = %v, want *InvalidRangeError", err)
 			}
 		})
 	}
@@ -208,9 +208,9 @@ func TestQuerier_Disabled(t *testing.T) {
 	}
 
 	_, err := q.QueryRange(context.Background(), "m", time.UnixMilli(0), time.UnixMilli(60000), time.Second)
-	var none *ErrNoQueryEndpoint
+	var none *NoQueryEndpointError
 	if !errors.As(err, &none) {
-		t.Fatalf("QueryRange() = %v, want *ErrNoQueryEndpoint", err)
+		t.Fatalf("QueryRange() = %v, want *NoQueryEndpointError", err)
 	}
 }
 
@@ -347,9 +347,9 @@ func TestQuerier_QueryRange_SuccessUnderAFailureStatus(t *testing.T) {
 			t.Fatalf("QueryRange() = %d series, nil error for an HTTP %d carrying "+
 				"a success envelope", len(got), status)
 		}
-		var qe *ErrQuery
+		var qe *QueryError
 		if !errors.As(err, &qe) {
-			t.Fatalf("QueryRange() = %v for HTTP %d, want an *ErrQuery", err, status)
+			t.Fatalf("QueryRange() = %v for HTTP %d, want a *QueryError", err, status)
 		}
 	}
 
@@ -388,9 +388,9 @@ func TestQuerier_QueryRange_WrongResultType(t *testing.T) {
 			t.Fatalf("%s: QueryRange() = %d series, nil error; an empty chart and a "+
 				"wrong answer are indistinguishable to whoever is reading it", name, len(got))
 		}
-		var wrong *ErrUnexpectedResultType
+		var wrong *UnexpectedResultTypeError
 		if !errors.As(err, &wrong) {
-			t.Fatalf("%s: QueryRange() = %v, want an *ErrUnexpectedResultType", name, err)
+			t.Fatalf("%s: QueryRange() = %v, want an *UnexpectedResultTypeError", name, err)
 		}
 	}
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -119,12 +120,12 @@ func TestWriter_Write_RejectionIsTyped(t *testing.T) {
 		w := NewWriter(srv.URL, time.Second, discardLog)
 
 		err := w.Write(context.Background(), goldenSeries())
-		var rw *ErrRemoteWrite
+		var rw *RemoteWriteError
 		if !errors.As(err, &rw) {
-			t.Fatalf("status %d: Write() = %v, want *ErrRemoteWrite", tt.status, err)
+			t.Fatalf("status %d: Write() = %v, want *RemoteWriteError", tt.status, err)
 		}
 		if rw.Status != tt.status {
-			t.Errorf("status %d: ErrRemoteWrite.Status = %d", tt.status, rw.Status)
+			t.Errorf("status %d: RemoteWriteError.Status = %d", tt.status, rw.Status)
 		}
 		if rw.Retryable() != tt.wantRetryable {
 			t.Errorf("status %d: Retryable() = %v, want %v", tt.status, rw.Retryable(), tt.wantRetryable)
@@ -142,11 +143,11 @@ func TestWriter_Write_UnreachableEndpoint(t *testing.T) {
 	w := NewWriter(deadpeer.URL(t)+"/api/v1/write", 500*time.Millisecond, discardLog)
 
 	err := w.Write(context.Background(), goldenSeries())
-	var reqErr *ErrRequest
+	var reqErr *RequestError
 	if !errors.As(err, &reqErr) {
-		t.Fatalf("Write() = %v, want *ErrRequest", err)
+		t.Fatalf("Write() = %v, want *RequestError", err)
 	}
-	var rw *ErrRemoteWrite
+	var rw *RemoteWriteError
 	if errors.As(err, &rw) {
 		t.Fatal("an unreachable endpoint must not look like a rejection")
 	}
@@ -241,6 +242,69 @@ func TestBuilder_OddLabelIsIgnored(t *testing.T) {
 	series := b.Drain()
 	if len(series[0].Labels) != 1 || series[0].Labels[0].Name != "__name__" {
 		t.Fatalf("labels = %v, want only __name__", series[0].Labels)
+	}
+}
+
+// TestBuilder_AnEmptyLabelValueIsLeftOff: a host-wide alert has no resource,
+// and resource="" would put an empty label value on the wire, which a receiver
+// may reject together with the whole batch. It is left off, which is what the
+// empty value means to Prometheus, while every labelled value is kept.
+func TestBuilder_AnEmptyLabelValueIsLeftOff(t *testing.T) {
+	b := NewBuilder([]Label{{Name: "instance", Value: "node-1"}})
+	b.Add("sysmon_alert", 1, 1, "rule", "cpu_high", "resource", "", "severity", "warning")
+
+	series := b.Drain()
+	want := []Label{
+		{Name: "__name__", Value: "sysmon_alert"}, {Name: "instance", Value: "node-1"},
+		{Name: "rule", Value: "cpu_high"}, {Name: "severity", Value: "warning"},
+	}
+	if len(series) != 1 || !reflect.DeepEqual(series[0].Labels, want) {
+		t.Fatalf("Drain() = %+v, want one series labelled %v", series, want)
+	}
+	for _, l := range series[0].Labels {
+		if l.Value == "" {
+			t.Errorf("label %q is sent with an empty value", l.Name)
+		}
+	}
+}
+
+// TestBuilder_AnEmptyValueAndAnAbsentLabelAreOneSeries: the two are the same
+// series to Prometheus, so they must not become two here.
+func TestBuilder_AnEmptyValueAndAnAbsentLabelAreOneSeries(t *testing.T) {
+	b := NewBuilder(nil)
+	b.Add("m", 1, 1, "rule", "load_high", "resource", "")
+	b.Add("m", 2, 2, "rule", "load_high")
+
+	if series := b.Drain(); len(series) != 1 || len(series[0].Samples) != 2 {
+		t.Fatalf("Drain() = %+v, want one series with both samples", series)
+	}
+}
+
+// TestBuilder_ASecondSampleAtOneTimeIsDroppedAndReported: two samples of one
+// series at one timestamp are a labelling defect upstream, and sent together
+// they are a duplicate the receiver refuses with the whole request. The first
+// stands, the second is dropped and reported once, and a later timestamp is
+// kept as usual.
+func TestBuilder_ASecondSampleAtOneTimeIsDroppedAndReported(t *testing.T) {
+	b := NewBuilder([]Label{{Name: "instance", Value: "n"}})
+	b.Add("sysmon_cpu_temperature_celsius", 61, 1000, "core", "0")
+	b.Add("sysmon_cpu_temperature_celsius", 67, 1000, "core", "0")
+
+	want := []string{`{__name__="sysmon_cpu_temperature_celsius",core="0",instance="n"}`}
+	if got := b.TakeCollisions(); !reflect.DeepEqual(got, want) {
+		t.Errorf("TakeCollisions() = %q, want %q", got, want)
+	}
+	if got := b.TakeCollisions(); len(got) != 0 {
+		t.Errorf("TakeCollisions() again = %q, want them forgotten", got)
+	}
+	b.Add("sysmon_cpu_temperature_celsius", 62, 2000, "core", "0")
+
+	series := b.Drain()
+	if len(series) != 1 || !reflect.DeepEqual(series[0].Samples, []Sample{{Value: 61, TimeMs: 1000}, {Value: 62, TimeMs: 2000}}) {
+		t.Fatalf("Drain() = %+v, want the first sample at 1000 and the one at 2000", series)
+	}
+	if b.Len() != 0 {
+		t.Errorf("Len() after Drain = %d, want 0", b.Len())
 	}
 }
 

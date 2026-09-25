@@ -176,7 +176,7 @@ func TestHandleFleetSnapshot_AnswersWithinTheWriteBudget(t *testing.T) {
 // TestFleetSnapshotStatus_ARepointedPeerIsWorthRetrying: a drill-in overtaken
 // by a reload is 503 -- ask again -- not a missing node or a dead one.
 func TestFleetSnapshotStatus_ARepointedPeerIsWorthRetrying(t *testing.T) {
-	if got := fleetSnapshotStatus(&fleet.ErrPeerMoved{Peer: "fs"}); got != http.StatusServiceUnavailable {
-		t.Errorf("ErrPeerMoved -> %d, want 503", got)
+	if got := fleetSnapshotStatus(&fleet.PeerMovedError{Peer: "fs"}); got != http.StatusServiceUnavailable {
+		t.Errorf("PeerMovedError -> %d, want 503", got)
 	}
 }

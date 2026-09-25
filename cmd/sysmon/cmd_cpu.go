@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -43,7 +42,7 @@ func runCPUCmd(cmd *cobra.Command, _ []string) error {
 			})
 		}
 		if err := cli.RenderCPU(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render cpu: %w", err)
+			return &cli.RenderError{Function: "cpu", Cause: err}
 		}
 		return nil
 	})

@@ -5,11 +5,13 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
+	"golang.org/x/sys/unix"
 )
 
 // buildContainerCgroup writes a synthetic cgroup v2 container scope.
@@ -905,5 +907,132 @@ func TestCollect_CapabilityReportsCgroupV1(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(info.Capability.Notes, " "), "v2") {
 		t.Errorf("note should mention the v2 requirement: %v", info.Capability.Notes)
+	}
+}
+
+// TestCountHypervisorThreads_CountsVCPUThreads verifies qemu's "CPU N/KVM"
+// threads are told apart from its I/O and emulation workers.
+func TestCountHypervisorThreads_CountsVCPUThreads(t *testing.T) {
+	root := t.TempDir()
+	withProcRoot(t, root)
+	for tid, comm := range map[string]string{
+		"100": "qemu-system-x86\n", "101": "CPU 0/KVM\n", "102": "CPU 1/KVM\n", "103": "IO iothread1\n",
+	} {
+		writeSysfsFile(t, filepath.Join(root, "100", "task", tid, "comm"), comm)
+	}
+
+	vcpus, total := countHypervisorThreads(100)
+	if vcpus != 2 || total != 4 {
+		t.Errorf("countHypervisorThreads() = (%d, %d), want (2, 4)", vcpus, total)
+	}
+}
+
+// TestParseHypervisorCmdline_BlockdevImages verifies disk images are read out
+// of -blockdev JSON, once each, and that a fragment naming no file adds none.
+func TestParseHypervisorCmdline_BlockdevImages(t *testing.T) {
+	cmdline := `qemu-system-x86_64 -name guest=web ` +
+		`-blockdev {"driver":"file","filename":"/var/lib/libvirt/images/web.img","node-name":"f0"} ` +
+		`-blockdev {"driver":"file","filename":"/var/lib/libvirt/images/web.img","node-name":"f1"} ` +
+		`-blockdev {"driver":"file","filename":"/var/lib/libvirt/images/data.img"} ` +
+		`-blockdev {"driver":"qcow2","file":"f0","note":"filename-less.img"}`
+
+	vm := parseHypervisorCmdline(cmdline)
+
+	want := []string{"/var/lib/libvirt/images/web.img", "/var/lib/libvirt/images/data.img"}
+	if len(vm.DiskImages) != len(want) {
+		t.Fatalf("DiskImages = %v, want %v", vm.DiskImages, want)
+	}
+	for i := range want {
+		if vm.DiskImages[i] != want[i] {
+			t.Errorf("DiskImages[%d] = %q, want %q", i, vm.DiskImages[i], want[i])
+		}
+	}
+}
+
+// TestParseHypervisorCmdline_EveryImageFormat verifies a disk is recorded
+// whatever its extension -- libvirt's default qcow2, raw images, block
+// devices -- and that only an argument to -blockdev is read as one: a
+// filename in another option is not a disk.
+func TestParseHypervisorCmdline_EveryImageFormat(t *testing.T) {
+	cmdline := `qemu-system-x86_64 -name guest=db ` +
+		`-blockdev {"driver":"file","filename":"/var/lib/libvirt/images/db.qcow2","node-name":"f0"} ` +
+		`-blockdev {"node-name":"fmt0","driver":"qcow2","file":"f0"} ` +
+		`-blockdev driver=file,filename=/srv/vm/scratch.raw,node-name=f1 ` +
+		`-blockdev {"driver":"host_device","filename":"/dev/vg0/db-data"} ` +
+		`-blockdev {"driver":"file","filename":"/srv/vm/seed.iso"} ` +
+		`-chardev socket,id=mon,filename=/run/qemu/db.monitor.img`
+
+	vm := parseHypervisorCmdline(cmdline)
+
+	want := []string{
+		"/var/lib/libvirt/images/db.qcow2",
+		"/srv/vm/scratch.raw",
+		"/dev/vg0/db-data",
+		"/srv/vm/seed.iso",
+	}
+	if !reflect.DeepEqual(vm.DiskImages, want) {
+		t.Errorf("DiskImages = %q, want %q", vm.DiskImages, want)
+	}
+}
+
+// TestParseHypervisorCmdline_BlockdevWithNoArgument verifies a -blockdev at
+// the end of a truncated command line adds nothing.
+func TestParseHypervisorCmdline_BlockdevWithNoArgument(t *testing.T) {
+	if vm := parseHypervisorCmdline("qemu-system-x86_64 -blockdev"); len(vm.DiskImages) != 0 {
+		t.Errorf("DiskImages = %q, want none", vm.DiskImages)
+	}
+}
+
+func TestBlockdevFilename_ReadsBothSyntaxes(t *testing.T) {
+	for arg, want := range map[string]string{
+		`{"driver":"file","filename":"/images/a.img"}`:    "/images/a.img",
+		`driver=file,filename=/images/b.img,node-name=f0`: "/images/b.img",
+	} {
+		if got := blockdevFilename(arg); got != want {
+			t.Errorf("blockdevFilename(%s) = %q, want %q", arg, got, want)
+		}
+	}
+}
+
+func TestAppendDiskImage_IgnoresAnArgumentWithNoPath(t *testing.T) {
+	for _, arg := range []string{
+		`{"driver":"file"}`,
+		`{"filename":""}`,
+		`{"driver":"file","filename":`, // truncated JSON
+		`driver=qcow2,file=f0`,
+	} {
+		if got := appendDiskImage(nil, arg); len(got) != 0 {
+			t.Errorf("appendDiskImage(%s) = %v, want nothing", arg, got)
+		}
+	}
+}
+
+// TestBlockDeviceBytes_ReadsTheSysfsSectorCount verifies a whole block device
+// handed to a guest counts its capacity -- sysfs sectors are always 512 bytes
+// -- and that a device sysfs does not list, or lists unreadably, counts 0.
+func TestBlockDeviceBytes_ReadsTheSysfsSectorCount(t *testing.T) {
+	root := t.TempDir()
+	previous := sysDevBlockRoot
+	sysDevBlockRoot = root
+	t.Cleanup(func() { sysDevBlockRoot = previous })
+	writeSysfsFile(t, filepath.Join(root, "253:3", "size"), "2097152\n")
+	writeSysfsFile(t, filepath.Join(root, "8:0", "size"), "unknown\n")
+
+	if got := blockDeviceBytes(unix.Mkdev(253, 3)); got != 1<<30 {
+		t.Errorf("blockDeviceBytes(253:3) = %d, want %d (2097152 sectors of 512 bytes)", got, 1<<30)
+	}
+	for _, dev := range []uint64{unix.Mkdev(8, 0), unix.Mkdev(259, 7)} {
+		if got := blockDeviceBytes(dev); got != 0 {
+			t.Errorf("blockDeviceBytes(%d:%d) = %d, want 0", unix.Major(dev), unix.Minor(dev), got)
+		}
+	}
+}
+
+// TestSumDiskImageBytes_CharacterDeviceCountsNothing verifies a character
+// device, which no guest disk is, adds no size rather than being read as a
+// block device.
+func TestSumDiskImageBytes_CharacterDeviceCountsNothing(t *testing.T) {
+	if got := sumDiskImageBytes([]string{os.DevNull}); got != 0 {
+		t.Errorf("sumDiskImageBytes(%s) = %d, want 0", os.DevNull, got)
 	}
 }

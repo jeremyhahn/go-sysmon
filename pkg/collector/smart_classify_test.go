@@ -141,25 +141,25 @@ func TestRAIDControllerFor_ReadsTheDriverBehindTheDevice(t *testing.T) {
 func TestClassifyRefusal_TellsOpenFromIoctl(t *testing.T) {
 	// The shape a withheld CAP_SYS_RAWIO actually arrives in: the node opened,
 	// both ATA transports were rejected by the kernel.
-	refusedIoctl := &ErrSMARTUnavailable{
+	refusedIoctl := &SMARTUnavailableError{
 		DevPath: "/dev/sdc",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sdc", Op: "HDIO_DRIVE_CMD(0xD0)", Errno: syscall.EPERM},
-		SGIOErr: &ErrSMARTIoctl{DevPath: "/dev/sdc", Op: "SG_IO", Errno: syscall.EPERM},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sdc", Op: "HDIO_DRIVE_CMD(0xD0)", Errno: syscall.EPERM},
+		SGIOErr: &SMARTIoctlError{DevPath: "/dev/sdc", Op: "SG_IO", Errno: syscall.EPERM},
 	}
 	if got := classifyRefusal(refusedIoctl); got != refusedAtIoctl {
-		t.Errorf("classifyRefusal(EPERM under ErrSMARTUnavailable) = %v, want refusedAtIoctl", got)
+		t.Errorf("classifyRefusal(EPERM under SMARTUnavailableError) = %v, want refusedAtIoctl", got)
 	}
-	if got := classifyRefusal(&ErrSMARTPermission{DevPath: "/dev/sda"}); got != refusedAtOpen {
+	if got := classifyRefusal(&SMARTPermissionError{DevPath: "/dev/sda"}); got != refusedAtOpen {
 		t.Errorf("classifyRefusal(open refused) = %v, want refusedAtOpen", got)
 	}
 
 	// A drive that answered and raised a check condition is not a refusal.
 	// Calling it one would tell the operator to grant a capability that would
 	// change nothing.
-	declined := &ErrSMARTUnavailable{
+	declined := &SMARTUnavailableError{
 		DevPath: "/dev/sdc",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sdc", Op: "HDIO", Errno: syscall.ENOTTY},
-		SGIOErr: &ErrSMARTPassthrough{DevPath: "/dev/sdc", Op: "SG_IO", Status: 0x02},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sdc", Op: "HDIO", Errno: syscall.ENOTTY},
+		SGIOErr: &SMARTPassthroughError{DevPath: "/dev/sdc", Op: "SG_IO", Status: 0x02},
 	}
 	if got := classifyRefusal(declined); got != notRefused {
 		t.Errorf("classifyRefusal(check condition) = %v, want notRefused", got)
@@ -208,10 +208,10 @@ func TestClassifySMARTFailure_PrefersTheAnswerThatSaysWhereToLook(t *testing.T) 
 	// from a passthrough disk on the same controller, so claiming "the drives
 	// are behind the controller" would be a claim about drives that may not
 	// exist.
-	refused := &ErrSMARTUnavailable{
+	refused := &SMARTUnavailableError{
 		DevPath: "/dev/sda",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.EPERM},
-		SGIOErr: &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "SG_IO", Errno: syscall.EPERM},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.EPERM},
+		SGIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "SG_IO", Errno: syscall.EPERM},
 	}
 	var info types.DiskInfo
 	classifySMARTFailure("sda", refused, &info)
@@ -231,10 +231,10 @@ func TestClassifySMARTFailure_PrefersTheAnswerThatSaysWhereToLook(t *testing.T) 
 	// And with the capability present, a volume fails with a check condition
 	// rather than EPERM -- measured on ci-node-1 as "unsupported scsi opcode"
 	// -- so behind_controller is still reached wherever it is the whole truth.
-	declined := &ErrSMARTUnavailable{
+	declined := &SMARTUnavailableError{
 		DevPath: "/dev/sda",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.ENOTTY},
-		SGIOErr: &ErrSMARTPassthrough{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.ENOTTY},
+		SGIOErr: &SMARTPassthroughError{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
 	}
 	var capable types.DiskInfo
 	classifySMARTFailure("sda", declined, &capable)
@@ -259,10 +259,10 @@ func TestClassifySMARTFailure_CompletedTransportIsNotBlamedOnTheController(t *te
 	writeSysfsFile(t, filepath.Join(hosts, "host0", "proc_name"), "megaraid_sas\n")
 
 	answered := []error{
-		&ErrSMARTChecksum{DevPath: "/dev/sdd", Sum: 7},
-		&ErrSMARTEmptySector{DevPath: "/dev/sdd"},
-		&ErrSMARTShortTransfer{DevPath: "/dev/sdd", Op: "SMART READ DATA", Want: 512, Got: 128},
-		&ErrSMARTNoAttributes{DevPath: "/dev/sdd"},
+		&SMARTChecksumError{DevPath: "/dev/sdd", Sum: 7},
+		&SMARTEmptySectorError{DevPath: "/dev/sdd"},
+		&SMARTShortTransferError{DevPath: "/dev/sdd", Op: "SMART READ DATA", Want: 512, Got: 128},
+		&SMARTNoAttributesError{DevPath: "/dev/sdd"},
 	}
 	for _, err := range answered {
 		original := probeATASMARTSupported
@@ -279,11 +279,11 @@ func TestClassifySMARTFailure_CompletedTransportIsNotBlamedOnTheController(t *te
 
 	// A device that never answered at all is still the controller's opacity.
 	original := probeATASMARTSupported
-	probeATASMARTSupported = func(string) (bool, error) { return false, &ErrIdentifyIndeterminate{} }
+	probeATASMARTSupported = func(string) (bool, error) { return false, &IdentifyIndeterminateError{} }
 	t.Cleanup(func() { probeATASMARTSupported = original })
 
 	var silent types.DiskInfo
-	classifySMARTFailure("sdd", &ErrSMARTPassthrough{DevPath: "/dev/sdd", Op: "SG_IO", Status: 0x02}, &silent)
+	classifySMARTFailure("sdd", &SMARTPassthroughError{DevPath: "/dev/sdd", Op: "SG_IO", Status: 0x02}, &silent)
 	if silent.SMARTStatus != types.SMARTBehindController {
 		t.Errorf("a check condition on a RAID controller = %q, want %q", silent.SMARTStatus, types.SMARTBehindController)
 	}
@@ -309,10 +309,10 @@ func TestClassifySMARTFailure_JBODDiskIsNotCalledAVolume(t *testing.T) {
 	writeSysfsFile(t, filepath.Join(hosts, "host0", "proc_name"), "megaraid_sas\n")
 
 	var info types.DiskInfo
-	classifySMARTFailure("sdd", &ErrSMARTUnavailable{
+	classifySMARTFailure("sdd", &SMARTUnavailableError{
 		DevPath: "/dev/sdd",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sdd", Op: "HDIO", Errno: syscall.EPERM},
-		SGIOErr: &ErrSMARTIoctl{DevPath: "/dev/sdd", Op: "SG_IO", Errno: syscall.EPERM},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sdd", Op: "HDIO", Errno: syscall.EPERM},
+		SGIOErr: &SMARTIoctlError{DevPath: "/dev/sdd", Op: "SG_IO", Errno: syscall.EPERM},
 	}, &info)
 
 	if info.SMARTStatus == types.SMARTBehindController {
@@ -342,7 +342,7 @@ func TestClassifySMARTFailure_NonRAIDCases(t *testing.T) {
 	}{
 		{
 			name: "refused by the kernel",
-			err:  &ErrSMARTPermission{DevPath: "/dev/sdc"},
+			err:  &SMARTPermissionError{DevPath: "/dev/sdc"},
 			// A refusal is already the whole answer, and the probe would be
 			// refused identically. Asking anyway costs an ioctl per device per
 			// cycle for the life of the deployment.
@@ -351,20 +351,20 @@ func TestClassifySMARTFailure_NonRAIDCases(t *testing.T) {
 		},
 		{
 			name:       "the drive says it has no SMART",
-			err:        &ErrSMARTPassthrough{DevPath: "/dev/sdc", Op: "SG_IO", Status: 0x02},
+			err:        &SMARTPassthroughError{DevPath: "/dev/sdc", Op: "SG_IO", Status: 0x02},
 			supported:  false,
 			wantStatus: types.SMARTUnsupported,
 		},
 		{
 			name:       "the drive has SMART and the read still failed",
-			err:        &ErrSMARTChecksum{DevPath: "/dev/sdc", Sum: 7},
+			err:        &SMARTChecksumError{DevPath: "/dev/sdc", Sum: 7},
 			supported:  true,
 			wantStatus: types.SMARTUnreadable,
 		},
 		{
 			name:       "the probe itself could not answer",
-			err:        &ErrSMARTChecksum{DevPath: "/dev/sdc", Sum: 7},
-			probeErr:   &ErrIdentifyIndeterminate{},
+			err:        &SMARTChecksumError{DevPath: "/dev/sdc", Sum: 7},
+			probeErr:   &IdentifyIndeterminateError{},
 			wantStatus: types.SMARTUnreadable,
 		},
 	}
@@ -532,7 +532,7 @@ func TestApplySMARTRead_RecordsEveryOutcome(t *testing.T) {
 		},
 		{
 			name:       "refused",
-			read:       func(*types.DiskInfo) error { return &ErrSMARTPermission{DevPath: "/dev/sdc"} },
+			read:       func(*types.DiskInfo) error { return &SMARTPermissionError{DevPath: "/dev/sdc"} },
 			wantStatus: types.SMARTUnreadable,
 		},
 	}
@@ -670,36 +670,36 @@ func TestSMARTOpenError_WrapsBothDenials(t *testing.T) {
 }
 
 // TestClassifyRefusal_SeesAnHDIORefusalAlone is the gap that opened when
-// classification started asking errors.Is through ErrSMARTUnavailable. Its
+// classification started asking errors.Is through SMARTUnavailableError. Its
 // Unwrap returned only the SG_IO error while its doc said both were
 // inspectable, so an HDIO refusal paired with any other SG_IO failure was
 // invisible -- and a device we were refused would have been reported as one
 // that declined to answer, sending the operator to the hardware.
 func TestClassifyRefusal_SeesAnHDIORefusalAlone(t *testing.T) {
-	hdioRefused := &ErrSMARTUnavailable{
+	hdioRefused := &SMARTUnavailableError{
 		DevPath: "/dev/sda",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "HDIO_DRIVE_CMD(0xD0)", Errno: syscall.EPERM},
-		SGIOErr: &ErrSMARTPassthrough{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO_DRIVE_CMD(0xD0)", Errno: syscall.EPERM},
+		SGIOErr: &SMARTPassthroughError{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
 	}
 	if got := classifyRefusal(hdioRefused); got != refusedAtIoctl {
 		t.Errorf("classifyRefusal(HDIO EPERM, SG_IO check condition) = %v, want refusedAtIoctl", got)
 	}
 
 	// And the mirror, so the test is not passing on the old single-Unwrap path.
-	sgioRefused := &ErrSMARTUnavailable{
+	sgioRefused := &SMARTUnavailableError{
 		DevPath: "/dev/sda",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.ENOTTY},
-		SGIOErr: &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "SG_IO", Errno: syscall.EPERM},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.ENOTTY},
+		SGIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "SG_IO", Errno: syscall.EPERM},
 	}
 	if got := classifyRefusal(sgioRefused); got != refusedAtIoctl {
 		t.Errorf("classifyRefusal(HDIO ENOTTY, SG_IO EPERM) = %v, want refusedAtIoctl", got)
 	}
 
 	// Neither refused: still not a refusal.
-	neither := &ErrSMARTUnavailable{
+	neither := &SMARTUnavailableError{
 		DevPath: "/dev/sda",
-		HDIOErr: &ErrSMARTIoctl{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.ENOTTY},
-		SGIOErr: &ErrSMARTPassthrough{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
+		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.ENOTTY},
+		SGIOErr: &SMARTPassthroughError{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
 	}
 	if got := classifyRefusal(neither); got != notRefused {
 		t.Errorf("classifyRefusal(no refusal) = %v, want notRefused", got)
@@ -708,15 +708,15 @@ func TestClassifyRefusal_SeesAnHDIORefusalAlone(t *testing.T) {
 
 // TestTransportCompleted_DoesNotClaimTheDriveAnswered pins the modest claim.
 // An all-zero sector is what a bridge returns when it answers WITHOUT asking
-// the drive -- ErrSMARTEmptySector exists to say so -- and a short transfer
+// the drive -- SMARTEmptySectorError exists to say so -- and a short transfer
 // proves the transfer completed, not who filled it. All this predicate decides
 // is whether a controller's opacity is still a candidate explanation.
 func TestTransportCompleted_DoesNotClaimTheDriveAnswered(t *testing.T) {
 	completed := []error{
-		&ErrSMARTChecksum{DevPath: "/dev/sda", Sum: 7},
-		&ErrSMARTEmptySector{DevPath: "/dev/sda"},
-		&ErrSMARTShortTransfer{DevPath: "/dev/sda", Op: "SMART READ DATA", Want: 512, Got: 128},
-		&ErrSMARTNoAttributes{DevPath: "/dev/sda"},
+		&SMARTChecksumError{DevPath: "/dev/sda", Sum: 7},
+		&SMARTEmptySectorError{DevPath: "/dev/sda"},
+		&SMARTShortTransferError{DevPath: "/dev/sda", Op: "SMART READ DATA", Want: 512, Got: 128},
+		&SMARTNoAttributesError{DevPath: "/dev/sda"},
 	}
 	for _, err := range completed {
 		if !transportCompleted(err) {
@@ -726,9 +726,9 @@ func TestTransportCompleted_DoesNotClaimTheDriveAnswered(t *testing.T) {
 
 	// Nothing came back from these, so the controller is still a candidate.
 	for _, err := range []error{
-		&ErrSMARTPassthrough{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
-		&ErrSMARTIoctl{DevPath: "/dev/sda", Op: "SG_IO", Errno: syscall.EPERM},
-		&ErrSMARTPermission{DevPath: "/dev/sda"},
+		&SMARTPassthroughError{DevPath: "/dev/sda", Op: "SG_IO", Status: 0x02},
+		&SMARTIoctlError{DevPath: "/dev/sda", Op: "SG_IO", Errno: syscall.EPERM},
+		&SMARTPermissionError{DevPath: "/dev/sda"},
 		errors.New("something else"),
 	} {
 		if transportCompleted(err) {

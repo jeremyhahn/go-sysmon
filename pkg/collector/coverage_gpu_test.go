@@ -2,9 +2,12 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
 // writeSysfs creates a sysfs-style file, making its parent directories.
@@ -178,5 +181,21 @@ func TestGPUCollect_UnreadableDRMRoot(t *testing.T) {
 	}
 	if gpus := c.Info(); len(gpus) != 0 {
 		t.Errorf("Info() = %v, want no GPUs", gpus)
+	}
+}
+
+// TestEnumerateDRMCards_UnreadableRoot verifies a DRM class that exists but
+// cannot be read is a typed error, distinct from one that is absent.
+func TestEnumerateDRMCards_UnreadableRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "notadir")
+	if err := os.WriteFile(root, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	withDRMRoot(t, root)
+
+	_, err := enumerateDRMCards()
+	var readErr *types.SysfsReadError
+	if !errors.As(err, &readErr) || readErr.Path != root {
+		t.Errorf("enumerateDRMCards() error = %v, want a *types.SysfsReadError for %s", err, root)
 	}
 }

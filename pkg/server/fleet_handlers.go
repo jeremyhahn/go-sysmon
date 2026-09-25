@@ -78,9 +78,9 @@ func (s *Server) treeRequest(w http.ResponseWriter, r *http.Request) (context.Co
 // writeFleetError answers err with its status, and for a refusal, the reason a
 // parent aggregator reads it by.
 func writeFleetError(w http.ResponseWriter, err error) {
-	var loop *fleet.ErrFleetLoop
-	var deep *fleet.ErrTreeTooDeep
-	var refused *fleet.ErrFleetRefused
+	var loop *fleet.FleetLoopError
+	var deep *fleet.TreeTooDeepError
+	var refused *fleet.FleetRefusedError
 	switch {
 	case errors.As(err, &loop):
 		w.Header().Set(fleet.HeaderRefusal, fleet.RefusalLoop)
@@ -194,10 +194,10 @@ func drillInBudget() time.Duration {
 
 // fleetSnapshotStatus maps a PeerSnapshot error to its HTTP status.
 func fleetSnapshotStatus(err error) int {
-	var unknown *fleet.ErrUnknownPeer
-	var noReading *fleet.ErrNoReading
-	var moved *fleet.ErrPeerMoved
-	var conflict *fleet.ErrNameConflict
+	var unknown *fleet.UnknownPeerError
+	var noReading *fleet.NoReadingError
+	var moved *fleet.PeerMovedError
+	var conflict *fleet.NameConflictError
 	switch {
 	case errors.As(err, &unknown), errors.As(err, &noReading):
 		return http.StatusNotFound
@@ -299,15 +299,15 @@ func (s *Server) handleFleetConfig(w http.ResponseWriter, r *http.Request) {
 // isRefusal reports a request refused as a loop or as too deep, here or by a
 // child.
 func isRefusal(err error) bool {
-	var loop *fleet.ErrFleetLoop
-	var deep *fleet.ErrTreeTooDeep
-	var refused *fleet.ErrFleetRefused
+	var loop *fleet.FleetLoopError
+	var deep *fleet.TreeTooDeepError
+	var refused *fleet.FleetRefusedError
 	return errors.As(err, &loop) || errors.As(err, &deep) || errors.As(err, &refused)
 }
 
 // isInvalidAncestry reports a malformed ancestry header.
 func isInvalidAncestry(err error) bool {
-	var invalid *fleet.ErrInvalidAncestry
+	var invalid *fleet.InvalidAncestryError
 	return errors.As(err, &invalid)
 }
 
@@ -326,7 +326,7 @@ func (s *Server) handleHistoryRequest(w http.ResponseWriter, r *http.Request) {
 	route := s.fleet.Resolve(node)
 	switch route.Kind {
 	case fleet.RouteConflict:
-		http.Error(w, (&fleet.ErrNameConflict{Node: node}).Error(), http.StatusConflict)
+		http.Error(w, (&fleet.NameConflictError{Node: node}).Error(), http.StatusConflict)
 		return
 	case fleet.RouteSubtree:
 	default:
@@ -361,7 +361,7 @@ var relayedStatuses = map[int]bool{
 // relayedStatus is the status a child's relayed error keeps here, or 0 when
 // err is not a relayed status.
 func relayedStatus(err error) int {
-	var relayed *fleet.ErrRelayStatus
+	var relayed *fleet.RelayStatusError
 	if !errors.As(err, &relayed) {
 		return 0
 	}

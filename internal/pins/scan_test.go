@@ -87,10 +87,10 @@ func TestCheckAgreement_CurrentPinsPass(t *testing.T) {
 		"Dockerfile": "FROM node:24.21.0-trixie-slim AS frontend\n" +
 			"FROM --platform=$BUILDPLATFORM golang:1.27.1-trixie AS builder\n" +
 			"FROM debian:trixie-slim\n",
-		"test/integration/Dockerfile": "ARG GO_VERSION=1.27.1\nFROM golang:${GO_VERSION}-trixie\n",
-		"test/desktop/Dockerfile":     "FROM golang:1.27.1-trixie@sha256:0123456789abcdef AS b\nFROM ubuntu:26.04\n",
-		".github/workflows/ci.yml":    currentWorkflow,
-		"docker-compose.yml":          "services:\n  dev:\n    image: debian:trixie\n  app:\n    image: ghcr.io/example/golang:0.1.2\n",
+		"build/docker/devcontainer/Dockerfile": "ARG GO_VERSION=1.27.1\nFROM golang:${GO_VERSION}-trixie\n",
+		"test/desktop/Dockerfile":              "FROM golang:1.27.1-trixie@sha256:0123456789abcdef AS b\nFROM ubuntu:26.04\n",
+		".github/workflows/ci.yml":             currentWorkflow,
+		"docker-compose.yml":                   "services:\n  dev:\n    image: debian:trixie\n  app:\n    image: ghcr.io/example/golang:0.1.2\n",
 	})
 
 	n, err := CheckAgreement(root, current)
@@ -109,9 +109,9 @@ func TestCheckAgreement_CurrentPinsPass(t *testing.T) {
 
 func TestCheckAgreement_StalePinsFail(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		"Dockerfile":                  "FROM golang:1.27.0-trixie AS builder\nFROM node:22-bookworm-slim\nFROM debian:bookworm-slim\n",
-		"test/integration/Dockerfile": "FROM golang:1.27-alpine\nFROM golang\nFROM golang:latest\nFROM golang:1.27.1\n",
-		"test/desktop/Dockerfile":     "FROM golang:${GO_VERSION}-trixie\nFROM ubuntu:24.04\nFROM node:24.21.0-bookworm\n",
+		"Dockerfile":                           "FROM golang:1.27.0-trixie AS builder\nFROM node:22-bookworm-slim\nFROM debian:bookworm-slim\n",
+		"build/docker/devcontainer/Dockerfile": "FROM golang:1.27-alpine\nFROM golang\nFROM golang:latest\nFROM golang:1.27.1\n",
+		"test/desktop/Dockerfile":              "FROM golang:${GO_VERSION}-trixie\nFROM ubuntu:24.04\nFROM node:24.21.0-bookworm\n",
 		".github/workflows/ci.yml": `jobs:
   a:
     steps:
@@ -155,14 +155,14 @@ func TestCheckAgreement_StalePinsFail(t *testing.T) {
 		"Dockerfile:1: golang:1.27.0-trixie",
 		"Dockerfile:2: node:22-bookworm-slim",
 		"Dockerfile:3: debian:bookworm-slim",
+		"build/docker/devcontainer/Dockerfile:1: golang:1.27-alpine",
+		"build/docker/devcontainer/Dockerfile:2: golang",
+		"build/docker/devcontainer/Dockerfile:3: golang:latest",
+		"build/docker/devcontainer/Dockerfile:4: golang:1.27.1",
 		"compose.yaml:3: library/ubuntu:noble",
 		"test/desktop/Dockerfile:1: golang:${GO_VERSION}-trixie",
 		"test/desktop/Dockerfile:2: ubuntu:24.04",
 		"test/desktop/Dockerfile:3: node:24.21.0-bookworm",
-		"test/integration/Dockerfile:1: golang:1.27-alpine",
-		"test/integration/Dockerfile:2: golang",
-		"test/integration/Dockerfile:3: golang:latest",
-		"test/integration/Dockerfile:4: golang:1.27.1",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("mismatches =\n%q\nwant\n%q", got, want)

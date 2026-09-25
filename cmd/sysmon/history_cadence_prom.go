@@ -70,7 +70,7 @@ type cadenceResult struct {
 	// reason says why the check is pending, or what it found violated.
 	reason string
 	// violation is the refusal when state is cadenceViolated.
-	violation *config.ErrHistoryCadence
+	violation *config.HistoryCadenceError
 }
 
 // historyCadence checks c against the lookback of the database its history is
@@ -96,7 +96,7 @@ func cachedHistoryCadence(history *prom.Querier, c *config.Config) cadenceResult
 
 // errLookbackNotYetRead is the pending reason for a check made before the
 // watch has read the database's lookback.
-var errLookbackNotYetRead = &prom.ErrLookbackUnpublished{Reason: "its lookback has not been read yet"}
+var errLookbackNotYetRead = &prom.LookbackUnpublishedError{Reason: "its lookback has not been read yet"}
 
 // cadenceCheck is the check against whatever lookback source it is given.
 func cadenceCheck(c *config.Config, lookbackAt func(base string) (time.Duration, error)) cadenceResult {
@@ -111,7 +111,7 @@ func cadenceCheck(c *config.Config, lookbackAt func(base string) (time.Duration,
 	lookback, err := lookbackAt(base)
 	if err != nil {
 		reason := "the time-series database could not be reached"
-		var unpublished *prom.ErrLookbackUnpublished
+		var unpublished *prom.LookbackUnpublishedError
 		switch {
 		case errors.Is(err, errLookbackNotYetRead):
 			reason = "the time-series database's lookback has not been read yet"
@@ -120,7 +120,7 @@ func cadenceCheck(c *config.Config, lookbackAt func(base string) (time.Duration,
 		}
 		return cadenceResult{state: cadencePending, reason: reason}
 	}
-	var violation *config.ErrHistoryCadence
+	var violation *config.HistoryCadenceError
 	if err := config.CheckHistoryCadence(c, lookback); errors.As(err, &violation) {
 		return cadenceResult{state: cadenceViolated, reason: violation.Error(), violation: violation}
 	}
@@ -366,7 +366,7 @@ func (s cadenceState) String() string {
 // workers, which must not wait on it. The lookback is the one the cadence
 // watch keeps cached.
 func peerHistoryGate(mgr *config.Manager, history *prom.Querier) fleet.HistoryGate {
-	return func(peer string, summary *types.NodeSummary, source types.SummarySource) (bool, types.PeerHistory) {
+	return func(peer string, summary *types.NodeSummary) (bool, types.PeerHistory) {
 		c := mgr.Current()
 		base, ok := lookbackSource(c.Prometheus)
 		if !ok {
@@ -385,7 +385,7 @@ func peerHistoryGate(mgr *config.Manager, history *prom.Querier) fleet.HistoryGa
 		// Checked before any conversion: an interval too large to convert
 		// and add a relay tick to would wrap round to a small duration and
 		// pass. No real node collects that rarely, and none can be charted.
-		tick := relayTick(c, source)
+		tick := relayTick(c)
 		if summary.CollectionIntervalMs > (math.MaxInt64-int64(tick))/int64(time.Millisecond) {
 			return false, types.PeerHistory{State: types.PeerHistoryRefused,
 				Reason: "the node reports a collection interval of " +
@@ -405,29 +405,22 @@ func peerHistoryGate(mgr *config.Manager, history *prom.Querier) fleet.HistoryGa
 }
 
 // relayTick is the longest interval between two relays of one peer's
-// readings, by how the peer is read.
+// readings. Only a peer read by its summary gets here: one read by its whole
+// snapshot reports no collection interval, and the gate calls its history
+// unverified before asking.
 //
 // Every fetch is counted as two requests, each with its own timeout, because
 // it can be: a history fetch the peer does not serve falls back to its whole
-// snapshot, and the poll of a peer too old for a summary asks for the summary
-// before the snapshot.
+// snapshot.
 //
 // And a relayed reading reaches the database through the exporter, whose loop
 // stops for each write, up to prometheus.timeout_ms: that wait is added once.
-func relayTick(c *config.Config, source types.SummarySource) time.Duration {
+//
+// A worker queues behind at most every other peer's fetch, those run
+// MaxHistoryFetches at a time: ceil(peers / slots) timeouts, its own included.
+func relayTick(c *config.Config) time.Duration {
 	timeout := 2 * c.Fleet.Timeout()
 	write := c.Prometheus.Timeout()
-	if source == types.SummarySourceSnapshot {
-		// A refresh waits for the slowest peer, so this peer's reading can
-		// open one refresh held for two requests by another peer, and its
-		// next close the refresh after the sleep, itself slow: two refreshes'
-		// worth of requests between them.
-		dashboardMax := time.Duration(config.SlowestDashboardIntervalMs) * time.Millisecond
-		return max(c.Fleet.PollInterval(), dashboardMax) + 2*timeout + write
-	}
-	// A worker queues behind at most every other peer's fetch, those run
-	// MaxHistoryFetches at a time: ceil(peers / slots) timeouts, its own
-	// included.
 	rounds := (len(c.Fleet.Peers) + fleet.MaxHistoryFetches - 1) / fleet.MaxHistoryFetches
 	return max(c.Prometheus.SampleInterval(), fleet.MinPollInterval) + time.Duration(max(rounds, 1))*timeout + write
 }

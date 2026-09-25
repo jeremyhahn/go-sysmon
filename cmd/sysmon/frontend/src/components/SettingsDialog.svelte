@@ -4,6 +4,7 @@
   // not a place you spend time. There is deliberately no input and no save
   // button — configuration is edited on disk and reloaded, and a form here
   // would imply otherwise.
+  import { FLEET_URL } from "$lib/fleetpage";
   import type { ConfigEntry, ConfigSource, ConfigView } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
@@ -20,8 +21,8 @@
   const selectedNode = $derived(monitor.selectedNode);
   const configURL = $derived(
     selectedNode == null
-      ? "/api/config"
-      : `/api/fleet/${encodeURIComponent(selectedNode)}/config`
+      ? "api/config"
+      : `${FLEET_URL}/${encodeURIComponent(selectedNode)}/config`
   );
 
   let dialogEl = $state<HTMLDialogElement | null>(null);

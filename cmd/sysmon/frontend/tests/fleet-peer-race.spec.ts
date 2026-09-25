@@ -91,12 +91,17 @@ async function setupFleet(page: Page) {
         } as unknown as Response);
 
       window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-        const url =
+        // Resolved against the page, as fetch does: the dashboard asks for
+        // relative URLs ("api/fleet"), so the raw argument has no leading
+        // slash to match on.
+        const url = new URL(
           typeof input === 'string'
             ? input
             : input instanceof URL
               ? input.href
-              : input.url;
+              : input.url,
+          document.baseURI,
+        ).href;
         // The peer endpoint returns a freshness envelope, not a bare snapshot.
         // reachable must be true here or the store would decline to apply
         // either payload -- correctly, since a stale reading must not be folded

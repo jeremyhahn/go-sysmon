@@ -173,7 +173,7 @@ func (p *Poller) fetchNodes(ctx context.Context, cfg config.Fleet, child, childU
 	v, err := group.do(ctx, key, cfg.Timeout(), func(work context.Context) (any, error) {
 		peer, _, ok := p.resolvePeer(child)
 		if !ok || peer.URL != childURL {
-			return nil, &ErrUnknownPeer{Peer: child}
+			return nil, &UnknownPeerError{Peer: child}
 		}
 		q := url.Values{}
 		for _, n := range names {
@@ -319,19 +319,19 @@ func (p *Poller) Nodes(ctx context.Context, names []string) types.FleetNodes {
 func ParseNames(raw string) ([]string, error) {
 	values, err := url.ParseQuery(raw)
 	if err != nil {
-		return nil, &ErrMalformedQuery{Raw: raw, Cause: err}
+		return nil, &MalformedQueryError{Raw: raw, Cause: err}
 	}
 	names := values[QueryParamName]
 	if len(names) == 0 {
-		return nil, &ErrInvalidQuery{Param: QueryParamName, Reason: "at least one is required"}
+		return nil, &InvalidQueryError{Param: QueryParamName, Reason: "at least one is required"}
 	}
 	if len(names) > maxNamesPerRequest {
-		return nil, &ErrInvalidQuery{Param: QueryParamName, Value: strconv.Itoa(len(names)) + " names",
+		return nil, &InvalidQueryError{Param: QueryParamName, Value: strconv.Itoa(len(names)) + " names",
 			Reason: "at most " + strconv.Itoa(maxNamesPerRequest) + " per request"}
 	}
 	for _, n := range names {
 		if err := nodename.Validate(n); err != nil {
-			return nil, &ErrInvalidQuery{Param: QueryParamName, Value: n, Reason: nodename.Rule}
+			return nil, &InvalidQueryError{Param: QueryParamName, Value: n, Reason: nodename.Rule}
 		}
 	}
 	return names, nil

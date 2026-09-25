@@ -16,15 +16,20 @@
 // check-latest workflow runs. The token is read from the environment variable
 // named by -token-env, never from a flag, so it does not appear in a process
 // listing.
+//
+// Each source is fetched from a URL a flag names, defaulting to the public
+// one: -go-releases-url, -node-index-url, -debian-dists-url,
+// -ubuntu-series-url, -runner-images-url and -actions-base-url. Pointing them
+// at a mirror is how the check runs where the public sources are unreachable.
 package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -60,43 +65,127 @@ func (t *toolFlags) Set(s string) error {
 	return nil
 }
 
-func main() {
-	var tools toolFlags
-	root := flag.String("root", ".", "repository root: go.mod, the Node.js version file and the workflows")
-	nodeFile := flag.String("node-file", ".node-version", "file under root holding the Node.js release")
-	debian := flag.String("debian", "", "pinned Debian release codename")
-	ubuntu := flag.String("ubuntu", "", "pinned Ubuntu release")
-	hostedRunner := flag.String("hosted-runner", "", "pinned Ubuntu release of GitHub-hosted runner labels")
-	flag.Var(&tools, "tool", "a pinned tool as name=module@version; repeat for each")
-	timeout := flag.Duration("timeout", 5*time.Minute, "limit on the whole check")
-	fileIssue := flag.Bool("file-issue", false, "file the lag as a Gitea issue instead of failing")
-	dryRun := flag.Bool("dry-run", false, "with -file-issue: print the issue instead of filing it")
-	api := flag.String("gitea-api", "", "with -file-issue: Gitea API root, https://host/api/v1")
-	repo := flag.String("repo", "", "with -file-issue: owner/name of the repository")
-	tokenEnv := flag.String("token-env", "GITEA_TOKEN", "with -file-issue: environment variable holding the API token")
-	runURL := flag.String("run-url", "", "with -file-issue: workflow run to link from the issue")
-	flag.Parse()
+// sourceURL is a flag naming where one source is fetched from. It accepts
+// only an absolute URL with a host and one of the allowed schemes, so a typo
+// is a usage error rather than a check that could not run.
+type sourceURL struct {
+	url     string
+	schemes map[string]bool
+}
 
-	o := options{
-		root: *root, nodeFile: *nodeFile, debian: *debian, ubuntu: *ubuntu, hostedRunner: *hostedRunner,
-		tools: tools, fileIssue: *fileIssue, dryRun: *dryRun,
-		api: *api, repo: *repo, token: os.Getenv(*tokenEnv), runURL: *runURL,
-		stdout: os.Stdout, stderr: os.Stderr,
+func (u *sourceURL) String() string { return u.url }
+
+func (u *sourceURL) Set(s string) error {
+	parsed, err := url.Parse(s)
+	if err != nil {
+		return err
+	}
+	if !u.schemes[parsed.Scheme] || (parsed.Host == "" && parsed.Scheme != "file") || (parsed.Scheme == "file" && parsed.Path == "") {
+		return &sourceURLError{URL: s}
+	}
+	u.url = s
+	return nil
+}
+
+// sourceURLError reports a source flag that is not a usable URL.
+type sourceURLError struct {
+	URL string
+}
+
+func (e *sourceURLError) Error() string {
+	return "checklatest: " + strings.TrimSpace(e.URL) + " is not an absolute URL this source can be fetched from"
+}
+
+// httpSchemes are where an HTTP source may be fetched from.
+var httpSchemes = map[string]bool{"http": true, "https": true}
+
+// gitSchemes are where git can list an action repository's tags from: a
+// server, or a local mirror of the repositories.
+var gitSchemes = map[string]bool{"http": true, "https": true, "file": true}
+
+// sourceURLs are where each live source is fetched from.
+type sourceURLs struct {
+	goReleases   string
+	nodeIndex    string
+	debianDists  string
+	ubuntuSeries string
+	runnerImages string
+	actionsBase  string
+}
+
+func main() {
+	o, timeout, err := parseOptions(os.Args[1:], os.Getenv, os.Stdout, os.Stderr)
+	if err != nil {
+		// The flag package has already printed the error and the usage.
+		os.Exit(exitUnchecked)
 	}
 	client := &http.Client{}
-	src := sources{
-		goLatest:  pins.GoReleases{Client: client, URL: pins.GoVersionURL}.Latest,
-		module:    pins.GoList{Run: pins.Run}.Latest,
-		nodeLTS:   pins.NodeReleases{Client: client, URL: pins.NodeIndexURL}.LatestLTS,
-		debian:    pins.DebianReleases{Client: client, URL: pins.DebianDistsURL}.Release,
-		ubuntuLTS: pins.UbuntuReleases{Client: client, URL: pins.UbuntuSeriesURL}.LatestLTS,
-		tags:      pins.GitTags{Run: pins.Run, BaseURL: pins.ActionsBaseURL}.Tags,
-		runners:   pins.RunnerImages{Client: client, URL: pins.RunnerImagesURL}.Labels,
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-	code := run(ctx, o, src, client)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	code := run(ctx, o, newSources(client, o.urls), client)
 	cancel()
 	os.Exit(code)
+}
+
+// parseOptions reads the command line. The API token is read from the
+// environment variable -token-env names, through getenv, so it never appears
+// in the process's arguments. A malformed command line is reported on stderr,
+// with the usage, and returned as an error.
+func parseOptions(args []string, getenv func(string) string, stdout, stderr io.Writer) (options, time.Duration, error) {
+	fs := flag.NewFlagSet("checklatest", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var tools toolFlags
+	root := fs.String("root", ".", "repository root: go.mod, the Node.js version file and the workflows")
+	nodeFile := fs.String("node-file", ".node-version", "file under root holding the Node.js release")
+	debian := fs.String("debian", "", "pinned Debian release codename")
+	ubuntu := fs.String("ubuntu", "", "pinned Ubuntu release")
+	hostedRunner := fs.String("hosted-runner", "", "pinned Ubuntu release of GitHub-hosted runner labels")
+	fs.Var(&tools, "tool", "a pinned tool as name=module@version; repeat for each")
+	timeout := fs.Duration("timeout", 5*time.Minute, "limit on the whole check")
+	fileIssue := fs.Bool("file-issue", false, "file the lag as a Gitea issue instead of failing")
+	dryRun := fs.Bool("dry-run", false, "with -file-issue: print the issue instead of filing it")
+	api := fs.String("gitea-api", "", "with -file-issue: Gitea API root, https://host/api/v1")
+	repo := fs.String("repo", "", "with -file-issue: owner/name of the repository")
+	tokenEnv := fs.String("token-env", "GITEA_TOKEN", "with -file-issue: environment variable holding the API token")
+	runURL := fs.String("run-url", "", "with -file-issue: workflow run to link from the issue")
+	goReleases := &sourceURL{url: pins.GoVersionURL, schemes: httpSchemes}
+	nodeIndex := &sourceURL{url: pins.NodeIndexURL, schemes: httpSchemes}
+	debianDists := &sourceURL{url: pins.DebianDistsURL, schemes: httpSchemes}
+	ubuntuSeries := &sourceURL{url: pins.UbuntuSeriesURL, schemes: httpSchemes}
+	runnerImages := &sourceURL{url: pins.RunnerImagesURL, schemes: httpSchemes}
+	actionsBase := &sourceURL{url: pins.ActionsBaseURL, schemes: gitSchemes}
+	fs.Var(goReleases, "go-releases-url", "Go's latest-release document")
+	fs.Var(nodeIndex, "node-index-url", "the Node.js release index")
+	fs.Var(debianDists, "debian-dists-url", "the Debian archive's dists directory")
+	fs.Var(ubuntuSeries, "ubuntu-series-url", "Launchpad's Ubuntu series list")
+	fs.Var(runnerImages, "runner-images-url", "the actions/runner-images README")
+	fs.Var(actionsBase, "actions-base-url", "where action repositories are listed from with git ls-remote (http, https or file)")
+	if err := fs.Parse(args); err != nil {
+		return options{}, 0, err
+	}
+	return options{
+		root: *root, nodeFile: *nodeFile, debian: *debian, ubuntu: *ubuntu, hostedRunner: *hostedRunner,
+		tools: tools, fileIssue: *fileIssue, dryRun: *dryRun,
+		api: *api, repo: *repo, token: getenv(*tokenEnv), runURL: *runURL,
+		urls: sourceURLs{
+			goReleases: goReleases.url, nodeIndex: nodeIndex.url, debianDists: debianDists.url,
+			ubuntuSeries: ubuntuSeries.url, runnerImages: runnerImages.url, actionsBase: actionsBase.url,
+		},
+		stdout: stdout, stderr: stderr,
+	}, *timeout, nil
+}
+
+// newSources returns the live sources of every pin's latest release, fetched
+// from urls through client.
+func newSources(client *http.Client, urls sourceURLs) sources {
+	return sources{
+		goLatest:  pins.GoReleases{Client: client, URL: urls.goReleases}.Latest,
+		module:    pins.GoList{Run: pins.Run}.Latest,
+		nodeLTS:   pins.NodeReleases{Client: client, URL: urls.nodeIndex}.LatestLTS,
+		debian:    pins.DebianReleases{Client: client, URL: urls.debianDists}.Release,
+		ubuntuLTS: pins.UbuntuReleases{Client: client, URL: urls.ubuntuSeries}.LatestLTS,
+		tags:      pins.GitTags{Run: pins.Run, BaseURL: urls.actionsBase}.Tags,
+		runners:   pins.RunnerImages{Client: client, URL: urls.runnerImages}.Labels,
+	}
 }
 
 type options struct {
@@ -113,6 +202,7 @@ type options struct {
 	repo         string
 	token        string
 	runURL       string
+	urls         sourceURLs
 	stdout       io.Writer
 	stderr       io.Writer
 }
@@ -214,22 +304,31 @@ func run(ctx context.Context, o options, src sources, client *http.Client) int {
 	return exitCurrent
 }
 
-// errNoToken is returned when -file-issue is set and the token variable named
-// by -token-env is empty. A blank token would not be inert: Gitea answers an unauthenticated
-// caller, and the failure would look like a permissions problem.
-var errNoToken = errors.New("checklatest: -file-issue needs an API token in the variable named by -token-env")
+// noTokenError is returned when -file-issue is set and the token variable
+// named by -token-env is empty. A blank token would not be inert: Gitea answers
+// an unauthenticated caller, and the failure would look like a permissions
+// problem.
+type noTokenError struct{}
 
-// errFilerFlags is returned when -file-issue is set without -gitea-api and an
-// owner/name -repo.
-var errFilerFlags = errors.New("checklatest: -file-issue needs -gitea-api and -repo owner/name")
+func (e *noTokenError) Error() string {
+	return "checklatest: -file-issue needs an API token in the variable named by -token-env"
+}
+
+// filerFlagsError is returned when -file-issue is set without -gitea-api and
+// an owner/name -repo.
+type filerFlagsError struct{}
+
+func (e *filerFlagsError) Error() string {
+	return "checklatest: -file-issue needs -gitea-api and -repo owner/name"
+}
 
 func newFiler(o options, client *http.Client) (*pins.Filer, error) {
 	owner, name, ok := strings.Cut(o.repo, "/")
 	if o.api == "" || !ok || owner == "" || name == "" || strings.Contains(name, "/") {
-		return nil, errFilerFlags
+		return nil, &filerFlagsError{}
 	}
 	if o.token == "" {
-		return nil, errNoToken
+		return nil, &noTokenError{}
 	}
 	return &pins.Filer{
 		Tracker: &gitea.Client{BaseURL: o.api, Owner: owner, Repo: name, Token: o.token, HTTP: client},

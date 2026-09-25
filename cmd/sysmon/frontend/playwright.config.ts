@@ -15,7 +15,13 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     headless: true,
+    // What a failed CI run uploads (#225), all under test-results/: a
+    // screenshot of the failure, the error-context.md Playwright writes for
+    // every failed test, and a trace of the retry. A test that fails its retry
+    // is a real failure rather than a flake, and tracing only the retry keeps
+    // passing runs free of trace recording.
     screenshot: 'only-on-failure',
+    trace: 'on-first-retry',
   },
   webServer: {
     // CGO must stay enabled: pkg/collector imports NVIDIA go-nvml, which does

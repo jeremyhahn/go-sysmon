@@ -20,6 +20,7 @@ import (
 	"go/constant"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"reflect"
 	"sort"
 	"strconv"
@@ -358,7 +359,7 @@ func evalString(expr ast.Expr, known map[string]typedConst, enums map[string]*En
 	case *ast.CallExpr:
 		ident, ok := e.Fun.(*ast.Ident)
 		if !ok || len(e.Args) != 1 || (ident.Name != "string" && enums[ident.Name] == nil) {
-			return typedConst{}, "call " + exprString(e.Fun) + " is not a conversion to a string type"
+			return typedConst{}, "call " + types.ExprString(e.Fun) + " is not a conversion to a string type"
 		}
 		c, reason := evalString(e.Args[0], known, enums)
 		if reason != "" {
@@ -370,7 +371,7 @@ func evalString(expr ast.Expr, known map[string]typedConst, enums map[string]*En
 		}
 		return c, ""
 	}
-	return typedConst{}, "expression " + exprString(expr) + " is not a constant the generator can compute"
+	return typedConst{}, "expression " + types.ExprString(expr) + " is not a constant the generator can compute"
 }
 
 // add appends a value unless the enum already has it: implicit repetition in
@@ -548,8 +549,8 @@ func collectEmbedded(
 	if !ok {
 		return nil, &UnsupportedDeclError{
 			Struct: root,
-			Field:  exprString(field.Type),
-			Reason: "embedded type " + exprString(field.Type) + " is not a struct declared on the wire, so its JSON form is not modelled",
+			Field:  types.ExprString(field.Type),
+			Reason: "embedded type " + types.ExprString(field.Type) + " is not a struct declared on the wire, so its JSON form is not modelled",
 		}
 	}
 
@@ -738,7 +739,7 @@ func convertType(
 	return Type{}, &UnsupportedTypeError{
 		Struct: structName,
 		Field:  fieldName,
-		GoType: exprString(expr),
+		GoType: types.ExprString(expr),
 	}
 }
 
@@ -809,26 +810,4 @@ func docText(group *ast.CommentGroup) string {
 		return ""
 	}
 	return strings.TrimRight(group.Text(), "\n")
-}
-
-// exprString renders a type expression for an error message. It handles the
-// forms this package can meet; anything else falls back to a marker rather
-// than pulling in a printer for a message nobody should ever see twice.
-func exprString(expr ast.Expr) string {
-	switch t := expr.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.SelectorExpr:
-		return exprString(t.X) + "." + t.Sel.Name
-	case *ast.StarExpr:
-		return "*" + exprString(t.X)
-	case *ast.ArrayType:
-		return "[]" + exprString(t.Elt)
-	case *ast.MapType:
-		return "map[" + exprString(t.Key) + "]" + exprString(t.Value)
-	case *ast.InterfaceType:
-		return "interface{}"
-	default:
-		return "unrecognised type expression"
-	}
 }

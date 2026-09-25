@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/spf13/cobra"
 
@@ -27,7 +26,7 @@ func runOverviewCmd(cmd *cobra.Command, _ []string) error {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(snap)
 		}
 		if err := cli.RenderOverview(cmd.OutOrStdout(), snap); err != nil {
-			return fmt.Errorf("render overview: %w", err)
+			return &cli.RenderError{Function: "overview", Cause: err}
 		}
 		return nil
 	})

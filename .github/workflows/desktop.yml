@@ -41,3 +41,16 @@ jobs:
 
       - name: Run the Cinnamon applet tests
         run: make test-extensions-desktop
+
+      # The session's logs -- cinnamon.log, xorg.log, the system bus and udisksd
+      # logs, and the runner's own output -- which make copies out of the
+      # container (#225). Gitea's runners open upload-artifact's GHES gate and
+      # forward the upload to Gitea's own artifact service, so this one pinned
+      # action serves github.com and Gitea alike. docs/testing/ci-artifacts.md
+      # says where to download it.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: desktop-session-logs
+          path: test-logs/desktop/
+          retention-days: 7

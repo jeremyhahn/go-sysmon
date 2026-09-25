@@ -46,6 +46,20 @@ Throttle counters are cumulative since boot, so a non-zero value means the CPU
 has thermally throttled at some point — not that it is throttling now. That is
 usually the question you are actually asking after a slow benchmark.
 
+The temperature table lists each reading's package (`Pkg`, numbered from 0 as
+the kernel does), core number and label. Every package numbers its cores from
+0, so on a host with more than one package the label names the package too:
+
+```
+CPU Temperatures:
+   Pkg  Core  Label              Temp      High      Crit
+     0     0  P0 · Core 0       50.0°C         -         -
+     1     0  P1 · Core 0       60.0°C         -         -
+```
+
+A single-package host keeps the driver's plain label, `Core 0`. The dashboard
+names cores the same way.
+
 ```bash
 sysmon cpu
 sysmon --refresh 0.5 cpu       # twice a second
@@ -57,8 +71,9 @@ RAM and swap, the buffer/cache/slab breakdown, and a table of the physical
 modules: manufacturer, part number, type, speed, rank, voltage.
 
 Per-DIMM temperature needs the `spd5118` or `jc42` driver bound to the SMBus,
-which most systems do not do by default. The column stays empty when it is not
-available rather than reporting zero.
+which most systems do not do by default, and which go-sysmon never does itself
+([how to enable it](../collector/sensors.md#dimm-temperatures)). The column
+stays empty when it is not available rather than reporting zero.
 
 ```bash
 sysmon memory

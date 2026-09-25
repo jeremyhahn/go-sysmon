@@ -40,9 +40,9 @@ func TestPollerFetch_RefusesRedirectOffTheConfiguredHost(t *testing.T) {
 	if err == nil {
 		t.Fatalf("fetch() followed the redirect and returned %+v, want it refused", snap)
 	}
-	var redir *outbound.ErrRedirect
+	var redir *outbound.RedirectError
 	if !errors.As(err, &redir) {
-		t.Fatalf("fetch() = %v, want an *outbound.ErrRedirect", err)
+		t.Fatalf("fetch() = %v, want an *outbound.RedirectError", err)
 	}
 	if snap != nil {
 		t.Errorf("fetch() returned a snapshot %+v alongside the error, want nil", snap)

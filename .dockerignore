@@ -3,7 +3,9 @@
 # Three Dockerfiles share this file and they need different things:
 #   ./Dockerfile                  builds the frontend from source, so it needs
 #                                 cmd/sysmon/frontend/{src,package*.json}
-#   test/integration/Dockerfile   expects cmd/sysmon/frontend/dist prebuilt
+#   build/docker/devcontainer/Dockerfile
+#                                 the integration environment; expects
+#                                 cmd/sysmon/frontend/dist prebuilt
 #   test/desktop/Dockerfile       installs the Cinnamon applet, so it needs
 #                                 extensions/
 #

@@ -30,13 +30,13 @@ func TestValidate_RejectsUnusableNames(t *testing.T) {
 		"mon0 # c", ".lead", "-lead", "::1", strings.Repeat("a", 254),
 	} {
 		err := Validate(name)
-		var invalid *ErrInvalid
+		var invalid *InvalidError
 		if !errors.As(err, &invalid) {
-			t.Errorf("Validate(%q) = %v, want *ErrInvalid", name, err)
+			t.Errorf("Validate(%q) = %v, want *InvalidError", name, err)
 			continue
 		}
 		if invalid.Name != name {
-			t.Errorf("ErrInvalid.Name = %q, want %q", invalid.Name, name)
+			t.Errorf("InvalidError.Name = %q, want %q", invalid.Name, name)
 		}
 		// The message is what an operator reads at startup, so it has to say
 		// what the rule is, not just that it was broken.

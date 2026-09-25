@@ -17,7 +17,7 @@ import (
 // parts. The previous tree therefore stays valid, which matters to a caller
 // keeping it as the base for the next diff.
 //
-// A patch that does not fit returns ErrApply rather than a partly applied
+// A patch that does not fit returns ApplyError rather than a partly applied
 // tree. The receiver has diverged from the sender, and no later patch can
 // repair that -- the only correct answer is a whole snapshot.
 func Apply(tree Tree, patch *Patch) (Tree, error) {
@@ -51,7 +51,7 @@ func apply(tree Tree, patch *Patch, path string) (Tree, error) {
 		}
 	}
 	if operations > 1 {
-		return nil, &ErrApply{Path: path, Reason: "the patch names more than one operation"}
+		return nil, &ApplyError{Path: path, Reason: "the patch names more than one operation"}
 	}
 
 	switch {
@@ -67,13 +67,13 @@ func apply(tree Tree, patch *Patch, path string) (Tree, error) {
 	case patch.Keyed != nil:
 		return applyKeyed(tree, patch.Keyed, path)
 	}
-	return nil, &ErrApply{Path: path, Reason: "the patch names no operation"}
+	return nil, &ApplyError{Path: path, Reason: "the patch names no operation"}
 }
 
 func applyObject(tree Tree, fields map[string]*Patch, path string) (Tree, error) {
 	object, ok := tree.(map[string]any)
 	if !ok {
-		return nil, &ErrApply{Path: path, Reason: "an object patch met something that is not an object"}
+		return nil, &ApplyError{Path: path, Reason: "an object patch met something that is not an object"}
 	}
 	out := make(map[string]any, len(object))
 	for name, value := range object {
@@ -82,7 +82,7 @@ func applyObject(tree Tree, fields map[string]*Patch, path string) (Tree, error)
 	for name, sub := range fields {
 		previous, ok := out[name]
 		if !ok {
-			return nil, &ErrApply{Path: join(path, name), Reason: "the patch names a field that is not there"}
+			return nil, &ApplyError{Path: join(path, name), Reason: "the patch names a field that is not there"}
 		}
 		patched, err := apply(previous, sub, join(path, name))
 		if err != nil {
@@ -96,7 +96,7 @@ func applyObject(tree Tree, fields map[string]*Patch, path string) (Tree, error)
 func applyIndex(tree Tree, elements map[string]*Patch, path string) (Tree, error) {
 	array, ok := tree.([]any)
 	if !ok {
-		return nil, &ErrApply{Path: path, Reason: "a positional patch met something that is not an array"}
+		return nil, &ApplyError{Path: path, Reason: "a positional patch met something that is not an array"}
 	}
 	out := make([]any, len(array))
 	copy(out, array)
@@ -110,7 +110,7 @@ func applyIndex(tree Tree, elements map[string]*Patch, path string) (Tree, error
 		// nothing and removes the ambiguity rather than picking a winner.
 		i, err := strconv.Atoi(position)
 		if err != nil || strconv.Itoa(i) != position || i < 0 || i >= len(out) {
-			return nil, &ErrApply{Path: path, Reason: "the patch names position " + position + ", which this array does not have"}
+			return nil, &ApplyError{Path: path, Reason: "the patch names position " + position + ", which this array does not have"}
 		}
 		patched, err := apply(out[i], sub, path+"[]")
 		if err != nil {
@@ -124,15 +124,15 @@ func applyIndex(tree Tree, elements map[string]*Patch, path string) (Tree, error
 func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 	array, ok := tree.([]any)
 	if !ok {
-		return nil, &ErrApply{Path: path, Reason: "a keyed patch met something that is not an array"}
+		return nil, &ApplyError{Path: path, Reason: "a keyed patch met something that is not an array"}
 	}
 	if patch.Key == "" {
-		return nil, &ErrApply{Path: path, Reason: "the keyed patch names no key"}
+		return nil, &ApplyError{Path: path, Reason: "the keyed patch names no key"}
 	}
 
 	existing, ok := indexByKey(array, patch.Key)
 	if !ok {
-		return nil, &ErrApply{Path: path,
+		return nil, &ApplyError{Path: path,
 			Reason: "the array does not identify its elements by " + strconv.Quote(patch.Key)}
 	}
 
@@ -166,7 +166,7 @@ func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 	out := make([]any, 0, len(order))
 	for _, id := range order {
 		if used[id] {
-			return nil, &ErrApply{Path: path,
+			return nil, &ApplyError{Path: path,
 				Reason: "the patch names element " + strconv.Quote(id) + " twice"}
 		}
 		used[id] = true
@@ -187,7 +187,7 @@ func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 			// rendering a reading that never existed as current.
 			actual, ok := identity(element, patch.Key)
 			if !ok || actual != id {
-				return nil, &ErrApply{Path: path,
+				return nil, &ApplyError{Path: path,
 					Reason: "the patch supplies element " + strconv.Quote(id) +
 						" whose own " + strconv.Quote(patch.Key) + " says it is " +
 						strconv.Quote(actual)}
@@ -196,7 +196,7 @@ func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 			// differ never makes, and taking it would silently replace an
 			// element that the patch also says survived.
 			if _, present := existing[id]; present {
-				return nil, &ErrApply{Path: path,
+				return nil, &ApplyError{Path: path,
 					Reason: "the patch supplies element " + strconv.Quote(id) +
 						" as new, and the array already has it"}
 			}
@@ -205,7 +205,7 @@ func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 		}
 		element, ok := existing[id]
 		if !ok {
-			return nil, &ErrApply{Path: path,
+			return nil, &ApplyError{Path: path,
 				Reason: "the patch keeps element " + strconv.Quote(id) + ", which is neither present nor supplied"}
 		}
 		patched, err := apply(element, patch.Patches[id], path+"[]")
@@ -218,7 +218,7 @@ func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 		// applied. The differ represents an identity change as a removal plus a
 		// New element, never as a survivor changing its key.
 		if actual, ok := identity(patched, patch.Key); !ok || actual != id {
-			return nil, &ErrApply{Path: path,
+			return nil, &ApplyError{Path: path,
 				Reason: "the patch changes element " + strconv.Quote(id) +
 					" into one whose " + strconv.Quote(patch.Key) + " says it is " +
 					strconv.Quote(actual)}
@@ -228,19 +228,19 @@ func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 
 	for id := range patch.New {
 		if !used[id] {
-			return nil, &ErrApply{Path: path,
+			return nil, &ApplyError{Path: path,
 				Reason: "the patch supplies element " + strconv.Quote(id) + ", which its order never places"}
 		}
 	}
 	for id := range patch.Patches {
 		if !used[id] {
-			return nil, &ErrApply{Path: path,
+			return nil, &ApplyError{Path: path,
 				Reason: "the patch changes element " + strconv.Quote(id) + ", which this array does not contain"}
 		}
 		// An identity both supplied whole and patched names one element twice,
 		// and only the whole one is used: the change would be dropped.
 		if _, alsoNew := patch.New[id]; alsoNew {
-			return nil, &ErrApply{Path: path,
+			return nil, &ApplyError{Path: path,
 				Reason: "the patch both supplies and changes element " + strconv.Quote(id)}
 		}
 	}
@@ -251,7 +251,7 @@ func applyKeyed(tree Tree, patch *KeyedPatch, path string) (Tree, error) {
 func Encode(patch *Patch) ([]byte, error) {
 	raw, err := json.Marshal(patch)
 	if err != nil {
-		return nil, &ErrEncode{Err: err}
+		return nil, &EncodeError{Err: err}
 	}
 	return raw, nil
 }

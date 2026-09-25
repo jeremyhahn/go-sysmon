@@ -10,6 +10,7 @@ import { liveReading } from "$lib/peer";
 import { isNewReading } from "$lib/reading";
 import { coreUsage, meanCpuUsage } from "$lib/cpu";
 import {
+  FLEET_URL,
   fleetPageUrl,
   lastPageIfPast,
   parsePageSize,
@@ -542,7 +543,7 @@ class MonitorStore {
   async #pollPeer(name: string, generation: number): Promise<void> {
     try {
       const res = await fetch(
-        `/api/fleet/${encodeURIComponent(name)}/snapshot`
+        `${FLEET_URL}/${encodeURIComponent(name)}/snapshot`
       );
       if (res.status === 404 && this.#selectionGeneration === generation) {
         // The node has left the fleet. A drill-in answers 404 only for a name

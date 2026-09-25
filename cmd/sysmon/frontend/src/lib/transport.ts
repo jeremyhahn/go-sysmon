@@ -22,8 +22,13 @@ const WAILS_DELTA_EVENT = "sysmon:delta";
 // listener here for the old event either. A negotiation that somehow failed
 // should leave the page visibly empty rather than quietly falling back, because
 // falling back is exactly the bug that would never be noticed.
-const EVENTS_URL = "/api/events?deltas=1";
-const INTERVAL_URL = "/api/interval";
+//
+// Every API URL in the dashboard is relative to the page, never root-absolute,
+// so a reverse proxy can serve it under a sub-path (/sysmon/ -> sysmon's /):
+// "api/events" from https://host/sysmon/ is https://host/sysmon/api/events.
+// docs/server/deployment.md, "Behind a reverse proxy".
+const EVENTS_URL = "api/events?deltas=1";
+const INTERVAL_URL = "api/interval";
 
 /** A whole snapshot, with the sequence number it belongs to. */
 interface FullFrame {

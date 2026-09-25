@@ -24,12 +24,17 @@ func writeRepo(t *testing.T, dockerfile string) string {
 	return root
 }
 
+// pinArgs is the command line make check-pins passes, for the repo at root.
+func pinArgs(root string) []string {
+	return []string{"-root", root, "-node-file", ".node-version", "-debian", "trixie", "-ubuntu", "26.04", "-hosted-runner", "26.04"}
+}
+
 const currentDockerfile = "FROM node:24.21.0-trixie-slim\nFROM golang:1.27.1-trixie\nFROM debian:trixie-slim\nFROM ubuntu:26.04\n"
 
 func TestRun_CurrentPinsPass(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
-	code := run(writeRepo(t, currentDockerfile), ".node-version", "trixie", "26.04", "26.04", &stdout, &stderr)
+	code := run(pinArgs(writeRepo(t, currentDockerfile)), &stdout, &stderr)
 
 	if code != 0 {
 		t.Fatalf("run() = %d, want 0; stderr: %s", code, stderr.String())
@@ -42,7 +47,7 @@ func TestRun_CurrentPinsPass(t *testing.T) {
 func TestRun_StalePinFails(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
-	code := run(writeRepo(t, "FROM golang:1.27.1-bookworm\n"), ".node-version", "trixie", "26.04", "26.04", &stdout, &stderr)
+	code := run(pinArgs(writeRepo(t, "FROM golang:1.27.1-bookworm\n")), &stdout, &stderr)
 
 	if code != 1 {
 		t.Fatalf("run() = %d, want 1", code)
@@ -60,12 +65,23 @@ func TestRun_MissingPinFilesFail(t *testing.T) {
 				t.Fatal(err)
 			}
 			var stdout, stderr bytes.Buffer
-			if code := run(root, ".node-version", "trixie", "26.04", "26.04", &stdout, &stderr); code != 1 {
+			if code := run(pinArgs(root), &stdout, &stderr); code != 1 {
 				t.Fatalf("run() = %d, want 1", code)
 			}
 			if !strings.Contains(stderr.String(), remove+": cannot read") {
 				t.Errorf("stderr = %q, want the missing %s named", stderr.String(), remove)
 			}
 		})
+	}
+}
+
+func TestRun_MalformedCommandLineExitsTwo(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"-no-such-flag"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("run() = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "Usage of checkpins") {
+		t.Errorf("stderr = %q, want the usage printed", stderr.String())
 	}
 }

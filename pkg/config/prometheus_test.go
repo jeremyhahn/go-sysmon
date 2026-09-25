@@ -119,9 +119,9 @@ func TestPrometheus_UnusableURLsAreRejected(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, _, err := config.NewLoader(writeConfig(t, tt.body)).Load()
-			var urlErr *config.ErrPrometheusURL
+			var urlErr *config.PrometheusURLError
 			if !errors.As(err, &urlErr) {
-				t.Fatalf("Load() = %v, want *ErrPrometheusURL", err)
+				t.Fatalf("Load() = %v, want *PrometheusURLError", err)
 			}
 			if urlErr.Key == "" {
 				t.Error("the error does not name the setting to fix")
@@ -140,9 +140,9 @@ func TestPrometheus_CredentialsAreRejected(t *testing.T) {
 		"prometheus:\n  query_url: \"http://user:hunter2@mon0:9090\"\n",
 	} {
 		_, _, err := config.NewLoader(writeConfig(t, body)).Load()
-		var credErr *config.ErrPrometheusCredentials
+		var credErr *config.PrometheusCredentialsError
 		if !errors.As(err, &credErr) {
-			t.Fatalf("Load() = %v, want *ErrPrometheusCredentials", err)
+			t.Fatalf("Load() = %v, want *PrometheusCredentialsError", err)
 		}
 		if strings.Contains(err.Error(), "hunter2") {
 			t.Fatalf("the rejection quoted the secret: %s", err)
@@ -290,9 +290,9 @@ func TestPrometheus_ExternalLabelsAreValidated(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Load() accepted external label %q", tt.label)
 			}
-			var labelErr *config.ErrPrometheusLabel
+			var labelErr *config.PrometheusLabelError
 			if tt.label != "" && !errors.As(err, &labelErr) {
-				t.Fatalf("Load() = %v, want *ErrPrometheusLabel", err)
+				t.Fatalf("Load() = %v, want *PrometheusLabelError", err)
 			}
 		})
 	}
@@ -432,9 +432,9 @@ func TestCheckHistoryCadence_BeyondTheLookbackIsRefused(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := config.CheckHistoryCadence(load(t, tt.body), tt.lookback)
-			var cadence *config.ErrHistoryCadence
+			var cadence *config.HistoryCadenceError
 			if !errors.As(err, &cadence) {
-				t.Fatalf("CheckHistoryCadence() = %v, want *ErrHistoryCadence", err)
+				t.Fatalf("CheckHistoryCadence() = %v, want *HistoryCadenceError", err)
 			}
 			if cadence.Key != tt.key || cadence.LookbackMs != int(tt.lookback.Milliseconds()) {
 				t.Errorf("error = %+v, want key %q against %v", cadence, tt.key, tt.lookback)
@@ -490,9 +490,9 @@ func TestLoad_DoesNotCheckTheCadence(t *testing.T) {
 // can leave 10m between stored samples.
 func TestCheckHistoryCadence_TheWriteTimeoutCounts(t *testing.T) {
 	body := "prometheus:\n  remote_write_url: http://mon0:9090/api/v1/write\n  timeout_ms: 540000\n"
-	var cadence *config.ErrHistoryCadence
+	var cadence *config.HistoryCadenceError
 	if err := config.CheckHistoryCadence(load(t, body), 5*time.Minute); !errors.As(err, &cadence) {
-		t.Fatalf("a 9m write timeout against a 5m lookback: %v, want *ErrHistoryCadence", err)
+		t.Fatalf("a 9m write timeout against a 5m lookback: %v, want *HistoryCadenceError", err)
 	}
 }
 
@@ -502,8 +502,8 @@ func TestCheckHistoryCadence_TheWriteTimeoutCounts(t *testing.T) {
 // configured milliseconds add up to exactly 300s.
 func TestCheckHistoryCadence_TheSampleIntervalIsInWholeTicks(t *testing.T) {
 	body := "prometheus:\n  remote_write_url: http://mon0:9090/api/v1/write\n  sample_interval_ms: 230500\n  timeout_ms: 9500\n"
-	var cadence *config.ErrHistoryCadence
+	var cadence *config.HistoryCadenceError
 	if err := config.CheckHistoryCadence(load(t, body), 5*time.Minute); !errors.As(err, &cadence) || cadence.IntervalMs != 300500 {
-		t.Fatalf("CheckHistoryCadence = %v, want *ErrHistoryCadence at 300500ms", err)
+		t.Fatalf("CheckHistoryCadence = %v, want *HistoryCadenceError at 300500ms", err)
 	}
 }

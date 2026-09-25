@@ -124,6 +124,33 @@ Comparison rules, all unit-tested in `internal/pins`:
 - A source that reports an rc, or a bare language version, as the latest Go is
   refused as an invalid answer. It is not trusted.
 
+### Mirrors and air-gapped runs
+
+Each source is fetched from a URL a flag names. Every flag defaults to the
+public source in the table above, so `make check-latest` passes none:
+
+| Flag | Default | Accepts |
+|---|---|---|
+| `-go-releases-url` | `https://go.dev/VERSION?m=text` | `http`, `https` |
+| `-node-index-url` | `https://nodejs.org/dist/index.json` | `http`, `https` |
+| `-debian-dists-url` | `https://deb.debian.org/debian/dists` | `http`, `https` |
+| `-ubuntu-series-url` | `https://api.launchpad.net/devel/ubuntu/series` | `http`, `https` |
+| `-runner-images-url` | the `actions/runner-images` README on `raw.githubusercontent.com` | `http`, `https` |
+| `-actions-base-url` | `https://github.com` | `http`, `https`, `file` |
+
+A mirror serves the same documents at the paths the defaults use: the Debian
+URL is the `dists` directory, under which `<suite>/Release` is read, and the
+actions URL is where `<owner>/<repo>` is listed with `git ls-remote`. A `file`
+URL there names a directory of repository mirrors, which is how an air-gapped
+host checks its actions. Tool versions come from `go list -m`, so they follow
+`GOPROXY` rather than a flag.
+
+A URL that is not absolute, has no host, or uses a scheme the source cannot be
+fetched over is a usage error (exit 2) before anything is fetched.
+
+The integration suite (`test/integration/tools`) runs the command this way,
+against in-process stand-ins for every source, a module proxy and a Gitea API.
+
 check-latest is not in `make lint` or `ci.yml`. An upstream release is not a
 defect in whatever PR happens to be open, and it must not fail one.
 

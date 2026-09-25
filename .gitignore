@@ -15,6 +15,9 @@ coverage.out
 coverage.html
 cmd/sysmon/frontend/test-results/
 cmd/sysmon/frontend/playwright-report/
+# Each Go suite's log and the desktop session's logs (TEST_LOG_DIR), which CI
+# uploads when a job fails.
+/test-logs/
 # Captured run output from `make test` / `make integration-test`, which the
 # analysis workflows read and then discard.
 test.log

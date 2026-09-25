@@ -36,14 +36,12 @@ func promOptions(mgr *config.Manager) func() prom.Options {
 			{Name: "instance", Value: localNodeName(mgr)},
 			{Name: "job", Value: jobLabel},
 		}
-		// Operator labels cannot displace the two above. Letting an
-		// external_labels entry override instance would silently merge this
-		// node's history with another machine's, which no later query could
-		// untangle.
+		// Operator labels cannot displace the two above: the config refuses an
+		// external_labels entry named instance, job or __*, at load and on
+		// every reload, so none reaches here. Letting one override instance
+		// would silently merge this node's history with another machine's,
+		// which no later query could untangle.
 		for name, value := range p.ExternalLabels {
-			if name == "instance" || name == "job" || name == "__name__" {
-				continue
-			}
 			labels = append(labels, prom.Label{Name: name, Value: value})
 		}
 		return prom.Options{

@@ -1,18 +1,21 @@
 package prom
 
 import (
+	"bytes"
 	"encoding/binary"
-	"github.com/jeremyhahn/go-sysmon/pkg/config"
 	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/jeremyhahn/go-sysmon/pkg/config"
 
 	"github.com/golang/snappy"
 
@@ -812,7 +815,7 @@ func TestExporter_CollectFailureIsNotFatal(t *testing.T) {
 	e := NewExporter(func() Options { return fixedOptions(rec.srv.URL) }, func() (Measurement, error) {
 		n := calls.Add(1)
 		if n <= 3 {
-			return Measurement{}, &ErrNoQueryEndpoint{} // any error will do
+			return Measurement{}, &NoQueryEndpointError{} // any error will do
 		}
 		return Measurement{TimeMs: baseMs + n, Write: func(b *Builder, timeMs int64) {
 			b.Add("sysmon_up", 1, timeMs)
@@ -888,10 +891,10 @@ func TestExporter_RequestTimeoutIsNotRetried(t *testing.T) {
 	})
 }
 
-// TestErrRemoteWrite_RetryableFollowsTheSpec enumerates the boundary, since the
+// TestRemoteWriteError_RetryableFollowsTheSpec enumerates the boundary, since the
 // classification is one expression and every status either side of it means a
 // different outcome for the samples.
-func TestErrRemoteWrite_RetryableFollowsTheSpec(t *testing.T) {
+func TestRemoteWriteError_RetryableFollowsTheSpec(t *testing.T) {
 	cases := []struct {
 		status int
 		want   bool
@@ -911,7 +914,7 @@ func TestErrRemoteWrite_RetryableFollowsTheSpec(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		err := &ErrRemoteWrite{URL: "http://receiver:9090/api/v1/write", Status: tc.status}
+		err := &RemoteWriteError{URL: "http://receiver:9090/api/v1/write", Status: tc.status}
 		if got := err.Retryable(); got != tc.want {
 			t.Errorf("Retryable() for %d = %v, want %v -- %s", tc.status, got, tc.want, tc.why)
 		}
@@ -1165,5 +1168,34 @@ func TestExporter_SubmitDiscardedWhileDisabled(t *testing.T) {
 func TestTickIntervalMatchesConfig(t *testing.T) {
 	if tickInterval != time.Duration(config.ExporterTickMs)*time.Millisecond {
 		t.Errorf("tickInterval = %v, config.ExporterTickMs = %d; they must agree", tickInterval, config.ExporterTickMs)
+	}
+}
+
+// TestExporter_ACollidingReadingIsWrittenAndReportedOnce feeds the exporter
+// readings in which two cores share one label set, as a two-socket host's did
+// before its cores carried their package. The reading is still written, the
+// duplicate is counted as dropped, and the defect is logged once for the
+// series, not once per collection.
+func TestExporter_ACollidingReadingIsWrittenAndReportedOnce(t *testing.T) {
+	var logs bytes.Buffer
+	e := NewExporter(func() Options { return fixedOptions("http://receiver.invalid") }, nil,
+		slog.New(slog.NewTextHandler(&logs, nil)))
+	e.ensureBuilder(fixedOptions("http://receiver.invalid"))
+
+	for ts := int64(1000); ts <= 3000; ts += 1000 {
+		e.record(Measurement{TimeMs: ts, Write: func(b *Builder, timeMs int64) {
+			b.Add("sysmon_cpu_temperature_celsius", 61, timeMs, "core", "0")
+			b.Add("sysmon_cpu_temperature_celsius", 67, timeMs, "core", "0")
+		}})
+	}
+
+	if got := e.builder.Len(); got != 3 {
+		t.Errorf("samples held = %d, want one per reading", got)
+	}
+	if got := e.Stats().SamplesDropped; got != 3 {
+		t.Errorf("SamplesDropped = %d, want the three duplicates", got)
+	}
+	if n := strings.Count(logs.String(), "two samples at the same time"); n != 1 {
+		t.Errorf("the collision was logged %d times, want once:\n%s", n, logs.String())
 	}
 }

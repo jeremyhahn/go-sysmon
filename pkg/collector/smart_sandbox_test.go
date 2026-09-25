@@ -35,9 +35,9 @@ func TestSmartOpenError_HiddenNodeIsDiagnosed(t *testing.T) {
 	enoent := &os.PathError{Op: "open", Path: "/dev/sda", Err: syscall.ENOENT}
 	got := smartOpenError("/dev/sda", enoent)
 
-	var hidden *ErrSMARTDeviceHidden
+	var hidden *SMARTDeviceHiddenError
 	if !errors.As(got, &hidden) {
-		t.Fatalf("smartOpenError = %#v, want *ErrSMARTDeviceHidden", got)
+		t.Fatalf("smartOpenError = %#v, want *SMARTDeviceHiddenError", got)
 	}
 	if hidden.DevPath != "/dev/sda" {
 		t.Errorf("DevPath = %q, want /dev/sda", hidden.DevPath)

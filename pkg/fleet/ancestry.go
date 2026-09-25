@@ -66,38 +66,38 @@ func WithAncestry(ctx context.Context, chain []string) context.Context {
 	return context.WithValue(ctx, ancestryKey{}, chain)
 }
 
-// ErrInvalidAncestry reports a malformed HeaderAncestry.
-type ErrInvalidAncestry struct{ Value string }
+// InvalidAncestryError reports a malformed HeaderAncestry.
+type InvalidAncestryError struct{ Value string }
 
-func (e *ErrInvalidAncestry) Error() string {
+func (e *InvalidAncestryError) Error() string {
 	return "fleet: malformed " + HeaderAncestry + " header"
 }
 
-// ErrFleetLoop reports a request that has already passed through this
+// FleetLoopError reports a request that has already passed through this
 // aggregator: the fleet's peer lists form a loop.
-type ErrFleetLoop struct{}
+type FleetLoopError struct{}
 
-func (e *ErrFleetLoop) Error() string {
+func (e *FleetLoopError) Error() string {
 	return "fleet: this request has already passed through this aggregator; the fleet's peer lists form a loop"
 }
 
-// ErrTreeTooDeep reports a request that has passed through more aggregators
+// TreeTooDeepError reports a request that has passed through more aggregators
 // than MaxTreeDepth allows.
-type ErrTreeTooDeep struct{ Depth int }
+type TreeTooDeepError struct{ Depth int }
 
-func (e *ErrTreeTooDeep) Error() string {
+func (e *TreeTooDeepError) Error() string {
 	return "fleet: this request has passed through " + strconv.Itoa(e.Depth) +
 		" aggregators, more than the " + strconv.Itoa(MaxTreeDepth) + " a fleet tree may have"
 }
 
-// ErrFleetRefused reports a peer that refused a request with 508: the request
+// FleetRefusedError reports a peer that refused a request with 508: the request
 // looped back to it, or the tree is too deep there.
-type ErrFleetRefused struct {
+type FleetRefusedError struct {
 	Peer   string
 	Reason string
 }
 
-func (e *ErrFleetRefused) Error() string {
+func (e *FleetRefusedError) Error() string {
 	if e.Reason == RefusalDepth {
 		return "fleet node " + e.Peer + " refused: the fleet tree is deeper than " + strconv.Itoa(MaxTreeDepth) + " levels there"
 	}
@@ -113,11 +113,11 @@ func ParseAncestry(header string) ([]string, error) {
 	}
 	ids := strings.Split(header, ",")
 	if len(ids) > MaxTreeDepth+1 {
-		return nil, &ErrTreeTooDeep{Depth: len(ids)}
+		return nil, &TreeTooDeepError{Depth: len(ids)}
 	}
 	for _, id := range ids {
 		if !validInstanceID(id) {
-			return nil, &ErrInvalidAncestry{Value: header}
+			return nil, &InvalidAncestryError{Value: header}
 		}
 	}
 	return ids, nil
@@ -147,11 +147,11 @@ func (p *Poller) InstanceID() string { return p.instanceID }
 func (p *Poller) CheckAncestry(chain []string) error {
 	for _, id := range chain {
 		if id == p.instanceID {
-			return &ErrFleetLoop{}
+			return &FleetLoopError{}
 		}
 	}
 	if len(chain) > MaxTreeDepth {
-		return &ErrTreeTooDeep{Depth: len(chain)}
+		return &TreeTooDeepError{Depth: len(chain)}
 	}
 	return nil
 }
