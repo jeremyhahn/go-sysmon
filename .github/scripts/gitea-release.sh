@@ -30,11 +30,25 @@ if isinstance(d, dict):
     v = d.get(sys.argv[1], "")
     print(v if v is not None else "")' "$1"; }
 
+# An -alpha tag, the one pre-release kind (release-versioning.md §1a), is
+# published as a pre-release, so it is never offered as the latest stable
+# release. Set on create AND on a re-run: a release made before this rule,
+# or edited by hand, is corrected rather than left marked stable.
+prerelease=false
+case "${RELEASE_TAG}" in *-alpha) prerelease=true ;; esac
+
 # Re-releasing a tag should update it, not fail.
 release_id="$(curl -sS -H "${AUTH}" "${BASE}/tags/${RELEASE_TAG}" | json_get id)"
 
 if [ -n "${release_id}" ]; then
   echo "release ${RELEASE_TAG} already exists (id ${release_id}); replacing assets"
+  updated="$(printf '{"prerelease": %s}' "${prerelease}" \
+    | curl -sS -X PATCH -H "${AUTH}" -H 'Content-Type: application/json' \
+        --data-binary @- "${BASE}/${release_id}" | json_get prerelease)"
+  if [ "${updated}" != "$([ "${prerelease}" = true ] && echo True || echo False)" ]; then
+    echo "failed to set prerelease=${prerelease} on release ${RELEASE_TAG}" >&2
+    exit 1
+  fi
 else
   body="Automated release from Gitea Actions.
 
@@ -45,8 +59,8 @@ this instance's registry."
     "name": "go-sysmon " + sys.argv[1],
     "body": sys.argv[2],
     "draft": False,
-    "prerelease": False,
-}))' "${RELEASE_TAG}" "${body}")"
+    "prerelease": sys.argv[3] == "true",
+}))' "${RELEASE_TAG}" "${body}" "${prerelease}")"
 
   release_id="$(printf '%s' "${payload}" \
     | curl -sS -X POST -H "${AUTH}" -H 'Content-Type: application/json' \

@@ -32,7 +32,7 @@ The most recent snapshot, as JSON.
     "processes": { ... },
     "sensors": { ... },
     "virt": { ... },
-    "version": "0.1.0-alpha",
+    "version": "0.2.0-alpha",
     "git_commit": "a46f6cf",
     "build_date": "2026-09-05T03:26:50Z",
     "node_name": "db-01",
@@ -42,9 +42,9 @@ The most recent snapshot, as JSON.
 
 `version` is the release string and `git_commit`/`build_date` are the build it
 was cut from. All three are the same values `GET /api/version` reports, and the
-last two are the only ones that identify a build: the release string has read
-`0.1.0-alpha` on every build this project has produced, so it cannot tell two
-apart. They were added in an additive change — a client that does not read them
+last two are the only ones that identify a build: the release string changes
+only when a release is cut, so every build between two releases carries the
+same one and it cannot tell them apart. They were added in an additive change — a client that does not read them
 is unaffected — and they are omitted entirely by a node that does not state its
 build, which is what a binary built without the release `-ldflags` does. An
 absent commit means the node said nothing, never that it agrees with yours.
@@ -89,7 +89,7 @@ instead of `/api/snapshot` (#76).
 ```json
 {
     "hostname": "ci-node-1",
-    "version": "0.1.0-alpha",
+    "version": "0.2.0-alpha",
     "uptime_seconds": 864000,
     "node_name": "ci-node-1",
     "collection_interval_ms": 1000,

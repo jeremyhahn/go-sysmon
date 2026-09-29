@@ -179,7 +179,7 @@ INTERVAL ?= 1000
 .PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report check-bundle-current frontend-deps test \
         coverage check-package-targets check-coverage-exceptions integration-test \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
-        ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop clean-dist \
+        ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog clean-dist \
         build-both generate check-generated check-ts check-nolint \
         check-build-tags test-fips check-pins check-latest \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
@@ -912,3 +912,82 @@ release-build-desktop: build-frontend
 	cd $(RELEASE_DIR) && sha256sum sysmon-$(VERSION)-linux-$(shell go env GOARCH) \
 		> sysmon-$(VERSION)-linux-$(shell go env GOARCH).sha256
 	@echo "Built $(RELEASE_DIR)/sysmon-$(VERSION)-linux-$(shell go env GOARCH)"
+
+# RELEASE is read LITERALLY by the two targets below. A command-line variable
+# is auto-exported, and `$(RELEASE)` would expand it while make builds the
+# recipe environment, so `RELEASE='$(shell ...)'` would run before any check.
+# `$(value ...)` takes the text unexpanded. `override` stops the internal name
+# being set directly to skip that. `unexport` keeps both names out of every
+# other recipe. This is the pattern from the handbook's release-alpha.mk.
+unexport RELEASE ASM_RELEASE CHK_RELEASE RELEASE_TAG_RE
+
+# RELEASE_TAG_RE is the shape a release tag must have: vX.Y.Z with no leading
+# zeroes, optionally -alpha. Those are the only two kinds of release; there is
+# no -rc.N or -beta (release-versioning.md §1a). It is matched with grep -z,
+# so the whole value must match: a value with a newline in it is refused, where
+# plain grep would accept it on its first line alone.
+override RELEASE_TAG_RE := ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha)?$$
+
+# changelog-assemble folds the changelog.d fragments into a new CHANGELOG.md
+# section and deletes them (release-versioning.md §5).
+#
+# This is a COMMITTED step, done before tagging. release.yml never does it: the
+# workflow's copy of the repository is thrown away, so a fragment folded in
+# there would never reach it. Run it, read the diff, commit CHANGELOG.md and the
+# fragment deletions together, then tag. It doesn't commit for you, because the
+# changelog is the one release artefact a person should read before it's
+# published.
+#
+#   make changelog-assemble RELEASE=v0.3.0-alpha
+changelog-assemble: override export ASM_RELEASE := $(value RELEASE)
+changelog-assemble:
+	@test -n "$$ASM_RELEASE" || { echo 'ERROR: state the version explicitly: make changelog-assemble RELEASE=vX.Y.Z-alpha'; exit 1; }
+	@printf '%s' "$$ASM_RELEASE" | grep -Ezq '$(RELEASE_TAG_RE)' || { echo "ERROR: not a release tag (vX.Y.Z, optionally -alpha): $$ASM_RELEASE"; exit 1; }
+	@set -eu; \
+	ver="$${ASM_RELEASE#v}"; \
+	frags=$$(ls changelog.d/*.md 2>/dev/null || true); \
+	test -n "$$frags" || { echo 'ERROR: changelog.d holds no fragments; nothing to assemble'; exit 1; }; \
+	! awk -v h="## [$$ver]" 'index($$0, h) == 1 { f = 1 } END { exit f ? 0 : 1 }' CHANGELOG.md || { echo "ERROR: CHANGELOG.md already has a [$$ver] section. Fold the new fragments into it by hand, or release them as the next version"; exit 1; }; \
+	{ \
+	  printf '## [%s] - %s\n\n' "$$ver" "$$(date -u +%Y-%m-%d)"; \
+	  for f in $$frags; do cat "$$f"; printf '\n'; done; \
+	} > .changelog-section; \
+	awk 'NR==FNR { sec = sec $$0 "\n"; next } \
+	     !done && /^## \[/ { printf "%s", sec; done = 1 } \
+	     { print } \
+	     END { if (!done) printf "%s", sec }' .changelog-section CHANGELOG.md > .changelog-new; \
+	mv .changelog-new CHANGELOG.md; \
+	rm -f .changelog-section $$frags; \
+	echo "Assembled $$(echo "$$frags" | wc -w) fragment(s) into CHANGELOG.md as [$$ver]."; \
+	echo "Review the diff, then commit CHANGELOG.md and the fragment deletions together."
+
+# check-changelog refuses a release that would publish notes out of step with
+# the tag. release.yml runs it before building anything. It fails if:
+#
+#   - the tag is not a release tag, or VERSION is not exactly the tag without
+#     its "v" (compared byte for byte, so a stray space or line doesn't pass);
+#   - changelog.d still holds unassembled fragments;
+#   - CHANGELOG.md has no "## [X.Y.Z...]" heading for the version. The heading
+#     is matched literally at the start of a line, and only outside a fenced
+#     code block (CommonMark fences), so a quoted example doesn't count.
+#
+#   make check-changelog RELEASE=v0.2.0-alpha
+check-changelog: override export CHK_RELEASE := $(value RELEASE)
+check-changelog:
+	@test -n "$$CHK_RELEASE" || { echo 'ERROR: state the tag: make check-changelog RELEASE=vX.Y.Z-alpha'; exit 1; }
+	@printf '%s' "$$CHK_RELEASE" | grep -Ezq '$(RELEASE_TAG_RE)' || { echo "ERROR: not a release tag (vX.Y.Z, optionally -alpha): $$CHK_RELEASE"; exit 1; }
+	@printf '%s\n' "$${CHK_RELEASE#v}" | cmp -s - VERSION || { echo "ERROR: VERSION is not exactly $${CHK_RELEASE#v}; bump it in the release commit. It holds:"; od -c VERSION; exit 1; }
+	@frags=$$(ls changelog.d/*.md 2>/dev/null || true); \
+	test -z "$$frags" || { echo "ERROR: changelog.d still holds unassembled fragments:"; echo "$$frags" | sed 's/^/  /'; echo "Run: make changelog-assemble RELEASE=$$CHK_RELEASE, review, commit, then tag."; exit 1; }
+	@ver="## [$${CHK_RELEASE#v}]"; awk -v ver="$$ver" ' \
+	  function fence(s,   i, n) { \
+	    i = 1; while (i <= 3 && substr(s, i, 1) == " ") i++; \
+	    fch = substr(s, i, 1); if (fch != "~" && fch != "\140") return 0; \
+	    n = 0; while (substr(s, i + n, 1) == fch) n++; \
+	    info = substr(s, i + n); return n >= 3 ? n : 0 } \
+	  { n = fence($$0) } \
+	  open { if (n >= open && fch == opench && info ~ /^[ \t]*$$/) open = 0; next } \
+	  n && !(fch == "\140" && index(info, "\140")) { open = n; opench = fch; next } \
+	  index($$0, ver) == 1 { f = 1 } \
+	  END { exit f ? 0 : 1 }' CHANGELOG.md || { echo "ERROR: CHANGELOG.md has no \"$$ver\" section heading outside a code block"; exit 1; }
+	@echo "CHANGELOG.md is ready for $$CHK_RELEASE."

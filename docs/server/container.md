@@ -154,6 +154,8 @@ mapping.
 ## The image
 
 - `ghcr.io/jeremyhahn/go-sysmon:0.1.2`, and `:latest`
+  (`:latest` is always a stable release: an `-alpha` release is tagged with
+  its version only)
 - linux/amd64 and linux/arm64
 - ~100 MB, Debian-based
 

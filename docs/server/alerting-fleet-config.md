@@ -766,9 +766,9 @@ need two names.
 
   The build is three fields: `version`, `git_commit` and `build_date`, carried
   up from that node's snapshot. `version` alone never answered the question it
-  was added for. It is the release string, it has read `0.1.0-alpha` on every
-  build this project has produced, and a fleet running five different builds
-  therefore reported one identical word ten times — five nodes sat two builds
+  was added for. It is the release string, which changes only when a release
+  is cut, so every build between two releases carries the same one: a fleet
+  running five different builds reported one identical word ten times — five nodes sat two builds
   behind for days and the view showed them green. `git_commit` is the field
   that distinguishes builds; `version` is kept beside it unchanged for anything
   already reading it.

@@ -24,8 +24,20 @@ jobs:
   verify:
     name: Verify Before Release
     runs-on: ubuntu-latest
+    # The one place the release is resolved. Every later job builds and
+    # publishes exactly this tag and commit, and each publishing job confirms
+    # that the tag still names the commit before it publishes.
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
+      # A manual run releases the tag it names, so that tag is what is verified.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.version && format('refs/tags/{0}', inputs.version) || github.ref }}
+          # Full history, so the check below can prove the commit is on main.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v7
         with:
@@ -68,6 +80,31 @@ jobs:
       # Nothing is published unless lint, vulnerability scans and the race
       # suite pass. The container and browser suites are covered by CI on the
       # commit being tagged.
+      # Before anything is built: a tag whose CHANGELOG section is missing, or
+      # that leaves changelog.d fragments unassembled, must not publish.
+      # The tag reaches the shell through env, never pasted into the script:
+      # git accepts tags containing shell syntax. check-changelog validates its
+      # shape before anything is exported to the later jobs.
+      - name: Resolve and check the release
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+        run: |
+          make check-changelog RELEASE="${RELEASE_TAG}"
+          # Every release is a tag on main (release-versioning.md §1a). A tag
+          # on an unmerged branch would publish code that never merged, and a
+          # published tag can't be taken back.
+          git fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main || {
+            echo "::error::${RELEASE_TAG} names $(git rev-parse HEAD), which is not on main. Merge it, then tag the commit on main."
+            exit 1
+          }
+          {
+            echo "tag=${RELEASE_TAG}"
+            echo "version=${RELEASE_TAG#v}"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run the release gate
         run: make ci-fast
 
@@ -105,6 +142,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         if: env.NATIVE == 'true'
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@v7
         if: env.NATIVE == 'true'
@@ -126,24 +165,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
 
-      - name: Resolve version
-        id: version
-        if: env.NATIVE == 'true'
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
-
       # The server binary is the portable artifact: 3 shared libraries, runs on
       # a headless host. The desktop binary additionally links GTK and WebKit
       # and only runs where those are installed.
       - name: Build release binaries
         if: env.NATIVE == 'true'
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           make release-build VERSION="${VERSION}"
           make release-build-desktop VERSION="${VERSION}"
@@ -196,6 +224,8 @@ jobs:
             runner: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: docker/setup-buildx-action@v4
 
@@ -205,17 +235,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve version
-        id: version
-        if: env.NATIVE == 'true'
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
-
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v7
@@ -224,8 +243,8 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           provenance: false
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-            GIT_COMMIT=${{ github.sha }}
+            VERSION=${{ needs.verify.outputs.version }}
+            GIT_COMMIT=${{ needs.verify.outputs.sha }}
             BUILD_DATE=${{ github.event.repository.updated_at }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.arch }}
@@ -253,9 +272,14 @@ jobs:
   image-manifest:
     name: Publish Image Manifest
     if: github.server_url == 'https://github.com'
-    needs: image
+    needs: [verify, image]
     runs-on: ubuntu-latest
     steps:
+      # Checked out only so the tag can be confirmed before it is published.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+
       - uses: actions/download-artifact@v8
         with:
           pattern: digest-*
@@ -270,16 +294,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve version
-        id: version
-        if: env.NATIVE == 'true'
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+      - name: Confirm the tag still names the verified commit
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+        run: bash .github/scripts/confirm-release-ref.sh
 
       # ghcr requires a lowercase repository path; github.repository already is
       # for this repo, but tolower keeps it correct if the owner ever changes.
@@ -288,7 +307,14 @@ jobs:
         run: |
           IMAGE="ghcr.io/${{ github.repository }}"
           IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.verify.outputs.version }}"
+          # :latest is the stable image. An -alpha release is a pre-release
+          # and never moves it.
+          tags=(-t "${IMAGE}:${VERSION}")
+          case "${VERSION}" in
+            *-alpha) ;;
+            *) tags+=(-t "${IMAGE}:latest") ;;
+          esac
           # One digest file per architecture, named for the digest. Collect
           # them into an array rather than relying on an unquoted expansion to
           # word-split, which is what shellcheck objects to (SC2046) and is
@@ -297,20 +323,19 @@ jobs:
           for digest in *; do
             refs+=("${IMAGE}@sha256:${digest}")
           done
-          docker buildx imagetools create \
-            -t "${IMAGE}:${VERSION}" \
-            -t "${IMAGE}:latest" \
-            "${refs[@]}"
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
           docker buildx imagetools inspect "${IMAGE}:${VERSION}"
 
   publish:
     name: Publish Release
     # softprops/action-gh-release talks to the GitHub Releases API.
     if: github.server_url == 'https://github.com'
-    needs: [build, image-manifest]
+    needs: [verify, build, image-manifest]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/download-artifact@v8
         with:
@@ -320,18 +345,6 @@ jobs:
 
       - name: List artifacts
         run: ls -lh artifacts/
-
-      - name: Resolve version
-        id: version
-        if: env.NATIVE == 'true'
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
 
       - name: Write release notes
         run: |
@@ -343,7 +356,7 @@ jobs:
           deploy to servers.
 
           ```bash
-          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/sysmon-server-${{ steps.version.outputs.version }}-linux-amd64
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ needs.verify.outputs.tag }}/sysmon-server-${{ needs.verify.outputs.version }}-linux-amd64
           chmod +x sysmon-server-*
           sudo install -m 0755 sysmon-server-* /usr/local/bin/sysmon-server
           sysmon-server serve --addr :8080
@@ -366,7 +379,7 @@ jobs:
           docker run -d --name sysmon \
             --pid=host --network=host \
             -v /sys:/sys:ro -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
-            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }} \
+            ghcr.io/${{ github.repository }}:${{ needs.verify.outputs.version }} \
             serve --addr :8080
           ```
 
@@ -378,7 +391,7 @@ jobs:
           ### Verifying a download
 
           ```bash
-          sha256sum -c sysmon-server-${{ steps.version.outputs.version }}-linux-amd64.sha256
+          sha256sum -c sysmon-server-${{ needs.verify.outputs.version }}-linux-amd64.sha256
           ```
 
           ### Note on the dashboard
@@ -390,14 +403,20 @@ jobs:
           it before exposing it to an untrusted network.
           EOF
 
+      - name: Confirm the tag still names the verified commit
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+        run: bash .github/scripts/confirm-release-ref.sh
+
       - uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: go-sysmon ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.verify.outputs.tag }}
+          name: go-sysmon ${{ needs.verify.outputs.tag }}
           body_path: NOTES.md
           files: artifacts/*
           draft: false
-          prerelease: ${{ contains(steps.version.outputs.tag, '-rc') || contains(steps.version.outputs.tag, '-beta') }}
+          prerelease: ${{ endsWith(needs.verify.outputs.tag, '-alpha') }}
           generate_release_notes: true
 
   # The Gitea equivalent of build + image + publish, in one job.
@@ -419,6 +438,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@v7
         with:
@@ -435,17 +456,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
 
-      - name: Resolve version and instance
+      - name: Resolve the instance
         id: meta
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version="${{ inputs.version }}"
-          else
-            version="${GITHUB_REF#refs/tags/}"
-          fi
           {
-            echo "version=${version#v}"
-            echo "tag=${version}"
             # github.server_url is the Gitea instance; the registry is the same
             # host and port with the scheme stripped.
             server="${{ github.server_url }}"
@@ -455,8 +469,8 @@ jobs:
 
       - name: Build binaries
         run: |
-          make release-build VERSION="${{ steps.meta.outputs.version }}"
-          make release-build-desktop VERSION="${{ steps.meta.outputs.version }}"
+          make release-build VERSION="${{ needs.verify.outputs.version }}"
+          make release-build-desktop VERSION="${{ needs.verify.outputs.version }}"
 
       - name: Verify the binaries run
         run: |
@@ -473,14 +487,22 @@ jobs:
         continue-on-error: true
         env:
           REGISTRY: ${{ steps.meta.outputs.registry }}
-          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
         run: bash .github/scripts/gitea-image.sh
+
+      - name: Confirm the tag still names the verified commit
+        env:
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+        run: bash .github/scripts/confirm-release-ref.sh
 
       - name: Publish the release
         env:
           GITEA_API: ${{ steps.meta.outputs.api }}
           GITEA_REPO: ${{ github.repository }}
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
         run: bash .github/scripts/gitea-release.sh

@@ -1730,9 +1730,10 @@ export interface Snapshot {
   version: string;
   /**
    * GitCommit and BuildDate identify the BUILD, which Version alone cannot.
-   * The release string has read "0.1.0-alpha" for every build this project
-   * has ever produced, so a fleet on five different builds reported one word
-   * ten times and a stale node was indistinguishable from a current one.
+   * The release string changes only when a release is cut, so every build
+   * between two releases carries the same one: a fleet on five different
+   * builds reported one word ten times and a stale node was
+   * indistinguishable from a current one.
    * GET /api/version has always carried these two; the snapshot, and so the
    * fleet payload built from it, dropped them.
    *

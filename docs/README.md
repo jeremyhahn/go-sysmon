@@ -53,12 +53,22 @@ when you need to know why a number says what it says.
 | Scan Go dependencies and stdlib | `make vulncheck` |
 | Scan the frontend | `make audit` |
 | Build release binaries | `make release-build`, `make release-build-desktop` |
+| Record a change for the next release | Add `changelog.d/<issue>-<slug>.md`, holding the Keep a Changelog subsections it belongs under |
+| Cut a release | Set `VERSION` and run `make changelog-assemble RELEASE=vX.Y.Z-alpha`. Get that commit onto `main`, then push the signed tag `vX.Y.Z-alpha` on it |
 | Deploy to a host | [deployment/user.md](deployment/user.md) — `make deploy` |
 | Build prerequisites and the bare-binary path | [server/deployment.md](server/deployment.md) |
 
 The workflows themselves are `.github/workflows/ci.yml` and
 `.github/workflows/release.yml`. `make ci` runs the same targets in the same
 order, so a green local run means a green CI run.
+
+A pushed `v*` tag runs `release.yml`. Before it builds anything,
+`make check-changelog` refuses a tag that doesn't match `VERSION`, a
+`CHANGELOG.md` without a section for the version, and fragments still left in
+`changelog.d/`. The verify job also refuses a tag whose commit is not on `main`. An `-alpha` tag is
+published as a pre-release. Every job after the check builds the
+commit that passed it, and each job that publishes first confirms the tag
+still names that commit.
 
 ## Documentation layout
 
