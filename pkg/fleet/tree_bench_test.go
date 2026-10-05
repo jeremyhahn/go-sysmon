@@ -65,7 +65,7 @@ func treeFixture(b *testing.B) (*Poller, config.Fleet, *atomic.Int64, *atomic.In
 			byName[name] = n
 			entries = append(entries, types.FleetIndexEntry{Name: name, Hostname: name, Status: n.Status, Reachable: true, AgeSeconds: 1, Depth: 1})
 		}
-		sub := types.FleetSubtree{Nodes: entries, Rollup: collect(nodes, types.RollupNames), Aggregators: []string{newInstanceID()}}
+		sub := types.FleetSubtree{Nodes: entries, Rollup: collect(nodes, types.RollupNames, 0.8), Aggregators: []string{newInstanceID()}}
 		childSummary := summary
 		childSummary.Hostname = child
 		childSummary.Aggregates = treeLeaves

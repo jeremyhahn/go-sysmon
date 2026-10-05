@@ -381,6 +381,40 @@ Per-image sizes **include layers shared with other images**, so they do not sum
 to the total; the reclaimable estimate is capped at the deduplicated size on
 disk for the same reason.
 
+### Free space on the data root
+
+`runtime_disk` is `{path, total_bytes, free_bytes}`: the filesystem a container
+runtime writes its images and layers to, which is what fills up under CI jobs
+(#239). Unlike the rest of this section it does **not** need the runtime's API,
+and is measured on every node.
+
+The path measured is the first of these that exists:
+
+1. `root_dir`, when the runtime's API answered;
+2. `/var/lib/docker`;
+3. `/var/lib/containers/storage` (Podman and every containers/storage engine);
+4. `/`, so a node with no runtime at all still reports its free disk.
+
+It is a `statfs` of that path, not a lookup in the disk list. A data root is
+often a bind mount the disk list cannot name: on ci-node-2 `/var/lib/docker`
+is `/dev/nvme2n1p1[/docker]`, which the disk list shows only as
+`/mnt/ci-scratch`. `statfs` needs only traversal of the parent directories, so
+it works for a `sysmon` user outside the docker group, whose runtime API is
+unreachable. `free_bytes` is what an unprivileged writer may use (`f_bavail`,
+`df`'s "Avail").
+
+A path that does not exist is passed over. Any other failure (permission, I/O)
+leaves `path` empty rather than measuring the next candidate, which would be
+another filesystem under the data root's name. **An empty `path` is unknown**,
+and so is a snapshot from a build that predates the field: the zero sizes
+beside it are never a full disk. It is collected in the medium tier, after the
+runtime collector, so a relocated `root_dir` is measured from the first
+collection.
+
+In a container, the host's `/var/lib/docker` is not visible unless it is
+mounted, so the candidates fall through to the container's own `/`. That is
+reported as `/`, so the gap is visible.
+
 ### Why it is asynchronous
 
 The runtime's disk usage query walks every layer, volume and cache entry. On a

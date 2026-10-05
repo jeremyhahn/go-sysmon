@@ -10,13 +10,16 @@ import (
 )
 
 // randomFleet is n nodes with every status, overlapping extremes (so ties are
-// decided by name), a few builds, and devices, power and network on some.
+// decided by name), a few builds, and devices, power, network and capacity on
+// some.
 func randomFleet(rng *rand.Rand, n int) []types.FleetNode {
 	nodes := make([]types.FleetNode, 0, n)
 	for i := range n {
 		s := types.NodeSummary{
-			GitCommit:        fmt.Sprintf("c%d", rng.IntN(7)),
-			CPUPercent:       float64(rng.IntN(20)) * 5,
+			GitCommit: fmt.Sprintf("c%d", rng.IntN(7)),
+			// Quarter steps: headroom at 0.75 is then exact in binary, so
+			// cores summed in any order are the same sum.
+			CPUPercent:       float64(rng.IntN(5)) * 25,
 			CPUAvailable:     rng.IntN(4) != 0,
 			MemoryPercent:    float64(rng.IntN(10)) * 10,
 			LoadPerCore:      float64(rng.IntN(4)) / 2,
@@ -38,19 +41,36 @@ func randomFleet(rng *rand.Rand, n int) []types.FleetNode {
 		if rng.IntN(3) == 0 {
 			s.SwapRateAvailable, s.SwapOutRate = true, float64(rng.IntN(4))*1024
 		}
+		// Capacity on some nodes and not others, as a rollout leaves it.
+		if rng.IntN(3) != 0 {
+			s.CPUCount = 4 << rng.IntN(5)
+		}
+		if rng.IntN(3) != 0 {
+			s.MemoryTotalBytes = uint64(1+rng.IntN(64)) << 30
+			s.MemoryAvailableBytes = s.MemoryTotalBytes / uint64(1+rng.IntN(4))
+		}
+		if rng.IntN(2) == 0 {
+			s.DiskFreePath, s.DiskFreeBytes = "/", uint64(rng.IntN(1000))<<30
+		}
+		if rng.IntN(2) == 0 {
+			s.ContainersObservable, s.ContainersRunning = true, rng.IntN(12)
+		}
 		name := fmt.Sprintf("n-%03d", i)
+		var n types.FleetNode
 		switch rng.IntN(5) {
 		case 0:
-			nodes = append(nodes, down(name, float64(rng.IntN(3)*60), s))
+			n = down(name, float64(rng.IntN(3)*60), s)
 		case 1:
 			s.WarningCount, s.Alerts = 1, []types.Alert{warn("w " + name)}
-			nodes = append(nodes, up(name, s))
+			n = up(name, s)
 		case 2:
 			s.CriticalCount, s.Alerts = 1, []types.Alert{crit("c " + name)}
-			nodes = append(nodes, up(name, s))
+			n = up(name, s)
 		default:
-			nodes = append(nodes, up(name, s))
+			n = up(name, s)
 		}
+		n.Headroom = nodeHeadroom(&n, 0.75)
+		nodes = append(nodes, n)
 	}
 	sortByName(nodes)
 	return nodes
@@ -66,7 +86,7 @@ func TestMerge_ComposesExactlyWhatOnePassWouldCompute(t *testing.T) {
 	rng := rand.New(rand.NewPCG(190, 46))
 	for trial := range 200 {
 		fleet := randomFleet(rng, 5+rng.IntN(60))
-		want := rollup(fleet, types.RollupNames)
+		want := rollup(fleet, types.RollupNames, 0.75)
 
 		// Deal the nodes out to children at random, keeping each child's
 		// share in name order, as a child's own view is.
@@ -76,9 +96,9 @@ func TestMerge_ComposesExactlyWhatOnePassWouldCompute(t *testing.T) {
 			c := rng.IntN(k)
 			shares[c] = append(shares[c], n)
 		}
-		got := collect(nil, types.RollupNames)
+		got := collect(nil, types.RollupNames, 0.75)
 		for _, share := range shares {
-			merge(got, collect(share, types.RollupNames), types.RollupNames)
+			merge(got, collect(share, types.RollupNames, 0.75), types.RollupNames, 0.75)
 		}
 		trimBuilds(got, types.RollupNames)
 
@@ -91,9 +111,9 @@ func TestMerge_ComposesExactlyWhatOnePassWouldCompute(t *testing.T) {
 // TestMerge_TieGoesToTheEarlierName: an extreme shared by nodes in two
 // children names the node first by name, whichever child is merged first.
 func TestMerge_TieGoesToTheEarlierName(t *testing.T) {
-	a := collect([]types.FleetNode{up("zeta", types.NodeSummary{CPUPercent: 90, CPUAvailable: true})}, types.RollupNames)
-	b := collect([]types.FleetNode{up("alpha", types.NodeSummary{CPUPercent: 90, CPUAvailable: true})}, types.RollupNames)
-	merge(a, b, types.RollupNames)
+	a := collect([]types.FleetNode{up("zeta", types.NodeSummary{CPUPercent: 90, CPUAvailable: true})}, types.RollupNames, 0.75)
+	b := collect([]types.FleetNode{up("alpha", types.NodeSummary{CPUPercent: 90, CPUAvailable: true})}, types.RollupNames, 0.75)
+	merge(a, b, types.RollupNames, 0.75)
 	if a.CPU.Node != "alpha" {
 		t.Errorf("tie named %q, want alpha", a.CPU.Node)
 	}
@@ -103,7 +123,7 @@ func TestMerge_TieGoesToTheEarlierName(t *testing.T) {
 // unreachable -- never healthy -- with the longest absence carried forward by
 // the time since it was read, and a node that never answered left as such.
 func TestAddUnknown(t *testing.T) {
-	r := collect(nil, types.RollupNames)
+	r := collect(nil, types.RollupNames, 0.75)
 	addUnknown(r, []types.FleetIndexEntry{
 		{Name: "a", Status: types.NodeStatusHealthy, Reachable: true, AgeSeconds: 1},
 		{Name: "b", Status: types.NodeStatusUnreachable, AgeSeconds: 600},

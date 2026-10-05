@@ -53,7 +53,10 @@ type SystemCollector struct {
 	sensor  *SensorCollector
 	virt    *VirtCollector
 	runtime *RuntimeCollector
-	logger  *slog.Logger
+	// runtimeDisk measures the runtime's data root, which the runtime
+	// collector reports when its API answers.
+	runtimeDisk *RuntimeDiskCollector
+	logger      *slog.Logger
 
 	// tick is the monotonic snapshot counter used for frequency tiering.
 	tick atomic.Uint64
@@ -84,6 +87,7 @@ func NewSystemCollector(logger *slog.Logger) *SystemCollector {
 		runtime: NewRuntimeCollector(logger),
 		logger:  logger,
 	}
+	sc.runtimeDisk = NewRuntimeDiskCollector(sc.runtimeRootDir)
 	sc.tiering.Store(true) // enabled by default for streaming mode
 	return sc
 }
@@ -143,6 +147,10 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 		{"sensor", s.sensor.Collect, tierMedium},
 		{"virt", s.virt.Collect, tierMedium},
 		{"runtime", s.runtime.Collect, tierSlow},
+		// After the runtime collector, so a first collection measures the
+		// data root its API has just reported. One statfs: free space moves
+		// with the jobs filling it, faster than the slow tier would see.
+		{"runtime-disk", s.runtimeDisk.Collect, tierMedium},
 
 		// Slow tier: expensive I/O (SMART ioctls, DIMM temp module probing),
 		// and the NPU, whose driver attributes resume a suspended accelerator
@@ -189,6 +197,7 @@ func (s *SystemCollector) assemble(snap *types.Snapshot) {
 	snap.Sensors = s.sensor.Info()
 	snap.Virt = s.virt.Info()
 	snap.Virt.Runtime = s.runtime.Info()
+	snap.Virt.RuntimeDisk = s.runtimeDisk.Info()
 	snap.Virt.Capability.RuntimeAPIReachable = snap.Virt.Runtime.Available
 	if !snap.Virt.Capability.RuntimeAPIReachable {
 		snap.Virt.Capability.Notes = append(snap.Virt.Capability.Notes,
@@ -208,6 +217,15 @@ func (s *SystemCollector) assemble(snap *types.Snapshot) {
 	// the one point every snapshot, served or printed by the CLI, leaves the
 	// collector.
 	types.ReplaceNilSlices(snap)
+}
+
+// runtimeRootDir is the data root the container runtime's API reported, or ""
+// when the API did not answer.
+func (s *SystemCollector) runtimeRootDir() string {
+	if info := s.runtime.Info(); info.Available {
+		return info.RootDir
+	}
+	return ""
 }
 
 // mergeSensorIntoCPUs populates CPUInfo.TemperatureCelsius and VoltageV

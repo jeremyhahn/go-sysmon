@@ -378,7 +378,7 @@ func sortByName(nodes []types.FleetNode) {
 
 // boundedRollup is the roll-up as a page and GET /api/fleet/rollup carry it.
 func boundedRollup(nodes []types.FleetNode) *types.FleetRollup {
-	return rollup(nodes, types.RollupNames)
+	return rollup(nodes, types.RollupNames, 0.8)
 }
 
 // TestRollup_UnboundedNamesEveryNode: a whole-fleet request gets the lists
@@ -390,7 +390,7 @@ func TestRollup_UnboundedNamesEveryNode(t *testing.T) {
 		nodes = append(nodes, up(fmt.Sprintf("w%02d", i), types.NodeSummary{GitCommit: fmt.Sprintf("c%d", i%7), WarningCount: 1, Alerts: []types.Alert{warn("w")}}))
 	}
 	sortByName(nodes)
-	r := rollup(nodes, 0)
+	r := rollup(nodes, 0, 0.8)
 	if len(r.Attention) != 12 || len(r.Builds) != 7 || r.BuildGroups != 7 {
 		t.Fatalf("unbounded roll-up has %d attention and %d of %d build groups; want 12, 7 of 7", len(r.Attention), len(r.Builds), r.BuildGroups)
 	}

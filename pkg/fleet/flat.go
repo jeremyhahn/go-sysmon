@@ -32,7 +32,11 @@ type flatCache struct {
 	// with ages as at builtAt.
 	peers      []types.FleetNode
 	selfCommit string
-	builtAt    time.Time
+	// target is the headroom target the peers were stamped at. A reload that
+	// changes it serves the long way until the next refresh, as one that
+	// replaces the peers does.
+	target  float64
+	builtAt time.Time
 	// whole and bounded are the peers' roll-up with whole and with bounded
 	// lists; build groups are untrimmed, for merging this node in.
 	whole, bounded *types.FleetRollup
@@ -44,13 +48,14 @@ func (p *Poller) buildFlat(cfg config.Fleet, g *generation) *flatCache {
 		return nil
 	}
 	now := p.now()
-	fc := &flatCache{selfCommit: p.selfNode().GitCommit, builtAt: now, peers: make([]types.FleetNode, len(g.order))}
+	fc := &flatCache{selfCommit: p.selfNode().GitCommit, target: cfg.HeadroomTarget(), builtAt: now,
+		peers: make([]types.FleetNode, len(g.order))}
 	for k, i := range g.order {
 		peerNode(&fc.peers[k], cfg.Peers[i], g.states[k], now)
-		stamp(&fc.peers[k], fc.selfCommit)
+		stamp(&fc.peers[k], fc.selfCommit, fc.target)
 	}
-	fc.whole = collect(fc.peers, 0)
-	fc.bounded = collect(fc.peers, types.RollupNames)
+	fc.whole = collect(fc.peers, 0, fc.target)
+	fc.bounded = collect(fc.peers, types.RollupNames, fc.target)
 	return fc
 }
 
@@ -63,10 +68,11 @@ func (p *Poller) flatView(g *generation, q Query) types.Fleet {
 	}
 	fc := g.flat
 	self := p.selfNode()
-	if fc == nil || !samePeers(g.cfgPeers, cfg.Peers) || self.GitCommit != fc.selfCommit {
+	if fc == nil || !samePeers(g.cfgPeers, cfg.Peers) || self.GitCommit != fc.selfCommit ||
+		fc.target != cfg.HeadroomTarget() {
 		return p.flatViewLive(g, q)
 	}
-	stamp(&self, self.GitCommit)
+	stamp(&self, self.GitCommit, fc.target)
 	self.Aggregates = len(fc.peers)
 	aged := p.now().Sub(fc.builtAt).Seconds()
 
@@ -109,7 +115,7 @@ func (p *Poller) flatView(g *generation, q Query) types.Fleet {
 		base = fc.whole
 	}
 	r := agedRollup(base, aged)
-	merge(r, collect([]types.FleetNode{self}, names), names)
+	merge(r, collect([]types.FleetNode{self}, names, fc.target), names, fc.target)
 	trimBuilds(r, names)
 
 	return types.Fleet{
@@ -159,6 +165,7 @@ func agedRollup(r *types.FleetRollup, aged float64) *types.FleetRollup {
 		v := *r.RAID
 		c.RAID = &v
 	}
+	c.Capacity = cloneCapacity(r.Capacity)
 	return &c
 }
 
@@ -192,6 +199,6 @@ func (p *Poller) flatViewLive(g *generation, q Query) types.Fleet {
 			Total:   len(nodes),
 		},
 		Self:   self,
-		Rollup: rollup(nodes, rollupNames(q)),
+		Rollup: rollup(nodes, rollupNames(q), p.cfgFn().HeadroomTarget()),
 	}
 }

@@ -297,6 +297,9 @@ func rollupInconsistency(r *types.FleetRollup, indexed int, counts map[types.Nod
 	if s := r.Network; s != nil && (!measure(s.RxRate) || !measure(s.TxRate) || s.Nodes < 0 || s.Nodes > s.Of || s.Of != r.Reporting) {
 		return "a network total whose denominator is not its reachable nodes"
 	}
+	if reason := capacityInconsistency(r.Capacity, r.Reporting); reason != "" {
+		return reason
+	}
 	for _, h := range []*types.FleetHealth{r.SMART, r.RAID} {
 		if h != nil && (h.Unhealthy < 0 || h.Unhealthy > h.Devices || h.Nodes < 0 || h.Nodes > h.Of || h.Of != r.Reporting) {
 			return "a device count whose denominator is not its own"
@@ -557,6 +560,9 @@ type tree struct {
 	// now is when the tree was built, on the Poller's clock: every age the
 	// tree states is as at this moment, so the list and the roll-up agree.
 	now time.Time
+	// target is this aggregator's headroom target, the one its roll-up's
+	// headroom is summed at; a child's sums at any other are left out.
+	target float64
 }
 
 // tree builds the view's node list: this node and its direct peers merged in
@@ -575,6 +581,7 @@ func (p *Poller) treeOf(g *generation) (*tree, bool) {
 	sub := g.subtrees
 	t := &tree{
 		now:      p.now(),
+		target:   p.cfgFn().HeadroomTarget(),
 		direct:   direct,
 		children: map[string]*childTree{},
 		unknown:  map[string]unknownSubtree{},
@@ -681,7 +688,7 @@ func (t *tree) rollup(names int) *types.FleetRollup {
 			}
 		}
 	}
-	r := collect(local, names)
+	r := collect(local, names, t.target)
 	for _, n := range t.direct {
 		ct, composed := t.children[n.Name]
 		if !composed {
@@ -694,7 +701,7 @@ func (t *tree) rollup(names int) *types.FleetRollup {
 			a.Via = n.Name
 			child.Attention[i] = a
 		}
-		merge(r, &child, names)
+		merge(r, &child, names, t.target)
 	}
 	for _, u := range t.unknown {
 		addUnknown(r, u.entries, t.now.Sub(u.fetchedAt).Seconds())

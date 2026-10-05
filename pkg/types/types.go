@@ -173,6 +173,32 @@ type NodeSummary struct {
 	MemoryPercent float64 `json:"memory_percent"`
 	LoadPerCore   float64 `json:"load_per_core"`
 
+	// The capacity figures below are ABSOLUTE, where the percentages above
+	// are relative: enough for a scheduler to place work across the fleet
+	// from one query (#239). A percentage says how busy a node is; only these
+	// say how much of it is left.
+	//
+	// Each has a way of saying it is unknown, and a peer on a build that
+	// predates them sends none of them, so every one of its zeros reads as
+	// unknown -- never as a node with nothing.
+
+	// CPUCount is the node's logical cores, CPUSummary.TotalThreads. ZERO
+	// MEANS UNKNOWN: an older peer, or topology the node could not read.
+	CPUCount int `json:"cpu_count"`
+	// Load1, Load5 and Load15 are the node's raw load averages, beside the
+	// per-core figure above. They are read with CPUCount: an older peer sends
+	// neither, and a zero load from a node whose CPUCount is zero is unknown,
+	// not idle.
+	Load1  float64 `json:"load_1"`
+	Load5  float64 `json:"load_5"`
+	Load15 float64 `json:"load_15"`
+	// MemoryTotalBytes and MemoryAvailableBytes are the node's RAM and the
+	// part of it that can be had without swapping (MemAvailable). ZERO TOTAL
+	// MEANS UNKNOWN, and then the available figure means nothing either; a
+	// zero available beside a known total is a node out of memory.
+	MemoryTotalBytes     uint64 `json:"memory_total_bytes"`
+	MemoryAvailableBytes uint64 `json:"memory_available_bytes"`
+
 	// SwapPercent is swap OCCUPANCY: how much of swap holds pages. It cannot
 	// say whether the node is paging -- a machine that swapped out idle pages
 	// last week and has not touched swap since reads the same as one thrashing
@@ -196,6 +222,33 @@ type NodeSummary struct {
 	SwapOutRate float64 `json:"swap_out_rate"`
 
 	WorstDiskPercent float64 `json:"worst_disk_percent"`
+	// DiskFreeBytes and DiskTotalBytes are the filesystem holding the
+	// container runtime's data root, or / on a node with no runtime -- the
+	// disk a CI job fills, which the fullest-filesystem figure above does not
+	// name. DiskFreePath is the path that was measured (VirtInfo.RuntimeDisk).
+	// EMPTY PATH MEANS UNKNOWN, so a zero free figure is never read as a full
+	// disk.
+	DiskFreeBytes  uint64 `json:"disk_free_bytes"`
+	DiskTotalBytes uint64 `json:"disk_total_bytes"`
+	DiskFreePath   string `json:"disk_free_path"`
+
+	// The container figures separate what the node's containers -- its CI
+	// runners, typically -- are using from the rest of its load. They come
+	// from the cgroup tree, which is readable where the runtime's API usually
+	// is not, and cover the containers with processes in them: running ones,
+	// and paused ones, which still hold their memory.
+	//
+	// They mean nothing without ContainersObservable (VirtCapability), which
+	// is false when the cgroup tree could not be read in full, and for an
+	// older peer: zero containers is then unknown, not none.
+	ContainersObservable bool `json:"containers_observable"`
+	ContainersRunning    int  `json:"containers_running"`
+	// ContainerCPUCores is the containers' CPU in cores, summed from their
+	// percent-of-one-core readings. A container first seen in the node's
+	// latest scan has no earlier reading to difference yet and counts zero
+	// until the next.
+	ContainerCPUCores    float64 `json:"container_cpu_cores"`
+	ContainerMemoryBytes uint64  `json:"container_memory_bytes"`
 
 	// RAIDArrays and SMARTCapable are the DENOMINATORS, and without them the
 	// two fields below cannot be read.
@@ -388,7 +441,47 @@ type FleetNode struct {
 	// and for a child whose subtree is composed.
 	SubtreeError string `json:"subtree_error,omitempty"`
 
+	// Headroom is how much more work the node can take before it reaches the
+	// aggregator's utilisation target (#239). It is derived here, by the
+	// aggregator serving the view, rather than carried in the summary: the
+	// target is the aggregator's configuration (fleet.headroom_target), and a
+	// node cannot know which aggregator is asking. A subtree node is restated
+	// at this aggregator's target, whatever its child computed.
+	//
+	// Absent for a node that cannot be seen -- a stale reading is not
+	// capacity to place work on -- and for one where neither half could be
+	// computed. See NodeHeadroom for a node where only one half could.
+	Headroom *NodeHeadroom `json:"headroom,omitempty"`
+
 	NodeSummary
+}
+
+// NodeHeadroom is one node's spare capacity at a utilisation target: how much
+// CPU and memory work could be added to it before it reaches the target.
+//
+// The two halves are known independently -- a node's first collection has its
+// memory but not yet its CPU usage, an older peer has neither -- so each says
+// whether it was computed, on the rule every summary figure follows: a false
+// beside a zero is unknown, never "no room". The object itself is absent when
+// neither half was, so a consumer that only checks for it is never handed two
+// zeros that mean nothing.
+type NodeHeadroom struct {
+	// Target is the utilisation the figures are computed against, as a
+	// fraction: 0.8 keeps a node at about 80%.
+	Target float64 `json:"target"`
+	// CPUCoresFreeAtTarget is cores that could be kept busy before the node's
+	// mean CPU reached Target: cpu_count x target, less the cores in use now,
+	// and never below zero. A node already past its target has none to give.
+	// CPUReported is false when the node's core count or its CPU usage is
+	// unknown.
+	CPUCoresFreeAtTarget float64 `json:"cpu_cores_free_at_target"`
+	CPUReported          bool    `json:"cpu_reported"`
+	// MemoryBytesFree is memory that could be allocated before the node's
+	// in-use memory reached Target: what is available without swapping, less
+	// the (1 - target) share of its RAM kept in reserve, and never below
+	// zero. MemoryReported is false when the node's total memory is unknown.
+	MemoryBytesFree uint64 `json:"memory_bytes_free"`
+	MemoryReported  bool   `json:"memory_reported"`
 }
 
 // PeerHistory is whether an aggregator records one peer's history, and why.
@@ -531,10 +624,14 @@ type FleetRollup struct {
 	SwapOut     *FleetExtreme `json:"swap_out,omitempty"`
 	SwapUnknown int           `json:"swap_unknown"`
 
-	Power   *FleetSum    `json:"power,omitempty"`
-	Network *FleetNet    `json:"network,omitempty"`
-	SMART   *FleetHealth `json:"smart,omitempty"`
-	RAID    *FleetHealth `json:"raid,omitempty"`
+	Power   *FleetSum `json:"power,omitempty"`
+	Network *FleetNet `json:"network,omitempty"`
+	// Capacity is the fleet's absolute capacity, summed over the nodes that
+	// measured each figure (#239). Absent when no reporting node measured
+	// any of it.
+	Capacity *FleetCapacity `json:"capacity,omitempty"`
+	SMART    *FleetHealth   `json:"smart,omitempty"`
+	RAID     *FleetHealth   `json:"raid,omitempty"`
 
 	// Builds groups the nodes by the commit they run, the largest group
 	// first. It is identity, not health: mid-rollout every node differs for
@@ -667,6 +764,62 @@ type FleetSum struct {
 	Value float64 `json:"value"`
 	Nodes int     `json:"nodes"`
 	Of    int     `json:"of"`
+}
+
+// FleetTotal is a whole-number total -- a count, or bytes -- and the nodes it
+// was summed over: Nodes contributed a reading, of the Of that could have
+// (FleetRollup.Reporting). It is FleetSum for quantities a float would round:
+// a fleet's memory in bytes is past where float64 counts exactly.
+type FleetTotal struct {
+	Value uint64 `json:"value"`
+	Nodes int    `json:"nodes"`
+	Of    int    `json:"of"`
+}
+
+// FleetCapacity is the fleet's absolute capacity: what a scheduler needs to
+// place work across it from one query (#239).
+//
+// Every figure is a sum with its coverage, never a mean -- #46's rule. A
+// fleet's mean free memory says nothing about whether any one node can take a
+// job; the sums say what the fleet has, and the per-node figures say where.
+// Each sum is taken over the reporting nodes that measured it, and is absent
+// when none did, so a fleet of older builds reports no capacity rather than
+// none to spare.
+type FleetCapacity struct {
+	// CPUCount is logical cores, over the nodes that know theirs.
+	CPUCount *FleetTotal `json:"cpu_count,omitempty"`
+	// MemoryTotalBytes and MemoryAvailableBytes are RAM, and the part of it
+	// available without swapping, over the nodes that know their total.
+	MemoryTotalBytes     *FleetTotal `json:"memory_total_bytes,omitempty"`
+	MemoryAvailableBytes *FleetTotal `json:"memory_available_bytes,omitempty"`
+	// DiskFreeBytes is free space on each node's container data root (or /),
+	// over the nodes that measured it.
+	DiskFreeBytes *FleetTotal `json:"disk_free_bytes,omitempty"`
+	// ContainersRunning is containers, over the nodes whose cgroup tree could
+	// be read in full.
+	ContainersRunning *FleetTotal `json:"containers_running,omitempty"`
+	// Headroom is the nodes' headroom summed. Absent when no node's could be
+	// computed.
+	Headroom *FleetHeadroom `json:"headroom,omitempty"`
+}
+
+// FleetHeadroom is the fleet's spare capacity at one utilisation target: each
+// node's NodeHeadroom, summed over the nodes where it was computed.
+//
+// Each node's headroom is clamped at zero before it is summed, so a node past
+// its target does not cancel another's room -- which is why this cannot be
+// derived from the capacity totals, and why it is summed at all.
+//
+// Headroom computed at one target cannot be added to headroom at another.
+// Target is always the target of the aggregator serving the roll-up, and every
+// node it lists is computed at that target. In a tree whose aggregators are
+// configured with different targets, a child's sums at another target are left
+// out rather than added, and the coverage counts say how many nodes are
+// missing from them.
+type FleetHeadroom struct {
+	Target               float64     `json:"target"`
+	CPUCoresFreeAtTarget *FleetSum   `json:"cpu_cores_free_at_target,omitempty"`
+	MemoryBytesFree      *FleetTotal `json:"memory_bytes_free,omitempty"`
 }
 
 // FleetNet is the fleet's summed network throughput, bytes per second, over
@@ -821,6 +974,10 @@ type VirtInfo struct {
 	// runtime's API. It is only populated when the runtime collector is
 	// explicitly enabled, because that API socket is root-equivalent access.
 	Runtime RuntimeInfo `json:"runtime"`
+	// RuntimeDisk is the free space on the filesystem container workloads
+	// write to, measured by the node itself whether or not the runtime's API
+	// answered (#239). See RuntimeDisk.
+	RuntimeDisk RuntimeDisk `json:"runtime_disk"`
 
 	// Capability explains an empty result. Without it a host with nothing
 	// running and a host we cannot observe look identical: both render as
@@ -955,6 +1112,36 @@ type RuntimeInfo struct {
 	// ImagesFiltered counts images removed by CLI filter or limit flags, so a
 	// shortened list is not mistaken for the whole inventory.
 	ImagesFiltered int `json:"images_filtered,omitempty"`
+}
+
+// RuntimeDisk is the space on the filesystem holding a container runtime's
+// data root: what a scheduler placing a CI job needs to know before the job's
+// images and layers land there (#239).
+//
+// It is measured by statfs on the path itself, never by finding the path's
+// mount in the disk list. A data root is routinely a bind mount: on
+// ci-node-2, /var/lib/docker is /dev/nvme2n1p1[/docker], which the disk list
+// shows only under its other mountpoint, /mnt/ci-scratch, so a lookup by
+// mountpoint finds nothing -- or, falling back to /, the wrong filesystem.
+// statfs answers for whatever filesystem the path is on, and needs only
+// traversal of its parent directories, so it works for a node whose user
+// cannot reach the runtime's API.
+//
+// The path measured is the runtime's own RootDir when its API answered, else
+// the first default data root that exists (Docker's, then Podman's), else /:
+// a node with no container runtime at all still has free disk to report, and
+// Path says which of these it was.
+type RuntimeDisk struct {
+	// Path is the path that was measured. EMPTY MEANS NOTHING WAS MEASURED --
+	// the statfs failed, or the node is a build that predates the field -- and
+	// the two figures below are then zero only because they must be
+	// something: a zero here is never a full disk.
+	Path string `json:"path"`
+	// TotalBytes is the filesystem's size, and FreeBytes what an unprivileged
+	// writer may still use of it (statfs f_bavail, as df's "Avail"): the
+	// blocks reserved for root are not space a workload can count on.
+	TotalBytes uint64 `json:"total_bytes"`
+	FreeBytes  uint64 `json:"free_bytes"`
 }
 
 // ImageInfo describes a single container image on disk.

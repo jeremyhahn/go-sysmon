@@ -86,7 +86,7 @@ func newFakeChild(t *testing.T, name string, below ...types.FleetIndexEntry) *fa
 			}
 		}
 		sortByName(nodes)
-		c.subtree = &types.FleetSubtree{Nodes: entries, Rollup: collect(nodes, types.RollupNames), Aggregators: []string{c.id}}
+		c.subtree = &types.FleetSubtree{Nodes: entries, Rollup: collect(nodes, types.RollupNames, 0.8), Aggregators: []string{c.id}}
 	}
 	c.srv = deadpeer.Server(t, http.HandlerFunc(c.serve))
 	return c

@@ -297,6 +297,7 @@ decide whether the dashboard has a Containers and a Virtualization tab at all:
 |-------|------|---------|
 | `container_runtime` | `StackDetection` | whether a container runtime is installed or containers are running |
 | `hypervisor` | `StackDetection` | whether a VM stack is installed or VMs are running |
+| `runtime_disk` | `RuntimeDisk` | free space on the container runtime's data root, or `/`; an empty `path` is unknown (#239) |
 
 `StackDetection` is `state`, `evidence` and `reason`.
 

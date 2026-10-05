@@ -35,7 +35,7 @@ func (c *fakeChild) setEntry(t *testing.T, name string, status types.NodeStatus)
 		nodes = append(nodes, n)
 	}
 	sortByName(nodes)
-	c.subtree.Rollup = collect(nodes, types.RollupNames)
+	c.subtree.Rollup = collect(nodes, types.RollupNames, 0.8)
 }
 
 // TestPage_NeverContradictsTheIndex (P2-3): a summary reused within the poll

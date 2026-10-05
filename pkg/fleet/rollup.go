@@ -36,9 +36,10 @@ var statusCounters = map[types.NodeStatus]func(*types.FleetRollup){
 //
 // names bounds every per-node list -- attention, the build groups and the
 // names in each -- at that many; zero leaves them whole. See View for which
-// requests get which.
-func rollup(nodes []types.FleetNode, names int) *types.FleetRollup {
-	r := collect(nodes, names)
+// requests get which. target is this aggregator's headroom target, the only
+// one its headroom sums are taken at.
+func rollup(nodes []types.FleetNode, names int, target float64) *types.FleetRollup {
+	r := collect(nodes, names, target)
 	trimBuilds(r, names)
 	return r
 }
@@ -47,7 +48,7 @@ func rollup(nodes []types.FleetNode, names int) *types.FleetRollup {
 // naming at most names nodes. That is the form a child aggregator serves its
 // parent (#190), because groups can only be summed across children exactly if
 // none has been dropped; the parent bounds them once, after composing.
-func collect(nodes []types.FleetNode, names int) *types.FleetRollup {
+func collect(nodes []types.FleetNode, names int, target float64) *types.FleetRollup {
 	within := func(n int) bool { return names == 0 || n < names }
 	r := &types.FleetRollup{
 		Nodes:     len(nodes),
@@ -118,6 +119,7 @@ func collect(nodes []types.FleetNode, names int) *types.FleetRollup {
 			r.Network.TxRate += s.NetTxRate
 			r.Network.Nodes++
 		}
+		addCapacity(r, n, target)
 
 		r.SMART = addDevices(r.SMART, s.SMARTCapable, s.SMARTUnhealthy)
 		r.RAID = addDevices(r.RAID, s.RAIDArrays, s.RAIDUnhealthy)
@@ -143,6 +145,7 @@ func collect(nodes []types.FleetNode, names int) *types.FleetRollup {
 	if r.Network != nil {
 		r.Network.Of = r.Reporting
 	}
+	capacityDenominators(r)
 	for _, h := range []*types.FleetHealth{r.SMART, r.RAID} {
 		if h != nil {
 			h.Of = r.Reporting
@@ -244,7 +247,7 @@ func attention(n *types.FleetNode) types.NodeAttention {
 // them; each build group names its first names nodes by name, so the merged
 // group's first names are among them. Build groups must all be present on both
 // sides (collect keeps them), or a group's count would be short.
-func merge(r, c *types.FleetRollup, names int) {
+func merge(r, c *types.FleetRollup, names int, target float64) {
 	r.Nodes += c.Nodes
 	r.Healthy += c.Healthy
 	r.Warning += c.Warning
@@ -282,6 +285,7 @@ func merge(r, c *types.FleetRollup, names int) {
 	}
 	r.SMART = mergeHealth(r.SMART, c.SMART)
 	r.RAID = mergeHealth(r.RAID, c.RAID)
+	mergeCapacity(r, c.Capacity, target)
 	// Every denominator is the reachable nodes, summed above.
 	if r.Power != nil {
 		r.Power.Of = r.Reporting
@@ -289,6 +293,7 @@ func merge(r, c *types.FleetRollup, names int) {
 	if r.Network != nil {
 		r.Network.Of = r.Reporting
 	}
+	capacityDenominators(r)
 	for _, h := range []*types.FleetHealth{r.SMART, r.RAID} {
 		if h != nil {
 			h.Of = r.Reporting

@@ -65,8 +65,8 @@ The single endpoint that changes anything at runtime is `POST /api/interval`
 described above: it retunes a transient refresh rate, writes no file, and is
 discarded by the next reload.
 
-**Reloadable:** alert thresholds, fleet peers, fleet poll intervals, and
-`server.interval_ms` — the collection interval is pushed into the running
+**Reloadable:** alert thresholds, fleet peers, fleet poll intervals,
+`fleet.headroom_target`, and `server.interval_ms` — the collection interval is pushed into the running
 monitor, so a reload changes the cadence rather than only the reported value.
 
 **Changed on the running service:** the refresh-rate selector in the dashboard
@@ -678,7 +678,10 @@ need two names.
   Each node's figures are its `NodeSummary`: status, alert counts and the
   firing warning and critical alerts, CPU, memory, load per core, swap
   occupancy **and paging rate**, worst filesystem, RAID, SMART, temperature,
-  power, throughput, uptime and **the build each node is running**. `source`
+  power, throughput, uptime, **absolute capacity** (cores, load, memory, free
+  disk under the container runtime, containers; see
+  [Capacity and headroom](#capacity-and-headroom)) and **the build each node
+  is running**. `source`
   says how the aggregator read the node: `local`, `summary`, or `snapshot`
   for a peer too old to serve a summary.
 
@@ -750,6 +753,13 @@ need two names.
     a sensor, of the `of` reachable nodes. It is omitted when no node has a
     sensor. `network` is `{rx_rate, tx_rate, nodes, of}`: throughput summed
     over the nodes that measure it (`net_reported`), of the reachable ones.
+  - `capacity` is the fleet's absolute capacity (#239), each figure a total
+    `{value, nodes, of}` over the reachable nodes that measured it:
+    `cpu_count`, `memory_total_bytes`, `memory_available_bytes`,
+    `disk_free_bytes`, `containers_running`, and `headroom` with the summed
+    per-node headroom. Each is omitted when no node measured it, and
+    `capacity` itself when none measured anything. See
+    [Capacity and headroom](#capacity-and-headroom).
   - `smart` and `raid` are `{unhealthy, devices, nodes, of}`. They count
     **devices**, not nodes, and the drives behind a hardware RAID controller
     count too (#45/#51). Each is omitted when no node has any, because
@@ -888,6 +898,76 @@ Peers are polled concurrently, each with its own timeout, so one dead node
 cannot delay the refresh. A peer that stops answering keeps its last good
 summary alongside the error, so a brief blip reads as stale data rather than an
 empty card, and an unreachable node is never rendered as a healthy one.
+
+### Capacity and headroom
+
+`/api/fleet` carries enough for a scheduler to place work from one query
+(#239): a coordinator keeping each worker at about 80% CPU without swapping
+needs absolute capacity, not only percentages.
+
+Each node's summary carries `cpu_count`, `load_1`, `load_5`, `load_15`,
+`memory_total_bytes`, `memory_available_bytes`, `disk_free_bytes`,
+`disk_total_bytes`, `disk_free_path`, `containers_observable`,
+`containers_running`, `container_cpu_cores` and `container_memory_bytes`. The
+fields and their unknown forms are listed under
+[`GET /api/summary`](api.md#get-apisummary). In short: a zero `cpu_count` or
+`memory_total_bytes`, an empty `disk_free_path` and a false
+`containers_observable` are unknown, and a peer on an older build sends none of
+these, so all of its figures read as unknown rather than as an empty machine.
+A peer too old to serve a summary is summarised here from its snapshot and gets
+the fields that snapshot can supply.
+
+The free disk is the container runtime's data root, measured by the node itself
+with `statfs`. It works when the runtime's API is unreachable and when the root
+is a bind mount the disk list cannot name; see
+[runtime storage](../collector/virtualization.md#free-space-on-the-data-root).
+The container figures come from the cgroup tree, so they separate CI-runner load
+from the rest of the node's without the docker group.
+
+**Headroom** is how much more work a node can take before it reaches the
+aggregator's utilisation target:
+
+```yaml
+fleet:
+  headroom_target: 0.8   # (0, 1]; default 0.8
+```
+
+- `cpu_cores_free_at_target` = max(0, `cpu_count` × target −
+  `cpu_count` × `cpu_percent` / 100). It is computed only when `cpu_count` is
+  known and `cpu_available` is true; `cpu_reported` says whether it was.
+- `memory_bytes_free` = max(0, `memory_available_bytes` − (1 − target) ×
+  `memory_total_bytes`). It is computed only when `memory_total_bytes` is
+  known; `memory_reported` says whether it was. Available memory is what can be
+  had without swapping, so a node with memory headroom can take the work
+  without paging.
+
+Both are clamped at zero. A node past its target has no room, not negative room
+that would cancel another node's room in a fleet sum.
+
+Headroom is a field of the fleet entry, not of the summary, because the target
+is the aggregator's configuration and a node cannot know which aggregator is
+asking. Every node in the view gets it, `self` and child-subtree nodes included.
+A subtree node is restated at this aggregator's target, whatever its child
+computed. It is absent for an unreachable node, because a stale reading is not
+capacity to place work on. It is also absent when neither half could be
+computed. When only one half could be, the object is present and that half's
+`*_reported` flag is false. That keeps the half that is known, and the object's
+absence still means there is nothing to read.
+
+A target outside (0, 1] is a load error naming the key
+(`HeadroomTargetError`). It is not repaired to the default, because the file
+would then state a target the view does not use. An unset key is the default.
+The key is reloadable and takes effect on the next view.
+
+The roll-up's `capacity` sums each figure over the reachable nodes that
+measured it, with `nodes` of `of` coverage, and never averages them: a fleet's
+mean free memory says nothing about whether any one node can take a job.
+`capacity.headroom` sums the per-node headroom at its `target`, which is always
+the serving aggregator's own `fleet.headroom_target`. In a tree whose
+aggregators are configured with different targets, a child's headroom sums at
+another target are left out rather than added, and the coverage counts show the
+gap. That holds even before the aggregator has headroom of its own (just after
+startup): it never adopts a child's target.
 
 ### Hierarchical aggregation
 

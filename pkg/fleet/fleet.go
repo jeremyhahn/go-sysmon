@@ -1201,8 +1201,9 @@ func (p *Poller) nodes(g *generation) (nodes []types.FleetNode, ok bool) {
 	// which also covers the two paths that carry no summary -- the peer that
 	// has not been polled yet and the peer that answered nothing -- so no node
 	// leaves the view with either field unset.
+	target := cfg.HeadroomTarget()
 	for i := range nodes {
-		stamp(&nodes[i], self.GitCommit)
+		stamp(&nodes[i], self.GitCommit, target)
 	}
 	return nodes, true
 }
@@ -1280,12 +1281,14 @@ func peerNode(n *types.FleetNode, peer config.Peer, st *peerState, now time.Time
 }
 
 // stamp sets the fields of n that the view derives rather than polls. Build
-// agreement is the one that is not a property of a node on its own: it is that
-// node's commit held against THIS node's.
-func stamp(n *types.FleetNode, selfCommit string) {
+// agreement and headroom are the ones that are not properties of a node on its
+// own: its commit held against THIS node's, and its capacity measured against
+// this aggregator's utilisation target.
+func stamp(n *types.FleetNode, selfCommit string, target float64) {
 	n.BuildMatch = compareBuild(selfCommit, n.GitCommit)
 	n.NameMatch = compareName(n.Name, n.NodeName, n.Reachable)
 	n.Status = nodeStatus(n.Reachable, &n.NodeSummary)
+	n.Headroom = nodeHeadroom(n, target)
 	if n.Alerts == nil {
 		n.Alerts = []types.Alert{}
 	}

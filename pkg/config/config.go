@@ -80,6 +80,13 @@ type Fleet struct {
 	// TimeoutMs bounds a single peer request so one dead node cannot stall the
 	// whole fleet refresh.
 	TimeoutMs int `mapstructure:"timeout_ms"`
+	// HeadroomTargetFraction is the utilisation, as a fraction in (0, 1], that
+	// each node's headroom in the fleet view is computed against (#239): 0.8
+	// reports how much work a node can take before it is 80% busy. It is the
+	// aggregator's own policy, read per view, so a reload changes it at once.
+	// Read it through HeadroomTarget, which supplies the default for a Fleet
+	// built in code.
+	HeadroomTargetFraction float64 `mapstructure:"headroom_target"`
 	// TLS is how peers reached over https are verified, and how this node
 	// identifies itself to them. It is inert for http peers.
 	TLS FleetTLS `mapstructure:"tls"`
@@ -133,6 +140,23 @@ func (f Fleet) PollInterval() time.Duration {
 // Timeout returns the per-peer request timeout.
 func (f Fleet) Timeout() time.Duration {
 	return time.Duration(f.TimeoutMs) * time.Millisecond
+}
+
+// DefaultHeadroomTarget is the utilisation fleet headroom is computed against
+// when fleet.headroom_target is not set: about 80% busy, the level a
+// coordinator keeping nodes loaded but not swapping aims at (#239).
+const DefaultHeadroomTarget = 0.8
+
+// HeadroomTarget returns the utilisation target fleet headroom is computed
+// against. A loaded configuration always carries a validated value; the zero
+// value -- a Fleet built in code, by a test or a library embedding this one,
+// without going through Defaults -- reads as the default rather than as a
+// target of nothing, which no node could ever be under.
+func (f Fleet) HeadroomTarget() float64 {
+	if f.HeadroomTargetFraction == 0 {
+		return DefaultHeadroomTarget
+	}
+	return f.HeadroomTargetFraction
 }
 
 // Alerts holds the threshold rules. A threshold of zero disables its rule;
@@ -306,8 +330,9 @@ func Defaults() Config {
 			ContainerCPUPct:    90,
 		},
 		Fleet: Fleet{
-			PollIntervalMs: 10000,
-			TimeoutMs:      3000,
+			PollIntervalMs:         10000,
+			TimeoutMs:              3000,
+			HeadroomTargetFraction: DefaultHeadroomTarget,
 		},
 		// No URLs, so the integration is off. The rest are the cadences it uses
 		// once an operator turns it on: 15s of sampling is what a Prometheus
@@ -487,6 +512,14 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 	if c.Fleet.TimeoutMs <= 0 {
 		c.Fleet.TimeoutMs = d.Fleet.TimeoutMs
 		repairedToDefault(sources, "fleet.timeout_ms")
+	}
+	// Refused, not repaired. An unset key already reads as the default, so a
+	// value out of range was written by the operator, and quietly replacing
+	// it would leave every node's headroom computed against a target the file
+	// does not state. NaN fails both comparisons, so it is caught by the
+	// negated form.
+	if t := c.Fleet.HeadroomTargetFraction; !(t > 0 && t <= 1) {
+		return &HeadroomTargetError{Value: t}
 	}
 	if c.Prometheus.SampleIntervalMs <= 0 {
 		c.Prometheus.SampleIntervalMs = d.Prometheus.SampleIntervalMs

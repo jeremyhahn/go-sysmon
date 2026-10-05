@@ -307,3 +307,16 @@ func (e *HistoryCadenceError) Error() string {
 		"the time-series database's query lookback, or the history written is stale between samples",
 		e.Key, e.IntervalMs, e.LookbackMs)
 }
+
+// HeadroomTargetError reports a fleet.headroom_target outside (0, 1]. The
+// target is the utilisation a node's headroom is measured up to, as a
+// fraction: zero or less leaves no node any headroom, and more than one
+// promises capacity past a node's whole.
+type HeadroomTargetError struct {
+	Value float64
+}
+
+func (e *HeadroomTargetError) Error() string {
+	return fmt.Sprintf("config: fleet.headroom_target %s is out of range; it is a utilisation fraction, "+
+		"greater than 0 and at most 1 (0.8 is 80%%)", strconv.FormatFloat(e.Value, 'g', -1, 64))
+}

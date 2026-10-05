@@ -43,6 +43,7 @@ func Summarize(prev, cur *types.Snapshot) types.NodeSummary {
 	if cur.CPUSummary.TotalThreads > 0 {
 		n.LoadPerCore = cur.LoadAvg.Load1 / float64(cur.CPUSummary.TotalThreads)
 	}
+	summarizeCapacity(&n, cur)
 
 	summarizeDisks(&n, cur.Disks)
 
@@ -101,6 +102,39 @@ func LocalSummary(prev, cur *types.Snapshot, interval time.Duration) types.NodeS
 	n := Summarize(prev, cur)
 	n.CollectionIntervalMs = interval.Milliseconds()
 	return n
+}
+
+// summarizeCapacity fills the absolute figures a scheduler places work by
+// (#239). Each is copied as the node measured it, unknowns included: a zero
+// core count, memory total or disk path, or containers that could not be
+// observed, is how the summary says "unknown", and the aggregator reads it so.
+func summarizeCapacity(n *types.NodeSummary, cur *types.Snapshot) {
+	n.CPUCount = cur.CPUSummary.TotalThreads
+	n.Load1, n.Load5, n.Load15 = cur.LoadAvg.Load1, cur.LoadAvg.Load5, cur.LoadAvg.Load15
+	n.MemoryTotalBytes = cur.Memory.TotalBytes
+	n.MemoryAvailableBytes = cur.Memory.AvailableBytes
+
+	// A free figure without its path is the snapshot of a build that did not
+	// measure one, and is not carried: the path is what says it is real.
+	if d := cur.Virt.RuntimeDisk; d.Path != "" {
+		n.DiskFreePath, n.DiskFreeBytes, n.DiskTotalBytes = d.Path, d.FreeBytes, d.TotalBytes
+	}
+
+	// The cgroup list, not the runtime API's count: the API is root-equivalent
+	// and usually unreachable (ci-node-2's sysmon user is not in the docker
+	// group), while the cgroup tree is readable by anyone. Only containers
+	// with processes are listed, so the count is the containers running now.
+	n.ContainersObservable = cur.Virt.Capability.ContainersObservable
+	if !n.ContainersObservable {
+		return
+	}
+	n.ContainersRunning = len(cur.Virt.Containers)
+	for i := range cur.Virt.Containers {
+		c := &cur.Virt.Containers[i]
+		// Percent of one core, as docker stats reports it: 200 is two cores.
+		n.ContainerCPUCores += c.CPUPercent / 100
+		n.ContainerMemoryBytes += c.MemoryBytes
+	}
 }
 
 // summarizeDisks fills the storage figures: the fullest filesystem, the RAID

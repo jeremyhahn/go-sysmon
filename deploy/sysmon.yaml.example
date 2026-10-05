@@ -83,6 +83,11 @@ fleet:
   # local_name: netmon
   poll_interval_ms: 10000
   timeout_ms: 3000
+  # The utilisation, as a fraction in (0, 1], that each node's headroom in the
+  # fleet view is computed against: 0.8 reports how much CPU and memory work a
+  # node can take before it is 80% busy. Anything outside (0, 1] stops the
+  # service at startup, and a reload with one keeps the running configuration.
+  headroom_target: 0.8
   peers: []
   # A peer's name is its fleet-wide identity: set it to exactly what that node
   # calls itself (its fleet.local_name, or its hostname), because it is also the

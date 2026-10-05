@@ -573,6 +573,43 @@ export interface FleetBuild {
 }
 
 /**
+ * FleetCapacity is the fleet's absolute capacity: what a scheduler needs to
+ * place work across it from one query (#239).
+ *
+ * Every figure is a sum with its coverage, never a mean -- #46's rule. A
+ * fleet's mean free memory says nothing about whether any one node can take a
+ * job; the sums say what the fleet has, and the per-node figures say where.
+ * Each sum is taken over the reporting nodes that measured it, and is absent
+ * when none did, so a fleet of older builds reports no capacity rather than
+ * none to spare.
+ */
+export interface FleetCapacity {
+  /** CPUCount is logical cores, over the nodes that know theirs. */
+  cpu_count?: FleetTotal | null;
+  /**
+   * MemoryTotalBytes and MemoryAvailableBytes are RAM, and the part of it
+   * available without swapping, over the nodes that know their total.
+   */
+  memory_total_bytes?: FleetTotal | null;
+  memory_available_bytes?: FleetTotal | null;
+  /**
+   * DiskFreeBytes is free space on each node's container data root (or /),
+   * over the nodes that measured it.
+   */
+  disk_free_bytes?: FleetTotal | null;
+  /**
+   * ContainersRunning is containers, over the nodes whose cgroup tree could
+   * be read in full.
+   */
+  containers_running?: FleetTotal | null;
+  /**
+   * Headroom is the nodes' headroom summed. Absent when no node's could be
+   * computed.
+   */
+  headroom?: FleetHeadroom | null;
+}
+
+/**
  * FleetExtreme is the worst value of one metric across the fleet and the node
  * that holds it. Ties go to the first node by name, so it does not flicker.
  */
@@ -584,6 +621,27 @@ export interface FleetExtreme {
    * several; for Temperature it is a TempSource.
    */
   kind?: TempSource;
+}
+
+/**
+ * FleetHeadroom is the fleet's spare capacity at one utilisation target: each
+ * node's NodeHeadroom, summed over the nodes where it was computed.
+ *
+ * Each node's headroom is clamped at zero before it is summed, so a node past
+ * its target does not cancel another's room -- which is why this cannot be
+ * derived from the capacity totals, and why it is summed at all.
+ *
+ * Headroom computed at one target cannot be added to headroom at another.
+ * Target is always the target of the aggregator serving the roll-up, and every
+ * node it lists is computed at that target. In a tree whose aggregators are
+ * configured with different targets, a child's sums at another target are left
+ * out rather than added, and the coverage counts say how many nodes are
+ * missing from them.
+ */
+export interface FleetHeadroom {
+  target: number;
+  cpu_cores_free_at_target?: FleetSum | null;
+  memory_bytes_free?: FleetTotal | null;
 }
 
 /**
@@ -708,6 +766,19 @@ export interface FleetNode {
    * and for a child whose subtree is composed.
    */
   subtree_error?: string;
+  /**
+   * Headroom is how much more work the node can take before it reaches the
+   * aggregator's utilisation target (#239). It is derived here, by the
+   * aggregator serving the view, rather than carried in the summary: the
+   * target is the aggregator's configuration (fleet.headroom_target), and a
+   * node cannot know which aggregator is asking. A subtree node is restated
+   * at this aggregator's target, whatever its child computed.
+   *
+   * Absent for a node that cannot be seen -- a stale reading is not
+   * capacity to place work on -- and for one where neither half could be
+   * computed. See NodeHeadroom for a node where only one half could.
+   */
+  headroom?: NodeHeadroom | null;
   hostname: string;
   version: string;
   uptime_seconds: number;
@@ -772,6 +843,28 @@ export interface FleetNode {
   memory_percent: number;
   load_per_core: number;
   /**
+   * CPUCount is the node's logical cores, CPUSummary.TotalThreads. ZERO
+   * MEANS UNKNOWN: an older peer, or topology the node could not read.
+   */
+  cpu_count: number;
+  /**
+   * Load1, Load5 and Load15 are the node's raw load averages, beside the
+   * per-core figure above. They are read with CPUCount: an older peer sends
+   * neither, and a zero load from a node whose CPUCount is zero is unknown,
+   * not idle.
+   */
+  load_1: number;
+  load_5: number;
+  load_15: number;
+  /**
+   * MemoryTotalBytes and MemoryAvailableBytes are the node's RAM and the
+   * part of it that can be had without swapping (MemAvailable). ZERO TOTAL
+   * MEANS UNKNOWN, and then the available figure means nothing either; a
+   * zero available beside a known total is a node out of memory.
+   */
+  memory_total_bytes: number;
+  memory_available_bytes: number;
+  /**
    * SwapPercent is swap OCCUPANCY: how much of swap holds pages. It cannot
    * say whether the node is paging -- a machine that swapped out idle pages
    * last week and has not touched swap since reads the same as one thrashing
@@ -801,6 +894,38 @@ export interface FleetNode {
   swap_in_rate: number;
   swap_out_rate: number;
   worst_disk_percent: number;
+  /**
+   * DiskFreeBytes and DiskTotalBytes are the filesystem holding the
+   * container runtime's data root, or / on a node with no runtime -- the
+   * disk a CI job fills, which the fullest-filesystem figure above does not
+   * name. DiskFreePath is the path that was measured (VirtInfo.RuntimeDisk).
+   * EMPTY PATH MEANS UNKNOWN, so a zero free figure is never read as a full
+   * disk.
+   */
+  disk_free_bytes: number;
+  disk_total_bytes: number;
+  disk_free_path: string;
+  /**
+   * The container figures separate what the node's containers -- its CI
+   * runners, typically -- are using from the rest of its load. They come
+   * from the cgroup tree, which is readable where the runtime's API usually
+   * is not, and cover the containers with processes in them: running ones,
+   * and paused ones, which still hold their memory.
+   *
+   * They mean nothing without ContainersObservable (VirtCapability), which
+   * is false when the cgroup tree could not be read in full, and for an
+   * older peer: zero containers is then unknown, not none.
+   */
+  containers_observable: boolean;
+  containers_running: number;
+  /**
+   * ContainerCPUCores is the containers' CPU in cores, summed from their
+   * percent-of-one-core readings. A container first seen in the node's
+   * latest scan has no earlier reading to difference yet and counts zero
+   * until the next.
+   */
+  container_cpu_cores: number;
+  container_memory_bytes: number;
   /**
    * RAIDArrays and SMARTCapable are the DENOMINATORS, and without them the
    * two fields below cannot be read.
@@ -970,6 +1095,12 @@ export interface FleetRollup {
   swap_unknown: number;
   power?: FleetSum | null;
   network?: FleetNet | null;
+  /**
+   * Capacity is the fleet's absolute capacity, summed over the nodes that
+   * measured each figure (#239). Absent when no reporting node measured
+   * any of it.
+   */
+  capacity?: FleetCapacity | null;
   smart?: FleetHealth | null;
   raid?: FleetHealth | null;
   /**
@@ -987,6 +1118,18 @@ export interface FleetRollup {
  * contributed a reading; Of is how many could have (FleetRollup.Reporting).
  */
 export interface FleetSum {
+  value: number;
+  nodes: number;
+  of: number;
+}
+
+/**
+ * FleetTotal is a whole-number total -- a count, or bytes -- and the nodes it
+ * was summed over: Nodes contributed a reading, of the Of that could have
+ * (FleetRollup.Reporting). It is FleetSum for quantities a float would round:
+ * a fleet's memory in bytes is past where float64 counts exactly.
+ */
+export interface FleetTotal {
   value: number;
   nodes: number;
   of: number;
@@ -1408,6 +1551,42 @@ export interface NodeAttention {
 }
 
 /**
+ * NodeHeadroom is one node's spare capacity at a utilisation target: how much
+ * CPU and memory work could be added to it before it reaches the target.
+ *
+ * The two halves are known independently -- a node's first collection has its
+ * memory but not yet its CPU usage, an older peer has neither -- so each says
+ * whether it was computed, on the rule every summary figure follows: a false
+ * beside a zero is unknown, never "no room". The object itself is absent when
+ * neither half was, so a consumer that only checks for it is never handed two
+ * zeros that mean nothing.
+ */
+export interface NodeHeadroom {
+  /**
+   * Target is the utilisation the figures are computed against, as a
+   * fraction: 0.8 keeps a node at about 80%.
+   */
+  target: number;
+  /**
+   * CPUCoresFreeAtTarget is cores that could be kept busy before the node's
+   * mean CPU reached Target: cpu_count x target, less the cores in use now,
+   * and never below zero. A node already past its target has none to give.
+   * CPUReported is false when the node's core count or its CPU usage is
+   * unknown.
+   */
+  cpu_cores_free_at_target: number;
+  cpu_reported: boolean;
+  /**
+   * MemoryBytesFree is memory that could be allocated before the node's
+   * in-use memory reached Target: what is available without swapping, less
+   * the (1 - target) share of its RAM kept in reserve, and never below
+   * zero. MemoryReported is false when the node's total memory is unknown.
+   */
+  memory_bytes_free: number;
+  memory_reported: boolean;
+}
+
+/**
  * PSIData contains Pressure Stall Information for cpu, memory, and io.
  *
  * Available separates "the kernel reported no pressure" from "there was no
@@ -1635,6 +1814,42 @@ export interface RAIDMember {
   slot: number;
   /** Errors is the md per-member read/corrected error count. */
   errors: number;
+}
+
+/**
+ * RuntimeDisk is the space on the filesystem holding a container runtime's
+ * data root: what a scheduler placing a CI job needs to know before the job's
+ * images and layers land there (#239).
+ *
+ * It is measured by statfs on the path itself, never by finding the path's
+ * mount in the disk list. A data root is routinely a bind mount: on
+ * ci-node-2, /var/lib/docker is /dev/nvme2n1p1[/docker], which the disk list
+ * shows only under its other mountpoint, /mnt/ci-scratch, so a lookup by
+ * mountpoint finds nothing -- or, falling back to /, the wrong filesystem.
+ * statfs answers for whatever filesystem the path is on, and needs only
+ * traversal of its parent directories, so it works for a node whose user
+ * cannot reach the runtime's API.
+ *
+ * The path measured is the runtime's own RootDir when its API answered, else
+ * the first default data root that exists (Docker's, then Podman's), else /:
+ * a node with no container runtime at all still has free disk to report, and
+ * Path says which of these it was.
+ */
+export interface RuntimeDisk {
+  /**
+   * Path is the path that was measured. EMPTY MEANS NOTHING WAS MEASURED --
+   * the statfs failed, or the node is a build that predates the field -- and
+   * the two figures below are then zero only because they must be
+   * something: a zero here is never a full disk.
+   */
+  path: string;
+  /**
+   * TotalBytes is the filesystem's size, and FreeBytes what an unprivileged
+   * writer may still use of it (statfs f_bavail, as df's "Avail"): the
+   * blocks reserved for root are not space a workload can count on.
+   */
+  total_bytes: number;
+  free_bytes: number;
 }
 
 /**
@@ -1937,6 +2152,12 @@ export interface VirtInfo {
    * explicitly enabled, because that API socket is root-equivalent access.
    */
   runtime: RuntimeInfo;
+  /**
+   * RuntimeDisk is the free space on the filesystem container workloads
+   * write to, measured by the node itself whether or not the runtime's API
+   * answered (#239). See RuntimeDisk.
+   */
+  runtime_disk: RuntimeDisk;
   /**
    * Capability explains an empty result. Without it a host with nothing
    * running and a host we cannot observe look identical: both render as

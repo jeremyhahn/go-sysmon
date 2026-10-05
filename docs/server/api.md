@@ -102,12 +102,25 @@ instead of `/api/snapshot` (#76).
     "cpu_available": true,
     "memory_percent": 73.7,
     "load_per_core": 0.36,
+    "cpu_count": 112,
+    "load_1": 40.3,
+    "load_5": 38.9,
+    "load_15": 35.2,
+    "memory_total_bytes": 540949086208,
+    "memory_available_bytes": 142270808064,
     "swap_percent": 51.1,
     "swap_counters_available": true,
     "swap_rate_available": true,
     "swap_in_rate": 0,
     "swap_out_rate": 0,
     "worst_disk_percent": 88.2,
+    "disk_free_bytes": 1288490188800,
+    "disk_total_bytes": 3840755982336,
+    "disk_free_path": "/var/lib/docker",
+    "containers_observable": true,
+    "containers_running": 6,
+    "container_cpu_cores": 21.4,
+    "container_memory_bytes": 68719476736,
     "raid_arrays": 2,
     "raid_unhealthy": 0,
     "raid_degraded": false,
@@ -155,6 +168,27 @@ instead of `/api/snapshot` (#76).
   sensors have not produced a reading yet (a CPU package needs two energy
   samples). Its `power_w`
   of 0 then means nothing.
+- The capacity figures are absolute, where the percentages are relative: what
+  a scheduler needs to place work (#239). `cpu_count` is logical cores and
+  `load_1`/`load_5`/`load_15` the raw load averages. `memory_total_bytes` and
+  `memory_available_bytes` are RAM and the part available without swapping.
+  `cpu_count` or `memory_total_bytes` of 0 is unknown, and so are the loads
+  beside a `cpu_count` of 0.
+- `disk_free_bytes` and `disk_total_bytes` are the filesystem holding the
+  container runtime's data root, or `/` on a node with no runtime;
+  `disk_free_path` names the path measured (the snapshot's
+  `virtualization.runtime_disk`). **An empty `disk_free_path` is unknown**, never
+  a full disk. `worst_disk_percent` is unchanged and may describe another
+  filesystem.
+- `containers_running`, `container_cpu_cores` (summed percent-of-one-core, so
+  `2` is two cores) and `container_memory_bytes` cover the containers with
+  processes in their cgroups. They come from the cgroup tree, not the runtime
+  API, which is usually unreachable. They mean nothing when
+  `containers_observable` is false: the cgroup tree could not be read in full.
+  A container first seen in the node's latest scan contributes no CPU until the
+  next one.
+- A node on a build that predates any of these fields omits them, and a
+  consumer decoding into this type reads them as the unknown forms above.
 
 `503 Service Unavailable` before the first collection, with the same bodies as
 `/api/snapshot`.
@@ -214,6 +248,14 @@ written) or `unverified` (written, but the peer reports no collection
 interval, or the database's lookback is not known yet); the card shows the
 last two. `reason` is worded from durations alone and names no address. It is
 carried on every page a node appears on.
+
+A reachable node also carries `headroom` (#239): `{target, cpu_cores_free_at_target,
+cpu_reported, memory_bytes_free, memory_reported}`, its spare capacity at this
+aggregator's `fleet.headroom_target`. It is computed here, not by the node,
+because the target is the aggregator's policy, and a subtree node is restated at
+this aggregator's target. `headroom` is absent for an unreachable node and for
+one where neither half could be computed; each half's `*_reported` says whether
+it was. See [Capacity and headroom](alerting-fleet-config.md#capacity-and-headroom).
 
 **No field carries a peer's URL or address** (#120). The endpoint has no
 authentication of its own, and a peer's URL is its scheme, address and port on

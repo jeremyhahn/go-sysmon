@@ -97,7 +97,7 @@ func (p *Poller) materialize(ctx context.Context, t *tree, rows []row, fetch boo
 		if v, ok := p.pageCache.Load(r.name); ok {
 			c := v.(*cachedNode)
 			if c.via == r.sub.via && c.childURL == r.sub.childURL && now.Sub(c.fetchedAt) < reuse && agrees(c.node, r) {
-				out[i] = fromChild(c.node, r, selfCommit, t.now)
+				out[i] = fromChild(c.node, r, selfCommit, cfg.HeadroomTarget(), t.now)
 				continue
 			}
 		}
@@ -149,7 +149,7 @@ func (p *Poller) fillBatch(ctx context.Context, cfg config.Fleet, child, childUR
 		case !agrees(n, r):
 			reason = "its figures changed since the last poll; they are shown on the next"
 		default:
-			out[i] = fromChild(n, r, selfCommit, now)
+			out[i] = fromChild(n, r, selfCommit, cfg.HeadroomTarget(), now)
 			continue
 		}
 		n = indexNode(r, selfCommit, now)
@@ -214,14 +214,16 @@ func agrees(n types.FleetNode, r row) bool {
 
 // fromChild is a subtree node as its child sent it, restated from this
 // aggregator's side: reached through the child, its build compared with this
-// node's, and its status, reachability and age the index's, which the roll-up
-// is counted from.
-func fromChild(n types.FleetNode, r row, selfCommit string, now time.Time) types.FleetNode {
+// node's, its status, reachability and age the index's, which the roll-up is
+// counted from, and its headroom at this aggregator's target -- the child's
+// was computed at the child's, and a child too old to compute any sent none.
+func fromChild(n types.FleetNode, r row, selfCommit string, target float64, now time.Time) types.FleetNode {
 	n.Self = false
 	n.Via = r.sub.via
 	n.NameConflict = r.conflict
 	n.BuildMatch = compareBuild(selfCommit, n.GitCommit)
 	overlay(&n, r, now)
+	n.Headroom = nodeHeadroom(&n, target)
 	if n.Alerts == nil {
 		n.Alerts = []types.Alert{}
 	}

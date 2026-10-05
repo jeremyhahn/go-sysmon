@@ -42,6 +42,7 @@ func scalarKeys() []string {
 		"fleet.local_name",
 		"fleet.poll_interval_ms",
 		"fleet.timeout_ms",
+		"fleet.headroom_target",
 		"fleet.tls.ca_file",
 		"fleet.tls.cert_file",
 		"fleet.tls.key_file",
@@ -88,6 +89,7 @@ func defaultMap(c Config) map[string]any {
 		"fleet.local_name":              c.Fleet.LocalName,
 		"fleet.poll_interval_ms":        c.Fleet.PollIntervalMs,
 		"fleet.timeout_ms":              c.Fleet.TimeoutMs,
+		"fleet.headroom_target":         c.Fleet.HeadroomTargetFraction,
 
 		"prometheus.remote_write_url":   c.Prometheus.RemoteWriteURL,
 		"prometheus.query_url":          c.Prometheus.QueryURL,
@@ -199,6 +201,8 @@ func (c *Config) raw(key string) string {
 		return strconv.Itoa(c.Fleet.PollIntervalMs)
 	case "fleet.timeout_ms":
 		return strconv.Itoa(c.Fleet.TimeoutMs)
+	case "fleet.headroom_target":
+		return num(c.Fleet.HeadroomTargetFraction)
 	case "fleet.tls.ca_file":
 		return c.Fleet.TLS.CAFile
 	case "fleet.tls.cert_file":
