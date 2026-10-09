@@ -16,9 +16,9 @@ Target kind: RC; no projected date until a milestone is set.
 
 ## Now
 
-- [#243](http://git.example.internal/jeremyhahn/go-sysmon/issues/243) CI workflows run without the host Docker socket — open
-- [#244](http://git.example.internal/jeremyhahn/go-sysmon/issues/244) release artifacts are signed — open
-- [#245](http://git.example.internal/jeremyhahn/go-sysmon/issues/245) feature docs complete, with banners and stamps — open
+- [#243](../../issues/243) CI workflows run without the host Docker socket — open
+- [#244](../../issues/244) release artifacts are signed — open
+- [#245](../../issues/245) feature docs complete, with banners and stamps — open
 
 ## Next
 
