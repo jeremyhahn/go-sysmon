@@ -1,5 +1,8 @@
 # Testing the desktop extensions
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the desktop extension tests.
+
 A panel applet cannot be tested the way a Go package can: it runs inside a
 compositor, against a JavaScript binding to a C toolkit, on a display. Testing
 it is a question of how much of that stack you are willing to stand up.

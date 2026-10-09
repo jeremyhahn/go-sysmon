@@ -1,5 +1,8 @@
 # Cinnamon panel applet
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the Cinnamon panel applet.
+
 Per-core bars and gauges drawn straight onto the Cinnamon panel, with the full
 data set one click away, fed by the sysmon event stream.
 

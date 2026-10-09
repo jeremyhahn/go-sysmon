@@ -1,5 +1,8 @@
 # Delta streaming
 
+> **Status: NORMATIVE** · Scope: the delta frames on `GET /api/events` · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 `GET /api/events?deltas=1` sends what changed instead of a whole snapshot.
 
 A snapshot of a busy host is around 200–270 kB of JSON. About three quarters of

@@ -1,5 +1,8 @@
 # Sensors
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the sensor collectors.
+
 `SensorCollector` reads hardware sensors out of sysfs and hwmon. It runs on the
 medium tier, every 5th tick.
 

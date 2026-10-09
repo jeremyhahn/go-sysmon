@@ -1,5 +1,8 @@
 # Desktop GUI
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the desktop GUI.
+
 A Wails v2 application wrapping the same web frontend the server ships. Same
 data as the CLI, same data as the dashboard — one codebase, three front doors.
 

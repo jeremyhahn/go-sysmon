@@ -10,6 +10,8 @@ self-hosted-runner:
     - code-review
     - codex
 
-# No repository or organization configuration variables are defined, so any
-# `vars.*` reference is a typo.
-config-variables: []
+# AUTOMERGE_APPROVERS_ONLY is an optional repository variable: the approver
+# list for a restricted repo, read by the automerge workflow template. Any
+# other `vars.*` reference is a typo.
+config-variables:
+  - AUTOMERGE_APPROVERS_ONLY

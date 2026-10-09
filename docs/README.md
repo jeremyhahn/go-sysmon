@@ -1,5 +1,8 @@
 # go-sysmon documentation
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> Index of the go-sysmon documentation.
+
 How the pieces fit together, what each metric actually measures, and where to
 look when something reads wrong.
 
@@ -72,8 +75,22 @@ still names that commit.
 
 ## Documentation layout
 
-`deployment/` is the first folder here to follow the five-file feature-docs
-layout — architecture, engineering, CLI, API and user. The rest of `docs/` is
-the older topic-folder shape and is unconverted, not exempt: new features get a
-feature folder, and the existing folders are migrated one feature at a time
-rather than all at once or in passing.
+Each feature folder holds the five-file feature-docs set: architecture,
+engineering, CLI, API and user. A file with nothing to say says so in one line
+and points to the page that does.
+
+| Feature | Architecture | Engineering | CLI | API | User |
+|---|---|---|---|---|---|
+| CLI | [architecture](cli/architecture.md) | [engineering](cli/engineering.md) | [cli](cli/cli.md) | [api](cli/api.md) | [user](cli/user.md) |
+| Collector | [architecture](collector/architecture.md) | [engineering](collector/engineering.md) | [cli](collector/cli.md) | [api](collector/api.md) | [user](collector/user.md) |
+| GUI | [architecture](gui/architecture.md) | [engineering](gui/engineering.md) | [cli](gui/cli.md) | [api](gui/api.md) | [user](gui/user.md) |
+| Monitor | [architecture](monitor/architecture.md) | [engineering](monitor/engineering.md) | [cli](monitor/cli.md) | [api](monitor/api.md) | [user](monitor/user.md) |
+| Server | [architecture](server/architecture.md) | [engineering](server/engineering.md) | [cli](server/cli.md) | [api](server/api.md) | [user](server/user.md) |
+| Deployment | [architecture](deployment/architecture.md) | [engineering](deployment/engineering.md) | [cli](deployment/cli.md) | [api](deployment/api.md) | [user](deployment/user.md) |
+
+The remaining folders (`extensions/`, `testing/`, `types/`) are the older
+topic-folder shape and are unconverted, not exempt: they are migrated one
+feature at a time rather than all at once or in passing. The extra pages inside
+a converted folder (for example `collector/sensors.md` or
+`server/delta-streaming.md`) are topic detail linked from its architecture
+page.

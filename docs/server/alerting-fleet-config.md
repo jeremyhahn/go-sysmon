@@ -1,5 +1,8 @@
 # Configuration, alerts, fleet and metrics
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of configuration, alerting, fleet and metrics.
+
 Four features that arrived together and depend on each other: settings that can
 be reloaded without a restart, alert rules evaluated from those settings, a
 fleet view built by polling peers, and a Prometheus endpoint that exports the

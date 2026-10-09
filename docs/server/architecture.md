@@ -1,5 +1,8 @@
 # Server architecture
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the server package.
+
 `pkg/server` puts the metrics on HTTP. It collects nothing itself — every
 response comes from the monitor.
 

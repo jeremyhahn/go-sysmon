@@ -1,5 +1,8 @@
 # CI failure artifacts
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the artifacts CI keeps on failure.
+
 When a CI job fails, it uploads what it knows about the failure as an artifact,
 on Gitea and on github.com alike (#225). A passing job uploads nothing to Gitea.
 Every failure artifact is kept for 7 days on github.com and 6 on Gitea (see

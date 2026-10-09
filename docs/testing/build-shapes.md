@@ -1,5 +1,8 @@
 # Build shapes
 
+> **Status: NORMATIVE** · Scope: build tags and build shapes · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 go-sysmon is compiled with several build-tag sets. `go vet` and `go test`
 report success over the files their tags select and say nothing about the rest,
 so a file behind a tag that no gate passes can stop compiling with every check

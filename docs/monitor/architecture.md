@@ -1,5 +1,8 @@
 # Monitor architecture
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the monitor package.
+
 `pkg/monitor` sits between the collector and everything that wants data — the
 web server, the GUI, the tray, the CLI's refresh mode. It polls on an interval
 and hands each snapshot to every subscriber.

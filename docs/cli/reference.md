@@ -1,5 +1,8 @@
 # CLI reference
 
+> **Status: NORMATIVE** · Scope: the go-sysmon CLI commands and flags · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 Every command takes `--json` and `--refresh`. Run `sysmon` with no arguments
 and it picks a mode for you; see [automatic mode selection](#automatic-mode-selection)
 at the bottom.
@@ -301,6 +304,12 @@ sysmon serve --addr :8080 --interval 1000
 |--------------|--------|---------|-------------------------------------|
 | `--addr`     | string | `:8080` | TCP listen address                  |
 | `--interval` | int    | `1000`  | Polling interval in milliseconds    |
+| `--tls-cert` | string | *(none)* | PEM certificate; enables HTTPS      |
+| `--tls-key`  | string | *(none)* | PEM key matching `--tls-cert`       |
+| `--config`   | string | `/etc/go-sysmon/sysmon.yaml` | YAML configuration; missing is not an error |
+
+The full verb and flag index, including `host`, `npu` and the `--index` flag, is
+in [cli.md](cli.md).
 
 ### version
 

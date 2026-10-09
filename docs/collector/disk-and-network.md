@@ -1,5 +1,8 @@
 # Disk and network detail
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the disk and network collectors.
+
 Reference for the debugging-oriented fields on `DiskInfo` and `NetworkInfo`.
 
 ## Disk I/O, queue depth and peaks

@@ -23,8 +23,8 @@ cmd/sysmon/frontend/playwright-report/
 test.log
 integration-test.log
 
-# Tooling state
-.serena/
+# Tooling state. .serena/project.yml is committed; .serena/.gitignore keeps
+# the cache and local overrides out.
 
 # Note: cmd/sysmon/frontend/dist/ IS committed, deliberately. //go:embed
 # all:frontend/dist means a clone without it cannot `go build`, `go test` or

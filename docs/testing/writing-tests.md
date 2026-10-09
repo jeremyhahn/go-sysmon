@@ -1,5 +1,8 @@
 # Where testing effort pays
 
+> **Status: NORMATIVE** · Scope: writing tests in this repository · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 Six rules, each of which was learned the expensive way in this repository. The
 examples are real and the commit history has them; they are here because the
 general form is not obvious from the specific bug.

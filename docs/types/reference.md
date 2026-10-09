@@ -1,5 +1,8 @@
 # Types reference
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the exported types.
+
 `pkg/types` holds every structure the rest of the project speaks in. The
 collector fills them, the monitor passes them around, the server encodes them,
 and the frontend decodes them — so this file is the contract between all four.

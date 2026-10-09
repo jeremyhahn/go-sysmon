@@ -1,5 +1,8 @@
 # Coverage
 
+> **Status: NORMATIVE** · Scope: coverage floors and measurement · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 Every package is held to a 90% statement-coverage floor, for its unit tests
 and for the integration suite (CLAUDE.md, #167). This page says how coverage
 is measured, which make targets measure it, and where each package stands.

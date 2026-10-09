@@ -1,5 +1,8 @@
 # System tray
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the system tray extension.
+
 Live metrics in the notification area, and a way back to the window after you
 have closed it.
 

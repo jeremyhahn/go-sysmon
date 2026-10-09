@@ -1,5 +1,8 @@
 # House style
 
+> **Status: NORMATIVE** · Scope: the go-sysmon GUI and web UI · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The visual decisions the go-sysmon dashboard makes, with the measurements
 behind them, written so a sibling project can implement the same thing rather
 than approximate it.

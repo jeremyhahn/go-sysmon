@@ -1,5 +1,8 @@
 # Virtualization
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the virtualization collectors.
+
 Reports the containers and virtual machines running on the host.
 
 Both are observed **from the host side only**, using files the kernel already

@@ -1,5 +1,8 @@
 # API reference
 
+> **Status: NORMATIVE** · Scope: the go-sysmon HTTP API · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 Two ways in: poll `/api/snapshot`, or connect to `/api/events` and let the
 server push. Both carry identical JSON. Use the event stream unless you have a
 reason not to — polling re-encodes a snapshot the server already has.

@@ -1,5 +1,8 @@
 # Running in a container
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of running go-sysmon in a container.
+
 ```bash
 docker compose up -d      # then open http://localhost:8080/
 ```

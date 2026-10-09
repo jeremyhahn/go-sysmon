@@ -1,5 +1,8 @@
 # CLI architecture
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the go-sysmon CLI.
+
 Two packages, split along a deliberate line:
 
 - `cmd/sysmon/` — Cobra commands, flags, mode selection

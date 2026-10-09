@@ -1,5 +1,8 @@
 # Build and deployment
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the build and deployment targets.
+
 The server binary embeds the dashboard, so deploying it is copying one file.
 No assets, no config, no database, no runtime on the target.
 

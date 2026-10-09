@@ -1,5 +1,8 @@
 # Collector architecture
 
+> **Status: REFERENCE** · Last verified: 2026-10-09
+> As-built description of the collector package.
+
 `pkg/collector` reads system metrics from the kernel — procfs, sysfs, hwmon and
 a couple of ioctls — and assembles them into one `types.Snapshot`. There is no
 agent and no daemon. Every number in the UI came out of a file the kernel

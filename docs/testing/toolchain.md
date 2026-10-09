@@ -1,5 +1,8 @@
 # Staying on the latest toolchain
 
+> **Status: NORMATIVE** · Scope: Go and tool versions · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 Owner rule, 2026-09-22: go-sysmon uses the latest stable release of everything
 it pins. That covers Go, the dev tools, Node.js, the Debian and Ubuntu base
 images, the workflows' actions, and the GitHub-hosted runner labels. Two checks enforce it (#183), and a daily

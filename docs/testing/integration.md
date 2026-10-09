@@ -1,5 +1,8 @@
 # Integration tests
 
+> **Status: NORMATIVE** · Scope: integration tests · Last verified: 2026-10-09
+> Conflicts with this document are defects. Fix them here first.
+
 The integration suites run the real binaries end to end, the way an operator
 would. Their code lives under `test/integration/`, behind the `integration`
 build tag, one package per area:
