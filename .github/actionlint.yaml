@@ -9,6 +9,7 @@ self-hosted-runner:
     - claude
     - code-review
     - codex
+    - qwen
 
 # AUTOMERGE_APPROVERS_ONLY is an optional repository variable: the approver
 # list for a restricted repo, read by the automerge workflow template. Any
