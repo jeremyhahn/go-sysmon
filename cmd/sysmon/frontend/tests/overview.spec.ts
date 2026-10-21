@@ -79,3 +79,17 @@ test.describe('Overview Tab', () => {
     await expect(memChartCard.locator('canvas').first()).toBeVisible({ timeout: 8000 });
   });
 });
+
+/** The busiest interface's rates are bits per second here too, as on the Network tab (#257). */
+test.describe('Overview network rates', () => {
+  test('the top interface rates are shown in bits per second', async ({ page }) => {
+    await mockSnapshotFeed(page, {
+      networks: [{ name: 'enp131s0', bytes_sent_rate: 125_000, bytes_recv_rate: 187_500_000 }],
+    });
+    await page.goto('/');
+    await openTab(page, 'Overview');
+
+    await expect(page.locator('.card-body').filter({ hasText: 'Net ↑ (enp131s0)' })).toContainText('1.0 Mbps');
+    await expect(page.locator('.card-body').filter({ hasText: 'Net ↓ (enp131s0)' })).toContainText('1.5 Gbps');
+  });
+});

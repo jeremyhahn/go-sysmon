@@ -18,6 +18,7 @@ Runs until `SIGINT` or `SIGTERM`. No positional arguments.
 | `--interval` | int | `1000` | no | Polling interval in milliseconds; must be greater than zero |
 | `--tls-cert` | string | *(none)* | with `--tls-key` | PEM certificate; enables HTTPS |
 | `--tls-key` | string | *(none)* | with `--tls-cert` | PEM key matching `--tls-cert` |
+| `--trusted-proxies` | strings | *(none)* | no | CIDR prefixes of reverse proxies whose `Forwarded` / `X-Forwarded-*` headers are believed; repeat or comma-separate. See [deployment.md](deployment.md#trusted-proxies) |
 | `--config` | string | `/etc/go-sysmon/sysmon.yaml` | no | YAML configuration; a missing file is not an error |
 
 Global `--log-file`, `--log-level` and `--log-format` apply. `--json`,

@@ -38,7 +38,8 @@ endpoints in [api.md](api.md). This page is the contract a change must keep.
   30 s for ordinary responses; no `ReadTimeout`.
 - **Request bodies** to `POST /api/interval` are capped at 1 KiB.
 - **Allowed intervals (ms):** 250, 500, 1000, 5000, 10000, 15000, 30000, 60000.
-- **Security headers** wrap the whole mux; HSTS follows `r.TLS`.
+- **Security headers** wrap the whole mux; HSTS follows `r.TLS`, or a trusted
+  proxy's report of HTTPS (`server.trusted_proxies`).
 - **Config is read-only over HTTP.** Reload happens through `SIGHUP` or the
   file watcher, never a request.
 - **Startup order in `serve`:** signal handler installed first; config loaded;
@@ -54,6 +55,8 @@ endpoints in [api.md](api.md). This page is the contract a change must keep.
 | Malformed or oversize interval body | 400 `malformed request body` |
 | Interval not in the allowed set, unknown scope, `fleet` scope on a node without fleet | 400 with the `types.InvalidIntervalError` text |
 | Unusable TLS configuration | Construction fails with `types.TLSConfigError`; the process does not start |
+| `server.trusted_proxies` entry not a CIDR prefix | `config.TrustedProxyError`; the process does not start, and a bad reload keeps the previous settings |
+| Malformed or oversized forwarding header from a trusted proxy | Ignored; the request is served as if it were absent |
 | Address in use / unbindable | `Listen` fails before serving; `serve` exits 1 |
 | Fleet peer CA file unreadable | Startup error (not reported later as "peers unreachable") |
 | `fleet.tls.insecure_skip_verify` | Allowed, with a startup warning that peer verification is off |
@@ -73,6 +76,7 @@ Precedence, highest first: command-line flag, `SYSMON_*` environment variable
 | `server.addr` | `:8080` | restart |
 | `server.interval_ms` | `1000` | live on reload |
 | `server.tls_cert`, `server.tls_key` | *(none)* | restart |
+| `server.trusted_proxies` | *(none)* | restart; see [deployment.md](deployment.md#trusted-proxies) |
 | `server.watch` | `false` | re-reads the file when it changes on disk; an empty file seen by the watcher is refused and the running configuration kept |
 | `fleet.*`, `alerts.*`, `prometheus.*` | see [alerting-fleet-config.md](alerting-fleet-config.md) | per key; settings needing a restart are logged as deferred |
 

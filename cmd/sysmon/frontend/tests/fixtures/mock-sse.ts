@@ -15,7 +15,7 @@ import snapshot from "./snapshot.json" with { type: "json" };
  * undefined.
  */
 import templates from "./entry-templates.json" with { type: "json" };
-import type { Alert, StackDetection } from "../../src/lib/types";
+import type { Alert, NetworkInfo, StackDetection } from "../../src/lib/types";
 import { TAB_IDS, type TabLabel } from "./tabs";
 
 /**
@@ -58,6 +58,13 @@ export interface MockOptions {
    * a renderable card.
    */
   disks?: Partial<Snapshot["disks"][number]>[];
+  /**
+   * Replaces the fixture's interface list. Given as partials merged over the
+   * fixture's ethernet port, for the same reason as disks; typed from the
+   * API rather than the fixture so a spec can serve a wifi interface, whose
+   * `wireless` block the fixture's interfaces do not carry.
+   */
+  networks?: Partial<NetworkInfo>[];
   /**
    * Replaces the container list. Default: the fixture's, which is empty.
    *
@@ -277,6 +284,10 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
     ? listed.map((d, i) => (i === 0 ? { ...d, smart_attrs: makeSMARTAttrs() } : d))
     : listed;
 
+  const ethernet = snapshot.networks.find((n) => n.kind === "ethernet") ?? snapshot.networks[0];
+  const networks =
+    opts.networks == null ? snapshot.networks : opts.networks.map((n) => ({ ...ethernet, ...n }));
+
   const gpus = opts.gpus == null ? snapshot.gpus : makeGPUs(opts.gpus);
   const npus = opts.npus == null ? snapshot.npus : makeNPUs(opts.npus);
 
@@ -304,6 +315,7 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
     ...snapshot,
     ...(opts.coreTemps == null ? {} : { sensors: { ...snapshot.sensors, core_temps: opts.coreTemps } }),
     disks,
+    networks,
     gpus,
     npus,
     virtualization,

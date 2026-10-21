@@ -39,6 +39,8 @@ var (
 	serveTLSCert    string
 	serveTLSKey     string
 	serveConfigPath string
+
+	serveTrustedProxies []string
 )
 
 var serveCmd = &cobra.Command{
@@ -61,6 +63,9 @@ func init() {
 	serveCmd.Flags().IntVar(&serveIntervalMs, "interval", d.Server.IntervalMs, "Polling interval in milliseconds")
 	serveCmd.Flags().StringVar(&serveTLSCert, "tls-cert", d.Server.TLSCert, "Path to a PEM certificate; enables HTTPS")
 	serveCmd.Flags().StringVar(&serveTLSKey, "tls-key", d.Server.TLSKey, "Path to the PEM private key matching --tls-cert")
+	serveCmd.Flags().StringSliceVar(&serveTrustedProxies, "trusted-proxies", d.Server.TrustedProxies,
+		"CIDR prefixes of reverse proxies whose Forwarded and X-Forwarded-* headers are believed; "+
+			"repeat or comma-separate")
 	serveCmd.Flags().StringVar(&serveConfigPath, "config", config.DefaultPath,
 		"Path to the YAML configuration file; missing is not an error")
 	rootCmd.AddCommand(serveCmd)
@@ -261,20 +266,27 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// Already validated when the configuration loaded; parsed here into the
+	// form the server takes.
+	trustedProxies, err := config.ParseTrustedProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		return err
+	}
 
 	srv, err := server.NewWithConfig(server.Config{
-		Monitor:   mon,
-		Addr:      cfg.Server.Addr,
-		Assets:    webAssets,
-		TLS:       serveTLSConfig(cfg),
-		Fleet:     fleetPoller,
-		Config:    cfgMgr,
-		Exporter:  exporter,
-		History:   history,
-		Alerts:    alerts,
-		Version:   version,
-		GitCommit: gitCommit,
-		BuildDate: buildDate,
+		Monitor:        mon,
+		Addr:           cfg.Server.Addr,
+		Assets:         webAssets,
+		TLS:            serveTLSConfig(cfg),
+		TrustedProxies: trustedProxies,
+		Fleet:          fleetPoller,
+		Config:         cfgMgr,
+		Exporter:       exporter,
+		History:        history,
+		Alerts:         alerts,
+		Version:        version,
+		GitCommit:      gitCommit,
+		BuildDate:      buildDate,
 	})
 	if err != nil {
 		return err

@@ -41,6 +41,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -220,6 +221,10 @@ type Server struct {
 	IntervalMs int    `mapstructure:"interval_ms"`
 	TLSCert    string `mapstructure:"tls_cert"`
 	TLSKey     string `mapstructure:"tls_key"`
+	// TrustedProxies lists the CIDR prefixes of the reverse proxies whose
+	// Forwarded and X-Forwarded-* headers are believed. Empty, the default,
+	// believes none, and the headers are ignored from every peer.
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
 	// Watch re-reads the config file when it changes on disk.
 	Watch bool `mapstructure:"watch"`
 }
@@ -551,6 +556,9 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 		return err
 	}
 	if err := checkExternalLabels(c.Prometheus.ExternalLabels); err != nil {
+		return err
+	}
+	if _, err := ParseTrustedProxies(c.Server.TrustedProxies); err != nil {
 		return err
 	}
 
@@ -919,6 +927,7 @@ func bootOnlyKeys() []string {
 		"server.addr",
 		"server.tls_cert",
 		"server.tls_key",
+		"server.trusted_proxies",
 		"server.watch",
 		"fleet.tls.ca_file",
 		"fleet.tls.cert_file",
@@ -1076,6 +1085,10 @@ func (m *Manager) reload(empty emptyFilePolicy) ([]string, error) {
 	if cfg.Server.TLSKey != m.boot.TLSKey {
 		deferred = append(deferred, "server.tls_key")
 	}
+	// The trusted proxies are handed to the HTTP server when it is built.
+	if !slices.Equal(cfg.Server.TrustedProxies, m.boot.TrustedProxies) {
+		deferred = append(deferred, "server.trusted_proxies")
+	}
 	if cfg.Server.Watch != m.boot.Watch {
 		deferred = append(deferred, "server.watch")
 	}
@@ -1105,6 +1118,7 @@ func (m *Manager) reload(empty emptyFilePolicy) ([]string, error) {
 	cfg.Server.Addr = m.boot.Addr
 	cfg.Server.TLSCert = m.boot.TLSCert
 	cfg.Server.TLSKey = m.boot.TLSKey
+	cfg.Server.TrustedProxies = m.boot.TrustedProxies
 	cfg.Fleet.TLS.CAFile = m.bootFleetTLS.CAFile
 	cfg.Fleet.TLS.CertFile = m.bootFleetTLS.CertFile
 	cfg.Fleet.TLS.KeyFile = m.bootFleetTLS.KeyFile

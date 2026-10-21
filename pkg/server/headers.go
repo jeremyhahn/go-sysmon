@@ -13,7 +13,8 @@ import (
 
 // hstsHeader is the one security header that depends on the request: a
 // browser ignores Strict-Transport-Security received over plain HTTP (RFC 6797
-// section 8.1), so it is sent only on requests that arrived over TLS.
+// section 8.1), so it is sent only on requests that arrived over TLS, here or
+// at a trusted proxy (requestSecure).
 const hstsHeader = "Strict-Transport-Security"
 
 // contentSecurityPolicy is fitted to the dashboard and to nothing more.
@@ -98,7 +99,8 @@ func permissionsPolicy() string {
 // arrived over TLS, whether the server terminates TLS itself or an embedding
 // application does and mounts the server as an http.Handler. Behind a reverse
 // proxy that terminates TLS the request reaching this server is plain HTTP, so
-// the proxy is the one that must send it.
+// it is sent only when the proxy is in Config.TrustedProxies and reports that
+// the client used HTTPS; otherwise the proxy is the one that must send it.
 func DefaultSecurityHeaders() http.Header {
 	return http.Header{
 		"Content-Security-Policy":      {contentSecurityPolicy},
@@ -173,7 +175,7 @@ func securityHeaders(headers http.Header, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		for name, values := range headers {
-			if name == hstsHeader && r.TLS == nil {
+			if name == hstsHeader && !requestSecure(r) {
 				continue
 			}
 			h[name] = values

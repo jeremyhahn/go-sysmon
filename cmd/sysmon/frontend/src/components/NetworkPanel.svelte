@@ -3,7 +3,7 @@
   import { history } from "$stores/history.svelte";  import MetricChart from "./MetricChart.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
-  import { formatBytes, formatBytesRate } from "$lib/format";
+  import { formatBytes, formatByteRateAsBits } from "$lib/format";
   import type { NetworkInfo } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
@@ -98,13 +98,22 @@
                   {iface.duplex}
                 {/if}
               </p>
+              {#if iface.bus}
+                <p class="text-xs text-base-content/60">
+                  {[iface.vendor, iface.model].filter(Boolean).join(" ") || "Unknown NIC"}
+                  &bull; {iface.bus.toUpperCase()} {iface.vendor_id}:{iface.device_id}
+                  {#if iface.subsystem_vendor && iface.subsystem_vendor !== iface.vendor}
+                    &bull; {iface.subsystem_vendor}
+                  {/if}
+                </p>
+              {/if}
             </div>
             <div class="text-right text-xs space-y-0.5">
               <div class="text-success font-medium">
-                ↑ {formatBytesRate(iface.bytes_sent_rate)}
+                ↑ {formatByteRateAsBits(iface.bytes_sent_rate)}
               </div>
               <div class="text-info font-medium">
-                ↓ {formatBytesRate(iface.bytes_recv_rate)}
+                ↓ {formatByteRateAsBits(iface.bytes_recv_rate)}
               </div>
             </div>
           </div>
@@ -143,6 +152,24 @@
             </div>
           {/if}
 
+          <!-- Wireless link -->
+          {#if iface.wireless != null}
+            <div class="flex flex-wrap items-center gap-3 mb-3 text-xs" data-testid="wireless">
+              <span class="text-base-content/60">wifi</span>
+              {#if iface.wireless.ssid}
+                <span>SSID: {iface.wireless.ssid}</span>
+              {/if}
+              {#if iface.wireless.bssid}
+                <span>BSSID: <span class="font-mono">{iface.wireless.bssid}</span></span>
+              {/if}
+              <span>Quality: {iface.wireless.link_quality}</span>
+              <span>Signal: {iface.wireless.signal_level_dbm} dBm</span>
+              {#if iface.wireless.noise_level_dbm !== 0}
+                <span>Noise: {iface.wireless.noise_level_dbm} dBm</span>
+              {/if}
+            </div>
+          {/if}
+
           <!-- Traffic chart -->
           {#if nh != null}
             <div class="mb-3">
@@ -155,13 +182,13 @@
                     label: "Send",
                     data: nh.sentRates,
                     color: "#36d399",
-                    formatter: formatBytesRate,
+                    formatter: formatByteRateAsBits,
                   },
                   {
                     label: "Recv",
                     data: nh.recvRates,
                     color: "#38bdf8",
-                    formatter: formatBytesRate,
+                    formatter: formatByteRateAsBits,
                   },
                 ]}
                 height="140px"

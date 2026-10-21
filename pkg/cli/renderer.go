@@ -953,6 +953,9 @@ func renderInterface(w io.Writer, iface types.NetworkInfo) {
 			iface.Wireless.SignalLevelDBm,
 			iface.Wireless.NoiseLevelDBm,
 		)
+		if iface.Wireless.SSID != "" || iface.Wireless.BSSID != "" {
+			fmt.Fprintf(w, "  %-12sSSID %s | BSSID %s\n", "", iface.Wireless.SSID, iface.Wireless.BSSID)
+		}
 	}
 
 	if iface.Speed > 0 {

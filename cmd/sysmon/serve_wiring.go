@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -54,6 +55,9 @@ func loadServeConfig(cmd *cobra.Command) (*config.Manager, error) {
 	}
 	if supplied("tls-key", serveTLSKey != d.Server.TLSKey) && serveTLSKey != "" {
 		loader.SetFlag("server.tls_key", serveTLSKey)
+	}
+	if supplied("trusted-proxies", len(serveTrustedProxies) > 0) && len(serveTrustedProxies) > 0 {
+		loader.SetFlag("server.trusted_proxies", strings.Join(serveTrustedProxies, ","))
 	}
 
 	mgr, err := config.NewManager(loader)

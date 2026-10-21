@@ -38,7 +38,7 @@ verb that starts one.
 | `vms` | Guests seen from the hypervisor process | `--index` |
 | `images` | Container image inventory (queries the runtime API) | `--sort`, `--filter`, `--unused`, `--limit` |
 | `doctor` | What this build can do on this machine, and fixes | |
-| `serve` | HTTP server and dashboard | `--addr`, `--interval`, `--tls-cert`, `--tls-key`, `--config` |
+| `serve` | HTTP server and dashboard | `--addr`, `--interval`, `--tls-cert`, `--tls-key`, `--trusted-proxies`, `--config` |
 | `version` | Version, commit, build date | |
 
 `--index` is an `int`, default `-1` (show all), 0-based.
@@ -51,6 +51,7 @@ verb that starts one.
 | `--interval` | int | `1000` | Polling interval in milliseconds; must be greater than zero |
 | `--tls-cert` | string | *(none)* | PEM certificate; enables HTTPS |
 | `--tls-key` | string | *(none)* | PEM key matching `--tls-cert` |
+| `--trusted-proxies` | strings | *(none)* | CIDR prefixes of reverse proxies whose forwarding headers are believed; see [deployment](../server/deployment.md#trusted-proxies) |
 | `--config` | string | `/etc/go-sysmon/sysmon.yaml` | YAML configuration; a missing file is not an error |
 
 The defaults come from the configuration layer, so the file and `SYSMON_*`

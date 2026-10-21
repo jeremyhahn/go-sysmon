@@ -306,6 +306,7 @@ sysmon serve --addr :8080 --interval 1000
 | `--interval` | int    | `1000`  | Polling interval in milliseconds    |
 | `--tls-cert` | string | *(none)* | PEM certificate; enables HTTPS      |
 | `--tls-key`  | string | *(none)* | PEM key matching `--tls-cert`       |
+| `--trusted-proxies` | strings | *(none)* | CIDR prefixes of reverse proxies whose forwarding headers are believed; see [deployment](../server/deployment.md#trusted-proxies) |
 | `--config`   | string | `/etc/go-sysmon/sysmon.yaml` | YAML configuration; missing is not an error |
 
 The full verb and flag index, including `host`, `npu` and the `--index` flag, is

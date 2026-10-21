@@ -1,6 +1,6 @@
 # GUI — using it
 
-> **Status: NORMATIVE** · Scope: the desktop app and the web dashboard · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: the desktop app and the web dashboard · Last verified: 2026-10-11
 > Conflicts with this document are defects. Fix them here first.
 
 The desktop window and the browser dashboard show the same pages. Use the
@@ -27,6 +27,11 @@ sysmon serve --addr :8080      # then open http://localhost:8080
 - **Find a subsystem.** The page has a panel per area: host, CPU, memory,
   disks, network, GPU and NPU where present, processes, and containers and VMs
   where the node has them.
+- **Identify a NIC.** Each physical interface in the network panel has a line
+  under its MAC and driver naming the manufacturer and model, the bus with
+  its `vendor:device` identifiers, and the board maker when it differs from
+  the chip's. Virtual interfaces have no such line
+  ([collector/disk-and-network.md](../collector/disk-and-network.md#hardware-identity)).
 - **Switch light/dark.** The theme toggle.
 - **See alerts.** The bell and banner show active threshold alerts. Thresholds
   are set in the config file; the settings dialog shows what is in force.
@@ -34,6 +39,20 @@ sysmon serve --addr :8080      # then open http://localhost:8080
   a history store configured ([server/alerting-fleet-config.md](../server/alerting-fleet-config.md)).
 - **Keep the app in the tray.** Closing the window hides it while the tray icon
   runs; use the tray menu to reopen or quit. With `--no-tray`, closing quits.
+
+## Reading the panels
+
+- **Network rates are bits per second.** An interface's send and receive rates,
+  and its traffic chart, on the Network tab and the Overview, use decimal bit units as links are rated (bps, Kbps,
+  Mbps, Gbps, Tbps; 1 Kbps = 1000 bps). Byte totals stay in bytes (KB, MB, …).
+- **Wifi link.** A wifi interface's card shows the driver's link quality
+  (higher is better; the scale is the driver's), the signal level and, when the
+  driver reports it, the noise floor, both in dBm. Wired interfaces show none.
+  An associated interface also shows its SSID and the BSSID of its access point
+  ([collector/disk-and-network.md](../collector/disk-and-network.md#wireless)).
+- **Disk peaks.** Each disk card shows, beside the current figures, the peaks
+  since the server started: utilisation, queue length, and read and write
+  throughput (binary bytes per second, as disk rates are elsewhere).
 
 ## Troubleshooting
 

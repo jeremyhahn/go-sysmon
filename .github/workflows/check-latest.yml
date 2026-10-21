@@ -3,7 +3,7 @@ name: Check Latest
 # Owner rule 2026-09-22: always the latest stable Go, golangci-lint and dev
 # tools. Nothing noticed when PR #180 was about to ship Go 1.27.0 with 1.27.1
 # out, or when CI sat two releases behind on actionlint (#183). This workflow is
-# what notices: once a day it runs `make check-latest`, and when any pin lags --
+# what notices: dispatched once a day, it runs `make check-latest`, and when any pin lags --
 # Go, a dev tool, Node.js LTS, the Debian or Ubuntu base release, an action a
 # workflow uses, or a GitHub-hosted runner label -- it files ONE task:ready issue as the project agent, none
 # while an earlier one is still open.
@@ -20,10 +20,7 @@ name: Check Latest
 # module proxy must not look like "everything is current".
 
 on:
-  schedule:
-    # 05:17 UTC daily: clear of the nightly desktop run at 04:00, and off the
-    # top of the hour when scheduled jobs pile up.
-    - cron: '17 5 * * *'
+  # No `schedule:` (#267): the coordinator dispatches the daily run.
   workflow_dispatch:
     inputs:
       dry_run:

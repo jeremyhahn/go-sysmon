@@ -45,6 +45,7 @@ when you need to know why a number says what it says.
 | [Coverage](testing/coverage.md) | How unit and integration coverage are measured per package, the 90% floor, and where each package stands |
 | [Integration tests](testing/integration.md) | The devcontainer the integration suite runs in, and its make targets |
 | [Build shapes](testing/build-shapes.md) | Every build-tag set the project ships, and the gates that vet, lint and test each one |
+| [CI tiers](testing/ci-tiers.md) | Which CI jobs every pull request runs, which run only on `main`, on demand or with the `ci:full` label, and how CI Passed gates both |
 | [CI failure artifacts](testing/ci-artifacts.md) | What a failed CI job keeps (Playwright traces, screenshots and error context, Go test logs, desktop session logs) and how to download it from Gitea or GitHub |
 | [Latest toolchain](testing/toolchain.md) | Keeping Go, the dev tools, Node.js, the base images and the actions on their latest stable release, and the daily check that files an issue when one falls behind |
 

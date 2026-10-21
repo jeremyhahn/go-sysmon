@@ -945,16 +945,16 @@ func TestClampPercent(t *testing.T) {
 	}
 }
 
-// TestSplitPCIEntry_RejectsNonHexIdentifiers verifies the database parser will
+// TestSplitIDEntry_RejectsNonHexIdentifiers verifies the database parser will
 // not accept a line whose first field is not a hex identifier, which would
 // otherwise attach a stray name to a real device ID.
-func TestSplitPCIEntry_RejectsNonHexIdentifiers(t *testing.T) {
-	if id, name, ok := splitPCIEntry("ad1d  Arrow Lake NPU"); !ok || id != "ad1d" || name != "Arrow Lake NPU" {
-		t.Errorf("splitPCIEntry of a valid line gave %q/%q/%v", id, name, ok)
+func TestSplitIDEntry_RejectsNonHexIdentifiers(t *testing.T) {
+	if id, name, ok := splitIDEntry("ad1d  Arrow Lake NPU"); !ok || id != "ad1d" || name != "Arrow Lake NPU" {
+		t.Errorf("splitIDEntry of a valid line gave %q/%q/%v", id, name, ok)
 	}
 	for _, line := range []string{"", "nothex  Some Device", "onlyonefield", "  ", "zzzz  Bad"} {
-		if _, _, ok := splitPCIEntry(line); ok {
-			t.Errorf("splitPCIEntry(%q) accepted a line it should reject", line)
+		if _, _, ok := splitIDEntry(line); ok {
+			t.Errorf("splitIDEntry(%q) accepted a line it should reject", line)
 		}
 	}
 }

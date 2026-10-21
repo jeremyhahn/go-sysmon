@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/server"
@@ -123,6 +124,48 @@ func TestSecurityHeaders_EmbedderOverridesReachTheWire(t *testing.T) {
 	}
 	if v := got.Get("X-Content-Type-Options"); v != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want the untouched default", v)
+	}
+}
+
+// TestSecurityHeaders_HSTSBehindATrustedProxy: a TLS-terminating proxy in
+// Config.TrustedProxies that reports an HTTPS client gets HSTS sent, and the
+// same report from a peer outside the list does not.
+func TestSecurityHeaders_HSTSBehindATrustedProxy(t *testing.T) {
+	m := newMonitor(t, "proxied-host")
+	waitForSnapshot(t, m)
+
+	cases := map[string]struct {
+		trusted []netip.Prefix
+		want    bool
+	}{
+		"trusted":   {[]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("::1/128")}, true},
+		"untrusted": {[]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv, err := server.NewWithConfig(server.Config{Monitor: m, TrustedProxies: tc.trusted})
+			if err != nil {
+				t.Fatalf("NewWithConfig: %v", err)
+			}
+			ts := httptest.NewServer(srv)
+			t.Cleanup(ts.Close)
+
+			req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/version", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("X-Forwarded-Proto", "https")
+			resp, err := ts.Client().Do(req)
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			if err := resp.Body.Close(); err != nil {
+				t.Errorf("close body: %v", err)
+			}
+			if got := resp.Header.Get("Strict-Transport-Security") == hsts; got != tc.want {
+				t.Errorf("HSTS sent = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

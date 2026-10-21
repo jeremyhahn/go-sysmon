@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { openTab } from './fixtures/tabs';
 
@@ -40,7 +40,7 @@ test.describe('Network Tab', () => {
   });
 
   test('traffic rate indicators are shown (sent and received)', async ({ page }) => {
-    // The rate display uses ↑ and ↓ arrows with formatBytesRate values
+    // The rate display uses ↑ and ↓ arrows with bit-rate values
     const sentRate = page.locator('.text-success').filter({ hasText: /↑/ }).first();
     const recvRate = page.locator('.text-info').filter({ hasText: /↓/ }).first();
     await expect(sentRate).toBeVisible();
@@ -66,5 +66,85 @@ test.describe('Network Tab', () => {
     // The details row at the bottom of each card shows "MTU: N"
     const mtuText = page.locator('div').filter({ hasText: /^MTU: / }).first();
     await expect(mtuText).toBeVisible();
+  });
+});
+
+/**
+ * Interface rates are shown in decimal bits per second, as links are rated
+ * (#257): the collector reports bytes per second, and a 1 Gbps port moving
+ * 125 MB/s should read as the 1 Gbps it is. Byte totals stay in bytes.
+ */
+test.describe('Network rates', () => {
+  test('interface rates are shown in bits per second', async ({ page }) => {
+    await mockSnapshotFeed(page, {
+      networks: [{ name: 'enp131s0', bytes_sent_rate: 125_000, bytes_recv_rate: 187_500_000, bytes_sent: 2048 }],
+    });
+    await page.goto('/');
+    await openTab(page, 'Network');
+
+    await expect(page.locator('.text-success').filter({ hasText: /↑/ }).first()).toHaveText(/↑\s*1\.0 Mbps/);
+    await expect(page.locator('.text-info').filter({ hasText: /↓/ }).first()).toHaveText(/↓\s*1\.5 Gbps/);
+    await expect(page.locator('div').filter({ hasText: /^Sent:/ }).first()).toContainText('2.0 KB');
+  });
+});
+
+/**
+ * A wifi interface shows its radio statistics from /proc/net/wireless (#259);
+ * a wired one shows none.
+ */
+test.describe('Wireless detail', () => {
+  test.beforeEach(async ({ page }) => {
+    await mockSnapshotFeed(page, {
+      networks: [
+        { name: 'enp131s0' },
+        {
+          name: 'wlp2s0',
+          kind: 'wifi',
+          wireless: {
+            ssid: 'home-net',
+            bssid: '02:00:00:00:00:02',
+            link_quality: 62,
+            signal_level_dbm: -48,
+            noise_level_dbm: -95,
+          },
+        },
+        {
+          name: 'wlp3s0',
+          kind: 'wifi',
+          wireless: { link_quality: 0, signal_level_dbm: -90, noise_level_dbm: 0 },
+        },
+      ],
+    });
+    await page.goto('/');
+    await openTab(page, 'Network');
+  });
+
+  const card = (page: Page, name: string) =>
+    page.locator('.card').filter({ has: page.locator('h3', { hasText: new RegExp(`^\\s*${name}\\s*$`) }) });
+
+  test('a wifi interface shows quality, signal and noise', async ({ page }) => {
+    const wireless = card(page, 'wlp2s0').getByTestId('wireless');
+    await expect(wireless).toBeVisible();
+    await expect(wireless).toContainText('Quality: 62');
+    await expect(wireless).toContainText('Signal: -48 dBm');
+    await expect(wireless).toContainText('Noise: -95 dBm');
+  });
+
+  test('an associated wifi interface shows its SSID and BSSID', async ({ page }) => {
+    const wireless = card(page, 'wlp2s0').getByTestId('wireless');
+    await expect(wireless).toContainText('SSID: home-net');
+    await expect(wireless).toContainText('BSSID: 02:00:00:00:00:02');
+  });
+
+  test('an unassociated wifi interface omits SSID, BSSID and a zero noise', async ({ page }) => {
+    const wireless = card(page, 'wlp3s0').getByTestId('wireless');
+    await expect(wireless).toContainText('Signal: -90 dBm');
+    await expect(wireless).not.toContainText('SSID');
+    await expect(wireless).not.toContainText('Noise');
+  });
+
+  test('a wired interface shows no wireless block', async ({ page }) => {
+    await expect(card(page, 'enp131s0').locator('h3')).toBeVisible();
+    await expect(card(page, 'enp131s0').getByTestId('wireless')).toHaveCount(0);
   });
 });

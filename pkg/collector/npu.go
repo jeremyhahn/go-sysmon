@@ -1,13 +1,11 @@
 package collector
 
 import (
-	"bufio"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -545,11 +543,11 @@ func lookupPCINames(vendorID, deviceID, classHex string) (vendor, device, class 
 		return "", "", ""
 	}
 	pciIDsOnce.Do(loadPCIIDs)
-	v := strings.TrimPrefix(strings.ToLower(vendorID), "0x")
-	d := strings.TrimPrefix(strings.ToLower(deviceID), "0x")
+	v := normalizeHexID(vendorID)
+	d := normalizeHexID(deviceID)
 	vendor = pciVendors[v]
 	device = pciDevices[v+":"+d]
-	if c := strings.TrimPrefix(strings.ToLower(classHex), "0x"); len(c) >= 2 {
+	if c := normalizeHexID(classHex); len(c) >= 2 {
 		class = pciClasses[c[:2]]
 	}
 	return vendor, device, class
@@ -559,76 +557,6 @@ func lookupPCINames(vendorID, deviceID, classHex string) (vendor, device, class 
 // roughly 1.5 MB of tab-indented text; vendors and classes sit at column zero,
 // their devices and subclasses one tab in.
 func loadPCIIDs() {
-	pciVendors = make(map[string]string)
-	pciDevices = make(map[string]string)
-	pciClasses = make(map[string]string)
-
-	var f *os.File
-	var path string
-	for _, candidate := range pciIDsPaths {
-		opened, err := os.Open(candidate)
-		if err == nil {
-			f, path = opened, candidate
-			break
-		}
-	}
-	if f == nil {
-		return
-	}
-	// Read-only: a close error loses nothing that was read, and there is no
-	// caller to hand it to, since the parse runs once behind a sync.Once.
-	defer func() {
-		if err := f.Close(); err != nil {
-			slog.Debug("npu: close pci.ids", "path", path, "error", err)
-		}
-	}()
-
-	scanner := bufio.NewScanner(f)
-	var vendor string
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		switch {
-		case strings.HasPrefix(line, "C "):
-			// "C 12  Processing accelerators"
-			id, name, ok := splitPCIEntry(strings.TrimPrefix(line, "C "))
-			if ok {
-				pciClasses[id] = name
-				vendor = ""
-			}
-		case strings.HasPrefix(line, "\t\t"):
-			// Subsystem entry; not used.
-		case strings.HasPrefix(line, "\t"):
-			if vendor == "" {
-				continue
-			}
-			if id, name, ok := splitPCIEntry(strings.TrimPrefix(line, "\t")); ok {
-				pciDevices[vendor+":"+id] = name
-			}
-		default:
-			if id, name, ok := splitPCIEntry(line); ok {
-				pciVendors[id] = name
-				vendor = id
-			}
-		}
-	}
-	// What was parsed before the failure is correct and is kept; names past
-	// it resolve to nothing, the same as an identifier the database lacks.
-	if err := scanner.Err(); err != nil {
-		slog.Warn("npu: pci.ids read stopped early; later PCI names are unresolved", "path", path, "error", err)
-	}
-}
-
-// splitPCIEntry splits a pci.ids entry into its hex identifier and name.
-func splitPCIEntry(line string) (id, name string, ok bool) {
-	id, name, found := strings.Cut(strings.TrimSpace(line), " ")
-	if !found {
-		return "", "", false
-	}
-	if _, err := strconv.ParseUint(id, 16, 32); err != nil {
-		return "", "", false
-	}
-	return strings.ToLower(id), strings.TrimSpace(name), true
+	db := loadIDDatabase(pciIDsPaths)
+	pciVendors, pciDevices, pciClasses = db.vendors, db.devices, db.classes
 }

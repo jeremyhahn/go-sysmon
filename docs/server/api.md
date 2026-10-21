@@ -748,8 +748,10 @@ stops any other page from framing the dashboard.
 HSTS is sent when the connection is TLS, whether `--tls-cert`/`--tls-key`,
 a `GetConfigForClient` hook, or an embedding application terminated it. It is
 not sent over plain HTTP, because browsers ignore it there (RFC 6797 §8.1).
-Behind a reverse proxy that terminates TLS, the proxy has to send it: the
-request reaching go-sysmon is plain HTTP.
+Behind a reverse proxy that terminates TLS the request reaching go-sysmon is
+plain HTTP, so the proxy has to send it, unless the proxy is listed in
+`server.trusted_proxies` and reports that the client used HTTPS; see
+[deployment.md](deployment.md#trusted-proxies).
 
 A dashboard framed inside another application, or served under a different
 policy, changes these through `Config.SecurityHeaders`; see

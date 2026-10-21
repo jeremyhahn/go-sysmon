@@ -19,7 +19,7 @@ environment are a valid configuration.
 | Defaults | `pkg/config.Defaults()` |
 | File | `/etc/go-sysmon/sysmon.yaml` (`--config` to move it) |
 | Environment | `SYSMON_` + the key, `.` → `_`, e.g. `SYSMON_ALERTS_DISK_FULL_PCT` |
-| Flag | `--addr`, `--interval`, `--tls-cert`, `--tls-key` |
+| Flag | `--addr`, `--interval`, `--tls-cert`, `--tls-key`, `--trusted-proxies` |
 
 Every layer is reachable for every key, the listen address included: `:8081` in
 the config file, `SYSMON_SERVER_ADDR=:8081`, or `--addr :8081`, in that rising
@@ -139,9 +139,9 @@ access that no ruling covers; the aggregator changes only how often it asks.
 new one and start it, so the same control also discarded every reading the
 monitor had accumulated — a second, unnamed action riding on "polling interval".
 
-**Boot-only:** `server.addr`, `server.tls_cert`, `server.tls_key` and
-`server.watch`. These are consumed once, when the process starts and the socket
-binds. A reload reports each changed one in `deferred` **and keeps the boot
+**Boot-only:** `server.addr`, `server.tls_cert`, `server.tls_key`,
+`server.trusted_proxies` and `server.watch`. These are consumed once, when the
+process starts and the socket binds. A reload reports each changed one in `deferred` **and keeps the boot
 value as the effective one**, so `GET /api/config` can never report a setting
 that is not actually in force — a value the file asks for but the running
 service never adopted would be worse than no answer at all.
@@ -246,6 +246,7 @@ authenticating proxy — so it reports **whether** each of these is set up, as
 | Withheld | Why |
 |---|---|
 | `server.tls_cert`, `server.tls_key` | The location of a private key. |
+| `server.trusted_proxies` | The addresses of the proxies in front of the node. |
 | `prometheus.remote_write_url`, `prometheus.query_url` | The address of the fleet's time-series database. |
 | `config_file` | An absolute path is a map of the host's filesystem layout. |
 | `fleet.peers.<name>` | Another machine's scheme, host and port. |

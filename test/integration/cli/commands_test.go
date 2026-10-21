@@ -10,12 +10,14 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
+	"github.com/jeremyhahn/go-sysmon/pkg/types"
 	"github.com/jeremyhahn/go-sysmon/test/integration/harness"
 )
 
@@ -65,35 +67,129 @@ func topLen(raw string) (int, error) {
 // TestCLI_IndexSelectsOneOrFails verifies, for every subcommand that lists
 // devices, that --index 0 prints exactly one when the host has any, and that
 // an index past the end fails naming what was not found rather than printing
-// an empty section.
+// an empty section. Each run is judged by the count it reports itself, since
+// containers and VMs can change between one sysmon run and the next.
 func TestCLI_IndexSelectsOneOrFails(t *testing.T) {
 	for _, tt := range indexed {
 		t.Run(tt.command, func(t *testing.T) {
-			all := harness.Run(t, harness.Bins.Sysmon, nil, tt.command, "--json")
-			if all.Code != 0 {
-				t.Fatalf("sysmon %s --json exited %d:\n%s", tt.command, all.Code, all.Output())
-			}
-			n, err := tt.list(all.Stdout)
-			if err != nil {
-				t.Fatalf("decode sysmon %s --json: %v\n%s", tt.command, err, all.Stdout)
-			}
-
-			if n > 0 {
-				one := harness.Run(t, harness.Bins.Sysmon, nil, tt.command, "--json", "--index", "0")
-				if got, err := tt.list(one.Stdout); one.Code != 0 || err != nil || got != 1 {
-					t.Errorf("sysmon %s --index 0 = %d entries (exit %d, %v), want 1", tt.command, got, one.Code, err)
+			n := 0
+			for attempt := 1; attempt <= indexAttempts; attempt++ {
+				n = listIndexed(t, tt.command, tt.list)
+				if n == 0 || !indexZeroEmptied(t, tt.command, tt.list) {
+					break
 				}
-				text := harness.Run(t, harness.Bins.Sysmon, nil, tt.command, "--index", "0")
-				if text.Code != 0 {
-					t.Errorf("sysmon %s --index 0 exited %d:\n%s", tt.command, text.Code, text.Output())
+				if attempt == indexAttempts {
+					t.Errorf("sysmon %s listed entries, then --index 0 saw none, on %d attempts in a row", tt.command, indexAttempts)
 				}
 			}
 
-			missing := harness.Run(t, harness.Bins.Sysmon, nil, tt.command, "--index", strconv.Itoa(n+7))
-			if missing.Code == 0 || !strings.Contains(missing.Output(), "not found") {
-				t.Errorf("sysmon %s --index %d exited %d:\n%s\nwant a not-found failure", tt.command, n+7, missing.Code, missing.Output())
+			past := n + 7
+			missing := harness.Run(t, harness.Bins.Sysmon, nil, tt.command, "--index", strconv.Itoa(past))
+			available, ok := reportedAvailable(missing.Output())
+			if missing.Code == 0 || !ok || available > past {
+				t.Errorf("sysmon %s --index %d exited %d:\n%s\nwant a not-found failure", tt.command, past, missing.Code, missing.Output())
 			}
 		})
+	}
+}
+
+// indexAttempts bounds how often TestCLI_IndexSelectsOneOrFails lists a
+// device set again after it emptied between the listing and an --index run.
+// Containers and VMs on a shared Docker host come and go between two runs, so
+// one listing cannot tell what a later run sees.
+const indexAttempts = 3
+
+// notFoundCount matches the count every --index not-found error reports, as
+// in "container index 0 not found; 0 container(s) available".
+var notFoundCount = regexp.MustCompile(`not found; (\d+) \S+ available`)
+
+// reportedAvailable returns the number of entries a failed --index run says
+// it saw, and false when the output carries no not-found error.
+func reportedAvailable(output string) (int, bool) {
+	match := notFoundCount.FindStringSubmatch(output)
+	if match == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// listIndexed returns the number of entries sysmon <command> --json lists.
+func listIndexed(t *testing.T, command string, list func(string) (int, error)) int {
+	t.Helper()
+	all := harness.Run(t, harness.Bins.Sysmon, nil, command, "--json")
+	if all.Code != 0 {
+		t.Fatalf("sysmon %s --json exited %d:\n%s", command, all.Code, all.Output())
+	}
+	n, err := list(all.Stdout)
+	if err != nil {
+		t.Fatalf("decode sysmon %s --json: %v\n%s", command, err, all.Stdout)
+	}
+	return n
+}
+
+// indexZeroEmptied checks that --index 0 selects exactly one entry, in JSON
+// and in text, on a host whose listing had some. It returns true, without
+// failing the test, when a run reports not found with 0 entries available:
+// that run is right, because the set emptied after it was listed.
+func indexZeroEmptied(t *testing.T, command string, list func(string) (int, error)) bool {
+	t.Helper()
+	one := harness.Run(t, harness.Bins.Sysmon, nil, command, "--json", "--index", "0")
+	if sawNone(one) {
+		return true
+	}
+	if got, err := list(one.Stdout); one.Code != 0 || err != nil || got != 1 {
+		t.Errorf("sysmon %s --index 0 = %d entries (exit %d, %v), want 1", command, got, one.Code, err)
+	}
+	text := harness.Run(t, harness.Bins.Sysmon, nil, command, "--index", "0")
+	if sawNone(text) {
+		return true
+	}
+	if text.Code != 0 {
+		t.Errorf("sysmon %s --index 0 exited %d:\n%s", command, text.Code, text.Output())
+	}
+	return false
+}
+
+// sawNone reports whether a run failed because it found no entries at all.
+func sawNone(r harness.Result) bool {
+	available, ok := reportedAvailable(r.Output())
+	return r.Code != 0 && ok && available == 0
+}
+
+// TestReportedAvailable verifies that the count is read from every --index
+// not-found error the CLI can print, and that output without one is refused
+// rather than read as an empty set.
+func TestReportedAvailable(t *testing.T) {
+	found := []error{
+		&types.CPUIndexNotFoundError{Index: 9, Available: 4},
+		&types.DIMMIndexNotFoundError{Index: 9, Available: 4},
+		&types.DiskIndexNotFoundError{Index: 9, Available: 4},
+		&types.NetworkIndexNotFoundError{Index: 9, Available: 4},
+		&types.GPUIndexNotFoundError{Index: 9, Available: 4},
+		&types.NPUIndexNotFoundError{Index: 9, Available: 4},
+		&types.ContainerIndexNotFoundError{Index: 9, Available: 4},
+		&types.VMIndexNotFoundError{Index: 9, Available: 4},
+	}
+	for _, err := range found {
+		if got, ok := reportedAvailable("Error: " + err.Error() + "\n"); !ok || got != 4 {
+			t.Errorf("reportedAvailable(%q) = %d, %v, want 4, true", err.Error(), got, ok)
+		}
+	}
+
+	for _, output := range []string{
+		"",
+		"Error: unknown flag: --index\n",
+		"container index 0 not found\n",
+		"container index 0 not found; many container(s) available\n",
+		"container index 0 not found; 99999999999999999999 container(s) available\n",
+	} {
+		if got, ok := reportedAvailable(output); ok {
+			t.Errorf("reportedAvailable(%q) = %d, true, want false", output, got)
+		}
 	}
 }
 

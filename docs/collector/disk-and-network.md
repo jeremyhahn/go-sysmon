@@ -115,4 +115,43 @@ For `wifi` interfaces, `wireless` carries link quality, signal level and noise
 in dBm from `/proc/net/wireless`. It is `null` when the interface has no entry,
 which is the case for a radio that is down.
 
-SSID and BSSID require an nl80211 netlink query and are not reported.
+`ssid` and `bssid` name the network the interface is associated with. They
+come from nl80211 over generic netlink, since `/proc/net/wireless` does not
+carry them, and both queries are unprivileged:
+
+- `NL80211_CMD_GET_INTERFACE` gives the SSID.
+- A `NL80211_CMD_GET_SCAN` dump gives the BSSID: it is the entry whose status
+  is associated, or joined for an ad-hoc network.
+
+The client is in `pkg/collector/network_nl80211.go` and uses only
+`golang.org/x/sys/unix`. Both fields are omitted when the interface is not
+associated or nl80211 is unavailable; a failed query is logged at debug level
+and does not affect the other wireless fields. An SSID is arbitrary bytes, so
+one that is not printable UTF-8 is reported as hex (`0x…`), which keeps
+control characters out of the CLI.
+
+### Hardware identity
+
+A physical NIC reports which device it is:
+
+| Field | Source |
+|---|---|
+| `bus` | `pci` or `usb` |
+| `vendor_id`, `device_id` | PCI `vendor`/`device`, or USB `idVendor`/`idProduct` |
+| `subsystem_vendor_id`, `subsystem_device_id` | PCI `subsystem_vendor`/`subsystem_device` (the board, not the chip) |
+| `vendor`, `model`, `subsystem_vendor` | names for those identifiers |
+
+Identifiers are lower-case hex without `0x`. The collector follows
+`/sys/class/net/<if>/device` up its ancestry to the first PCI function or USB
+device, so a USB adapter is identified as itself rather than as the host
+controller it is plugged into, and a virtio NIC as its virtio PCI function.
+
+Names come from the hwdata databases, `pci.ids` (`/usr/share/misc`,
+`/usr/share/hwdata`) and `usb.ids` (`/usr/share/hwdata`, `/usr/share/misc`,
+`/var/lib/usbutils`), each parsed once. With no database installed the
+identifiers are still reported; a USB NIC then falls back to its own
+`manufacturer` and `product` strings, and a PCI NIC has no names. A
+malformed or truncated database keeps the entries it could read.
+
+A virtual interface (bridge, bond, veth, tun, dummy, loopback) has no device
+and reports all of these empty, as does a platform NIC on neither bus.

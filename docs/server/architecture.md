@@ -282,8 +282,18 @@ deadlines.
 `Strict-Transport-Security` follows the request, not the configuration: it is
 sent when `r.TLS` is set. That covers both of the server's own TLS modes and an
 embedding application that terminates TLS and mounts the server as an
-`http.Handler`, and it is correct behind a TLS-terminating proxy, where the
-request really is plain HTTP and the proxy owns HSTS.
+`http.Handler`. Behind a TLS-terminating proxy the request really is plain
+HTTP and the proxy owns HSTS, unless the proxy is in `Config.TrustedProxies`.
+
+`Config.TrustedProxies` (`[]netip.Prefix`, empty by default) is read by a
+middleware outside the security headers (`pkg/server/forwarded.go`). For a
+request whose immediate peer is in it, it parses `Forwarded`, else
+`X-Forwarded-For` and `X-Forwarded-Proto`, and stores the client's address and
+scheme in the request context. `requestSecure` (HSTS) and `clientAddr` (the
+`remote` attribute of log lines) read it; nothing else does. With the list
+empty the middleware is not installed at all. `config.ParseTrustedProxies`
+turns `server.trusted_proxies` into the prefixes. Rules and threat model:
+[deployment.md](deployment.md#trusted-proxies).
 
 ### The policy and the dashboard
 

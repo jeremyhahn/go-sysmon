@@ -320,3 +320,18 @@ func (e *HeadroomTargetError) Error() string {
 	return fmt.Sprintf("config: fleet.headroom_target %s is out of range; it is a utilisation fraction, "+
 		"greater than 0 and at most 1 (0.8 is 80%%)", strconv.FormatFloat(e.Value, 'g', -1, 64))
 }
+
+// TrustedProxyError reports a server.trusted_proxies entry that is not a CIDR
+// prefix. It stops startup: a list the server cannot read in full would trust
+// a different set of proxies than the file names.
+type TrustedProxyError struct {
+	CIDR string
+	Err  error
+}
+
+func (e *TrustedProxyError) Error() string {
+	return fmt.Sprintf("config: server.trusted_proxies entry %q is not a CIDR prefix "+
+		"(write 10.0.0.0/8, or 192.0.2.10/32 for one host): %v", e.CIDR, e.Err)
+}
+
+func (e *TrustedProxyError) Unwrap() error { return e.Err }

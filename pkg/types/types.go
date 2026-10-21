@@ -1899,9 +1899,15 @@ type NPUClient struct {
 }
 
 // WirelessInfo holds link statistics for a wifi interface, read from
-// /proc/net/wireless. SSID and the associated BSSID require an nl80211 netlink
-// query and are therefore not reported here.
+// /proc/net/wireless, and the network it is associated with, from nl80211.
 type WirelessInfo struct {
+	// SSID is the associated network's name; empty when the radio is not
+	// associated or nl80211 could not be asked. A name that is not printable
+	// UTF-8 is shown as hex with a 0x prefix.
+	SSID string `json:"ssid,omitempty"`
+	// BSSID is the MAC address of the associated access point, or of the
+	// joined ad-hoc network; empty when there is none.
+	BSSID string `json:"bssid,omitempty"`
 	// LinkQuality is the driver's link quality metric (higher is better).
 	LinkQuality float64 `json:"link_quality"`
 	// SignalLevelDBm is the received signal strength in dBm (negative).
@@ -1922,9 +1928,24 @@ type NetworkInfo struct {
 	Speed        uint64   `json:"speed_mbps"`
 	Duplex       string   `json:"duplex"`
 	Driver       string   `json:"driver"`
-	IsUp         bool     `json:"is_up"`
-	IsLoopback   bool     `json:"is_loopback"`
-	IsVirtual    bool     `json:"is_virtual"`
+	// Hardware identity of a physical NIC, empty for a virtual interface.
+	// Bus is "pci" or "usb". The identifiers are lower-case hex without
+	// "0x" (PCI vendor/device, or USB idVendor/idProduct); Vendor and Model
+	// are their names from pci.ids or usb.ids, or a USB device's own
+	// manufacturer and product strings, and are empty when neither is
+	// available. The subsystem fields name the board maker of a PCI card,
+	// which is often not the chip's vendor.
+	Bus               string `json:"bus"`
+	VendorID          string `json:"vendor_id"`
+	DeviceID          string `json:"device_id"`
+	Vendor            string `json:"vendor"`
+	Model             string `json:"model"`
+	SubsystemVendorID string `json:"subsystem_vendor_id"`
+	SubsystemDeviceID string `json:"subsystem_device_id"`
+	SubsystemVendor   string `json:"subsystem_vendor"`
+	IsUp              bool   `json:"is_up"`
+	IsLoopback        bool   `json:"is_loopback"`
+	IsVirtual         bool   `json:"is_virtual"`
 	// OperState is the kernel's operational state ("up", "down", "unknown",
 	// "lowerlayerdown"). It differs from IsUp, which reflects the
 	// administrative IFF_UP flag: a cable-less NIC is administratively up but

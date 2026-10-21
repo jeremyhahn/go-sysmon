@@ -5,7 +5,7 @@
   import MetricChart from "$components/MetricChart.svelte";
   import {
     formatBytes,
-    formatBytesRate,
+    formatByteRateAsBits,
     formatDuration,
     formatPercent,
     formatTemp,
@@ -323,12 +323,12 @@
       {#if topIface != null}
         <StatCard
           label="Net ↑ ({topIface.name})"
-          value={formatBytesRate(topIface.bytes_sent_rate)}
+          value={formatByteRateAsBits(topIface.bytes_sent_rate)}
           colorClass="text-success"
         />
         <StatCard
           label="Net ↓ ({topIface.name})"
-          value={formatBytesRate(topIface.bytes_recv_rate)}
+          value={formatByteRateAsBits(topIface.bytes_recv_rate)}
           colorClass="text-info"
         />
       {/if}
@@ -372,13 +372,13 @@
                 label: "Send",
                 data: topIfaceHistory.sentRates,
                 color: "#36d399",
-                formatter: formatBytesRate,
+                formatter: formatByteRateAsBits,
               },
               {
                 label: "Recv",
                 data: topIfaceHistory.recvRates,
                 color: "#38bdf8",
-                formatter: formatBytesRate,
+                formatter: formatByteRateAsBits,
               },
             ]}
             height="120px"

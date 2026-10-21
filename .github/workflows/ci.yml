@@ -8,7 +8,25 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # The default types only: never `labeled` or `unlabeled`. train-pr puts
+    # every label on a PR in its create call, and Gitea 1.27.1 turns each
+    # label add or remove into a `labeled` event, so those types would start
+    # a run per label. `ci:full` counts when it is on the PR at open; a full
+    # run on an open PR goes through workflow_dispatch.
   workflow_dispatch:
+
+# Two tiers (#267, handbook ci-standard.md §8, docs/testing/ci-tiers.md). The
+# PR tier -- lint, build, bundle currency and the unit suite under -race --
+# runs on every event. The full tier adds security analysis, FIPS,
+# integration, browser, desktop extension and container image jobs, and runs
+# on a push to main, on workflow_dispatch, and on a PR labelled `ci:full`.
+# Each full-tier job and the gate repeat one test:
+#
+#   github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+#
+# The labels are read from the PR, never from github.event.label.name: Gitea
+# 1.27 sends `label_updated` with no label object, so that name is always empty.
+# No `schedule:`: the coordinator dispatches nightly runs.
 
 # Shed superseded runs instead of letting them finish. gpu-host's act_runner is
 # capacity 3 for the whole portfolio, so a run whose head has already moved on is
@@ -121,6 +139,8 @@ jobs:
 
   security:
     name: Security Scan
+    # Full tier.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     # No `needs`: every job starts at once and CI Passed fails closed on any
     # of them (ci-template v1.14/v1.15, #237).
@@ -257,8 +277,10 @@ jobs:
           path: coverage.out
           retention-days: 7
 
+  # Full tier, like every job whose `if:` is the tier test above.
   extensions:
     name: Desktop Extension Tests
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -326,6 +348,7 @@ jobs:
 
   fips:
     name: FIPS
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     # No `needs`: every job starts at once and CI Passed fails closed on any
     # of them (ci-template v1.14/v1.15, #237).
@@ -357,6 +380,7 @@ jobs:
 
   integration:
     name: Integration Tests
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     # No `needs`: every job starts at once and CI Passed fails closed on any
     # of them (ci-template v1.14/v1.15, #237).
@@ -392,6 +416,7 @@ jobs:
 
   e2e:
     name: Browser Tests
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     # No `needs`: every job starts at once and CI Passed fails closed on any
     # of them (ci-template v1.14/v1.15, #237).
@@ -436,9 +461,6 @@ jobs:
           path: cmd/sysmon/frontend/test-results/
           retention-days: 7
 
-  # Builds the image on every push without publishing it, so a broken
-  # Dockerfile is caught here rather than at tag time when a release is
-  # already half-built.
   bundle:
     name: Bundle Currency
     runs-on: ubuntu-latest
@@ -467,8 +489,12 @@ jobs:
       - name: Committed bundle matches its source
         run: make check-bundle-current
 
+  # Builds the image on every full-tier run without publishing it, so a broken
+  # Dockerfile is caught on main rather than at tag time when a release is
+  # already half-built.
   image:
     name: Container Image
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     # No `needs`: every job starts at once and CI Passed fails closed on any
     # of them (ci-template v1.14/v1.15, #237).
@@ -540,7 +566,7 @@ jobs:
   ci-passed:
     name: CI Passed
     runs-on: ubuntu-latest
-    needs: [lint, security, test, extensions, bundle, build, fips, image, integration, e2e]
+    needs: [lint, test, bundle, build, security, extensions, fips, image, integration, e2e]
     if: always()
     steps:
       # Each job is read BY NAME rather than through join(needs.*.result).
@@ -549,14 +575,18 @@ jobs:
       # "All CI jobs succeeded" while Browser Tests had failed. A gate that
       # passes vacuously is worse than no gate at all.
       #
-      # Anything but `success` fails, an unreadable (empty) result included.
-      # Grepping for failure|cancelled let a `skipped` job through, and one
-      # unreadable result among readable ones as well (#237): a job that
-      # never ran proved nothing.
+      # A PR-tier job passes on `success` alone; an unreadable (empty) result
+      # fails, and so does `skipped` (#237): a job that never ran proved
+      # nothing. A full-tier job may also be `skipped`, but only when this run
+      # did not ask for the full tier (FULL_TIER, the tier test at the top of
+      # the file). Skipped in a full-tier run means its `if:` and this test
+      # disagree, and that fails closed too.
       #
       # Expression strings must also be single-quoted -- GitHub rejects double
       # quotes and invalidates the whole file before any job starts.
       - name: Verify every job succeeded
+        env:
+          FULL_TIER: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
         run: |
           check() { case "$2" in
             success) echo "OK   $1";;
@@ -564,17 +594,24 @@ jobs:
             '')      echo "FAIL $1 (result unreadable)"; BAD=1;;
             *)       echo "FAIL $1 ($2)"; BAD=1;;
           esac; }
+          full() {
+            if [ "$2" = skipped ] && [ "$FULL_TIER" = false ]; then
+              echo "--   $1 (full tier, not requested)"
+            else
+              check "$1" "$2"
+            fi; }
           BAD=0
+          echo "Full tier requested: $FULL_TIER"
           check lint        "${{ needs.lint.result }}"
-          check security    "${{ needs.security.result }}"
           check test        "${{ needs.test.result }}"
-          check extensions  "${{ needs.extensions.result }}"
           check bundle      "${{ needs.bundle.result }}"
           check build       "${{ needs.build.result }}"
-          check fips        "${{ needs.fips.result }}"
-          check image       "${{ needs.image.result }}"
-          check integration "${{ needs.integration.result }}"
-          check e2e         "${{ needs.e2e.result }}"
+          full  security    "${{ needs.security.result }}"
+          full  extensions  "${{ needs.extensions.result }}"
+          full  fips        "${{ needs.fips.result }}"
+          full  image       "${{ needs.image.result }}"
+          full  integration "${{ needs.integration.result }}"
+          full  e2e         "${{ needs.e2e.result }}"
           if [ "$BAD" -ne 0 ]; then
             echo "One or more CI jobs did not succeed."
             exit 1

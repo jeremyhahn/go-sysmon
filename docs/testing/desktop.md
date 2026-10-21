@@ -7,8 +7,10 @@ A panel applet cannot be tested the way a Go package can: it runs inside a
 compositor, against a JavaScript binding to a C toolkit, on a display. Testing
 it is a question of how much of that stack you are willing to stand up.
 
-The answer here is three tiers. The first two are fast and hermetic and run on
-every commit. The third stands up a real Cinnamon session and runs nightly.
+The answer here is three tiers. The first two are fast and hermetic and run in
+`make ci` and in CI's full tier ([CI tiers](ci-tiers.md)). The third stands up a
+real Cinnamon session and runs nightly, dispatched by hand rather than on a
+schedule.
 
 | Tier | What it proves                                  | Cost      | Where it runs |
 |------|-------------------------------------------------|-----------|---------------|

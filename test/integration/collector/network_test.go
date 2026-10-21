@@ -26,6 +26,10 @@ type netInfo struct {
 	BondMode     string   `json:"bond_mode"`
 	BondSlaves   []string `json:"bond_slaves"`
 	BondMaster   string   `json:"bond_master"`
+	Bus          string   `json:"bus"`
+	VendorID     string   `json:"vendor_id"`
+	Vendor       string   `json:"vendor"`
+	Model        string   `json:"model"`
 }
 
 // topology builds, in the process's own network namespace, a host's worth of
@@ -104,6 +108,20 @@ func TestNetwork_SoftwareTopologyIsClassified(t *testing.T) {
 	}
 	if nets["dum0"].MTU != 9000 || !nets["dum0"].IsUp || !nets["dum0"].IsVirtual {
 		t.Errorf("dum0 = mtu %d, up %v, virtual %v; want 9000, up, virtual", nets["dum0"].MTU, nets["dum0"].IsUp, nets["dum0"].IsVirtual)
+	}
+}
+
+// TestNetwork_SoftwareLinksHaveNoHardwareIdentity verifies that a link with no
+// device behind it reports no bus, identifiers, manufacturer or model, rather
+// than borrowing those of some other device.
+func TestNetwork_SoftwareLinksHaveNoHardwareIdentity(t *testing.T) {
+	nets := networks(t)
+
+	for _, name := range []string{"lo", "br0", "bond0", "trunk.100", "tap0", "veth-a", "dum0"} {
+		n := nets[name]
+		if n.Bus != "" || n.VendorID != "" || n.Vendor != "" || n.Model != "" {
+			t.Errorf("%s = bus %q, id %q, %q %q; want no hardware identity", name, n.Bus, n.VendorID, n.Vendor, n.Model)
+		}
 	}
 }
 

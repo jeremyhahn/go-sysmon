@@ -32,6 +32,37 @@ export function formatBytesRate(bytesPerSec: number, decimals = 1): string {
   return `${formatBytes(bytesPerSec, decimals)}/s`;
 }
 
+const BIT_RATE_UNITS = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"] as const;
+
+/**
+ * formatBitRate converts a bits-per-second rate to the most readable decimal
+ * (SI) unit, as network links are rated: 1 Kbps is 1000 bps, not 1024.
+ * e.g. 1500 -> "1.5 Kbps", 1e9 -> "1.0 Gbps", 2.5e15 -> "2500.0 Tbps"
+ *
+ * Like formatBytes, a value below one bit stays in bps, a negative value keeps
+ * its sign, and a non-finite one renders as a dash.
+ */
+export function formatBitRate(bitsPerSec: number, decimals = 1): string {
+  if (!Number.isFinite(bitsPerSec)) return "-";
+  if (bitsPerSec === 0) return "0 bps";
+  const magnitude = Math.abs(bitsPerSec);
+  const i = Math.min(
+    Math.max(Math.floor(Math.log10(magnitude) / 3), 0),
+    BIT_RATE_UNITS.length - 1
+  );
+  const value = bitsPerSec / Math.pow(1000, i);
+  return `${value.toFixed(decimals)} ${BIT_RATE_UNITS[i]}`;
+}
+
+/**
+ * formatByteRateAsBits shows a bytes-per-second rate, as the collector reports
+ * interface traffic, in bits per second.
+ * e.g. 125000 -> "1.0 Mbps"
+ */
+export function formatByteRateAsBits(bytesPerSec: number, decimals = 1): string {
+  return formatBitRate(bytesPerSec * 8, decimals);
+}
+
 /**
  * formatDuration converts a duration in seconds to a human-readable string.
  * e.g. 90061 -> "1d 1h 1m"

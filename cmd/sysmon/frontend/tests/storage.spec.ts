@@ -124,3 +124,19 @@ test.describe('Storage Tab, disk without partitions', () => {
     await expect(card.getByText('Partitions', { exact: true })).toHaveCount(0);
   });
 });
+
+/**
+ * The peak read and write rates since the server started sit beside the peak
+ * utilisation and queue length (#260); the API carried them, the panel did not.
+ */
+test.describe('Storage Tab, peak throughput', () => {
+  test('shows the peak read and write rates', async ({ page }) => {
+    await openStorage(page, {
+      disks: [{ name: 'sda', peak_read_bytes_rate: 3 * 1024 * 1024, peak_write_bytes_rate: 512 * 1024 }],
+    });
+
+    const card = diskCard(page, 'sda');
+    await expect(card.locator('div', { hasText: /^\s*Peak read/ }).last()).toContainText('3.0 MB/s');
+    await expect(card.locator('div', { hasText: /^\s*Peak write/ }).last()).toContainText('512.0 KB/s');
+  });
+});

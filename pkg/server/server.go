@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -190,6 +191,15 @@ type Config struct {
 	// Content-Security-Policy with one whose frame-ancestors names its origin.
 	SecurityHeaders http.Header
 
+	// TrustedProxies is optional: the prefixes of the reverse proxies whose
+	// forwarding headers are believed when one of them is a request's
+	// immediate peer -- Forwarded (RFC 7239) first, else X-Forwarded-For and
+	// X-Forwarded-Proto. What they report decides two things only: whether
+	// Strict-Transport-Security is sent, and the client address logs name.
+	// Empty, the default, believes no peer's. config.ParseTrustedProxies
+	// reads them from server.trusted_proxies.
+	TrustedProxies []netip.Prefix
+
 	// Version, GitCommit and BuildDate are the build metadata reported at
 	// GET /api/version. Empty values render as "dev"/"unknown" downstream.
 	Version   string
@@ -310,8 +320,10 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 	s.server = &http.Server{
 		Addr: cfg.Addr,
 		// Every response passes through the security headers, whichever
-		// route -- or none -- answers it.
-		Handler:   securityHeaders(mergeSecurityHeaders(cfg.SecurityHeaders), mux),
+		// route -- or none -- answers it. A trusted proxy's forwarding
+		// headers are read first, so HSTS can follow the client's scheme.
+		Handler: forwardedHeaders(trustedProxies(cfg.TrustedProxies),
+			securityHeaders(mergeSecurityHeaders(cfg.SecurityHeaders), mux)),
 		TLSConfig: s.tlsConfig,
 
 		// ReadHeaderTimeout bounds how long a client may take to send its
@@ -510,7 +522,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write([]byte("go-sysmon is running\n")); err != nil {
 		// The status is already sent; a failed body write means the client
 		// went away, and there is no one left to tell.
-		slog.Debug("status page write", "err", err, "remote", r.RemoteAddr)
+		slog.Debug("status page write", "err", err, "remote", clientAddr(r))
 	}
 }
 
@@ -722,12 +734,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		// failure here is a client that went away mid-stream: logged, since
 		// there is no response left to carry it.
 		if err := stream.Close(); err != nil {
-			slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+			slog.Debug("event stream close", "err", err, "remote", clientAddr(r))
 		}
 	}()
 
 	if err := stream.retry(reconnectDelayMS); err != nil {
-		slog.Debug("event stream retry", "err", err, "remote", r.RemoteAddr)
+		slog.Debug("event stream retry", "err", err, "remote", clientAddr(r))
 		return
 	}
 
@@ -763,7 +775,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// flag already false here.
 	if !s.mon.Running() {
 		if err := stream.send("bye", "monitor stopped"); err != nil {
-			slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+			slog.Debug("event stream close", "err", err, "remote", clientAddr(r))
 		}
 		return
 	}
@@ -776,7 +788,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// before its initial frame.
 	if snap, err := s.mon.Snapshot(); err == nil && !closed(sub.Done) {
 		if err := stream.send("snapshot", snap); err != nil {
-			slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
+			slog.Debug("event stream write", "err", err, "remote", clientAddr(r))
 			return
 		}
 	}
@@ -793,7 +805,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		case <-sub.Done:
 			// Monitor stopped; tell the client not to reconnect.
 			if err := stream.send("bye", "monitor stopped"); err != nil {
-				slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+				slog.Debug("event stream close", "err", err, "remote", clientAddr(r))
 			}
 			return
 
@@ -808,18 +820,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			// by the bye that follows it.
 			if closed(sub.Done) {
 				if err := stream.send("bye", "monitor stopped"); err != nil {
-					slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+					slog.Debug("event stream close", "err", err, "remote", clientAddr(r))
 				}
 				return
 			}
 			if err := stream.send("snapshot", snap); err != nil {
-				slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
+				slog.Debug("event stream write", "err", err, "remote", clientAddr(r))
 				return
 			}
 
 		case <-keepalive.C:
 			if err := stream.comment("keepalive"); err != nil {
-				slog.Debug("event stream keepalive", "err", err, "remote", r.RemoteAddr)
+				slog.Debug("event stream keepalive", "err", err, "remote", clientAddr(r))
 				return
 			}
 		}
@@ -860,7 +872,7 @@ func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *ev
 	// reason, and clientStream.initial makes the same check on the way out.
 	if name, payload, ok := client.initial(); ok {
 		if err := stream.sendRaw(name, payload); err != nil {
-			slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
+			slog.Debug("event stream write", "err", err, "remote", clientAddr(r))
 			return
 		}
 	}
@@ -875,7 +887,7 @@ func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *ev
 
 		case <-client.done():
 			if err := stream.send("bye", "monitor stopped"); err != nil {
-				slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+				slog.Debug("event stream close", "err", err, "remote", clientAddr(r))
 			}
 			return
 
@@ -887,7 +899,7 @@ func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *ev
 			// followed by the bye that says it is not.
 			if client.ended() {
 				if err := stream.send("bye", "monitor stopped"); err != nil {
-					slog.Debug("event stream close", "err", err, "remote", r.RemoteAddr)
+					slog.Debug("event stream close", "err", err, "remote", clientAddr(r))
 				}
 				return
 			}
@@ -896,13 +908,13 @@ func (s *Server) streamDeltas(w http.ResponseWriter, r *http.Request, stream *ev
 				continue // the frame already sent on connection
 			}
 			if err := stream.sendRaw(name, payload); err != nil {
-				slog.Debug("event stream write", "err", err, "remote", r.RemoteAddr)
+				slog.Debug("event stream write", "err", err, "remote", clientAddr(r))
 				return
 			}
 
 		case <-keepalive.C:
 			if err := stream.comment("keepalive"); err != nil {
-				slog.Debug("event stream keepalive", "err", err, "remote", r.RemoteAddr)
+				slog.Debug("event stream keepalive", "err", err, "remote", clientAddr(r))
 				return
 			}
 		}

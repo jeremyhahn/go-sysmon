@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/config"
@@ -25,15 +26,16 @@ func withServeConfig(t *testing.T, body string) string {
 	}
 
 	oldPath, oldAddr, oldInterval := serveConfigPath, serveAddr, serveIntervalMs
-	oldCert, oldKey := serveTLSCert, serveTLSKey
+	oldCert, oldKey, oldProxies := serveTLSCert, serveTLSKey, serveTrustedProxies
 	t.Cleanup(func() {
 		serveConfigPath, serveAddr, serveIntervalMs = oldPath, oldAddr, oldInterval
-		serveTLSCert, serveTLSKey = oldCert, oldKey
+		serveTLSCert, serveTLSKey, serveTrustedProxies = oldCert, oldKey, oldProxies
 	})
 
 	d := config.Defaults()
 	serveConfigPath = path
 	serveAddr, serveTLSCert, serveTLSKey = d.Server.Addr, d.Server.TLSCert, d.Server.TLSKey
+	serveTrustedProxies = d.Server.TrustedProxies
 	serveIntervalMs = d.Server.IntervalMs
 
 	return path
@@ -203,6 +205,48 @@ func TestLoadServeConfig_OnlyChangedFlagsReachTheFlagLayer(t *testing.T) {
 	}
 	if tls := serveTLSConfig(mgr.Current()); tls == nil || tls.CertFile != got.TLSCert || tls.KeyFile != got.TLSKey {
 		t.Errorf("serveTLSConfig() = %+v, want the flags' certificate and key", tls)
+	}
+}
+
+// trustedProxiesCommand is a serve command with only --trusted-proxies,
+// given values.
+func trustedProxiesCommand(t *testing.T, values ...string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "serve"}
+	cmd.Flags().StringSliceVar(&serveTrustedProxies, "trusted-proxies", nil, "")
+	for _, value := range values {
+		if err := cmd.Flags().Set("trusted-proxies", value); err != nil {
+			t.Fatalf("set --trusted-proxies: %v", err)
+		}
+	}
+	return cmd
+}
+
+// TestLoadServeConfig_TrustedProxiesFlag: the flag may be repeated or
+// comma-separated, and outranks the file.
+func TestLoadServeConfig_TrustedProxiesFlag(t *testing.T) {
+	withServeConfig(t, "server:\n  trusted_proxies: [192.0.2.0/24]\n")
+
+	mgr, err := loadServeConfig(trustedProxiesCommand(t, "10.0.0.0/8,fd00::/8", "172.16.0.0/12"))
+	if err != nil {
+		t.Fatalf("loadServeConfig(): %v", err)
+	}
+	want := []string{"10.0.0.0/8", "fd00::/8", "172.16.0.0/12"}
+	if got := mgr.Current().Server.TrustedProxies; !slices.Equal(got, want) {
+		t.Errorf("server.trusted_proxies = %v, want %v", got, want)
+	}
+	if src := mgr.Sources()["server.trusted_proxies"]; src != types.ConfigSourceFlag {
+		t.Errorf("server.trusted_proxies source = %q, want %q", src, types.ConfigSourceFlag)
+	}
+}
+
+func TestLoadServeConfig_InvalidTrustedProxyFailsStartup(t *testing.T) {
+	withServeConfig(t, "")
+
+	_, err := loadServeConfig(trustedProxiesCommand(t, "10.0.0.1"))
+	var proxyErr *config.TrustedProxyError
+	if !errors.As(err, &proxyErr) {
+		t.Fatalf("loadServeConfig() error = %v, want a TrustedProxyError", err)
 	}
 }
 

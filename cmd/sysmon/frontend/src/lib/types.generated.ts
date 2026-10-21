@@ -1469,6 +1469,23 @@ export interface NetworkInfo {
   speed_mbps: number;
   duplex: string;
   driver: string;
+  /**
+   * Hardware identity of a physical NIC, empty for a virtual interface.
+   * Bus is "pci" or "usb". The identifiers are lower-case hex without
+   * "0x" (PCI vendor/device, or USB idVendor/idProduct); Vendor and Model
+   * are their names from pci.ids or usb.ids, or a USB device's own
+   * manufacturer and product strings, and are empty when neither is
+   * available. The subsystem fields name the board maker of a PCI card,
+   * which is often not the chip's vendor.
+   */
+  bus: string;
+  vendor_id: string;
+  device_id: string;
+  vendor: string;
+  model: string;
+  subsystem_vendor_id: string;
+  subsystem_device_id: string;
+  subsystem_vendor: string;
   is_up: boolean;
   is_loopback: boolean;
   is_virtual: boolean;
@@ -2180,10 +2197,20 @@ export interface VirtInfo {
 
 /**
  * WirelessInfo holds link statistics for a wifi interface, read from
- * /proc/net/wireless. SSID and the associated BSSID require an nl80211 netlink
- * query and are therefore not reported here.
+ * /proc/net/wireless, and the network it is associated with, from nl80211.
  */
 export interface WirelessInfo {
+  /**
+   * SSID is the associated network's name; empty when the radio is not
+   * associated or nl80211 could not be asked. A name that is not printable
+   * UTF-8 is shown as hex with a 0x prefix.
+   */
+  ssid?: string;
+  /**
+   * BSSID is the MAC address of the associated access point, or of the
+   * joined ad-hoc network; empty when there is none.
+   */
+  bssid?: string;
   /** LinkQuality is the driver's link quality metric (higher is better). */
   link_quality: number;
   /** SignalLevelDBm is the received signal strength in dBm (negative). */

@@ -367,7 +367,8 @@
 
               <!-- Performance (iostat-style): the first things to check when a
                    disk is the bottleneck. util% is the share of wall-clock the
-                   device was busy; avg queue is iostat's avgqu-sz. -->
+                   device was busy; avg queue is iostat's avgqu-sz. Peaks are
+                   since the server started. -->
               <div class="grid grid-cols-3 gap-2 mt-2 text-xs">
                 <div>
                   <span class="text-base-content/60">Utilisation</span>
@@ -390,6 +391,18 @@
                   <span class="text-base-content/60">Queue (now / peak)</span>
                   <div class="font-semibold text-base-content">
                     {disk.queue_length} / {disk.peak_queue_length}
+                  </div>
+                </div>
+                <div>
+                  <span class="text-base-content/60">Peak read</span>
+                  <div class="font-semibold text-base-content">
+                    {formatBytesRate(disk.peak_read_bytes_rate)}
+                  </div>
+                </div>
+                <div>
+                  <span class="text-base-content/60">Peak write</span>
+                  <div class="font-semibold text-base-content">
+                    {formatBytesRate(disk.peak_write_bytes_rate)}
                   </div>
                 </div>
               </div>

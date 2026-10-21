@@ -335,6 +335,62 @@ The server already sends `X-Accel-Buffering: no`, which nginx honours on its
 own; the explicit `proxy_buffering off` is belt and braces, and documents the
 requirement for proxies that do not read that header.
 
+### Trusted proxies
+
+Behind a proxy, every request reaches go-sysmon from the proxy's address, over
+plain HTTP when the proxy terminates TLS. So by default the logs name the proxy
+as the client, and `Strict-Transport-Security` is never sent; the proxy has to
+send it. Name the proxy and go-sysmon reads what the proxy says about the
+client instead:
+
+```yaml
+server:
+  trusted_proxies:
+    - 127.0.0.1/32
+    - 10.20.0.0/16
+```
+
+or `--trusted-proxies 127.0.0.1/32,10.20.0.0/16` (repeatable), or
+`SYSMON_SERVER_TRUSTED_PROXIES=127.0.0.1/32,10.20.0.0/16`.
+
+| | |
+|---|---|
+| Default | empty: no peer's forwarding headers are read, and behaviour is exactly as without the setting |
+| Entries | CIDR prefixes, IPv4 or IPv6. A lone address is refused; write `/32` or `/128` for one host. An invalid entry stops startup with `config.TrustedProxyError` |
+| Applied | at startup only; a reload that changes it is logged as needing a restart |
+| Settings view | `(configured)` or `(not set)`; the prefixes themselves are withheld |
+
+For a request whose **immediate peer** is in the list, go-sysmon reads
+`Forwarded` (RFC 7239) when present and well-formed, and otherwise
+`X-Forwarded-For` and `X-Forwarded-Proto`. A chain of hops is walked from the
+right, past every trusted address, to the first address that is not trusted:
+that is the client. Everything to its left was written by the client itself
+and may be invented. `proto` is read from the same `Forwarded` element; of
+`X-Forwarded-Proto`, the right-most entry counts. When the client used HTTPS,
+HSTS is sent. A request that reached go-sysmon itself over TLS gets HSTS
+whatever the headers say.
+
+What the proxy reports is used for **two things only**: whether HSTS is sent,
+and the client address in logs. It authenticates nothing, redirects nothing,
+and builds no URLs.
+
+The threat this guards against is a spoofed header. Anyone can send
+`X-Forwarded-For: 192.0.2.1` or `Forwarded: proto=https`; believing it from
+any peer would let a client pick the address it is logged under. So:
+
+- Forwarding headers from a peer **not** in the list are ignored entirely.
+- List only the proxies themselves, as narrowly as you can. A broad prefix
+  such as `0.0.0.0/0` trusts every client's headers, which is the spoofing
+  this setting exists to prevent.
+- Make the proxy overwrite or append to these headers, never pass a client's
+  through unexamined (nginx: `proxy_set_header X-Forwarded-For
+  $proxy_add_x_forwarded_for;` and `proxy_set_header X-Forwarded-Proto
+  $scheme;`).
+
+A malformed header, or one over 4 KiB, is ignored, never answered with an
+error: the request is served as if the header were absent, and a malformed
+`Forwarded` falls back to the `X-Forwarded-*` headers.
+
 ### Under a sub-path
 
 The dashboard can be mounted anywhere under another site, for example at

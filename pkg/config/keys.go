@@ -17,6 +17,7 @@ func scalarKeys() []string {
 		"server.interval_ms",
 		"server.tls_cert",
 		"server.tls_key",
+		"server.trusted_proxies",
 		"server.watch",
 		"alerts.disk_full_pct",
 		"alerts.disk_full_crit_pct",
@@ -64,6 +65,7 @@ func defaultMap(c Config) map[string]any {
 		"server.interval_ms":            c.Server.IntervalMs,
 		"server.tls_cert":               c.Server.TLSCert,
 		"server.tls_key":                c.Server.TLSKey,
+		"server.trusted_proxies":        c.Server.TrustedProxies,
 		"server.watch":                  c.Server.Watch,
 		"alerts.disk_full_pct":          c.Alerts.DiskFullPct,
 		"alerts.disk_full_crit_pct":     c.Alerts.DiskFullCritPct,
@@ -122,6 +124,7 @@ func defaultMap(c Config) map[string]any {
 var withheld = map[string]bool{
 	"server.tls_cert":             true,
 	"server.tls_key":              true,
+	"server.trusted_proxies":      true,
 	"fleet.tls.ca_file":           true,
 	"fleet.tls.cert_file":         true,
 	"fleet.tls.key_file":          true,
@@ -151,6 +154,8 @@ func (c *Config) raw(key string) string {
 		return c.Server.TLSCert
 	case "server.tls_key":
 		return c.Server.TLSKey
+	case "server.trusted_proxies":
+		return strings.Join(c.Server.TrustedProxies, ",")
 	case "server.watch":
 		return strconv.FormatBool(c.Server.Watch)
 	case "alerts.disk_full_pct":

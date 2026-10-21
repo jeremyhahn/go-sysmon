@@ -237,6 +237,7 @@ func applyInterfaceDetail(info *types.NetworkInfo, ifIndex int, sysDNS, sysSearc
 	info.Kind = classifyInterface(info.Name)
 	info.OperState = readOperState(info.Name)
 	info.BondMaster = readMaster(info.Name)
+	applyNICHardware(info)
 
 	switch info.Kind {
 	case kindBridge:
@@ -245,6 +246,11 @@ func applyInterfaceDetail(info *types.NetworkInfo, ifIndex int, sysDNS, sysSearc
 		info.BondMode, info.BondSlaves = readBondInfo(info.Name)
 	case kindWifi:
 		info.Wireless = readWirelessInfo(info.Name)
+		// A radio with no /proc/net/wireless entry is down, so it has no
+		// association to ask nl80211 about.
+		if info.Wireless != nil {
+			applyWifiLink(info.Wireless, ifIndex)
+		}
 	}
 
 	if servers, search := readLinkDNS(ifIndex); len(servers) > 0 {
