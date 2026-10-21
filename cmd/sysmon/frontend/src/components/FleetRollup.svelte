@@ -7,6 +7,7 @@
   import { nodeStatusBadgeClass } from "$lib/alerts";
   import {
     formatBytesRate,
+    formatByteRateAsBits,
     formatPercent,
     formatTemp,
     formatWatts,
@@ -172,8 +173,8 @@
       <div data-testid="fleet-network">
         <p class="text-base-content/60">Network</p>
         <p class="font-mono">
-          <span class="text-info">↓ {formatBytesRate(rollup.network.rx_rate)}</span>
-          <span class="text-success ml-1">↑ {formatBytesRate(rollup.network.tx_rate)}</span>
+          <span class="text-info">↓ {formatByteRateAsBits(rollup.network.rx_rate)}</span>
+          <span class="text-success ml-1">↑ {formatByteRateAsBits(rollup.network.tx_rate)}</span>
         </p>
         <p class="text-base-content/60">across {rollup.network.nodes} {coverage(rollup.network.of, rollup)}</p>
       </div>

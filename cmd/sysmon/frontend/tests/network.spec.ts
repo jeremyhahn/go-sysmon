@@ -86,6 +86,62 @@ test.describe('Network rates', () => {
     await expect(page.locator('.text-info').filter({ hasText: /↓/ }).first()).toHaveText(/↓\s*1\.5 Gbps/);
     await expect(page.locator('div').filter({ hasText: /^Sent:/ }).first()).toContainText('2.0 KB');
   });
+
+  test('an unmeasured rate reads unknown, never 0 bps (#275)', async ({ page }) => {
+    await mockSnapshotFeed(page, {
+      networks: [{ name: 'enp131s0', rates_available: false, bytes_sent_rate: 0, bytes_recv_rate: 0 }],
+    });
+    await page.goto('/');
+    await openTab(page, 'Network');
+
+    await expect(page.locator('.text-success').filter({ hasText: /↑/ }).first()).toHaveText(/↑\s*unknown/);
+    await expect(page.locator('.text-info').filter({ hasText: /↓/ }).first()).toHaveText(/↓\s*unknown/);
+    await expect(page.getByText('0 bps')).toHaveCount(0);
+  });
+
+  test('a measured zero rate still reads 0 bps', async ({ page }) => {
+    await mockSnapshotFeed(page, {
+      networks: [{ name: 'enp131s0', rates_available: true, bytes_sent_rate: 0, bytes_recv_rate: 0 }],
+    });
+    await page.goto('/');
+    await openTab(page, 'Network');
+
+    await expect(page.locator('.text-success').filter({ hasText: /↑/ }).first()).toHaveText(/↑\s*0 bps/);
+  });
+});
+
+/** Each interface shows the resolvers it was configured with (#275). */
+test.describe('Per-interface DNS', () => {
+  test('two interfaces each show their own DNS servers', async ({ page }) => {
+    await mockSnapshotFeed(page, {
+      networks: [
+        { name: 'enp131s0', dns_servers: ['192.0.2.53'], dns_search: ['lan.example'] },
+        { name: 'wlp2s0', dns_servers: ['198.51.100.53', '198.51.100.54'], dns_search: [] },
+      ],
+    });
+    await page.goto('/');
+    await openTab(page, 'Network');
+
+    const card = (name: string) =>
+      page.locator('.card').filter({ has: page.locator('h3', { hasText: new RegExp(`^\\s*${name}\\s*$`) }) });
+    const wired = card('enp131s0').getByTestId('iface-dns');
+    const wifi = card('wlp2s0').getByTestId('iface-dns');
+
+    await expect(wired).toContainText('192.0.2.53');
+    await expect(wired).toContainText('lan.example');
+    await expect(wired).not.toContainText('198.51.100');
+    await expect(wifi).toContainText('198.51.100.53');
+    await expect(wifi).toContainText('198.51.100.54');
+    await expect(wifi).not.toContainText('192.0.2.53');
+  });
+
+  test('an interface with no DNS servers shows no DNS line', async ({ page }) => {
+    await mockSnapshotFeed(page, { networks: [{ name: 'enp131s0', dns_servers: [] }] });
+    await page.goto('/');
+    await openTab(page, 'Network');
+
+    await expect(page.getByTestId('iface-dns')).toHaveCount(0);
+  });
 });
 
 /**

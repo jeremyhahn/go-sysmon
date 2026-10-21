@@ -76,6 +76,8 @@ export interface MockOptions {
   containers?: number;
   /** Replaces the VM list. Same reasoning as containers. */
   vms?: number;
+  /** Fields set on every VM built by `vms`, e.g. a rate with a known value. */
+  vmOverrides?: Record<string, unknown>;
   /** Replaces the container image list. Same reasoning. */
   images?: number;
   /** Attaches SMART attributes to the first disk. Same reasoning. */
@@ -294,7 +296,9 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
   const virtualization = {
     ...snapshot.virtualization,
     containers: opts.containers == null ? snapshot.virtualization.containers : makeContainers(opts.containers),
-    vms: opts.vms == null ? snapshot.virtualization.vms : makeVMs(opts.vms),
+    vms: opts.vms == null
+      ? snapshot.virtualization.vms
+      : makeVMs(opts.vms).map((vm) => ({ ...vm, ...opts.vmOverrides })),
     ...(opts.containerRuntime == null ? {} : { container_runtime: opts.containerRuntime }),
     ...(opts.hypervisor == null ? {} : { hypervisor: opts.hypervisor }),
     capability: { ...snapshot.virtualization.capability, ...opts.capability },

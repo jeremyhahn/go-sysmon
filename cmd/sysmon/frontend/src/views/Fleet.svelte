@@ -18,6 +18,7 @@
   import {
     formatAge,
     formatBytesRate,
+    formatByteRateAsBits,
     formatDuration,
     formatPercent,
     formatTemp,
@@ -659,8 +660,8 @@
                     <div data-testid="net-cell">
                       <p class="text-xs text-base-content/60">Network</p>
                       <p class="font-mono text-xs">
-                        <span class="text-info">↓ {formatBytesRate(node.net_rx_rate)}</span>
-                        <span class="text-success ml-1">↑ {formatBytesRate(node.net_tx_rate)}</span>
+                        <span class="text-info">↓ {formatByteRateAsBits(node.net_rx_rate)}</span>
+                        <span class="text-success ml-1">↑ {formatByteRateAsBits(node.net_tx_rate)}</span>
                       </p>
                     </div>
                   {/if}

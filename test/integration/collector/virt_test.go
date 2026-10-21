@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -56,6 +57,15 @@ func vmByPID(t *testing.T, vms []vmInfo, pid int) vmInfo {
 	}
 	t.Fatalf("no virtual machine with PID %d among %+v", pid, vms)
 	return vmInfo{}
+}
+
+// awaitVMs polls sysmon vms --json, run as bin, until the virtual machine with
+// the given PID is listed, and returns that listing.
+func awaitVMs(t *testing.T, bin string, pid int) vmsPayload {
+	t.Helper()
+	return awaitListing(t, bin, "the virtual machine to be listed", func(p vmsPayload) bool {
+		return slices.ContainsFunc(p.VMs, func(vm vmInfo) bool { return vm.PID == pid })
+	}, "vms", "--json")
 }
 
 // sizedFile creates a file of size bytes and returns its path.
@@ -110,12 +120,7 @@ func TestVMs_ALibvirtGuestIsDescribed(t *testing.T) {
 		"ip link set vnet0 up",
 	}}.wrap(t, harness.Bins.Sysmon)
 
-	r := harness.Run(t, bin, nil, "vms", "--json")
-	if r.Code != 0 {
-		t.Fatalf("sysmon vms --json exited %d:\n%s", r.Code, r.Output())
-	}
-	var p vmsPayload
-	harness.MustParseJSON(t, r.Stdout, &p)
+	p := awaitVMs(t, bin, qemu.pid())
 	vm := vmByPID(t, p.VMs, qemu.pid())
 
 	if vm.Name != "web01" || vm.UUID != "1b4e28ba-2fa1-11d2-883f-0016d3cca427" || vm.Hypervisor != "qemu/kvm" || vm.Accelerator != "kvm" {
@@ -172,12 +177,7 @@ func TestVMs_OtherCommandLineForms(t *testing.T) {
 		"-blockdev", "driver=file,filename="+image+",node-name=f0",
 	)
 
-	r := harness.Run(t, harness.Bins.Sysmon, nil, "vms", "--json")
-	if r.Code != 0 {
-		t.Fatalf("sysmon vms --json exited %d:\n%s", r.Code, r.Output())
-	}
-	var p vmsPayload
-	harness.MustParseJSON(t, r.Stdout, &p)
+	p := awaitVMs(t, harness.Bins.Sysmon, qemu.pid())
 	vm := vmByPID(t, p.VMs, qemu.pid())
 
 	if vm.Name != "qemu-kvm" || vm.VCPUs != 2 || vm.MemoryBytes != 4<<30 || vm.Accelerator != "tcg" {
@@ -195,12 +195,7 @@ func TestVMs_FirecrackerAndAMissingIndex(t *testing.T) {
 	fc := startGuest(t, nil, guestBinary(t, "firecracker"), 0,
 		"--id", "fc-build-7", "--api-sock", "/run/firecracker.socket")
 
-	r := harness.Run(t, harness.Bins.Sysmon, nil, "vms", "--json")
-	if r.Code != 0 {
-		t.Fatalf("sysmon vms --json exited %d:\n%s", r.Code, r.Output())
-	}
-	var p vmsPayload
-	harness.MustParseJSON(t, r.Stdout, &p)
+	p := awaitVMs(t, harness.Bins.Sysmon, fc.pid())
 	vm := vmByPID(t, p.VMs, fc.pid())
 	if vm.Name != "fc-build-7" || vm.Hypervisor != "firecracker" {
 		t.Errorf("microVM = %q on %q, want fc-build-7 on firecracker", vm.Name, vm.Hypervisor)
@@ -254,6 +249,20 @@ func containerByID(t *testing.T, cs []containerInfo, id string) containerInfo {
 	}
 	t.Fatalf("no container %s among %+v", id, cs)
 	return containerInfo{}
+}
+
+// awaitContainers polls sysmon containers --json until every container in ids
+// is listed, and returns that listing.
+func awaitContainers(t *testing.T, bin string, ids ...string) containersPayload {
+	t.Helper()
+	return awaitListing(t, bin, "every container to be listed", func(p containersPayload) bool {
+		for _, id := range ids {
+			if !slices.ContainsFunc(p.Containers, func(c containerInfo) bool { return c.ID == id }) {
+				return false
+			}
+		}
+		return true
+	}, "containers", "--json")
 }
 
 // TestContainers_EveryRuntimesCgroupLayout creates the cgroups each runtime
@@ -316,12 +325,11 @@ func TestContainers_EveryRuntimesCgroupLayout(t *testing.T) {
 	startGuest(t, &decoy, nginx, 0)
 	startGuest(t, &notAnID, nginx, 0)
 
-	r := harness.Run(t, harness.Bins.Sysmon, nil, "containers", "--json")
-	if r.Code != 0 {
-		t.Fatalf("sysmon containers --json exited %d:\n%s", r.Code, r.Output())
+	ids := make([]string, len(all))
+	for i, m := range all {
+		ids[i] = m.id
 	}
-	var p containersPayload
-	harness.MustParseJSON(t, r.Stdout, &p)
+	p := awaitContainers(t, harness.Bins.Sysmon, ids...)
 	for _, c := range p.Containers {
 		if strings.Contains(c.CgroupPath, "compose@") || strings.HasSuffix(c.CgroupPath, "/buildkit") {
 			t.Errorf("%s was taken for a container", c.CgroupPath)

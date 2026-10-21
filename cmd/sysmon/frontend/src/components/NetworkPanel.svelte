@@ -3,7 +3,7 @@
   import { history } from "$stores/history.svelte";  import MetricChart from "./MetricChart.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
-  import { formatBytes, formatByteRateAsBits } from "$lib/format";
+  import { formatBytes, formatByteRateAsBits, formatInterfaceRate } from "$lib/format";
   import type { NetworkInfo } from "$lib/types";
   import { monitor } from "$stores/monitor.svelte";
 
@@ -16,17 +16,6 @@
   const networkHistory = $derived(monitor.networkHistory);
 
   const networks = $derived(snapshot?.networks ?? []);
-
-  // DNS is host-level (the same resolv.conf attaches to every interface), so
-  // surface it once from whichever interface reports it.
-  const dnsServers = $derived(
-    networks.find((n) => n.dns_servers != null && n.dns_servers.length > 0)
-      ?.dns_servers ?? []
-  );
-  const dnsSearch = $derived(
-    networks.find((n) => n.dns_search != null && n.dns_search.length > 0)
-      ?.dns_search ?? []
-  );
 
   function getHistory(name: string) {
     return networkHistory.find((h) => h.name === name);
@@ -52,19 +41,6 @@
 <div class="space-y-4">
   <AlertBanner alerts={networkAlerts} title="Network Alert" />
 
-  {#if dnsServers.length > 0}
-    <!-- On the page background, base-300: /60 is 4.45:1 there in the light
-         theme, so this line takes /70 (#156). -->
-    <div class="text-xs text-base-content/70">
-      <span class="text-base-content/70">DNS:</span>
-      {#each dnsServers as ns (ns)}
-        <span class="badge badge-ghost badge-xs font-mono ml-1">{ns}</span>
-      {/each}
-      {#if dnsSearch.length > 0}
-        <span class="text-base-content/70 ml-2">search:</span> {dnsSearch.join(" ")}
-      {/if}
-    </div>
-  {/if}
   {#if networks.length > 0}
     {#each networks as iface (iface.name)}
       {@const nh = getHistory(iface.name)}
@@ -110,10 +86,10 @@
             </div>
             <div class="text-right text-xs space-y-0.5">
               <div class="text-success font-medium">
-                ↑ {formatByteRateAsBits(iface.bytes_sent_rate)}
+                ↑ {formatInterfaceRate(iface, iface.bytes_sent_rate)}
               </div>
               <div class="text-info font-medium">
-                ↓ {formatByteRateAsBits(iface.bytes_recv_rate)}
+                ↓ {formatInterfaceRate(iface, iface.bytes_recv_rate)}
               </div>
             </div>
           </div>
@@ -124,6 +100,19 @@
               {#each iface.addresses as addr (addr)}
                 <span class="badge badge-outline badge-xs font-mono">{addr}</span>
               {/each}
+            </div>
+          {/if}
+
+          <!-- This interface's own resolvers -->
+          {#if iface.dns_servers != null && iface.dns_servers.length > 0}
+            <div class="text-xs text-base-content/70 mb-3" data-testid="iface-dns">
+              <span>DNS:</span>
+              {#each iface.dns_servers as ns (ns)}
+                <span class="badge badge-ghost badge-xs font-mono ml-1">{ns}</span>
+              {/each}
+              {#if iface.dns_search != null && iface.dns_search.length > 0}
+                <span class="ml-2">search:</span> {iface.dns_search.join(" ")}
+              {/if}
             </div>
           {/if}
 

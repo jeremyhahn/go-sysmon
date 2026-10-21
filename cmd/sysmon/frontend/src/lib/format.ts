@@ -64,6 +64,18 @@ export function formatByteRateAsBits(bytesPerSec: number, decimals = 1): string 
 }
 
 /**
+ * formatInterfaceRate shows one interface rate in bits per second, or
+ * "unknown" when the collector had no earlier sample to take it from. An
+ * unmeasured rate is not zero, and "0 bps" would be an invented number.
+ */
+export function formatInterfaceRate(
+  iface: { rates_available: boolean },
+  bytesPerSec: number
+): string {
+  return iface.rates_available ? formatByteRateAsBits(bytesPerSec) : "unknown";
+}
+
+/**
  * formatDuration converts a duration in seconds to a human-readable string.
  * e.g. 90061 -> "1d 1h 1m"
  */

@@ -4,6 +4,7 @@
   import {
     formatBytes,
     formatBytesRate,
+    formatByteRateAsBits,
     formatCores,
     formatDuration,
     formatPercent,
@@ -166,11 +167,11 @@
 
                   <div>
                     <p class="text-xs text-base-content/60">Network in</p>
-                    <p class="font-mono">{formatBytesRate(vm.net_rx_rate)}</p>
+                    <p class="font-mono">{formatByteRateAsBits(vm.net_rx_rate)}</p>
                   </div>
                   <div>
                     <p class="text-xs text-base-content/60">Network out</p>
-                    <p class="font-mono">{formatBytesRate(vm.net_tx_rate)}</p>
+                    <p class="font-mono">{formatByteRateAsBits(vm.net_tx_rate)}</p>
                   </div>
                   <div>
                     <p class="text-xs text-base-content/60">Host NICs</p>

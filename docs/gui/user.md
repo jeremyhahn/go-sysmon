@@ -44,7 +44,14 @@ sysmon serve --addr :8080      # then open http://localhost:8080
 
 - **Network rates are bits per second.** An interface's send and receive rates,
   and its traffic chart, on the Network tab and the Overview, use decimal bit units as links are rated (bps, Kbps,
-  Mbps, Gbps, Tbps; 1 Kbps = 1000 bps). Byte totals stay in bytes (KB, MB, …).
+  Mbps, Gbps, Tbps; 1 Kbps = 1000 bps). So do a VM's network in and out on the Virtualization tab, a node's
+  network figure in the Fleet view, and the fleet network rollup. Byte totals stay in bytes (KB, MB, …), as do
+  storage rates: disk, paging, and process and container I/O.
+- **An unmeasured network rate reads "unknown".** A rate needs two samples. Until the collector has
+  both, an interface's send and receive rates (Network tab, Overview) read "unknown", not "0 bps". A
+  measured zero still reads "0 bps".
+- **DNS is per interface.** Each interface's card lists the resolvers configured for that interface, and
+  its search domains. An interface with none shows no DNS line.
 - **Wifi link.** A wifi interface's card shows the driver's link quality
   (higher is better; the scale is the driver's), the signal level and, when the
   driver reports it, the noise floor, both in dBm. Wired interfaces show none.

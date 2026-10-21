@@ -6,6 +6,7 @@
   import {
     formatBytes,
     formatByteRateAsBits,
+    formatInterfaceRate,
     formatDuration,
     formatPercent,
     formatTemp,
@@ -323,12 +324,12 @@
       {#if topIface != null}
         <StatCard
           label="Net ↑ ({topIface.name})"
-          value={formatByteRateAsBits(topIface.bytes_sent_rate)}
+          value={formatInterfaceRate(topIface, topIface.bytes_sent_rate)}
           colorClass="text-success"
         />
         <StatCard
           label="Net ↓ ({topIface.name})"
-          value={formatByteRateAsBits(topIface.bytes_recv_rate)}
+          value={formatInterfaceRate(topIface, topIface.bytes_recv_rate)}
           colorClass="text-info"
         />
       {/if}

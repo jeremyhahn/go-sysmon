@@ -942,8 +942,15 @@ func TestRemoteWriteError_RetryableFollowsTheSpec(t *testing.T) {
 // the previous request was answered: a request given its own timeout when it
 // is sent always satisfies that, and one sharing a deadline set before the
 // first request never can.
+//
+// So the timeout is generous, not short. The assertion separates the two at
+// any timeout, since a shared deadline is set before the first request and
+// so always falls short of a full timeout after any answer. A short one only
+// risks a request on a loaded runner running out before the recorder answers
+// it: the flush then keeps the rest of the backlog and the test fails with
+// nothing wrong in the exporter.
 func TestExporter_TheTimeoutIsPerRequestNotPerFlush(t *testing.T) {
-	const timeout = 300 * time.Millisecond
+	const timeout = 10 * time.Second
 
 	rec := newRecorder(t)
 	rec.status.Store(http.StatusServiceUnavailable) // retryable, so the batches are kept

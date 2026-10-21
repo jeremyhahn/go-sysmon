@@ -292,9 +292,30 @@ test('a node that cannot measure throughput has no network figure, not a zero', 
     fleetNode('metal', { net_reported: true, net_rx_rate: 2048 }),
     fleetNode('ctr', { net_reported: false }),
   ], rollup({ nodes: 2, healthy: 2, reporting: 2, network: { rx_rate: 2048, tx_rate: 0, nodes: 1, of: 2 } }));
-  await expect(card(page, 'metal').getByTestId('net-cell')).toContainText('2.0 KB/s');
+  await expect(card(page, 'metal').getByTestId('net-cell')).toContainText('16.4 Kbps');
   await expect(card(page, 'ctr').getByTestId('net-cell')).toHaveCount(0);
   await expect(page.getByTestId('fleet-network')).toContainText('across 1 of 2 nodes');
+});
+
+// Network rates are bits per second, as links are rated; paging is a storage
+// rate and stays in bytes per second.
+test('fleet network rates are bits per second, paging stays bytes', async ({ page }) => {
+  await showFleet(page, [
+    fleetNode('metal', {
+      net_reported: true,
+      net_rx_rate: 125_000,
+      net_tx_rate: 187_500_000,
+      swap_percent: 51.1,
+      swap_out_rate: 2048,
+    }),
+  ], rollup({ nodes: 1, healthy: 1, reporting: 1, network: { rx_rate: 125_000, tx_rate: 187_500_000, nodes: 1, of: 1 } }));
+
+  const cell = card(page, 'metal').getByTestId('net-cell');
+  await expect(cell).toContainText('↓ 1.0 Mbps');
+  await expect(cell).toContainText('↑ 1.5 Gbps');
+  await expect(page.getByTestId('fleet-network')).toContainText('↓ 1.0 Mbps');
+  await expect(page.getByTestId('fleet-network')).toContainText('↑ 1.5 Gbps');
+  await expect(card(page, 'metal').getByTestId('swap-cell')).toContainText('out 2.0 KB/s');
 });
 
 test('a peer polled by its whole snapshot is marked on its card', async ({ page }) => {

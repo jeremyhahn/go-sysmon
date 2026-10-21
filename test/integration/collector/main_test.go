@@ -11,6 +11,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
@@ -31,4 +32,25 @@ func awaitSnapshot(t *testing.T, s *harness.Server, what string, ready func(raw 
 		status, _, body := harness.Do(t, http.DefaultClient, req)
 		return status == http.StatusOK && ready(body)
 	})
+}
+
+// awaitListing runs "sysmon <args>" until the JSON it prints decodes to a P
+// for which listed is true, and returns that P. A guest or container started
+// a moment ago is not always in the first listing, so one read cannot tell a
+// missing item from a late one; polling waits only for the item and leaves
+// every claim about it to the caller.
+func awaitListing[P any](t *testing.T, bin, what string, listed func(P) bool, args ...string) P {
+	t.Helper()
+	var p P
+	await.Until(t, what, func(context.Context) bool {
+		r := harness.Run(t, bin, nil, args...)
+		if r.Code != 0 {
+			t.Fatalf("sysmon %s exited %d:\n%s", strings.Join(args, " "), r.Code, r.Output())
+		}
+		var got P
+		harness.MustParseJSON(t, r.Stdout, &got)
+		p = got
+		return listed(got)
+	})
+	return p
 }

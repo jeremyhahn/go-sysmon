@@ -763,7 +763,8 @@
    "drops_in": 0,
    "drops_out": 0,
    "bytes_sent_rate": 0,
-   "bytes_recv_rate": 0
+   "bytes_recv_rate": 0,
+   "rates_available": true
   },
   {
    "index": 1,
@@ -802,7 +803,8 @@
    "drops_in": 0,
    "drops_out": 0,
    "bytes_sent_rate": 0,
-   "bytes_recv_rate": 0
+   "bytes_recv_rate": 0,
+   "rates_available": true
   }
  ],
  "load_avg": {
