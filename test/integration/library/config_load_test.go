@@ -222,7 +222,7 @@ func TestConfigReload_BootOnlySettingsAreDeferredNotApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeFile(t, path, "server:\n  addr: 127.0.0.1:9090\n  tls_cert: /etc/cert.pem\n  tls_key: /etc/key.pem\n  watch: true\n"+
+	writeFile(t, path, "server:\n  addr: 127.0.0.1:9090\n  tls_cert: /etc/cert.pem\n  tls_key: /etc/key.pem\n  trusted_proxies: [10.0.0.0/8]\n  watch: true\n"+
 		"fleet:\n  tls:\n    ca_file: /etc/ca.pem\n    cert_file: /etc/c.pem\n    key_file: /etc/k.pem\n    insecure_skip_verify: true\n")
 	deferred, err := mgr.Reload()
 	if err != nil {
@@ -235,6 +235,9 @@ func TestConfigReload_BootOnlySettingsAreDeferredNotApplied(t *testing.T) {
 	}
 	if got := mgr.Current().Server.Addr; got != "127.0.0.1:8081" {
 		t.Errorf("server.addr = %q after a reload, want the running 127.0.0.1:8081", got)
+	}
+	if got := mgr.Current().Server.TrustedProxies; len(got) != 0 {
+		t.Errorf("server.trusted_proxies = %v after a reload, want the running (empty) list", got)
 	}
 }
 

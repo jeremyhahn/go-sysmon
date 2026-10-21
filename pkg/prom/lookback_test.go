@@ -363,8 +363,13 @@ func TestCachedLookbackAt(t *testing.T) {
 // request that follows.
 func TestLookback_ATimeoutIsCached(t *testing.T) {
 	var requests atomic.Int64
+	arrived := make(chan struct{}, 1)
 	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		select {
+		case arrived <- struct{}{}:
+		default: // a second request is counted, and the count fails the test
+		}
 		<-r.Context().Done()
 	}))
 	defer hung.Close()
@@ -374,16 +379,55 @@ func TestLookback_ATimeoutIsCached(t *testing.T) {
 	clock := time.Unix(1788300000, 0)
 	q.now = func() time.Time { return clock }
 
-	for range 3 {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	// The deadline runs out only once the database has the request: a
+	// wall-clock timeout could fire before the request reached it, and the
+	// count would say nothing about whether the failure was cached.
+	ctx := newExpiringContext()
+	failed := make(chan error, 1)
+	go func() {
 		_, err := q.Lookback(ctx)
-		cancel()
-		if err == nil {
+		failed <- err
+	}()
+	await.Recv(t, "the lookback to reach the database", arrived)
+	ctx.expire()
+	if err := await.Recv(t, "the lookback to end at its deadline", failed); err == nil {
+		t.Fatal("Lookback() of a hung database succeeded")
+	}
+
+	// Asked again, the cached timeout answers: were it not cached, the hung
+	// database would be asked, and held, until the querier's own timeout.
+	for range 2 {
+		if _, err := q.Lookback(context.Background()); err == nil {
 			t.Fatal("Lookback() of a hung database succeeded")
 		}
 	}
 	if n := requests.Load(); n != 1 {
 		t.Errorf("%d requests to a database that timed out, want 1 until lookbackRetry", n)
+	}
+}
+
+// expiringContext is a context whose deadline runs out when the test says so,
+// not when a clock does: its Err is context.DeadlineExceeded once expire is
+// called.
+type expiringContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func newExpiringContext() *expiringContext {
+	return &expiringContext{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *expiringContext) expire() { close(c.done) }
+
+func (c *expiringContext) Done() <-chan struct{} { return c.done }
+
+func (c *expiringContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
 	}
 }
 

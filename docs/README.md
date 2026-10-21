@@ -9,6 +9,9 @@ look when something reads wrong.
 If you just want to run it, the [README](../README.md) is enough. Come here
 when you need to know why a number says what it says.
 
+Every feature, its requirements and its status are in the
+[specification](SPEC.md); the [roadmap](../ROADMAP.md) orders them in time.
+
 ## Components
 
 | Component | What it covers |

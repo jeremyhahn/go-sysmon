@@ -461,9 +461,29 @@ func TestHandleHistory_TheDatabaseLookbackIsBudgeted(t *testing.T) {
 // rather than pass.
 func TestHandleHistory_ACounterReadEndsInsideTheWriteBudget(t *testing.T) {
 	saved := responseWriteTimeout
-	responseWriteTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { responseWriteTimeout = saved })
 
+	// The one deadline spans the lookback and gap requests as well as the
+	// held rate query. On a loaded runner the first two can use up a short
+	// budget, so the read ends -- correctly, with 502 -- before it asks for
+	// the rate, and proves nothing about the held query. Such an attempt is
+	// retried at twice the budget until the read reaches its rate query; the
+	// budgets stay well inside await's bound, so a held read that ended at
+	// the deadline is told apart from one the deadline did not end.
+	for budget := 300 * time.Millisecond; budget <= 4800*time.Millisecond; budget *= 2 {
+		responseWriteTimeout = budget
+		if readReachedItsRateQuery(t) {
+			return
+		}
+	}
+	t.Fatal("no read reached its rate query inside a 4.8s write budget")
+}
+
+// readReachedItsRateQuery makes a counter read whose rate query is held, and
+// reports whether the read reached that query. Either way the read must end
+// at its deadline with 502.
+func readReachedItsRateQuery(t *testing.T) bool {
+	t.Helper()
 	f := newFakePrometheus(t)
 	f.cadence = time.Minute
 	f.holdRates(t)
@@ -478,9 +498,15 @@ func TestHandleHistory_ACounterReadEndsInsideTheWriteBudget(t *testing.T) {
 	go func() {
 		done <- get(t, s, "/api/history?metric=swap_out&node=mon0&start=1788300000000&end=1788303600000")
 	}()
-	await.Recv(t, "the read to reach its rate query", f.rateArrived)
-	if rec := await.Recv(t, "the held read to end at its deadline", done); rec.Code != http.StatusBadGateway {
+	rec := await.Recv(t, "the read to end at its deadline", done)
+	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 once the write budget ran out", rec.Code)
+	}
+	select {
+	case <-f.rateArrived:
+		return true
+	default:
+		return false
 	}
 }
 
