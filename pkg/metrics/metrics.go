@@ -299,15 +299,28 @@ func Write(m Sink, snap *types.Snapshot) {
 			m.Gauge("sysmon_disk_temperature_celsius", "Drive temperature.", d.Temperature, "device", dev)
 		}
 		if d.SMARTEnabled {
-			m.Gauge("sysmon_disk_smart_healthy", "1 when SMART reports no failing attribute.", Bool01(d.SMARTHealthy), "device", dev)
-			m.Gauge("sysmon_disk_power_on_hours", "Drive power-on hours.", float64(d.PowerOnHours), "device", dev)
+			// The drive's own health and endurance travel with the drive, so
+			// they also carry its serial. A device name is assigned at boot and
+			// NVMe names are not stable across one -- ci-node-1's 2026-08-31
+			// rebuild swapped two of four -- so a query keyed on "device" alone
+			// can join one drive's history to another's. "device" stays for the
+			// queries already written against it. A drive that reports no
+			// serial gets no serial label rather than an empty one: serial=""
+			// is the same label set as no serial at all, so it says nothing.
+			ident := []string{"device", dev}
+			if d.Serial != "" {
+				ident = append(ident, "serial", d.Serial)
+			}
+			m.Gauge("sysmon_disk_smart_healthy", "1 when SMART reports no failing attribute.", Bool01(d.SMARTHealthy), ident...)
+			m.Gauge("sysmon_disk_power_on_hours", "Drive power-on hours.", float64(d.PowerOnHours), ident...)
 			// Exported for every NVMe namespace, including zero. Suppressing a
 			// zero would drop the series precisely when spare capacity is
 			// exhausted, so an alerting rule watching it would see an absent
 			// metric at the moment it most needs a value.
 			if strings.HasPrefix(dev, "nvme") {
-				m.Gauge("sysmon_disk_wear_percent", "NVMe wear level used.", float64(d.WearLevelPercent), "device", dev)
-				m.Gauge("sysmon_disk_spare_percent", "NVMe spare blocks remaining.", float64(d.AvailableSparePercent), "device", dev)
+				m.Gauge("sysmon_disk_wear_percent", "NVMe wear level used.", float64(d.WearLevelPercent), ident...)
+				m.Gauge("sysmon_disk_spare_percent", "NVMe spare blocks remaining.", float64(d.AvailableSparePercent), ident...)
+				writeDataUnits(m, d, ident)
 			}
 		}
 		// Drives behind a hardware RAID controller. They are not block devices
@@ -408,6 +421,34 @@ func Write(m Sink, snap *types.Snapshot) {
 }
 
 // countSeverity counts alerts at one severity.
+// nvmeDataUnitBytes is the size of one NVMe SMART "data unit": the
+// specification counts in thousands of 512-byte units, so one unit is
+// 1000 x 512 bytes, not a power of two.
+const nvmeDataUnitBytes = 1000 * 512
+
+// writeDataUnits exports an NVMe drive's lifetime read and write volume, in
+// the drive's own data units and in bytes. Both are counters: the drive's
+// figures only grow, and increase() over them is the volume moved in a window
+// -- the weekly write volume that, beside the wear percentage, says how fast a
+// drive is being consumed. A zero is an unread log page, not an unused drive
+// (every drive leaves the factory with writes on it), so it is omitted.
+func writeDataUnits(m Sink, d *types.DiskInfo, ident []string) {
+	if d.DataUnitsWritten > 0 {
+		m.Counter("sysmon_disk_data_units_written_total",
+			"NVMe data units written over the drive's life; one unit is 512000 bytes.",
+			float64(d.DataUnitsWritten), ident...)
+		m.Counter("sysmon_disk_written_bytes_total", "Bytes written over the drive's life, from NVMe data units.",
+			float64(d.DataUnitsWritten)*nvmeDataUnitBytes, ident...)
+	}
+	if d.DataUnitsRead > 0 {
+		m.Counter("sysmon_disk_data_units_read_total",
+			"NVMe data units read over the drive's life; one unit is 512000 bytes.",
+			float64(d.DataUnitsRead), ident...)
+		m.Counter("sysmon_disk_read_bytes_total", "Bytes read over the drive's life, from NVMe data units.",
+			float64(d.DataUnitsRead)*nvmeDataUnitBytes, ident...)
+	}
+}
+
 func countSeverity(alerts []types.Alert, severity types.Severity) float64 {
 	var n float64
 	for _, a := range alerts {

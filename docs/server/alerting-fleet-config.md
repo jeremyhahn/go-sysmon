@@ -1218,7 +1218,8 @@ Series include `sysmon_cpu_usage_percent` (the mean over the cores whose usage
 was measured; omitted, never zero, when none was), `sysmon_memory_used_percent`,
 `sysmon_load1`, `sysmon_psi_{some,full}_avg10{resource}`,
 `sysmon_power_watts{source}`, `sysmon_disk_{util_percent,queue_length,
-used_percent,temperature_celsius,smart_healthy,wear_percent}{device}`,
+used_percent,temperature_celsius,smart_healthy,wear_percent}{device}` (the
+drive health series also carry `serial`, see below),
 `sysmon_raid_{degraded,active_devices,sync_percent,mismatch_count}{array}`,
 `sysmon_network_*{interface}`, and the alerts:
 
@@ -1252,6 +1253,52 @@ the host's own page size (omitted when unknown), for bytes:
 ```
 rate(sysmon_swap_out_pages_total[5m]) * sysmon_memory_page_size_bytes
 ```
+
+### Drive health by serial, and NVMe write volume
+
+A drive's health series — `sysmon_disk_smart_healthy`,
+`sysmon_disk_power_on_hours`, and for NVMe `sysmon_disk_wear_percent` and
+`sysmon_disk_spare_percent` — carry the drive's `serial` beside `device`.
+Device names are assigned at boot, and NVMe names can change between boots (on
+ci-node-1 a rebuild swapped two of four), so `device` alone can join one
+drive's history to another's. Select or group on `serial` to follow a drive.
+`device` stays so existing queries keep working. A drive that reports no serial
+has no `serial` label, never an empty one.
+
+NVMe drives also export their lifetime read and write volume from the SMART log,
+as **counters**. They are present only when the drive reported a non-zero
+value, so a disk with no NVMe data units has none of these series:
+
+| Metric | Meaning |
+|---|---|
+| `sysmon_disk_data_units_written_total` | Data units written, as the drive counts them |
+| `sysmon_disk_data_units_read_total` | Data units read |
+| `sysmon_disk_written_bytes_total` | Data units written × 512000 bytes |
+| `sysmon_disk_read_bytes_total` | Data units read × 512000 bytes |
+
+One NVMe data unit is 1000 × 512 = 512000 bytes, as the NVMe specification
+defines it. That is a decimal thousand, not 1024.
+
+The weekly question, how much did each drive write and how much did its wear
+move, is:
+
+```
+sum by (instance, serial) (increase(sysmon_disk_written_bytes_total[7d]))
+sum by (instance, serial) (delta(sysmon_disk_wear_percent[7d]))
+```
+
+Wear is a gauge, so its weekly change is `delta()`. `increase()` is for
+counters, and it would read any dip in a gauge as a reset. The `sum by serial`
+is what keeps the answer right across a reboot that renames the device: the
+week then holds two series for one drive, one per device name, and the sum
+joins them. Wear is reported in whole percent, so a week's `delta()` is often 0
+and is interpolated when it isn't. Use it to compare drives over a week, not as
+a precise figure.
+
+The mon0 History view does not offer these. Its catalog charts a counter as a
+`rate()` whose window follows the chart's step (see
+[the history API](api.md#counters)), so it cannot hold a fixed seven-day
+`increase()`. Run the queries above in Prometheus directly.
 
 Unlike the gauges, these are **omitted** when `/proc/vmstat` could not be read,
 rather than exported as zero. A counter stuck at zero reads as a host that has

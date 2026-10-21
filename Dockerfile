@@ -26,7 +26,7 @@ RUN npm run build
 # --- binary -----------------------------------------------------------------
 # The image Go version must satisfy the "go" directive in go.mod, or the
 # toolchain gets downloaded on every build.
-FROM golang:1.27.2-trixie AS builder
+FROM golang:1.27.3-trixie AS builder
 
 WORKDIR /src
 

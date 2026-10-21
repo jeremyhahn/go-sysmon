@@ -285,6 +285,75 @@ func TestWrite_EnduranceIsNVMeOnly(t *testing.T) {
 	}
 }
 
+// TestWrite_NVMeDataUnitsAreCountersBySerial checks the drive's lifetime
+// volume is exported in data units and in bytes, as counters, and that the
+// drive's series carry its serial beside the device name.
+func TestWrite_NVMeDataUnitsAreCountersBySerial(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "nvme0n1", Serial: "S6EUNX0T123456", SMARTEnabled: true, SMARTHealthy: true,
+		WearLevelPercent: 4, DataUnitsWritten: 123456, DataUnitsRead: 2000,
+	}}}
+	out := render(snap)
+	const labels = `{device="nvme0n1",serial="S6EUNX0T123456"}`
+	for _, want := range []string{
+		"# TYPE sysmon_disk_data_units_written_total counter",
+		"# TYPE sysmon_disk_written_bytes_total counter",
+		"# TYPE sysmon_disk_data_units_read_total counter",
+		"# TYPE sysmon_disk_read_bytes_total counter",
+		"sysmon_disk_data_units_written_total" + labels + " 123456\n",
+		"sysmon_disk_written_bytes_total" + labels + " 6.3209472e+10\n",
+		"sysmon_disk_data_units_read_total" + labels + " 2000\n",
+		"sysmon_disk_read_bytes_total" + labels + " 1.024e+09\n",
+		"sysmon_disk_wear_percent" + labels + " 4\n",
+		"sysmon_disk_spare_percent" + labels + " 0\n",
+		"sysmon_disk_power_on_hours" + labels + " 0\n",
+		"sysmon_disk_smart_healthy" + labels + " 1\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("exposition is missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// TestWrite_NoDataUnitSeriesWithoutDataUnits checks a drive that reported no
+// data units -- a SATA disk, or an NVMe log page that was not read -- exports
+// no volume series, rather than a zero that would read as a reset.
+func TestWrite_NoDataUnitSeriesWithoutDataUnits(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{
+		{Name: "nvme0n1", Serial: "S1", SMARTEnabled: true, SMARTHealthy: true},
+		{Name: "sda", Serial: "S2", SMARTEnabled: true, SMARTHealthy: true, DataUnitsWritten: 9, DataUnitsRead: 9},
+	}}
+	out := render(snap)
+	for _, name := range []string{
+		"sysmon_disk_data_units_written_total", "sysmon_disk_written_bytes_total",
+		"sysmon_disk_data_units_read_total", "sysmon_disk_read_bytes_total",
+	} {
+		if strings.Contains(out, name) {
+			t.Errorf("exposition has %s for drives with no NVMe data units\n---\n%s", name, out)
+		}
+	}
+}
+
+// TestWrite_EmptySerialOmitsTheLabel checks a drive with no serial keeps its
+// device-labelled series and gets no serial label at all, not serial="".
+func TestWrite_EmptySerialOmitsTheLabel(t *testing.T) {
+	snap := &types.Snapshot{Disks: []types.DiskInfo{{
+		Name: "nvme1n1", SMARTEnabled: true, SMARTHealthy: true, DataUnitsWritten: 10,
+	}}}
+	out := render(snap)
+	if strings.Contains(out, "serial=") {
+		t.Errorf("a drive without a serial was given a serial label\n---\n%s", out)
+	}
+	for _, want := range []string{
+		`sysmon_disk_wear_percent{device="nvme1n1"} 0`,
+		`sysmon_disk_written_bytes_total{device="nvme1n1"} 5.12e+06`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("exposition is missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
 // TestRender_MemberDrivesAreLabelledBySerial pins the label choice, which is
 // not cosmetic. A drive behind a controller has no device name, and the names
 // of the things around it are not stable: ci-node-1's rebuild renamed every
