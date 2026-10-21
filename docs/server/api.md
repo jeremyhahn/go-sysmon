@@ -1,6 +1,6 @@
 # API reference
 
-> **Status: NORMATIVE** · Scope: the go-sysmon HTTP API · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: the go-sysmon HTTP API · Last verified: 2026-10-11
 > Conflicts with this document are defects. Fix them here first.
 
 Two ways in: poll `/api/snapshot`, or connect to `/api/events` and let the
@@ -369,8 +369,33 @@ here; `404` is a name not in the fleet, `409` a name in conflict.
 ## GET /
 
 Serves the dashboard when frontend assets are embedded. Without them you get
-`200 OK` and the plain text `go-sysmon is running`, which is enough for a
-health check.
+`200 OK` and the plain text `go-sysmon is running`. It says nothing about the
+collector; probe `/readyz` instead.
+
+## GET /healthz
+
+Liveness. `200 OK` and `ok` for as long as the process serves requests. It
+checks nothing else, so use it only where a failure should restart the
+process.
+
+## GET /readyz
+
+Readiness. `200 OK` and `ready` when both hold:
+
+- the latest snapshot is no older than **three stream intervals, and never
+  less than 10s** — 10s at 500ms or 1s, 15s at 5s, 180s at 60s. The bound
+  follows `POST /api/interval` immediately;
+- the server is not draining (`Stop` has not begun).
+
+Otherwise `503 Service Unavailable` with a one-line reason, for example
+`not ready: latest snapshot is 42s old, more than the 15s allowed`,
+`not ready: server is draining`, or the monitor's own error before the first
+snapshot. The container image's `HEALTHCHECK` and `docker-compose.yml` probe
+this route.
+
+Both probes are plain text with `Cache-Control: no-store`, answer `HEAD`, and
+sit beside the other routes on the server's handler, so an application that
+mounts go-sysmon under a prefix finds them under that prefix.
 
 ## GET /api/events
 

@@ -467,6 +467,27 @@ func (e *ListenerCloseError) Unwrap() error {
 	return e.Cause
 }
 
+// ServerDrainingError indicates the server has begun to stop and should be
+// taken out of rotation, so its readiness probe fails while it drains.
+type ServerDrainingError struct{}
+
+func (e *ServerDrainingError) Error() string {
+	return "server is draining"
+}
+
+// SnapshotStaleError indicates the latest snapshot is older than readiness
+// allows: the collector has stalled, or is stuck in a collection that has not
+// returned. Age is how old the snapshot was; Bound is the most it may be.
+type SnapshotStaleError struct {
+	Age   time.Duration
+	Bound time.Duration
+}
+
+func (e *SnapshotStaleError) Error() string {
+	return "latest snapshot is " + e.Age.Round(time.Millisecond).String() +
+		" old, more than the " + e.Bound.String() + " allowed"
+}
+
 // ProcStatLineError indicates a per-CPU line of /proc/stat that could not be
 // parsed. That CPU's usage is unknown for the interval, never zero.
 type ProcStatLineError struct {

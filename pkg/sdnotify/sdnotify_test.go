@@ -155,8 +155,12 @@ func TestNew_UnreachableSocketIsReported(t *testing.T) {
 // begins with NUL. Passing the '@' through addresses a filesystem socket of
 // that name, which does not exist -- so this failure looks like a missing file
 // rather than a translation that was not done.
+//
+// The name is unique per run, not just per process: abstract names live in the
+// network namespace, and test processes in different PID namespaces sharing a
+// host's network can have the same PID (issue #265).
 func TestNew_AbstractSocketNameIsTranslated(t *testing.T) {
-	name := "\x00sysmon-test-" + strconv.Itoa(os.Getpid())
+	name := "\x00sysmon-test-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	conn, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: name, Net: "unixgram"})
 	if err != nil {
 		t.Fatalf("listen on abstract socket: %v", err)
@@ -187,6 +191,43 @@ func TestNew_AbstractSocketNameIsTranslated(t *testing.T) {
 	if string(buf[:got]) != "READY=1" {
 		t.Errorf("received %q, want READY=1", string(buf[:got]))
 	}
+}
+
+// A manager that stops draining its socket must not stall the caller: the
+// watchdog loop that sends the ping is the thing reporting the service's
+// health. Before the write had a deadline this blocked forever (issue #265).
+func TestNotifier_UndrainedSocketTimesOut(t *testing.T) {
+	l := newListener(t) // never read from
+
+	n, err := sdnotify.New(env(map[string]string{"NOTIFY_SOCKET": l.addr}), os.Getpid())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	closeOnCleanup(t, n)
+
+	// The receive queue holds a few hundred datagrams; this is far more.
+	const attempts = 100000
+	for i := 0; i < attempts; i++ {
+		start := time.Now()
+		err := n.Watchdog()
+		if err == nil {
+			continue
+		}
+		elapsed := time.Since(start)
+
+		var sendErr *types.NotifySendError
+		if !errors.As(err, &sendErr) {
+			t.Fatalf("Watchdog error = %v, want *types.NotifySendError", err)
+		}
+		if !errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Errorf("Watchdog error = %v, want it to wrap os.ErrDeadlineExceeded", err)
+		}
+		if limit := sdnotify.SendTimeout + await.Timeout; elapsed > limit {
+			t.Errorf("the failing send took %v, want at most %v", elapsed, limit)
+		}
+		return
+	}
+	t.Fatalf("%d sends to an undrained socket all succeeded", attempts)
 }
 
 func TestWatchdogInterval(t *testing.T) {

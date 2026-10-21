@@ -231,6 +231,10 @@ type Server struct {
 	// binding, and a plain field would be a race the detector would find.
 	ln atomic.Pointer[net.Listener]
 
+	// draining is set once Stop begins, so /readyz fails for the requests
+	// still being answered while the server shuts down.
+	draining atomic.Bool
+
 	version   string
 	gitCommit string
 	buildDate string
@@ -371,6 +375,8 @@ func (s *Server) routes() map[string]http.Handler {
 		"GET /api/history/metrics":       http.HandlerFunc(s.handleHistoryMetrics),
 		"GET /api/version":               http.HandlerFunc(s.handleVersion),
 		"GET /metrics":                   http.HandlerFunc(s.handleMetrics),
+		"GET /healthz":                   http.HandlerFunc(s.handleHealthz),
+		"GET /readyz":                    http.HandlerFunc(s.handleReadyz),
 		"GET /":                          root,
 	}
 }
@@ -454,6 +460,7 @@ func (s *Server) listener() net.Listener {
 
 // Stop gracefully shuts down the HTTP server within the deadline given by ctx.
 func (s *Server) Stop(ctx context.Context) error {
+	s.draining.Store(true)
 	err := s.server.Shutdown(ctx)
 
 	// Shutdown closes the listeners http.Server is SERVING on, and a listener

@@ -95,8 +95,10 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/sysmon-server"]
 CMD ["serve", "--addr", ":8080"]
 
+# Readiness, not liveness: / is the static asset server and answers 200 while
+# the collector is stalled, which is the failure worth reporting (#261).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8080/ >/dev/null || exit 1
+    CMD curl -fsS http://127.0.0.1:8080/readyz >/dev/null || exit 1
 
 LABEL org.opencontainers.image.title="go-sysmon" \
       org.opencontainers.image.description="Real-time Linux system monitor with an embedded web dashboard" \

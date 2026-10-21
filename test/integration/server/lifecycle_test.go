@@ -22,15 +22,17 @@ import (
 func TestLifecycle_BeforeTheFirstCollection(t *testing.T) {
 	s := harness.Serve(t, harness.ServeOptions{Args: []string{"--interval", "60000"}, NoSnapshot: true})
 
-	for _, path := range []string{"/api/snapshot", "/api/summary", "/api/snapshot/history"} {
+	for _, path := range []string{"/api/snapshot", "/api/summary", "/api/snapshot/history", "/readyz"} {
 		status, body := harness.Get(t, s.URL(path))
 		if status != http.StatusServiceUnavailable || !strings.Contains(string(body), "not collected a snapshot yet") {
 			t.Errorf("GET %s before the first collection = %d %q, want 503 saying so", path, status, body)
 		}
 	}
 	// The service is up regardless: the status endpoints answer.
-	if status, _ := harness.Get(t, s.URL("/api/version")); status != http.StatusOK {
-		t.Errorf("GET /api/version = %d, want 200 while waiting for the first collection", status)
+	for _, path := range []string{"/api/version", "/healthz"} {
+		if status, _ := harness.Get(t, s.URL(path)); status != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200 while waiting for the first collection", path, status)
+		}
 	}
 
 	streams := map[string]*stream{
@@ -62,6 +64,9 @@ func TestLifecycle_AMonitorRestartIsNeverShownAsCurrent(t *testing.T) {
 	}
 	base := "http://" + run(t, srv)
 	harness.WaitForSnapshot(t, base+"/api/snapshot")
+	if status, body := harness.Get(t, base+"/readyz"); status != http.StatusOK {
+		t.Errorf("GET /readyz after the first collection = %d %q, want 200", status, body)
+	}
 
 	before := &deltaClient{t: t, st: openStream(t, base+"/api/events?deltas=1", streamOptions{})}
 	before.step()

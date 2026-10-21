@@ -22,6 +22,11 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
+// SendTimeout bounds one notification write. sd_notify is fire-and-forget: a
+// manager that has not drained its socket within this long is not going to,
+// and a caller waiting on it would stop doing the work it is reporting on.
+const SendTimeout = time.Second
+
 // Notifier sends messages to the service manager. A nil *Notifier is valid and
 // discards everything, which is the state outside systemd: running under a
 // shell, in a container without notification, or in a test.
@@ -94,9 +99,16 @@ func (n *Notifier) Close() error {
 }
 
 // send writes one datagram. A nil Notifier discards it.
+//
+// The write is bounded by SendTimeout. A receiver that has stopped draining its
+// queue otherwise blocks the write forever, and with it the watchdog loop that
+// exists to report the service's health (issue #265).
 func (n *Notifier) send(msg string) error {
 	if n == nil || n.conn == nil {
 		return nil
+	}
+	if err := n.conn.SetWriteDeadline(time.Now().Add(SendTimeout)); err != nil {
+		return &types.NotifySendError{Message: msg, Cause: err}
 	}
 	if _, err := n.conn.Write([]byte(msg)); err != nil {
 		return &types.NotifySendError{Message: msg, Cause: err}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
@@ -98,6 +99,37 @@ func TestNoSnapshotYetError_IsDistinctFromNotRunning(t *testing.T) {
 	var noneYet *types.NoSnapshotYetError
 	if errors.As(error(&types.MonitorNotRunningError{}), &noneYet) {
 		t.Error("MonitorNotRunningError matches NoSnapshotYetError")
+	}
+}
+
+// ---- ServerDrainingError / SnapshotStaleError ------------------------------
+
+func TestServerDrainingError_Error(t *testing.T) {
+	if got, want := (&types.ServerDrainingError{}).Error(), "server is draining"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestSnapshotStaleError_Error checks the message a readiness probe returns
+// names both the age and the bound, rounded so it stays readable.
+func TestSnapshotStaleError_Error(t *testing.T) {
+	e := &types.SnapshotStaleError{Age: 42*time.Second + 123456*time.Nanosecond, Bound: 15 * time.Second}
+	want := "latest snapshot is 42s old, more than the 15s allowed"
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TestReadinessErrors_AreDistinct: the two reasons for not being ready must
+// not match each other, or a caller cannot tell a stall from a shutdown.
+func TestReadinessErrors_AreDistinct(t *testing.T) {
+	var stale *types.SnapshotStaleError
+	if errors.As(error(&types.ServerDrainingError{}), &stale) {
+		t.Error("ServerDrainingError matches SnapshotStaleError")
+	}
+	var draining *types.ServerDrainingError
+	if errors.As(error(&types.SnapshotStaleError{}), &draining) {
+		t.Error("SnapshotStaleError matches ServerDrainingError")
 	}
 }
 

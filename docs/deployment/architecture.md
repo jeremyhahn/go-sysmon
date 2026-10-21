@@ -163,6 +163,12 @@ nothing this process starts can satisfy a watchdog it has stopped satisfying —
 a child pinging on behalf of a stalled parent is vm-host-2 again with a
 different actor holding the pen.
 
+Each notification write is bounded by one second (`sdnotify.SendTimeout`).
+`sd_notify` is fire-and-forget, and a manager that has stopped draining its
+socket would otherwise block the write — and the watchdog loop with it —
+forever. A send that misses the bound returns `*types.NotifySendError`
+wrapping `os.ErrDeadlineExceeded`.
+
 **Verified end to end**, not only in tests: under a transient unit with
 `WatchdogSec=10`, the service stayed `active` through four watchdog periods, and
 a `SIGSTOP` — a process alive and unable to serve, which is the failure in

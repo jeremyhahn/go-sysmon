@@ -65,8 +65,10 @@ services:
     #
     # privileged: true
 
+    # /readyz rather than /healthz: unhealthy should mean the collector has
+    # stalled or the server is draining, not only that the process is gone.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
       interval: 30s
       timeout: 5s
       start_period: 10s
