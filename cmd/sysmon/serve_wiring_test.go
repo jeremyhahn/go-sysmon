@@ -208,6 +208,36 @@ func TestLoadServeConfig_OnlyChangedFlagsReachTheFlagLayer(t *testing.T) {
 	}
 }
 
+// intervalCommand is a serve command with only --interval, given value.
+func intervalCommand(t *testing.T, value string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "serve"}
+	cmd.Flags().IntVar(&serveIntervalMs, "interval", config.Defaults().Server.IntervalMs, "")
+	if err := cmd.Flags().Set("interval", value); err != nil {
+		t.Fatalf("set --interval: %v", err)
+	}
+	return cmd
+}
+
+// TestLoadServeConfig_IntervalFlagHonoursTheFloor: --interval goes through the
+// same floor check as the config file; 250 is refused and 500 accepted.
+func TestLoadServeConfig_IntervalFlagHonoursTheFloor(t *testing.T) {
+	withServeConfig(t, "")
+
+	var floor *config.IntervalBelowFloorError
+	if _, err := loadServeConfig(intervalCommand(t, "250")); !errors.As(err, &floor) {
+		t.Fatalf("loadServeConfig(--interval 250) = %v, want a *config.IntervalBelowFloorError", err)
+	}
+
+	mgr, err := loadServeConfig(intervalCommand(t, "500"))
+	if err != nil {
+		t.Fatalf("loadServeConfig(--interval 500): %v", err)
+	}
+	if got := mgr.Current().Server.IntervalMs; got != 500 {
+		t.Errorf("server.interval_ms = %d, want 500", got)
+	}
+}
+
 // trustedProxiesCommand is a serve command with only --trusted-proxies,
 // given values.
 func trustedProxiesCommand(t *testing.T, values ...string) *cobra.Command {

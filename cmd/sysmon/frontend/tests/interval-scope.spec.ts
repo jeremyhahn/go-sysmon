@@ -11,7 +11,7 @@ import { openTab } from './fixtures/tabs';
  * While a peer is selected, that poller is the aggregator's peer refresh, not
  * this node's monitor: changing the local rate from a peer's page would alter a
  * cadence nobody is looking at and leave the displayed data arriving exactly as
- * before. Worse, the dropdown would then read 250ms over figures collected once
+ * before. Worse, the dropdown would then read 500ms over figures collected once
  * a second -- a control reporting a rate nothing runs at.
  */
 
@@ -112,9 +112,9 @@ test.describe('Interval scope', () => {
     await openTab(page, 'Fleet');
     await page.getByRole('button', { name: /fs/ }).first().click();
 
-    // 250ms is below the aggregator's floor, so peers still refresh every
+    // 500ms is below the aggregator's floor, so peers still refresh every
     // second and the page must say so rather than showing the request back.
-    await selectInterval(page, '250ms');
+    await selectInterval(page, '500ms');
 
     await expect(page.getByText('peers every 1s')).toBeVisible();
   });

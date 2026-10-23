@@ -105,6 +105,8 @@ export interface MockOptions {
    * package. Given for a two-socket host, whose packages both have a Core 0.
    */
   coreTemps?: Snapshot["sensors"]["core_temps"];
+  /** Overrides fields of the memory block, for the Memory tab's swap states. */
+  memory?: Partial<Snapshot["memory"]>;
   /** The node's hypervisor detection, for the Virtualization tab. Same default. */
   hypervisor?: StackDetection;
   /**
@@ -318,6 +320,7 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
   const payload: Snapshot = {
     ...snapshot,
     ...(opts.coreTemps == null ? {} : { sensors: { ...snapshot.sensors, core_temps: opts.coreTemps } }),
+    ...(opts.memory == null ? {} : { memory: { ...snapshot.memory, ...opts.memory } }),
     disks,
     networks,
     gpus,

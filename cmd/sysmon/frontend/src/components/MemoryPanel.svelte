@@ -29,6 +29,19 @@
   const swapAlerts = $derived(memoryAlerts.filter((a) => a.resource === "swap"));
   const ramAlerts = $derived(memoryAlerts.filter((a) => a.resource !== "swap"));
 
+  // The paging counters, or null when they were not read. They need a page
+  // size to become bytes, so a missing one is as unknown as a missing counter.
+  const paging = $derived(
+    mem != null && mem.swap_counters_available === true && mem.page_size_bytes > 0
+      ? {
+          inPages: mem.swap_in_pages,
+          outPages: mem.swap_out_pages,
+          inBytes: mem.swap_in_pages * mem.page_size_bytes,
+          outBytes: mem.swap_out_pages * mem.page_size_bytes,
+        }
+      : null
+  );
+
   const totalDimmCapacity = $derived(
     mem?.dimms != null && mem.dimms.length > 0
       ? mem.dimms.reduce((sum, d) => sum + d.size_bytes, 0)
@@ -150,6 +163,17 @@
             ></progress>
             <p class="text-xs text-base-content/60">
               Free: {formatBytes(mem.swap_free_bytes)}
+            </p>
+            <!-- Occupancy above says nothing about whether the host is paging.
+                 These are cumulative since boot. Zero is also what a host that
+                 never paged reports, so an unread counter shows as unknown. -->
+            <p class="text-xs text-base-content/60" data-testid="swap-paging">
+              {#if paging != null}
+                Paged since boot: {formatBytes(paging.inBytes)} in / {formatBytes(paging.outBytes)} out
+                ({paging.inPages} / {paging.outPages} pages)
+              {:else}
+                Paged since boot: unknown
+              {/if}
             </p>
           </div>
         </div>

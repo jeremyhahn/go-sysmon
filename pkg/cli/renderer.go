@@ -254,6 +254,15 @@ func RenderHost(w io.Writer, snap *types.Snapshot) error {
 }
 
 // RenderCPU writes CPU information with per-core usage to w.
+// formatCoreFrequency is a core's current frequency, or "unknown" when none
+// could be read: zero MHz would read as a stopped core.
+func formatCoreFrequency(c types.CPUInfo) string {
+	if !c.CurMHzAvailable {
+		return "unknown"
+	}
+	return fmt.Sprintf("%.0f MHz", c.CurMHz)
+}
+
 func RenderCPU(w io.Writer, snap *types.Snapshot) error {
 	ew := newErrWriter(w)
 	w = ew
@@ -299,11 +308,11 @@ func RenderCPU(w io.Writer, snap *types.Snapshot) error {
 			if c.UsageAvailable {
 				bar, usage = formatBar(c.UsagePercent, coreBarWidth), fmt.Sprintf("%5.1f%%", c.UsagePercent)
 			}
+			line := fmt.Sprintf("  Core %2d:  %s  %s  %s", c.Index, bar, usage, formatCoreFrequency(c))
 			if c.TemperatureCelsius > 0 {
-				fmt.Fprintf(w, "  Core %2d:  %s  %s  %.1f°C\n", c.Index, bar, usage, c.TemperatureCelsius)
-			} else {
-				fmt.Fprintf(w, "  Core %2d:  %s  %s\n", c.Index, bar, usage)
+				line += fmt.Sprintf("  %.1f°C", c.TemperatureCelsius)
 			}
+			fmt.Fprintln(w, line)
 		}
 		fmt.Fprintln(w)
 		fmt.Fprintf(w, "%-16s%s\n", "Average:", FormatMeanCPUUsage(cpus))
@@ -925,6 +934,12 @@ func renderInterface(w io.Writer, iface types.NetworkInfo) {
 	if len(iface.Addresses) > 0 {
 		fmt.Fprintf(w, "  %-12s%s\n", "IPs:", strings.Join(iface.Addresses, ", "))
 	}
+	if masks := netmasks(iface.AddressDetails); len(masks) > 0 {
+		fmt.Fprintf(w, "  %-12s%s\n", "Netmask:", strings.Join(masks, ", "))
+	}
+	if gateways := gatewayParts(iface); len(gateways) > 0 {
+		fmt.Fprintf(w, "  %-12s%s\n", "Gateway:", strings.Join(gateways, " | "))
+	}
 
 	if len(iface.DNSServers) > 0 {
 		fmt.Fprintf(w, "  %-12s%s\n", "DNS:", strings.Join(iface.DNSServers, ", "))
@@ -955,6 +970,9 @@ func renderInterface(w io.Writer, iface types.NetworkInfo) {
 		)
 		if iface.Wireless.SSID != "" || iface.Wireless.BSSID != "" {
 			fmt.Fprintf(w, "  %-12sSSID %s | BSSID %s\n", "", iface.Wireless.SSID, iface.Wireless.BSSID)
+		}
+		if link := wirelessLinkParts(iface.Wireless); len(link) > 0 {
+			fmt.Fprintf(w, "  %-12s%s\n", "", strings.Join(link, " | "))
 		}
 	}
 
@@ -987,6 +1005,57 @@ func renderInterface(w io.Writer, iface types.NetworkInfo) {
 		iface.DropsIn,
 		iface.DropsOut,
 	)
+}
+
+// netmasks lists each IPv4 address's dotted netmask, labelled with the
+// address it belongs to. IPv6 has no dotted form; its prefix is in the CIDR.
+func netmasks(details []types.AddressInfo) []string {
+	var masks []string
+	for _, d := range details {
+		if d.Netmask != "" {
+			masks = append(masks, fmt.Sprintf("%s (%s)", d.Netmask, d.Address))
+		}
+	}
+	return masks
+}
+
+// gatewayParts describes the interface's gateway per family, marking the
+// family whose system default route it carries. A default route without a
+// next hop (a point-to-point link) reads "on-link".
+func gatewayParts(iface types.NetworkInfo) []string {
+	var parts []string
+	add := func(gateway string, isDefault bool) {
+		if gateway == "" && !isDefault {
+			return
+		}
+		if gateway == "" {
+			gateway = "on-link"
+		}
+		if isDefault {
+			gateway += " (default)"
+		}
+		parts = append(parts, gateway)
+	}
+	add(iface.GatewayIPv4, iface.DefaultRouteIPv4)
+	add(iface.GatewayIPv6, iface.DefaultRouteIPv6)
+	return parts
+}
+
+// wirelessLinkParts describes the radio link's channel and rates, leaving
+// out what nl80211 did not report.
+func wirelessLinkParts(wl *types.WirelessInfo) []string {
+	var parts []string
+	if wl.FrequencyAvailable {
+		channel := fmt.Sprintf("%d MHz", wl.FrequencyMHz)
+		if wl.Channel > 0 {
+			channel = fmt.Sprintf("channel %d (%s)", wl.Channel, channel)
+		}
+		parts = append(parts, channel)
+	}
+	if wl.BitrateAvailable {
+		parts = append(parts, fmt.Sprintf("tx %.1f Mbps", wl.TxBitrateMbps), fmt.Sprintf("rx %.1f Mbps", wl.RxBitrateMbps))
+	}
+	return parts
 }
 
 // FormatMeanCPUUsage formats the mean usage over the cores whose usage was

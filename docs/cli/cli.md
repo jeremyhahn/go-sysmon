@@ -48,7 +48,7 @@ verb that starts one.
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `--addr` | string | `:8080` | Listen address |
-| `--interval` | int | `1000` | Polling interval in milliseconds; must be greater than zero |
+| `--interval` | int | `1000` | Polling interval in milliseconds; at least `500` (`IntervalBelowFloorError`) |
 | `--tls-cert` | string | *(none)* | PEM certificate; enables HTTPS |
 | `--tls-key` | string | *(none)* | PEM key matching `--tls-cert` |
 | `--trusted-proxies` | strings | *(none)* | CIDR prefixes of reverse proxies whose forwarding headers are believed; see [deployment](../server/deployment.md#trusted-proxies) |

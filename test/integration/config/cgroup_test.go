@@ -52,7 +52,7 @@ func serveInCgroup(t *testing.T, dir string) *harness.Server {
 	t.Helper()
 	script := `echo $$ > "$1/cgroup.procs" && shift && exec "$@"`
 	s := harness.Start(t, "/bin/sh", nil, "-c", script, "sh", dir,
-		harness.Bins.Sysmon, "serve", "--addr", "127.0.0.1:0", "--interval", "200", "--log-format", "json",
+		harness.Bins.Sysmon, "serve", "--addr", "127.0.0.1:0", "--interval", "500", "--log-format", "json",
 		"--config", filepath.Join(t.TempDir(), "absent.yaml"))
 	s.Logs.AwaitMsg(t, harness.ListeningMsg)
 	return s

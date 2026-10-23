@@ -61,17 +61,9 @@ var keepaliveInterval = 30 * time.Second
 var responseWriteTimeout = 30 * time.Second
 
 // allowedIntervals is the set of polling intervals (in milliseconds) that
-// clients are permitted to request. Values match the UI dropdown options.
-var allowedIntervals = map[int]bool{
-	250:   true,
-	500:   true,
-	1000:  true,
-	5000:  true,
-	10000: true,
-	15000: true,
-	30000: true,
-	60000: true,
-}
+// clients are permitted to request. Values match the UI dropdown options, and
+// are the set a configured server.interval_ms is validated against.
+var allowedIntervals = config.AllowedIntervalMs
 
 // TLS describes the server's transport security. It supports both the classic
 // static case, where certificate and key live on disk, and the dynamic case,
@@ -683,7 +675,7 @@ func (s *Server) handleSetInterval(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The response reports what is in force, not what was asked for. A peer
-	// refresh is floored (fleet.MinPollInterval), so a request for 250ms is
+	// refresh is floored (fleet.MinPollInterval), so a request for 500ms is
 	// answered with the second it will actually run at -- the dashboard states
 	// the cadence it is being served, and a clamped value must not be presented
 	// back as though it had been honoured.

@@ -73,8 +73,8 @@ the port can also raise the poll rate and with it the service's CPU cost.
 which capped it; that quota was removed on 2026-09-03 because a hard CFS stop
 wedged the process (issue #65), and `CPUWeight` — what replaced it — is
 work-conserving and imposes no ceiling at all. The damage is bounded only by
-arithmetic: `allowedIntervals` floors the poll at 250 ms, so the worst an
-unauthenticated caller can do is multiply the shipped 2 s cost by **8**. On a
+arithmetic: `allowedIntervals` floors the poll at 500 ms, so the worst an
+unauthenticated caller can do is multiply the shipped 2 s cost by **4**. On a
 big host that is a nuisance; on the 4-thread reference target, where a tick
 already costs a tenth of a core, it is most of the machine.
 

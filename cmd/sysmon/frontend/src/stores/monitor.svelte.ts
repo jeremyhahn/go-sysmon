@@ -382,7 +382,7 @@ class MonitorStore {
    * arriving at its old rate.
    *
    * The server's answer is applied rather than assumed, because a fleet
-   * request is floored server-side: asking for 250ms and displaying 250ms
+   * request is floored server-side: asking for 500ms and displaying 500ms
    * while peers refresh once a second is the same class of untruth as a stale
    * reading presented as live.
    */

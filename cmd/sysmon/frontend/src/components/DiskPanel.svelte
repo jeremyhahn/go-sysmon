@@ -155,6 +155,19 @@
     return "text-base-content";
   }
 
+  // "Vendor Model", each part only when it says something. Vendor used to show
+  // only when the model was empty; the two together are what identifies a drive.
+  // The collector reports "unknown" for a vendor it could not read, and a model
+  // often already begins with its vendor.
+  function deviceLabel(disk: DiskInfo): string {
+    const vendor = disk.vendor ?? "";
+    const model = disk.model ?? "";
+    const vendorKnown = vendor !== "" && vendor.toLowerCase() !== "unknown";
+    const modelNamesVendor = model.toLowerCase().startsWith(vendor.toLowerCase());
+    const parts = vendorKnown && !modelNamesVendor ? [vendor, model] : [model];
+    return parts.filter((p) => p !== "").join(" ") || "Unknown";
+  }
+
   function getDiskHistory(name: string) {
     return diskHistory.find((h) => h.name === name);
   }
@@ -250,7 +263,9 @@
                   /dev/{disk.name}
                 </h3>
                 <p class="text-xs text-base-content/60">
-                  {disk.model || disk.vendor || "Unknown"} &bull;
+                  {deviceLabel(disk)} &bull;
+                  <span data-testid="disk-size">{disk.size_bytes > 0 ? formatBytes(disk.size_bytes) : "size unknown"}</span> &bull;
+                  <span data-testid="disk-transport">{disk.transport || "transport unknown"}</span> &bull;
                   {disk.drive_type}
                   {disk.rotational ? "(HDD)" : "(SSD/NVMe)"}
                   {#if disk.firmware_version}
@@ -310,6 +325,15 @@
                     {formatBytes(disk.used_bytes)}
                   </span>
                   / {formatBytes(disk.total_bytes)}
+                </div>
+                <!-- A peak below the current reading is impossible, so a zero
+                     peak beside real usage means it was not tracked. -->
+                <div class="text-xs text-base-content/60 text-center" data-testid="disk-peak-used">
+                  {#if disk.peak_used_percent > 0}
+                    peak {disk.peak_used_percent.toFixed(1)}% used
+                  {:else if disk.used_percent > 0}
+                    peak used unknown
+                  {/if}
                 </div>
               </div>
             {:else}
@@ -394,15 +418,15 @@
                   </div>
                 </div>
                 <div>
-                  <span class="text-base-content/60">Peak read</span>
-                  <div class="font-semibold text-base-content">
-                    {formatBytesRate(disk.peak_read_bytes_rate)}
+                  <span class="text-base-content/60">Read (now / peak)</span>
+                  <div class="font-semibold text-base-content" data-testid="disk-read-rate">
+                    {formatBytesRate(disk.read_bytes_rate)} / {formatBytesRate(disk.peak_read_bytes_rate)}
                   </div>
                 </div>
                 <div>
-                  <span class="text-base-content/60">Peak write</span>
-                  <div class="font-semibold text-base-content">
-                    {formatBytesRate(disk.peak_write_bytes_rate)}
+                  <span class="text-base-content/60">Write (now / peak)</span>
+                  <div class="font-semibold text-base-content" data-testid="disk-write-rate">
+                    {formatBytesRate(disk.write_bytes_rate)} / {formatBytesRate(disk.peak_write_bytes_rate)}
                   </div>
                 </div>
               </div>

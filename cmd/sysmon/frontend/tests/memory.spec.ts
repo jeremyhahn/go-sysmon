@@ -59,13 +59,38 @@ test.describe('Memory Tab', () => {
     await expect(page.locator('h3').filter({ hasText: /^Swap$/ })).toBeVisible();
   });
 
+  test('swap card shows the paging counters since boot', async ({ page }) => {
+    const paging = page.getByTestId('swap-paging');
+    await expect(paging).toContainText('Paged since boot:');
+    await expect(paging).toContainText('1204 / 4565760 pages');
+    await expect(paging).not.toContainText('unknown');
+  });
+
   test('DIMM table lists each module', async ({ page }) => {
     await expect(page.locator('h3').filter({ hasText: /Memory Modules/ })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Location' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Size' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Type' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Location', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Size', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Type', exact: true })).toBeVisible();
     for (const slot of ['DIMMA1', 'DIMMA2', 'DIMMB1', 'DIMMB2']) {
       await expect(page.getByRole('cell', { name: slot, exact: true })).toBeVisible();
     }
+  });
+});
+
+/**
+ * Zero paged pages is also what a host that never paged reports, so a counter
+ * that was not read must say unknown rather than draw 0 B.
+ */
+test.describe('Memory Tab, swap counters not read', () => {
+  test('shows paging as unknown, not zero', async ({ page }) => {
+    await mockSnapshotFeed(page, {
+      memory: { swap_counters_available: false, swap_in_pages: 0, swap_out_pages: 0 },
+    });
+    await page.goto('/');
+    await openTab(page, 'Memory');
+
+    const paging = page.getByTestId('swap-paging');
+    await expect(paging).toContainText('Paged since boot: unknown');
+    await expect(paging).not.toContainText('0 B');
   });
 });

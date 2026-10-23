@@ -87,7 +87,6 @@
   });
 
   const intervalOptions = [
-    { value: 250, label: "250ms" },
     { value: 500, label: "500ms" },
     { value: 1000, label: "1s" },
     { value: 5000, label: "5s" },
@@ -293,7 +292,7 @@
       {#if effectiveNote !== ""}
         <!-- The peer refresh is floored server-side, so a request can be
              honoured only as far as the floor. Saying so is the point: a
-             dropdown reading 250ms over data collected once a second states a
+             dropdown reading 500ms over data collected once a second states a
              cadence nothing is running at. -->
         <span class="whitespace-nowrap text-warning" title="The cadence peers are actually refreshed at">
           {effectiveNote}

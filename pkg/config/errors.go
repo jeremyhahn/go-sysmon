@@ -308,6 +308,17 @@ func (e *HistoryCadenceError) Error() string {
 		e.Key, e.IntervalMs, e.LookbackMs)
 }
 
+// IntervalBelowFloorError reports a collection interval faster than
+// MinIntervalMs.
+type IntervalBelowFloorError struct {
+	Key        string
+	IntervalMs int
+}
+
+func (e *IntervalBelowFloorError) Error() string {
+	return fmt.Sprintf("config: %s is %dms; it must be at least %dms", e.Key, e.IntervalMs, MinIntervalMs)
+}
+
 // HeadroomTargetError reports a fleet.headroom_target outside (0, 1]. The
 // target is the utilisation a node's headroom is measured up to, as a
 // fraction: zero or less leaves no node any headroom, and more than one

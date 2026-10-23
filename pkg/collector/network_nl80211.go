@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -81,6 +82,11 @@ func (e *NetlinkAttrMissingError) Error() string {
 type wifiLink struct {
 	SSID  string
 	BSSID string
+	// FrequencyMHz is 0 when unknown.
+	FrequencyMHz     uint32
+	TxBitrateMbps    float64
+	RxBitrateMbps    float64
+	BitrateAvailable bool
 }
 
 // applyWifiLink adds the SSID and BSSID of interface ifIndex to w. A query
@@ -92,8 +98,45 @@ func applyWifiLink(w *types.WirelessInfo, ifIndex int) {
 		slog.Debug("nl80211 link query failed", "ifindex", ifIndex, "err", err)
 		return
 	}
+	applyLinkDetail(w, link)
+}
+
+// applyLinkDetail copies what nl80211 said about the link into w.
+func applyLinkDetail(w *types.WirelessInfo, link wifiLink) {
 	w.SSID = link.SSID
 	w.BSSID = link.BSSID
+	if link.FrequencyMHz != 0 {
+		w.FrequencyMHz = link.FrequencyMHz
+		w.Channel = frequencyToChannel(link.FrequencyMHz)
+		w.FrequencyAvailable = true
+	}
+	w.TxBitrateMbps = link.TxBitrateMbps
+	w.RxBitrateMbps = link.RxBitrateMbps
+	w.BitrateAvailable = link.BitrateAvailable
+}
+
+// frequencyToChannel maps a centre frequency to its IEEE 802.11 channel
+// number, as the kernel's ieee80211_freq_khz_to_channel does. It returns 0
+// for a frequency outside the 2.4, 4.9/5, 6 and 60 GHz bands.
+func frequencyToChannel(mhz uint32) int {
+	f := int(mhz)
+	switch {
+	case f == 2484:
+		return 14
+	case f >= 2412 && f < 2484:
+		return (f - 2407) / 5
+	case f >= 4910 && f <= 4980:
+		return (f - 4000) / 5
+	case f >= 5000 && f < 5925:
+		return (f - 5000) / 5
+	case f == 5935:
+		return 2
+	case f >= 5950 && f <= 7125:
+		return (f - 5950) / 5
+	case f >= 58320 && f <= 70200:
+		return (f - 56160) / 2160
+	}
+	return 0
 }
 
 // readWifiLink asks nl80211 for the SSID and associated BSSID of interface
@@ -129,12 +172,33 @@ func readWifiLink(ifIndex int) (wifiLink, error) {
 	if err != nil {
 		return wifiLink{}, err
 	}
-	bssid, err := parseAssociatedBSSID(scan)
+	bss, err := parseAssociatedBSS(scan)
 	if err != nil {
 		return wifiLink{}, err
 	}
 
-	return wifiLink{SSID: ssid, BSSID: bssid}, nil
+	link := wifiLink{SSID: ssid, BSSID: bss.bssid, FrequencyMHz: bss.frequencyMHz}
+	if bss.mac == nil {
+		return link, nil
+	}
+
+	// The station entry for the access point holds the link's rates. A
+	// failure here loses only the rates, not what is already known.
+	query := slices.Concat(ifAttr, encodeAttr(unix.NL80211_ATTR_MAC, bss.mac))
+	station, err := conn.execute(family, nl80211Version, unix.NL80211_CMD_GET_STATION, unix.NLM_F_ACK, query)
+	if err != nil {
+		slog.Debug("nl80211 station query failed", "ifindex", ifIndex, "err", err)
+		return link, nil
+	}
+	rates, err := parseStationBitrates(station)
+	if err != nil {
+		slog.Debug("nl80211 station reply malformed", "ifindex", ifIndex, "err", err)
+		return link, nil
+	}
+	link.TxBitrateMbps = rates.txMbps
+	link.RxBitrateMbps = rates.rxMbps
+	link.BitrateAvailable = rates.available
+	return link, nil
 }
 
 // genetlinkConn is a generic-netlink socket that runs one request at a time.
@@ -340,13 +404,21 @@ func parseInterfaceSSID(replies [][]byte) (string, error) {
 	return "", nil
 }
 
-// parseAssociatedBSSID returns the BSSID of the scan entry the interface is
-// associated with, or joined to for an ad-hoc network: "" when there is none.
-func parseAssociatedBSSID(replies [][]byte) (string, error) {
+// associatedBSS is the scan entry the interface is associated with.
+type associatedBSS struct {
+	bssid        string // formatted MAC; empty when there is no entry
+	mac          []byte // raw MAC, nil when there is no entry
+	frequencyMHz uint32 // 0 when the entry does not carry it
+}
+
+// parseAssociatedBSS returns the scan entry the interface is associated
+// with, or joined to for an ad-hoc network: the zero value when there is
+// none.
+func parseAssociatedBSS(replies [][]byte) (associatedBSS, error) {
 	for _, reply := range replies {
 		attrs, err := parseAttrs(reply)
 		if err != nil {
-			return "", err
+			return associatedBSS{}, err
 		}
 		nested, ok := attrs[unix.NL80211_ATTR_BSS]
 		if !ok {
@@ -354,7 +426,7 @@ func parseAssociatedBSSID(replies [][]byte) (string, error) {
 		}
 		bss, err := parseAttrs(nested)
 		if err != nil {
-			return "", err
+			return associatedBSS{}, err
 		}
 		status, ok := bss[unix.NL80211_BSS_STATUS]
 		if !ok || len(status) < 4 {
@@ -362,12 +434,76 @@ func parseAssociatedBSSID(replies [][]byte) (string, error) {
 		}
 		switch binary.NativeEndian.Uint32(status[:4]) {
 		case unix.NL80211_BSS_STATUS_ASSOCIATED, unix.NL80211_BSS_STATUS_IBSS_JOINED:
-			if mac := bss[unix.NL80211_BSS_BSSID]; len(mac) == 6 {
-				return net.HardwareAddr(mac).String(), nil
+			mac := bss[unix.NL80211_BSS_BSSID]
+			if len(mac) != 6 {
+				continue
 			}
+			entry := associatedBSS{bssid: net.HardwareAddr(mac).String(), mac: mac}
+			if freq := bss[unix.NL80211_BSS_FREQUENCY]; len(freq) >= 4 {
+				entry.frequencyMHz = binary.NativeEndian.Uint32(freq[:4])
+			}
+			return entry, nil
 		}
 	}
-	return "", nil
+	return associatedBSS{}, nil
+}
+
+// stationBitrates is the link rate to one station, in Mbit/s.
+type stationBitrates struct {
+	txMbps, rxMbps float64
+	// available is true when either direction was reported.
+	available bool
+}
+
+// parseStationBitrates reads the transmit and receive rates from a
+// NL80211_CMD_GET_STATION reply.
+func parseStationBitrates(replies [][]byte) (stationBitrates, error) {
+	for _, reply := range replies {
+		attrs, err := parseAttrs(reply)
+		if err != nil {
+			return stationBitrates{}, err
+		}
+		nested, ok := attrs[unix.NL80211_ATTR_STA_INFO]
+		if !ok {
+			continue
+		}
+		info, err := parseAttrs(nested)
+		if err != nil {
+			return stationBitrates{}, err
+		}
+		var rates stationBitrates
+		var okTx, okRx bool
+		if rates.txMbps, okTx, err = parseRateInfo(info[unix.NL80211_STA_INFO_TX_BITRATE]); err != nil {
+			return stationBitrates{}, err
+		}
+		if rates.rxMbps, okRx, err = parseRateInfo(info[unix.NL80211_STA_INFO_RX_BITRATE]); err != nil {
+			return stationBitrates{}, err
+		}
+		rates.available = okTx || okRx
+		return rates, nil
+	}
+	return stationBitrates{}, nil
+}
+
+// parseRateInfo reads a nested NL80211_RATE_INFO block's bitrate, which the
+// kernel gives in units of 100 kbit/s: the 32-bit attribute when present,
+// else the older 16-bit one. It reports false for an absent block or one
+// with neither attribute.
+func parseRateInfo(nested []byte) (float64, bool, error) {
+	if nested == nil {
+		return 0, false, nil
+	}
+	rate, err := parseAttrs(nested)
+	if err != nil {
+		return 0, false, err
+	}
+	if v := rate[unix.NL80211_RATE_INFO_BITRATE32]; len(v) >= 4 {
+		return float64(binary.NativeEndian.Uint32(v[:4])) / 10, true, nil
+	}
+	if v := rate[unix.NL80211_RATE_INFO_BITRATE]; len(v) >= 2 {
+		return float64(binary.NativeEndian.Uint16(v[:2])) / 10, true, nil
+	}
+	return 0, false, nil
 }
 
 // displaySSID renders an SSID, which is up to 32 arbitrary octets rather than

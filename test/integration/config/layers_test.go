@@ -30,9 +30,9 @@ func TestSettingsView_NamesTheLayerBehindEverySetting(t *testing.T) {
 	if view.file != "(configured)" {
 		t.Errorf("config_file = %q, want (configured) with the path withheld", view.file)
 	}
-	// --interval 200 is on the command line the harness runs: it outranks the
+	// --interval 500 is on the command line the harness runs: it outranks the
 	// file's 5000.
-	view.want(t, "server.interval_ms", "200", types.ConfigSourceFlag)
+	view.want(t, "server.interval_ms", "500", types.ConfigSourceFlag)
 	view.want(t, "alerts.cpu_pct", "77", types.ConfigSourceEnv)
 	view.want(t, "alerts.disk_full_pct", "91", types.ConfigSourceEnv)
 	view.want(t, "alerts.memory_pct", "80", types.ConfigSourceFile)

@@ -59,7 +59,16 @@ sysmon serve --addr :8080      # then open http://localhost:8080
   ([collector/disk-and-network.md](../collector/disk-and-network.md#wireless)).
 - **Disk peaks.** Each disk card shows, beside the current figures, the peaks
   since the server started: utilisation, queue length, and read and write
-  throughput (binary bytes per second, as disk rates are elsewhere).
+  throughput (binary bytes per second, as disk rates are elsewhere). Read and
+  write throughput read `now / peak`; the used-space gauge carries `peak N% used`.
+- **Disk identity.** The card's subtitle names the vendor and model (vendor left
+  out when unreadable or already part of the model), the device size, and the
+  transport (NVMe, SATA, SAS, …). A size, transport or peak the collector could
+  not read says `unknown`, never 0.
+- **Swap paging.** The Memory tab's Swap card shows pages swapped in and out
+  since boot, as bytes and as pages, beside occupancy: full swap that nothing
+  touches is not pressure, and paging is. A host whose `/proc/vmstat` has no
+  swap counters shows `unknown`.
 
 ## Troubleshooting
 

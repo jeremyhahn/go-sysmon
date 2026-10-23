@@ -10,7 +10,7 @@ the desktop app. What it means for you:
   interval, not five.
 - **The refresh rate is shared.** Changing the interval in the dashboard changes
   it for every connected viewer, and takes effect on the next frame.
-- **Choosing a rate.** The dashboard dropdown offers 250 ms, 500 ms, 1 s, 5 s,
+- **Choosing a rate.** The dashboard dropdown offers 500 ms, 1 s, 5 s,
   10 s, 15 s, 30 s and 60 s. The starting rate is `--interval` (default 1000 ms)
   or `server.interval_ms` in the config file, which a reload applies live.
 - **A slow client misses frames, not the server.** If a viewer falls behind it

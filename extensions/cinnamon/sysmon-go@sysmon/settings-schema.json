@@ -7,10 +7,10 @@
     "update-interval": {
         "type": "spinbutton",
         "default": 1000,
-        "min": 250,
+        "min": 500,
         "max": 60000,
-        "step": 250,
-        "description": "Update interval in milliseconds"
+        "step": 500,
+        "description": "Update interval in milliseconds (the server accepts 500, 1000, 5000, 10000, 15000, 30000 or 60000)"
     },
     "show-cpu": {
         "type": "switch",

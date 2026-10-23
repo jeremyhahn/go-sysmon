@@ -184,7 +184,7 @@ function isWailsRuntime(): boolean {
 export type IntervalScope = "local" | "fleet";
 
 /** Effective is what the server is actually running at, after its own floor.
- * A request for 250ms on the fleet poller comes back as 1000. */
+ * A request for 500ms on the fleet poller comes back as 1000. */
 export interface Effective {
   intervalMs: number;
   fleetIntervalMs: number;

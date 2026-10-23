@@ -449,7 +449,7 @@ func Serve(t *testing.T, o ServeOptions) *Server {
 	if bin == "" {
 		bin = Bins.Sysmon
 	}
-	args := []string{"serve", "--addr", "127.0.0.1:0", "--interval", "200", "--log-format", "json"}
+	args := []string{"serve", "--addr", "127.0.0.1:0", "--interval", "500", "--log-format", "json"}
 	switch {
 	case o.ConfigPath != "":
 		args = append(args, "--config", o.ConfigPath)

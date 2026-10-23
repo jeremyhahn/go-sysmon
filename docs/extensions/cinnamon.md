@@ -73,7 +73,7 @@ Right-click the applet and choose Configure.
 | Setting         | Type       | Default          | What it does                    |
 |-----------------|------------|------------------|---------------------------------|
 | Server address  | text       | `localhost:8080` | Where the sysmon server is      |
-| Update interval | spinbutton | 1000 ms          | Poll rate, 250 to 60000 ms      |
+| Update interval | spinbutton | 1000 ms          | Poll rate, 500 to 60000 ms      |
 | Show CPU        | toggle     | on               | Per-core bars                   |
 | Show memory     | toggle     | on               | Memory bar                      |
 | Show network    | toggle     | on               | Throughput text                 |

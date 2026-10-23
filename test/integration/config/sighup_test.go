@@ -76,7 +76,7 @@ func TestSIGHUP_RefusesAPeerNamedLikeThisNode(t *testing.T) {
 
 // TestSIGHUP_ReappliesTheConfiguredInterval verifies a reload makes the
 // configuration true again: an interval chosen in the dashboard is replaced by
-// the configured one -- here the --interval 200 the service was started with,
+// the configured one -- here the --interval 500 the service was started with,
 // which outranks the file's 1000.
 func TestSIGHUP_ReappliesTheConfiguredInterval(t *testing.T) {
 	path := configDir(t, "server:\n  interval_ms: 1000\n")
@@ -89,7 +89,7 @@ func TestSIGHUP_ReappliesTheConfiguredInterval(t *testing.T) {
 	s.Signal(t, syscall.SIGHUP)
 	s.Logs.AwaitMsg(t, msgSIGHUPReloaded)
 
-	viewOf(t, s).want(t, "server.interval_ms", "200", types.ConfigSourceFlag)
+	viewOf(t, s).want(t, "server.interval_ms", "500", types.ConfigSourceFlag)
 }
 
 // TestSIGHUP_PeerTransportNeedsARestart verifies every fleet.tls setting that

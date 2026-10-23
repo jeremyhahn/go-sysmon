@@ -125,7 +125,14 @@ The top-level structure. One of these per collection.
 
 ## CPUInfo
 
-Per-logical-processor fields including `index`, `model_name`, `vendor_id`, `family`, `model`, `stepping`, `physical_id`, `core_id`, `cores`, `threads`, `mhz`, `cache_size`, `microcode`, `flags`, `usage_percent`, `usage_available`, `temperature_celsius`, and `voltage_v`.
+Per-logical-processor fields including `index`, `model_name`, `vendor_id`, `family`, `model`, `stepping`, `physical_id`, `core_id`, `cores`, `threads`, `mhz`, `cur_mhz`, `cur_mhz_available`, `cur_mhz_source`, `cache_size`, `microcode`, `flags`, `usage_percent`, `usage_available`, `temperature_celsius`, and `voltage_v`.
+
+`cache_size` is in kilobytes (KB), as gopsutil reports it. `mhz` is the cpufreq
+maximum where cpufreq exists; `cur_mhz` is the core's current frequency, read
+from `/sys/devices/system/cpu/cpuN/cpufreq/scaling_cur_freq` (`cur_mhz_source`
+`cpufreq`) or, without cpufreq, the core's `cpu MHz` in `/proc/cpuinfo`
+(`cpuinfo`). When neither exists `cur_mhz_available` is false, `cur_mhz` is 0
+and the source is empty: unknown, not a stopped core.
 
 `usage_percent` is the difference of two `/proc/stat` readings, so it exists
 only when `usage_available` is true. It is false on the collector's first
@@ -277,6 +284,29 @@ Rates: `bytes_sent_rate`, `bytes_recv_rate`. `rates_available` is false when
 they were not measured: on the first collection, for an interface that has just
 appeared, and when the counters could not be read. The rates are then zero only
 because they have to be something.
+
+Addressing: `address_details` is `addresses` in structured form, one
+`AddressInfo` per address in the same order (a string that is not CIDR is left
+out):
+
+| Field           | Type     | Description                                   |
+|-----------------|----------|-----------------------------------------------|
+| `address`       | `string` | IP address without the prefix                 |
+| `prefix_length` | `int`    | CIDR prefix length                            |
+| `netmask`       | `string` | Dotted netmask for IPv4, empty for IPv6       |
+| `family`        | `string` | `ipv4` or `ipv6`                              |
+
+Routing: `gateway_ipv4`, `gateway_ipv6` (the interface's next hop, empty when
+it has none), `default_route_ipv4`, `default_route_ipv6` (it carries the
+system's preferred default route of that family). `routes_available` is false
+when the IPv4 routing table could not be read, so the routing fields are
+unknown rather than empty.
+
+Wireless (`wireless`, wifi interfaces only): `ssid`, `bssid`, `link_quality`,
+`signal_level_dbm`, `noise_level_dbm`, `frequency_mhz`, `channel` and
+`frequency_available`, `tx_bitrate_mbps`, `rx_bitrate_mbps` and
+`bitrate_available`. Each `*_available` flag is false when its values were not
+learned, which makes the zeros beside it meaningless.
 
 ## SensorData
 

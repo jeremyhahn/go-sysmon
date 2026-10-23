@@ -65,8 +65,8 @@ func TestAPI_SummaryAndHistorySnapshotAreWhatAPeerPolls(t *testing.T) {
 
 	var summary types.NodeSummary
 	harness.GetJSON(t, s.URL("/api/summary"), &summary)
-	if summary.Hostname == "" || summary.NodeName != "rack-7" || summary.CollectionIntervalMs != 200 || summary.MemoryPercent <= 0 {
-		t.Errorf("summary = %+v, want the host's name, the fleet name, the 200ms cadence and its memory use", summary)
+	if summary.Hostname == "" || summary.NodeName != "rack-7" || summary.CollectionIntervalMs != 500 || summary.MemoryPercent <= 0 {
+		t.Errorf("summary = %+v, want the host's name, the fleet name, the 500ms cadence and its memory use", summary)
 	}
 
 	var hist types.Snapshot
@@ -114,9 +114,15 @@ func TestAPI_IntervalIsSetAndRefused(t *testing.T) {
 
 	// Peers are refreshed no faster than the fleet's floor, and the answer
 	// says what is in force rather than what was asked for.
-	status, _, body = request(t, http.DefaultClient, http.MethodPost, url, `{"interval_ms":250,"scope":"fleet"}`)
+	status, _, body = request(t, http.DefaultClient, http.MethodPost, url, `{"interval_ms":500,"scope":"fleet"}`)
 	if status != http.StatusOK || !strings.Contains(body, `"fleet_interval_ms":1000`) {
-		t.Errorf("POST 250 for the fleet = %d %s, want the 1000ms floor reported", status, body)
+		t.Errorf("POST 500 for the fleet = %d %s, want the 1000ms floor reported", status, body)
+	}
+
+	// Below the stream's 500ms floor the request is refused outright.
+	status, _, body = request(t, http.DefaultClient, http.MethodPost, url, `{"interval_ms":250,"scope":"fleet"}`)
+	if status != http.StatusBadRequest {
+		t.Errorf("POST 250 for the fleet = %d %s, want 400", status, body)
 	}
 
 	status, _, body = request(t, http.DefaultClient, http.MethodGet, url, "")

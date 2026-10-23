@@ -15,7 +15,7 @@ Runs until `SIGINT` or `SIGTERM`. No positional arguments.
 | Flag | Type | Default | Required | Description |
 |---|---|---|---|---|
 | `--addr` | string | `:8080` | no | Listen address (`host:port`; port `0` lets the kernel choose and the bound address is logged) |
-| `--interval` | int | `1000` | no | Polling interval in milliseconds; must be greater than zero |
+| `--interval` | int | `1000` | no | Polling interval in milliseconds; at least `500` (`IntervalBelowFloorError`) |
 | `--tls-cert` | string | *(none)* | with `--tls-key` | PEM certificate; enables HTTPS |
 | `--tls-key` | string | *(none)* | with `--tls-cert` | PEM key matching `--tls-cert` |
 | `--trusted-proxies` | strings | *(none)* | no | CIDR prefixes of reverse proxies whose `Forwarded` / `X-Forwarded-*` headers are believed; repeat or comma-separate. See [deployment.md](deployment.md#trusted-proxies) |

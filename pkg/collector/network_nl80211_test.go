@@ -3,8 +3,10 @@
 package collector
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
@@ -239,9 +241,10 @@ func TestParseAssociatedBSSID(t *testing.T) {
 	seen := bssAttr([]byte{0x02, 0, 0, 0, 0, 0x01}, 0, false)
 	associated := bssAttr([]byte{0x02, 0, 0, 0, 0, 0x02}, unix.NL80211_BSS_STATUS_ASSOCIATED, true)
 
-	bssid, err := parseAssociatedBSSID([][]byte{seen, associated})
+	bss, err := parseAssociatedBSS([][]byte{seen, associated})
+	bssid := bss.bssid
 	if err != nil {
-		t.Fatalf("parseAssociatedBSSID: %v", err)
+		t.Fatalf("parseAssociatedBSS: %v", err)
 	}
 	if bssid != "02:00:00:00:00:02" {
 		t.Errorf("bssid = %q, want the associated entry 02:00:00:00:00:02", bssid)
@@ -251,7 +254,8 @@ func TestParseAssociatedBSSID(t *testing.T) {
 func TestParseAssociatedBSSIDAdHoc(t *testing.T) {
 	joined := bssAttr([]byte{0x06, 1, 2, 3, 4, 5}, unix.NL80211_BSS_STATUS_IBSS_JOINED, true)
 
-	bssid, err := parseAssociatedBSSID([][]byte{joined})
+	bss, err := parseAssociatedBSS([][]byte{joined})
+	bssid := bss.bssid
 	if err != nil || bssid != "06:01:02:03:04:05" {
 		t.Errorf("bssid = %q, err = %v; want the joined ad-hoc cell", bssid, err)
 	}
@@ -260,14 +264,15 @@ func TestParseAssociatedBSSIDAdHoc(t *testing.T) {
 func TestParseAssociatedBSSIDNone(t *testing.T) {
 	authenticated := bssAttr([]byte{0x02, 0, 0, 0, 0, 0x03}, unix.NL80211_BSS_STATUS_AUTHENTICATED, true)
 
-	bssid, err := parseAssociatedBSSID([][]byte{authenticated, encodeAttr(unix.NL80211_ATTR_IFINDEX, u32(3))})
+	bss, err := parseAssociatedBSS([][]byte{authenticated, encodeAttr(unix.NL80211_ATTR_IFINDEX, u32(3))})
+	bssid := bss.bssid
 	if err != nil || bssid != "" {
 		t.Errorf("bssid = %q, err = %v; want empty: nothing is associated", bssid, err)
 	}
 }
 
 func TestParseAssociatedBSSIDMalformedNested(t *testing.T) {
-	_, err := parseAssociatedBSSID([][]byte{encodeAttr(unix.NL80211_ATTR_BSS, []byte{8, 0, 1, 0})})
+	_, err := parseAssociatedBSS([][]byte{encodeAttr(unix.NL80211_ATTR_BSS, []byte{8, 0, 1, 0})})
 	var malformed *NetlinkMalformedError
 	if !errors.As(err, &malformed) {
 		t.Errorf("err = %v, want NetlinkMalformedError", err)
@@ -354,5 +359,137 @@ func TestApplyWifiLinkKeepsStatisticsOnFailure(t *testing.T) {
 	}
 	if w.LinkQuality != 60 || w.SignalLevelDBm != -50 {
 		t.Errorf("statistics changed to %+v", *w)
+	}
+	if w.FrequencyAvailable || w.BitrateAvailable {
+		t.Errorf("availability = frequency %v, bitrate %v; want both false after a failed query", w.FrequencyAvailable, w.BitrateAvailable)
+	}
+}
+
+func TestParseAssociatedBSSFrequency(t *testing.T) {
+	mac := []byte{0x02, 0, 0, 0, 0, 0x07}
+	inner := slices.Concat(
+		encodeAttr(unix.NL80211_BSS_BSSID, mac),
+		encodeAttr(unix.NL80211_BSS_STATUS, u32(unix.NL80211_BSS_STATUS_ASSOCIATED)),
+		encodeAttr(unix.NL80211_BSS_FREQUENCY, u32(5180)),
+	)
+
+	bss, err := parseAssociatedBSS([][]byte{encodeAttr(unix.NL80211_ATTR_BSS|unix.NLA_F_NESTED, inner)})
+	if err != nil {
+		t.Fatalf("parseAssociatedBSS: %v", err)
+	}
+	if bss.frequencyMHz != 5180 || !bytes.Equal(bss.mac, mac) {
+		t.Errorf("bss = %+v, want 5180 MHz and the raw MAC", bss)
+	}
+}
+
+// An entry without a frequency still identifies the network.
+func TestParseAssociatedBSSNoFrequency(t *testing.T) {
+	bss, err := parseAssociatedBSS([][]byte{bssAttr([]byte{0x02, 0, 0, 0, 0, 0x08}, unix.NL80211_BSS_STATUS_ASSOCIATED, true)})
+	if err != nil || bss.bssid != "02:00:00:00:00:08" || bss.frequencyMHz != 0 {
+		t.Errorf("bss = %+v, err = %v; want the BSSID with frequency 0", bss, err)
+	}
+}
+
+// stationReply is a NL80211_CMD_GET_STATION reply holding the given
+// NL80211_STA_INFO attributes.
+func stationReply(info ...[]byte) []byte {
+	return encodeAttr(unix.NL80211_ATTR_STA_INFO|unix.NLA_F_NESTED, slices.Concat(info...))
+}
+
+func rateBlock(staAttr uint16, rate []byte) []byte {
+	return encodeAttr(staAttr|unix.NLA_F_NESTED, rate)
+}
+
+func TestParseStationBitrates(t *testing.T) {
+	reply := stationReply(
+		rateBlock(unix.NL80211_STA_INFO_TX_BITRATE, encodeAttr(unix.NL80211_RATE_INFO_BITRATE32, u32(8667))),
+		rateBlock(unix.NL80211_STA_INFO_RX_BITRATE, encodeAttr(unix.NL80211_RATE_INFO_BITRATE, binary.NativeEndian.AppendUint16(nil, 5400))),
+	)
+
+	rates, err := parseStationBitrates([][]byte{reply})
+	if err != nil {
+		t.Fatalf("parseStationBitrates: %v", err)
+	}
+	if !rates.available || rates.txMbps != 866.7 || rates.rxMbps != 540 {
+		t.Errorf("rates = %+v, want tx 866.7 (32-bit) and rx 540 (16-bit fallback)", rates)
+	}
+}
+
+func TestParseStationBitratesAbsent(t *testing.T) {
+	tests := map[string][][]byte{
+		"no replies":         nil,
+		"no station info":    {encodeAttr(unix.NL80211_ATTR_IFINDEX, u32(3))},
+		"no rate blocks":     {stationReply(encodeAttr(unix.NL80211_STA_INFO_SIGNAL, []byte{0xc4}))},
+		"rate without value": {stationReply(rateBlock(unix.NL80211_STA_INFO_TX_BITRATE, encodeAttr(unix.NL80211_RATE_INFO_MCS, []byte{7})))},
+	}
+	for name, replies := range tests {
+		t.Run(name, func(t *testing.T) {
+			rates, err := parseStationBitrates(replies)
+			if err != nil || rates.available {
+				t.Errorf("rates = %+v, err = %v; want unavailable without error", rates, err)
+			}
+		})
+	}
+}
+
+func TestParseStationBitratesMalformed(t *testing.T) {
+	tests := map[string][]byte{
+		"reply":        {9, 0, 1},
+		"station info": encodeAttr(unix.NL80211_ATTR_STA_INFO, []byte{8, 0, 1, 0}),
+		"tx rate":      stationReply(rateBlock(unix.NL80211_STA_INFO_TX_BITRATE, []byte{8, 0, 1, 0})),
+		"rx rate":      stationReply(rateBlock(unix.NL80211_STA_INFO_RX_BITRATE, []byte{8, 0, 1, 0})),
+	}
+	for name, reply := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseStationBitrates([][]byte{reply})
+			var malformed *NetlinkMalformedError
+			if !errors.As(err, &malformed) {
+				t.Errorf("err = %v, want NetlinkMalformedError", err)
+			}
+		})
+	}
+}
+
+func TestFrequencyToChannel(t *testing.T) {
+	tests := map[uint32]int{
+		2412: 1, 2437: 6, 2472: 13, 2484: 14, // 2.4 GHz
+		4920: 184,                      // 4.9 GHz (Japan)
+		5180: 36, 5825: 165, 5885: 177, // 5 GHz
+		5935: 2, 5955: 1, 6415: 93, 7115: 233, // 6 GHz
+		58320: 1, 60480: 2, // 60 GHz
+		0: 0, 2400: 0, 3000: 0, 7200: 0, 90000: 0, // outside every band
+	}
+	for mhz, want := range tests {
+		if got := frequencyToChannel(mhz); got != want {
+			t.Errorf("frequencyToChannel(%d) = %d, want %d", mhz, got, want)
+		}
+	}
+}
+
+func TestApplyLinkDetail(t *testing.T) {
+	w := &types.WirelessInfo{LinkQuality: 70}
+	applyLinkDetail(w, wifiLink{
+		SSID: "home", BSSID: "02:00:00:00:00:01", FrequencyMHz: 2437,
+		TxBitrateMbps: 144.4, RxBitrateMbps: 130, BitrateAvailable: true,
+	})
+
+	want := types.WirelessInfo{
+		SSID: "home", BSSID: "02:00:00:00:00:01", LinkQuality: 70,
+		FrequencyMHz: 2437, Channel: 6, FrequencyAvailable: true,
+		TxBitrateMbps: 144.4, RxBitrateMbps: 130, BitrateAvailable: true,
+	}
+	if *w != want {
+		t.Errorf("WirelessInfo = %+v, want %+v", *w, want)
+	}
+}
+
+// A link nl80211 knows nothing more about leaves the frequency and the
+// rates unavailable rather than claiming channel 0 at 0 Mbit/s.
+func TestApplyLinkDetailUnknown(t *testing.T) {
+	w := &types.WirelessInfo{}
+	applyLinkDetail(w, wifiLink{SSID: "home"})
+
+	if w.FrequencyAvailable || w.BitrateAvailable || w.Channel != 0 {
+		t.Errorf("WirelessInfo = %+v, want frequency and bitrate unavailable", *w)
 	}
 }

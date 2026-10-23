@@ -37,7 +37,7 @@ endpoints in [api.md](api.md). This page is the contract a change must keep.
 - **Timeouts.** `ReadHeaderTimeout` 10 s, `IdleTimeout` 120 s, `WriteTimeout`
   30 s for ordinary responses; no `ReadTimeout`.
 - **Request bodies** to `POST /api/interval` are capped at 1 KiB.
-- **Allowed intervals (ms):** 250, 500, 1000, 5000, 10000, 15000, 30000, 60000.
+- **Allowed intervals (ms):** 500, 1000, 5000, 10000, 15000, 30000, 60000.
 - **Security headers** wrap the whole mux; HSTS follows `r.TLS`, or a trusted
   proxy's report of HTTPS (`server.trusted_proxies`).
 - **Config is read-only over HTTP.** Reload happens through `SIGHUP` or the
@@ -61,6 +61,7 @@ endpoints in [api.md](api.md). This page is the contract a change must keep.
 | Fleet peer CA file unreadable | Startup error (not reported later as "peers unreachable") |
 | `fleet.tls.insecure_skip_verify` | Allowed, with a startup warning that peer verification is off |
 | `--interval` ≤ 0, or `server.interval_ms` ≤ 0 on reload | `types.InvalidIntervalError`; a bad reload keeps the previous settings |
+| `--interval` or `server.interval_ms` from 1 to 499 | `config.IntervalBelowFloorError` (500ms floor); a bad reload keeps the previous settings |
 
 Handler-level status codes for every endpoint are in [api.md](api.md).
 

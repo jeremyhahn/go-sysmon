@@ -47,7 +47,7 @@ type Options struct {
 	RemoteWriteURL string
 	// SampleInterval is how often the exporter looks for a new reading to
 	// write. It is deliberately independent of the dashboard's stream rate: a
-	// browser watching at 250ms must not write four samples a second into a
+	// browser watching at 500ms must not write two samples a second into a
 	// time-series database.
 	//
 	// It is a ceiling on the write rate, not the write rate. A reading is

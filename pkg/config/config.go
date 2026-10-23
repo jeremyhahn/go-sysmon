@@ -251,8 +251,8 @@ type Prometheus struct {
 	QueryURL string `mapstructure:"query_url"`
 	// SampleIntervalMs is how often a set of samples is taken for pushing. It
 	// is deliberately separate from server.interval_ms: the dashboard's stream
-	// rate is a display choice, and a browser watching at 250ms must not write
-	// four samples a second into a time-series database.
+	// rate is a display choice, and a browser watching at 500ms must not write
+	// two samples a second into a time-series database.
 	SampleIntervalMs int `mapstructure:"sample_interval_ms"`
 	// FlushIntervalMs bounds how long a sample waits before being sent.
 	FlushIntervalMs int `mapstructure:"flush_interval_ms"`
@@ -505,6 +505,9 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 	if c.Server.IntervalMs <= 0 {
 		c.Server.IntervalMs = d.Server.IntervalMs
 		repairedToDefault(sources, "server.interval_ms")
+	}
+	if c.Server.IntervalMs < MinIntervalMs {
+		return &IntervalBelowFloorError{Key: "server.interval_ms", IntervalMs: c.Server.IntervalMs}
 	}
 	if c.Server.Addr == "" {
 		c.Server.Addr = d.Server.Addr
@@ -1164,6 +1167,24 @@ func configFileDir(path string) string { return filepath.Dir(path) }
 // sample is due: pkg/prom's tickInterval, which a test there holds equal to
 // this. A sample interval takes effect only in whole ticks.
 const ExporterTickMs = 1000
+
+// MinIntervalMs is the fastest collection interval (milliseconds) the service
+// runs at: the floor of AllowedIntervalMs. A configured server.interval_ms
+// below it is refused. Slower values between the dropdown's choices, such as
+// the shipped 2000, stay valid.
+const MinIntervalMs = 500
+
+// AllowedIntervalMs is the set of collection intervals (milliseconds) the
+// dashboard dropdown offers and POST /api/interval accepts.
+var AllowedIntervalMs = map[int]bool{
+	500:   true,
+	1000:  true,
+	5000:  true,
+	10000: true,
+	15000: true,
+	30000: true,
+	60000: true,
+}
 
 // SlowestDashboardIntervalMs is the slowest collection interval the
 // dashboard can switch a node to at runtime -- the largest of pkg/server's

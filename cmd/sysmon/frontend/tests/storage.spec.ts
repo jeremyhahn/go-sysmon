@@ -136,7 +136,72 @@ test.describe('Storage Tab, peak throughput', () => {
     });
 
     const card = diskCard(page, 'sda');
-    await expect(card.locator('div', { hasText: /^\s*Peak read/ }).last()).toContainText('3.0 MB/s');
-    await expect(card.locator('div', { hasText: /^\s*Peak write/ }).last()).toContainText('512.0 KB/s');
+    await expect(card.getByTestId('disk-read-rate')).toContainText('/ 3.0 MB/s');
+    await expect(card.getByTestId('disk-write-rate')).toContainText('/ 512.0 KB/s');
+  });
+
+  test('shows the current rate beside the peak', async ({ page }) => {
+    await openStorage(page, {
+      disks: [
+        {
+          name: 'sda',
+          read_bytes_rate: 2 * 1024 * 1024,
+          write_bytes_rate: 256 * 1024,
+          peak_read_bytes_rate: 3 * 1024 * 1024,
+          peak_write_bytes_rate: 512 * 1024,
+        },
+      ],
+    });
+
+    const card = diskCard(page, 'sda');
+    await expect(card.getByTestId('disk-read-rate')).toHaveText(/^\s*2\.0 MB\/s \/ 3\.0 MB\/s\s*$/);
+    await expect(card.getByTestId('disk-write-rate')).toHaveText(/^\s*256\.0 KB\/s \/ 512\.0 KB\/s\s*$/);
+  });
+});
+
+/** Identity and capacity: size, transport, vendor with model, and peak usage. */
+test.describe('Storage Tab, identity and capacity', () => {
+  test('shows size, transport, vendor with model and peak usage', async ({ page }) => {
+    await openStorage(page, {
+      disks: [
+        {
+          name: 'sda',
+          vendor: 'SEAGATE',
+          model: 'ST4000NM',
+          size_bytes: 4 * 1000 * 1000 * 1000 * 1000,
+          transport: 'SAS',
+          used_percent: 40,
+          total_bytes: 1000,
+          peak_used_percent: 55.5,
+        },
+      ],
+    });
+
+    const card = diskCard(page, 'sda');
+    await expect(card.locator('p.text-xs').first()).toContainText('SEAGATE ST4000NM');
+    await expect(card.getByTestId('disk-size')).toContainText(/TB|TiB/);
+    await expect(card.getByTestId('disk-transport')).toHaveText('SAS');
+    await expect(card.getByTestId('disk-peak-used')).toContainText('peak 55.5% used');
+  });
+
+  test('shows unreadable size, transport and peak as unknown, not zero', async ({ page }) => {
+    await openStorage(page, {
+      disks: [
+        {
+          name: 'sda',
+          vendor: '',
+          size_bytes: 0,
+          transport: '',
+          used_percent: 40,
+          total_bytes: 1000,
+          peak_used_percent: 0,
+        },
+      ],
+    });
+
+    const card = diskCard(page, 'sda');
+    await expect(card.getByTestId('disk-size')).toHaveText('size unknown');
+    await expect(card.getByTestId('disk-transport')).toHaveText('transport unknown');
+    await expect(card.getByTestId('disk-peak-used')).toContainText('peak used unknown');
   });
 });

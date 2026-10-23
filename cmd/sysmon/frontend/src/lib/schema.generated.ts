@@ -33,6 +33,12 @@ export interface FieldEntry {
 export type TypeSchema = readonly FieldEntry[];
 
 export const SCHEMA: Readonly<Record<string, TypeSchema>> = {
+  AddressInfo: [
+    { key: "address", type: { kind: "string" } },
+    { key: "prefix_length", type: { kind: "number" } },
+    { key: "netmask", type: { kind: "string" } },
+    { key: "family", type: { kind: "string" } },
+  ],
   Alert: [
     { key: "id", type: { kind: "string" } },
     { key: "rule", type: { kind: "string" } },
@@ -56,6 +62,9 @@ export const SCHEMA: Readonly<Record<string, TypeSchema>> = {
     { key: "cores", type: { kind: "number" } },
     { key: "threads", type: { kind: "number" } },
     { key: "mhz", type: { kind: "number" } },
+    { key: "cur_mhz", type: { kind: "number" } },
+    { key: "cur_mhz_available", type: { kind: "boolean" } },
+    { key: "cur_mhz_source", type: { kind: "string" } },
     { key: "cache_size", type: { kind: "number" } },
     { key: "microcode", type: { kind: "string" } },
     { key: "flags", type: { kind: "array", elem: { kind: "string" }, nullable: true } },
@@ -569,6 +578,7 @@ export const SCHEMA: Readonly<Record<string, TypeSchema>> = {
     { key: "name", type: { kind: "string" } },
     { key: "hardware_addr", type: { kind: "string" } },
     { key: "addresses", type: { kind: "array", elem: { kind: "string" }, nullable: true } },
+    { key: "address_details", type: { kind: "array", elem: { kind: "object", ref: "AddressInfo" }, nullable: true } },
     { key: "mtu", type: { kind: "number" } },
     { key: "flags", type: { kind: "array", elem: { kind: "string" }, nullable: true } },
     { key: "speed_mbps", type: { kind: "number" } },
@@ -589,6 +599,11 @@ export const SCHEMA: Readonly<Record<string, TypeSchema>> = {
     { key: "kind", type: { kind: "string" } },
     { key: "dns_servers", type: { kind: "array", elem: { kind: "string" }, nullable: true } },
     { key: "dns_search", type: { kind: "array", elem: { kind: "string" }, nullable: true } },
+    { key: "gateway_ipv4", type: { kind: "string" } },
+    { key: "gateway_ipv6", type: { kind: "string" } },
+    { key: "default_route_ipv4", type: { kind: "boolean" } },
+    { key: "default_route_ipv6", type: { kind: "boolean" } },
+    { key: "routes_available", type: { kind: "boolean" } },
     { key: "bridge_ports", type: { kind: "array", elem: { kind: "string" }, nullable: true } },
     { key: "bond_mode", type: { kind: "string" } },
     { key: "bond_slaves", type: { kind: "array", elem: { kind: "string" }, nullable: true } },
@@ -846,6 +861,12 @@ export const SCHEMA: Readonly<Record<string, TypeSchema>> = {
   WirelessInfo: [
     { key: "ssid", optional: true, type: { kind: "string" } },
     { key: "bssid", optional: true, type: { kind: "string" } },
+    { key: "frequency_mhz", type: { kind: "number" } },
+    { key: "channel", type: { kind: "number" } },
+    { key: "frequency_available", type: { kind: "boolean" } },
+    { key: "tx_bitrate_mbps", type: { kind: "number" } },
+    { key: "rx_bitrate_mbps", type: { kind: "number" } },
+    { key: "bitrate_available", type: { kind: "boolean" } },
     { key: "link_quality", type: { kind: "number" } },
     { key: "signal_level_dbm", type: { kind: "number" } },
     { key: "noise_level_dbm", type: { kind: "number" } },

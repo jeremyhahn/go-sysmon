@@ -130,6 +130,41 @@ and does not affect the other wireless fields. An SSID is arbitrary bytes, so
 one that is not printable UTF-8 is reported as hex (`0x…`), which keeps
 control characters out of the CLI.
 
+The link's radio parameters come from the same client:
+
+- `frequency_mhz` is the `NL80211_BSS_FREQUENCY` of the associated scan entry,
+  and `channel` the 802.11 channel it maps to (2.4, 4.9/5, 6 and 60 GHz bands,
+  as the kernel maps them; 0 outside them).
+- `tx_bitrate_mbps` and `rx_bitrate_mbps` come from a
+  `NL80211_CMD_GET_STATION` query on the BSSID: the station entry for the
+  access point holds the current rates, in units of 100 kbit/s.
+
+`frequency_available` and `bitrate_available` say whether each was learned. A
+failed station query costs only the rates.
+
+### Addressing and routes
+
+`addresses` keeps the CIDR strings; `address_details` gives each as
+`address`, `prefix_length`, `netmask` (dotted, IPv4 only) and `family`.
+
+Routing comes from `/proc/net/route` and `/proc/net/ipv6_route`, read under
+`procRoot` once per collection, not from netlink: the proc tables carry the
+destination, next hop, flags, metric and interface of every route, which is
+all the answer needs. Routes that are down (`RTF_UP` clear) or reject routes
+(`RTF_REJECT`) are ignored, and malformed lines are skipped.
+
+| Field | Meaning |
+|---|---|
+| `gateway_ipv4`, `gateway_ipv6` | next hop of the interface's lowest-metric default route, else of its lowest-metric gatewayed route; empty when it has none |
+| `default_route_ipv4`, `default_route_ipv6` | the interface carries the system's lowest-metric default route of that family |
+| `routes_available` | `/proc/net/route` was read; when false the fields above are unknown |
+
+The system default gateway of a family is therefore the gateway of the
+interface whose `default_route_*` flag is set. A default route with no next hop
+(a point-to-point link) sets the flag with an empty gateway, which the CLI
+shows as `on-link`. A missing `/proc/net/ipv6_route` (IPv6 disabled) means no
+IPv6 routes, not unavailable routes.
+
 ### Hardware identity
 
 A physical NIC reports which device it is:

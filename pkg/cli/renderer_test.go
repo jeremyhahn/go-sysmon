@@ -673,6 +673,67 @@ func TestRenderNetwork(t *testing.T) {
 		}
 	})
 
+	t.Run("renders netmask, gateways and wifi link", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testSnapshot()
+		nic := &snap.Networks[0]
+		nic.AddressDetails = []types.AddressInfo{
+			{Address: "192.168.1.100", PrefixLength: 24, Netmask: "255.255.255.0", Family: "ipv4"},
+			{Address: "fe80::1", PrefixLength: 64, Family: "ipv6"},
+		}
+		nic.GatewayIPv4, nic.DefaultRouteIPv4 = "192.168.1.1", true
+		nic.GatewayIPv6 = "fe80::fe"
+		nic.Wireless = &types.WirelessInfo{
+			FrequencyMHz: 5180, Channel: 36, FrequencyAvailable: true,
+			TxBitrateMbps: 866.7, RxBitrateMbps: 540, BitrateAvailable: true,
+		}
+		if err := RenderNetwork(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+
+		for _, want := range []string{
+			"255.255.255.0 (192.168.1.100)",
+			"192.168.1.1 (default) | fe80::fe",
+			"channel 36 (5180 MHz) | tx 866.7 Mbps | rx 540.0 Mbps",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q\nFull output:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("unknown routing and link detail is left out", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testSnapshot()
+		snap.Networks[0].Wireless = &types.WirelessInfo{LinkQuality: 50}
+		if err := RenderNetwork(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := buf.String()
+
+		for _, absent := range []string{"Netmask:", "Gateway:", "MHz", "Mbps |"} {
+			if strings.Contains(out, absent) {
+				t.Errorf("output has %q with nothing to show\nFull output:\n%s", absent, out)
+			}
+		}
+	})
+
+	t.Run("on-link default route", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		snap := testSnapshot()
+		snap.Networks[0].DefaultRouteIPv6 = true
+		if err := RenderNetwork(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out := buf.String(); !strings.Contains(out, "on-link (default)") {
+			t.Errorf("output missing the on-link default\nFull output:\n%s", out)
+		}
+	})
+
 	t.Run("down interface shows DOWN label", func(t *testing.T) {
 		t.Parallel()
 		var buf bytes.Buffer
@@ -1280,6 +1341,46 @@ func TestRenderCPU_WithTemperature(t *testing.T) {
 		out := buf.String()
 		if strings.Contains(out, "°C") {
 			t.Errorf("expected no temperature in output when all temps are zero and CoreTemps is empty\nFull output:\n%s", out)
+		}
+	})
+}
+
+func TestRenderCPU_CurrentFrequency(t *testing.T) {
+	t.Parallel()
+
+	render := func(t *testing.T, snap *types.Snapshot) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := RenderCPU(&buf, snap); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return buf.String()
+	}
+
+	t.Run("available frequency is shown per core", func(t *testing.T) {
+		t.Parallel()
+		snap := testSnapshot()
+		snap.CPUs[0].CurMHz, snap.CPUs[0].CurMHzAvailable = 3200, true
+		snap.CPUs[1].CurMHz, snap.CPUs[1].CurMHzAvailable = 1800, true
+		out := render(t, snap)
+		for _, want := range []string{"3200 MHz", "1800 MHz"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q\nFull output:\n%s", want, out)
+			}
+		}
+	})
+
+	t.Run("unavailable frequency reads unknown, never 0 MHz", func(t *testing.T) {
+		t.Parallel()
+		snap := testSnapshot()
+		snap.CPUs[0].CurMHz, snap.CPUs[0].CurMHzAvailable = 0, false
+		snap.CPUs[1].CurMHz, snap.CPUs[1].CurMHzAvailable = 1800, true
+		out := render(t, snap)
+		if !strings.Contains(out, "unknown") {
+			t.Errorf("output missing %q\nFull output:\n%s", "unknown", out)
+		}
+		if strings.Contains(out, "  0 MHz") {
+			t.Errorf("unavailable frequency drawn as 0 MHz\nFull output:\n%s", out)
 		}
 	})
 }

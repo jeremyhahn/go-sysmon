@@ -8,7 +8,7 @@
   import {
     formatPercent,
     formatMHz,
-    formatBytes,
+    formatKilobytes,
     formatTemp,
     formatWatts,
     tempColor,
@@ -212,6 +212,23 @@
                       {formatTemp(cpu.temperature_celsius)}
                     </span>
                   {/if}
+                  {#if cpu.cur_mhz_available}
+                    <span
+                      class="text-xs text-base-content/70"
+                      title="Current frequency ({cpu.cur_mhz_source})"
+                      data-testid="core-cur-mhz"
+                    >
+                      {formatMHz(cpu.cur_mhz)}
+                    </span>
+                  {:else}
+                    <span
+                      class="text-xs text-base-content/60"
+                      title="Current frequency not available"
+                      data-testid="core-cur-mhz"
+                    >
+                      unknown
+                    </span>
+                  {/if}
                   {#if cpu.usage_available}
                     <span class="{usageColor(cpu.usage_percent)} font-semibold">
                       {formatPercent(cpu.usage_percent)}
@@ -281,7 +298,8 @@
                   <th>Vendor</th>
                   <th>Cores</th>
                   <th>Threads</th>
-                  <th>Frequency</th>
+                  <th>Family / Model / Stepping</th>
+                  <th>Frequency (min – max)</th>
                   <th>Cache</th>
                   <th>Microcode</th>
                   {#if hasCpuTemps}
@@ -296,8 +314,19 @@
                     <td>{cpu.vendor_id}</td>
                     <td>{cpu.cores}</td>
                     <td>{cpu.threads}</td>
-                    <td>{formatMHz(cpu.mhz)}</td>
-                    <td>{formatBytes(cpu.cache_size)}</td>
+                    <td class="font-mono text-xs">
+                      {cpu.family} / {cpu.model} / {cpu.stepping}
+                    </td>
+                    <td>
+                      {#if cpuSummary && cpuSummary.min_mhz > 0}
+                        {formatMHz(cpuSummary.min_mhz)} – {formatMHz(
+                          cpuSummary.max_mhz || cpu.mhz
+                        )}
+                      {:else}
+                        {formatMHz(cpuSummary?.max_mhz || cpu.mhz)}
+                      {/if}
+                    </td>
+                    <td>{formatKilobytes(cpu.cache_size)}</td>
                     <td class="font-mono text-xs">{cpu.microcode}</td>
                     {#if hasCpuTemps}
                       <td

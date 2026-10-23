@@ -38,6 +38,9 @@
    "cores": 24,
    "threads": 24,
    "mhz": 5600,
+   "cur_mhz": 3200,
+   "cur_mhz_available": true,
+   "cur_mhz_source": "cpufreq",
    "cache_size": 36864,
    "microcode": "0x11b",
    "flags": [
@@ -200,6 +203,9 @@
    "cores": 24,
    "threads": 24,
    "mhz": 5800,
+   "cur_mhz": 0,
+   "cur_mhz_available": false,
+   "cur_mhz_source": "",
    "cache_size": 36864,
    "microcode": "0x11b",
    "flags": [

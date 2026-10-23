@@ -82,27 +82,32 @@ func (c *CPUCollector) Collect() error {
 	usageByIndex := cpuUsage(prev, currentStat)
 	c.prevStat.Store(&currentStat)
 
+	cpuinfoMHz := readProcCPUInfoMHzByCPU()
 	result := make([]types.CPUInfo, 0, len(infos))
 	for _, stat := range infos {
 		idx := int(stat.CPU)
 		usage, measured := usageByIndex[idx]
+		curMHz, curSource := readCurMHz(idx, cpuinfoMHz)
 		info := types.CPUInfo{
-			Index:          idx,
-			ModelName:      stat.ModelName,
-			VendorID:       stat.VendorID,
-			Family:         stat.Family,
-			Model:          stat.Model,
-			Stepping:       stat.Stepping,
-			PhysicalID:     stat.PhysicalID,
-			CoreID:         stat.CoreID,
-			Cores:          int32(summary.TotalCores),
-			Threads:        int32(summary.TotalThreads),
-			Mhz:            stat.Mhz,
-			CacheSize:      stat.CacheSize,
-			Microcode:      stat.Microcode,
-			Flags:          stat.Flags,
-			UsagePercent:   usage,
-			UsageAvailable: measured,
+			Index:           idx,
+			ModelName:       stat.ModelName,
+			VendorID:        stat.VendorID,
+			Family:          stat.Family,
+			Model:           stat.Model,
+			Stepping:        stat.Stepping,
+			PhysicalID:      stat.PhysicalID,
+			CoreID:          stat.CoreID,
+			Cores:           int32(summary.TotalCores),
+			Threads:         int32(summary.TotalThreads),
+			Mhz:             stat.Mhz,
+			CurMHz:          curMHz,
+			CurMHzAvailable: curSource != "",
+			CurMHzSource:    curSource,
+			CacheSize:       stat.CacheSize,
+			Microcode:       stat.Microcode,
+			Flags:           stat.Flags,
+			UsagePercent:    usage,
+			UsageAvailable:  measured,
 		}
 		result = append(result, info)
 	}
@@ -374,6 +379,71 @@ func readProcCPUInfoMHz() float64 {
 		}
 	}
 	return 0
+}
+
+// Sources of CPUInfo.CurMHz, reported in CPUInfo.CurMHzSource.
+const (
+	curMHzSourceCPUFreq = "cpufreq"
+	curMHzSourceCPUInfo = "cpuinfo"
+)
+
+// parseCPUInfoMHz returns the "cpu MHz" of each logical processor in a
+// /proc/cpuinfo body, keyed by processor number. A processor whose value is
+// missing, malformed or not positive is left out.
+func parseCPUInfoMHz(body string) map[int]float64 {
+	result := make(map[int]float64)
+	current := -1
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) == "" {
+			// A blank line ends the processor's stanza.
+			current = -1
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch strings.TrimSpace(key) {
+		case "processor":
+			n, err := strconv.Atoi(value)
+			if err != nil {
+				current = -1
+				continue
+			}
+			current = n
+		case "cpu MHz":
+			mhz, err := strconv.ParseFloat(value, 64)
+			if current >= 0 && err == nil && mhz > 0 {
+				result[current] = mhz
+			}
+		}
+	}
+	return result
+}
+
+// readProcCPUInfoMHzByCPU reads the per-processor "cpu MHz" from
+// procCPUInfoPath. An unreadable file yields an empty map.
+func readProcCPUInfoMHzByCPU() map[int]float64 {
+	raw, err := os.ReadFile(procCPUInfoPath)
+	if err != nil {
+		return map[int]float64{}
+	}
+	return parseCPUInfoMHz(string(raw))
+}
+
+// readCurMHz returns the current frequency of logical CPU idx and the source
+// it came from: scaling_cur_freq under cpuSysfsBase, else the cpuinfo entry.
+// With neither it returns 0 and an empty source, meaning unknown.
+func readCurMHz(idx int, cpuinfo map[int]float64) (float64, string) {
+	path := filepath.Join(cpuSysfsBase, "cpu"+strconv.Itoa(idx), "cpufreq", "scaling_cur_freq")
+	if mhz := readCPUFreqMHz(path); mhz > 0 {
+		return mhz, curMHzSourceCPUFreq
+	}
+	if mhz, ok := cpuinfo[idx]; ok {
+		return mhz, curMHzSourceCPUInfo
+	}
+	return 0, ""
 }
 
 // summaryFromGopsutil builds a best-effort CPUSummary using gopsutil counts,

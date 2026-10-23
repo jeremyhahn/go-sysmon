@@ -78,13 +78,13 @@ func TestInterval_FleetScopeDrivesThePeerPoller(t *testing.T) {
 
 // TestInterval_FleetScopeReportsTheFlooredValue covers the clamp. A request
 // below the floor is honoured as far as it can be, and the answer says what is
-// actually in force -- reporting 250ms back while running at 1s would be the
+// actually in force -- reporting 500ms back while running at 1s would be the
 // dashboard stating a cadence nothing collects at, which is the defect #97
 // exists to remove.
 func TestInterval_FleetScopeReportsTheFlooredValue(t *testing.T) {
 	srv := scopedIntervalServer(t, []config.Peer{{Name: "omega", URL: deadpeer.URL(t)}})
 
-	code, got := postInterval(t, srv, `{"interval_ms":250,"scope":"fleet"}`)
+	code, got := postInterval(t, srv, `{"interval_ms":500,"scope":"fleet"}`)
 	if code != http.StatusOK {
 		t.Fatalf("POST fleet scope: status %d", code)
 	}
@@ -128,6 +128,9 @@ func TestInterval_RejectsWhatItCannotHonour(t *testing.T) {
 	}
 	if code, _ := postInterval(t, withFleet, `{"interval_ms":333,"scope":"fleet"}`); code != http.StatusBadRequest {
 		t.Errorf("interval outside the allowed set: status %d, want 400", code)
+	}
+	if code, _ := postInterval(t, withFleet, `{"interval_ms":250,"scope":"fleet"}`); code != http.StatusBadRequest {
+		t.Errorf("interval below the 500ms floor: status %d, want 400", code)
 	}
 
 	mon, err := monitor.New(idleSnapshotter{}, time.Second)

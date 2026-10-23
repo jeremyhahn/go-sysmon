@@ -140,6 +140,21 @@ export type TempSource =
   | "gpu"
   | "npu";
 
+/** AddressInfo is one interface address in structured form. */
+export interface AddressInfo {
+  /** Address is the bare IP address, without the prefix length. */
+  address: string;
+  /** PrefixLength is the CIDR prefix length (the "24" of "/24"). */
+  prefix_length: number;
+  /**
+   * Netmask is the dotted-quad form of the prefix for an IPv4 address,
+   * empty for IPv6, which has no dotted form.
+   */
+  netmask: string;
+  /** Family is "ipv4" or "ipv6". */
+  family: string;
+}
+
 /**
  * Alert is one firing threshold rule. ID is stable across snapshots for the
  * same rule and resource, which is what lets the UI track "new since last seen"
@@ -169,7 +184,22 @@ export interface CPUInfo {
   core_id: string;
   cores: number;
   threads: number;
+  /**
+   * Mhz is the frequency gopsutil reports: the cpufreq maximum where cpufreq
+   * exists. CurMHz is the live frequency of this core.
+   */
   mhz: number;
+  /**
+   * CurMHz is the core's current frequency, read from cpufreq
+   * scaling_cur_freq or, without cpufreq, /proc/cpuinfo "cpu MHz".
+   * CurMHzAvailable is false, and CurMHz zero, when neither exists: unknown,
+   * not a stopped core. CurMHzSource names the origin ("cpufreq" or
+   * "cpuinfo"), empty when unavailable.
+   */
+  cur_mhz: number;
+  cur_mhz_available: boolean;
+  cur_mhz_source: string;
+  /** CacheSize is the cache size in kilobytes (KB), as gopsutil reports it. */
   cache_size: number;
   microcode: string;
   flags: string[];
@@ -1464,6 +1494,11 @@ export interface NetworkInfo {
   name: string;
   hardware_addr: string;
   addresses: string[];
+  /**
+   * AddressDetails is Addresses in structured form, one entry per address
+   * in the same order. An address that does not parse as CIDR is left out.
+   */
+  address_details: AddressInfo[];
   mtu: number;
   flags: string[];
   speed_mbps: number;
@@ -1507,6 +1542,22 @@ export interface NetworkInfo {
    */
   dns_servers: string[];
   dns_search: string[];
+  /**
+   * Routing, from /proc/net/route and /proc/net/ipv6_route. GatewayIPv4
+   * and GatewayIPv6 are the next hop of this interface's lowest-metric
+   * default route, or of its lowest-metric gatewayed route when it has no
+   * default; empty when it has none. DefaultRouteIPv4 and DefaultRouteIPv6
+   * mark the interface carrying the system's preferred (lowest-metric)
+   * default route of that family, so the system default gateway is the
+   * gateway of the interface with the flag set. RoutesAvailable is false
+   * when the IPv4 routing table could not be read: the fields above are
+   * then unknown, not absent.
+   */
+  gateway_ipv4: string;
+  gateway_ipv6: string;
+  default_route_ipv4: boolean;
+  default_route_ipv6: boolean;
+  routes_available: boolean;
   /** Bridge membership, populated when Kind is "bridge". */
   bridge_ports: string[];
   /**
@@ -2211,6 +2262,25 @@ export interface WirelessInfo {
    * joined ad-hoc network; empty when there is none.
    */
   bssid?: string;
+  /**
+   * FrequencyMHz is the associated network's centre frequency, from its
+   * nl80211 scan entry, and Channel the IEEE 802.11 channel number it maps
+   * to (0 when the frequency is outside the 2.4, 5, 6 and 60 GHz bands).
+   * FrequencyAvailable is false when either is unknown: not associated, or
+   * nl80211 could not be asked.
+   */
+  frequency_mhz: number;
+  channel: number;
+  frequency_available: boolean;
+  /**
+   * TxBitrateMbps and RxBitrateMbps are the link's current transmit and
+   * receive rates to the access point, from nl80211's station information.
+   * BitrateAvailable is false when they are unknown; a driver that reports
+   * only one direction leaves the other zero.
+   */
+  tx_bitrate_mbps: number;
+  rx_bitrate_mbps: number;
+  bitrate_available: boolean;
   /** LinkQuality is the driver's link quality metric (higher is better). */
   link_quality: number;
   /** SignalLevelDBm is the received signal strength in dBm (negative). */

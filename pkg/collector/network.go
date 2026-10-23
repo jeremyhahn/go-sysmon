@@ -63,12 +63,14 @@ func (c *NetworkCollector) Collect() error {
 
 	// Resolver settings are system-wide; read them once rather than per NIC.
 	sysDNS, sysSearch := readSystemDNS()
+	routes := readRouteTables(c.logger)
 
 	result := make([]types.NetworkInfo, 0, len(ifaces))
 	for i, iface := range ifaces {
 		info := buildNetworkInfo(iface, ctrMap, prevMap, elapsed)
 		info.Index = i
 		applyInterfaceDetail(&info, iface.Index, sysDNS, sysSearch)
+		applyRoutes(&info, routes)
 		result = append(result, info)
 	}
 
@@ -92,6 +94,9 @@ func buildNetworkInfo(
 
 	for _, addr := range iface.Addrs {
 		info.Addresses = append(info.Addresses, addr.Addr)
+		if detail, ok := parseAddress(addr.Addr); ok {
+			info.AddressDetails = append(info.AddressDetails, detail)
+		}
 	}
 
 	for _, flag := range iface.Flags {

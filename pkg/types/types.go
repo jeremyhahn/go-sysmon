@@ -1340,20 +1340,31 @@ type CPUSummary struct {
 
 // CPUInfo contains detailed information about a CPU.
 type CPUInfo struct {
-	Index      int      `json:"index"`
-	ModelName  string   `json:"model_name"`
-	VendorID   string   `json:"vendor_id"`
-	Family     string   `json:"family"`
-	Model      string   `json:"model"`
-	Stepping   int32    `json:"stepping"`
-	PhysicalID string   `json:"physical_id"`
-	CoreID     string   `json:"core_id"`
-	Cores      int32    `json:"cores"`
-	Threads    int32    `json:"threads"`
-	Mhz        float64  `json:"mhz"`
-	CacheSize  int32    `json:"cache_size"`
-	Microcode  string   `json:"microcode"`
-	Flags      []string `json:"flags"`
+	Index      int    `json:"index"`
+	ModelName  string `json:"model_name"`
+	VendorID   string `json:"vendor_id"`
+	Family     string `json:"family"`
+	Model      string `json:"model"`
+	Stepping   int32  `json:"stepping"`
+	PhysicalID string `json:"physical_id"`
+	CoreID     string `json:"core_id"`
+	Cores      int32  `json:"cores"`
+	Threads    int32  `json:"threads"`
+	// Mhz is the frequency gopsutil reports: the cpufreq maximum where cpufreq
+	// exists. CurMHz is the live frequency of this core.
+	Mhz float64 `json:"mhz"`
+	// CurMHz is the core's current frequency, read from cpufreq
+	// scaling_cur_freq or, without cpufreq, /proc/cpuinfo "cpu MHz".
+	// CurMHzAvailable is false, and CurMHz zero, when neither exists: unknown,
+	// not a stopped core. CurMHzSource names the origin ("cpufreq" or
+	// "cpuinfo"), empty when unavailable.
+	CurMHz          float64 `json:"cur_mhz"`
+	CurMHzAvailable bool    `json:"cur_mhz_available"`
+	CurMHzSource    string  `json:"cur_mhz_source"`
+	// CacheSize is the cache size in kilobytes (KB), as gopsutil reports it.
+	CacheSize int32    `json:"cache_size"`
+	Microcode string   `json:"microcode"`
+	Flags     []string `json:"flags"`
 	// UsagePercent is the share of the core's time spent busy across the
 	// collector's last interval. It is a difference of two /proc/stat
 	// readings, so it exists only when UsageAvailable is true.
@@ -1898,6 +1909,19 @@ type NPUClient struct {
 	MemoryBytes uint64  `json:"memory_bytes"`
 }
 
+// AddressInfo is one interface address in structured form.
+type AddressInfo struct {
+	// Address is the bare IP address, without the prefix length.
+	Address string `json:"address"`
+	// PrefixLength is the CIDR prefix length (the "24" of "/24").
+	PrefixLength int `json:"prefix_length"`
+	// Netmask is the dotted-quad form of the prefix for an IPv4 address,
+	// empty for IPv6, which has no dotted form.
+	Netmask string `json:"netmask"`
+	// Family is "ipv4" or "ipv6".
+	Family string `json:"family"`
+}
+
 // WirelessInfo holds link statistics for a wifi interface, read from
 // /proc/net/wireless, and the network it is associated with, from nl80211.
 type WirelessInfo struct {
@@ -1908,6 +1932,21 @@ type WirelessInfo struct {
 	// BSSID is the MAC address of the associated access point, or of the
 	// joined ad-hoc network; empty when there is none.
 	BSSID string `json:"bssid,omitempty"`
+	// FrequencyMHz is the associated network's centre frequency, from its
+	// nl80211 scan entry, and Channel the IEEE 802.11 channel number it maps
+	// to (0 when the frequency is outside the 2.4, 5, 6 and 60 GHz bands).
+	// FrequencyAvailable is false when either is unknown: not associated, or
+	// nl80211 could not be asked.
+	FrequencyMHz       uint32 `json:"frequency_mhz"`
+	Channel            int    `json:"channel"`
+	FrequencyAvailable bool   `json:"frequency_available"`
+	// TxBitrateMbps and RxBitrateMbps are the link's current transmit and
+	// receive rates to the access point, from nl80211's station information.
+	// BitrateAvailable is false when they are unknown; a driver that reports
+	// only one direction leaves the other zero.
+	TxBitrateMbps    float64 `json:"tx_bitrate_mbps"`
+	RxBitrateMbps    float64 `json:"rx_bitrate_mbps"`
+	BitrateAvailable bool    `json:"bitrate_available"`
 	// LinkQuality is the driver's link quality metric (higher is better).
 	LinkQuality float64 `json:"link_quality"`
 	// SignalLevelDBm is the received signal strength in dBm (negative).
@@ -1923,11 +1962,14 @@ type NetworkInfo struct {
 	Name         string   `json:"name"`
 	HardwareAddr string   `json:"hardware_addr"`
 	Addresses    []string `json:"addresses"`
-	MTU          int      `json:"mtu"`
-	Flags        []string `json:"flags"`
-	Speed        uint64   `json:"speed_mbps"`
-	Duplex       string   `json:"duplex"`
-	Driver       string   `json:"driver"`
+	// AddressDetails is Addresses in structured form, one entry per address
+	// in the same order. An address that does not parse as CIDR is left out.
+	AddressDetails []AddressInfo `json:"address_details"`
+	MTU            int           `json:"mtu"`
+	Flags          []string      `json:"flags"`
+	Speed          uint64        `json:"speed_mbps"`
+	Duplex         string        `json:"duplex"`
+	Driver         string        `json:"driver"`
 	// Hardware identity of a physical NIC, empty for a virtual interface.
 	// Bus is "pci" or "usb". The identifiers are lower-case hex without
 	// "0x" (PCI vendor/device, or USB idVendor/idProduct); Vendor and Model
@@ -1958,6 +2000,20 @@ type NetworkInfo struct {
 	// present; otherwise the system-wide resolv.conf values are reported.
 	DNSServers []string `json:"dns_servers"`
 	DNSSearch  []string `json:"dns_search"`
+	// Routing, from /proc/net/route and /proc/net/ipv6_route. GatewayIPv4
+	// and GatewayIPv6 are the next hop of this interface's lowest-metric
+	// default route, or of its lowest-metric gatewayed route when it has no
+	// default; empty when it has none. DefaultRouteIPv4 and DefaultRouteIPv6
+	// mark the interface carrying the system's preferred (lowest-metric)
+	// default route of that family, so the system default gateway is the
+	// gateway of the interface with the flag set. RoutesAvailable is false
+	// when the IPv4 routing table could not be read: the fields above are
+	// then unknown, not absent.
+	GatewayIPv4      string `json:"gateway_ipv4"`
+	GatewayIPv6      string `json:"gateway_ipv6"`
+	DefaultRouteIPv4 bool   `json:"default_route_ipv4"`
+	DefaultRouteIPv6 bool   `json:"default_route_ipv6"`
+	RoutesAvailable  bool   `json:"routes_available"`
 	// Bridge membership, populated when Kind is "bridge".
 	BridgePorts []string `json:"bridge_ports"`
 	// Bond topology. BondMode and BondSlaves are set on a bond master;

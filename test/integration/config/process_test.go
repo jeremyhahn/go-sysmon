@@ -22,7 +22,7 @@ import (
 // and nothing is written to stderr.
 func TestLogging_WritesToTheLogFile(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "logs", "sysmon.log")
-	s := harness.Start(t, harness.Bins.Sysmon, nil, "serve", "--addr", "127.0.0.1:0", "--interval", "200",
+	s := harness.Start(t, harness.Bins.Sysmon, nil, "serve", "--addr", "127.0.0.1:0", "--interval", "500",
 		"--config", filepath.Join(t.TempDir(), "absent.yaml"),
 		"--log-file", logFile, "--log-format", "json", "--log-level", "info")
 
@@ -149,7 +149,7 @@ func TestShutdown_OnSIGINT(t *testing.T) {
 // `systemctl stop` can land during a rolling deploy: however far startup got,
 // the process exits cleanly and never dies on the signal.
 func TestShutdown_DuringStartup(t *testing.T) {
-	s := harness.Start(t, harness.Bins.Sysmon, nil, "serve", "--addr", "127.0.0.1:0", "--interval", "200",
+	s := harness.Start(t, harness.Bins.Sysmon, nil, "serve", "--addr", "127.0.0.1:0", "--interval", "500",
 		"--log-format", "json", "--config", filepath.Join(t.TempDir(), "absent.yaml"))
 	s.Logs.AwaitMsg(t, "starting sysmon web server")
 	if err := s.Stop(t); err != nil {

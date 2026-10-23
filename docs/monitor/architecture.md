@@ -83,7 +83,7 @@ change is already pending, it gets replaced, so the last value wins rather than
 the loop working through a backlog of interval changes someone made by dragging
 through a dropdown. Safe to call from any goroutine.
 
-Clients may pick 250ms, 500ms, 1s, 5s, 10s, 15s, 30s or 60s via POST
+Clients may pick 500ms, 1s, 5s, 10s, 15s, 30s or 60s via POST
 /api/interval.
 
 ## Thread safety

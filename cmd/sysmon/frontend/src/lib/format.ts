@@ -25,6 +25,14 @@ export function formatBytes(bytes: number, decimals = 1): string {
 }
 
 /**
+ * formatKilobytes formats a size given in kilobytes (KB), the unit of the
+ * API's cache_size, e.g. 512 -> "512.0 KB", 36864 -> "36.0 MB".
+ */
+export function formatKilobytes(kilobytes: number, decimals = 1): string {
+  return formatBytes(kilobytes * 1024, decimals);
+}
+
+/**
  * formatBytesRate converts a bytes-per-second rate to a human-readable string.
  * e.g. 2048 -> "2.0 KB/s"
  */

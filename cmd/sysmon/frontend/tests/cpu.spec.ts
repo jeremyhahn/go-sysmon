@@ -36,10 +36,10 @@ test.describe('CPU Tab', () => {
 
   test('CPU details table renders with required columns', async ({ page }) => {
     await expect(page.getByText('CPU Details')).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Model' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Vendor' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Cores' })).toBeVisible();
-    await expect(page.getByRole('columnheader', { name: 'Threads' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Model', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Vendor', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Cores', exact: true })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: 'Threads', exact: true })).toBeVisible();
   });
 
   test('CPU details table row shows the model name', async ({ page }) => {
@@ -137,5 +137,45 @@ test.describe('CPU usage not measured', () => {
     await drawn(chart, [0.5, 59.5 / 60], ([gap, reading]) => {
       expect(painted(reading)).toBeGreaterThan(painted(gap));
     });
+  });
+});
+
+/**
+ * A core's live frequency is shown when the host reports it. Without cpufreq
+ * or a cpuinfo line it is unknown, and zero must not read as a stopped core.
+ */
+test.describe('CPU per-core current frequency', () => {
+  async function serveCurMhz(page: Page, available: boolean) {
+    const cpus = snapshot.cpus.map((cpu) =>
+      available
+        ? { ...cpu, cur_mhz: 3200, cur_mhz_available: true, cur_mhz_source: 'cpufreq' }
+        : { ...cpu, cur_mhz: 0, cur_mhz_available: false, cur_mhz_source: '' }
+    );
+    const payload = { ...snapshot, cpus };
+    const body = `retry: 1000\n\nevent: full\ndata: ${JSON.stringify({ seq: 1, snapshot: payload })}\n\n`;
+    await page.route(/\/api\/events(\?|$)/, (route) =>
+      route.fulfill({ status: 200, headers: { 'Content-Type': 'text/event-stream' }, body })
+    );
+    await page.goto('/');
+    await expect(page.locator('nav').getByText(/Updated:/)).toBeVisible({ timeout: 30000 });
+    await openTab(page, 'CPU');
+  }
+
+  test('an available frequency is shown with its source', async ({ page }) => {
+    await serveCurMhz(page, true);
+
+    const cells = page.getByTestId('core-cur-mhz');
+    await expect(cells).toHaveCount(snapshot.cpus.length);
+    await expect(cells.first()).toHaveText('3.20 GHz');
+    await expect(cells.first()).toHaveAttribute('title', 'Current frequency (cpufreq)');
+  });
+
+  test('an unavailable frequency reads unknown, never 0 MHz', async ({ page }) => {
+    await serveCurMhz(page, false);
+
+    const cells = page.getByTestId('core-cur-mhz');
+    await expect(cells).toHaveCount(snapshot.cpus.length);
+    await expect(cells.first()).toHaveText('unknown');
+    await expect(cells.first()).not.toContainText('MHz');
   });
 });

@@ -271,7 +271,7 @@ func TestSetInterval_AppliesToActiveStream(t *testing.T) {
 
 	// Speed the monitor up over REST while the stream is open.
 	resp, err := http.Post(ts.URL+"/api/interval", "application/json",
-		strings.NewReader(`{"interval_ms":250}`))
+		strings.NewReader(`{"interval_ms":500}`))
 	if err != nil {
 		t.Fatalf("POST /api/interval: %v", err)
 	}

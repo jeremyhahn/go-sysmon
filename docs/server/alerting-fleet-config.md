@@ -92,7 +92,7 @@ whichever poller produces what is on screen:
 | this node's own data | the local monitor | `{"interval_ms":N}` (or `"scope":"local"`) |
 | the fleet, or a selected peer | the aggregator's peer refresh | `{"interval_ms":N,"scope":"fleet"}` |
 
-Without this, choosing 250ms while viewing a peer changed the local monitor —
+Without this, choosing 500ms while viewing a peer changed the local monitor —
 a cadence nobody was looking at — while the peer's figures kept arriving at
 `fleet.poll_interval_ms`, and the control reported a rate nothing was collecting
 at.
@@ -102,7 +102,7 @@ peer is fetched over HTTP on every cycle, on their CPU as well as this node's,
 so a sub-second fleet cadence spends the aggregator's time asking ten machines
 what changed in the last few hundred milliseconds. **The response reports what
 is in force, not what was asked for**, and the header states the effective rate
-beside the control — a dropdown reading 250ms over data collected once a second
+beside the control — a dropdown reading 500ms over data collected once a second
 is the same class of untruth as a stale reading shown as live.
 
 `GET /api/interval` reports both cadences: `interval_ms` for this node's monitor
@@ -119,7 +119,7 @@ autocorrelation peak at exactly 3.20 s in that node's CPU trace (#76).
 The endpoint therefore reports 3200 where the config file says 3000, and that is
 deliberate. Reporting the configured value restates the file rather than
 describing the service, which is the same class of untruth as a dropdown reading
-250 ms over data collected once a second. It reports the **last** cycle rather
+500 ms over data collected once a second. It reports the **last** cycle rather
 than an average: a cycle in which a peer times out genuinely does stretch, and
 smoothing it would trade a true jumpy number for a calm false one.
 
@@ -1372,8 +1372,8 @@ gap always has a number beside it.
 Everything in the section is reloadable — `systemctl reload go-sysmon` turns
 history on, retargets it, or switches it off without dropping a connected
 browser. The sample interval is deliberately separate from `server.interval_ms`:
-that one is the dashboard's stream rate, and a browser watching at 250ms must
-not write four samples a second into a database.
+that one is the dashboard's stream rate, and a browser watching at 500ms must
+not write two samples a second into a database.
 
 #### Every sample is a real measurement
 

@@ -510,18 +510,18 @@ func TestManagerReload_AppliesIntervalToRuntime(t *testing.T) {
 		return nil
 	})
 
-	if err := os.WriteFile(path, []byte("server:\n  interval_ms: 250\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("server:\n  interval_ms: 500\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := mgr.Reload(); err != nil {
 		t.Fatalf("Reload(): %v", err)
 	}
 
-	if applied != 250 {
-		t.Errorf("applier saw interval_ms = %d, want 250", applied)
+	if applied != 500 {
+		t.Errorf("applier saw interval_ms = %d, want 500", applied)
 	}
-	if got := mgr.Current().Server.IntervalMs; got != 250 {
-		t.Errorf("Current() interval_ms = %d, want 250", got)
+	if got := mgr.Current().Server.IntervalMs; got != 500 {
+		t.Errorf("Current() interval_ms = %d, want 500", got)
 	}
 	// Guard the pairing: an interval listed as boot-only would be pinned back
 	// to its boot value and the applier would push a stale number forever.
@@ -1160,6 +1160,27 @@ func TestLoad_RepairedValueIsAttributedToTheDefaults(t *testing.T) {
 	}
 	if got := mgr.Current().Server.IntervalMs; got != config.Defaults().Server.IntervalMs {
 		t.Errorf("interval_ms = %d, want the default", got)
+	}
+}
+
+// TestLoad_RefusesIntervalBelowTheFloor: a collection interval faster than the
+// 500ms floor is refused, naming the key, while the floor itself loads.
+func TestLoad_RefusesIntervalBelowTheFloor(t *testing.T) {
+	var floor *config.IntervalBelowFloorError
+	path := writeConfig(t, "server:\n  interval_ms: 250\n")
+	if _, _, err := l(path).Load(); !errors.As(err, &floor) {
+		t.Fatalf("Load() with interval_ms 250 = %v, want a *config.IntervalBelowFloorError", err)
+	} else if floor.Key != "server.interval_ms" || floor.IntervalMs != 250 {
+		t.Errorf("IntervalBelowFloorError = %+v, want server.interval_ms at 250", floor)
+	}
+
+	path = writeConfig(t, "server:\n  interval_ms: 500\n")
+	cfg, _, err := l(path).Load()
+	if err != nil {
+		t.Fatalf("Load() with interval_ms 500: %v", err)
+	}
+	if cfg.Server.IntervalMs != 500 {
+		t.Errorf("interval_ms = %d, want 500", cfg.Server.IntervalMs)
 	}
 }
 
