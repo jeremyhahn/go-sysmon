@@ -37,8 +37,11 @@ on:
 # `cancel-in-progress` is the LITERAL `true`. Gitea 1.27.1 does not evaluate
 # expressions in that field -- any non-empty value is truthy -- so an expression
 # there reads as "always cancel" no matter what it would have computed.
+#
+# A run on main is keyed on its run id, so it has a group of its own and is
+# never cancelled: a merge to main must always finish its CI run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -381,7 +384,7 @@ jobs:
   integration:
     name: Integration Tests
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'bigdisk' }}
     # No `needs`: every job starts at once and CI Passed fails closed on any
     # of them (ci-template v1.14/v1.15, #237).
     steps:
