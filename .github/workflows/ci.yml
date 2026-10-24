@@ -38,10 +38,10 @@ on:
 # expressions in that field -- any non-empty value is truthy -- so an expression
 # there reads as "always cancel" no matter what it would have computed.
 #
-# A run on main is keyed on its run id, so it has a group of its own and is
-# never cancelled: a merge to main must always finish its CI run.
+# A run on main is keyed on its event and commit sha, so it has a group of
+# its own and a merge never cancels it: a merge to main must always finish its CI run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && format('main-{0}-{1}', github.event_name, github.sha) || github.ref }}
   cancel-in-progress: true
 
 env:
