@@ -9,6 +9,113 @@ Changes waiting for the next release are kept as fragments in `changelog.d/`,
 one file per change named `<issue>-<slug>.md`. Each release folds them into
 its own section.
 
+## [0.3.0-rc.1] - 2026-10-25
+
+### Added
+
+- **NVMe write and read volume on `/metrics`.** NVMe drives that report SMART
+  data units export `sysmon_disk_data_units_written_total`,
+  `sysmon_disk_data_units_read_total`, and the same volume in bytes as
+  `sysmon_disk_written_bytes_total` and `sysmon_disk_read_bytes_total` (one
+  data unit is 1000 × 512 = 512000 bytes). All four are counters, so
+  `increase(...[7d])` gives a drive's weekly write volume (#253).
+- **Drive serial on the disk health series.** `sysmon_disk_smart_healthy`,
+  `sysmon_disk_power_on_hours`, `sysmon_disk_wear_percent`,
+  `sysmon_disk_spare_percent` and the new volume counters carry a `serial`
+  label beside `device`, so a drive's history can be followed across a boot
+  that renames NVMe devices. A drive that reports no serial has no `serial`
+  label. Adding the label starts new series for those metrics; queries that
+  select on `device` keep working (#253).
+
+### Added
+
+- **Project specification.** `docs/SPEC.md` lists every feature with its
+  requirements and status, and `ROADMAP.md` names the SPEC feature on each
+  line, with Complete and Future sections (#256).
+
+### Changed
+
+- **Network rates in bits per second.** The Network panel and the Overview show each
+  interface's send and receive rates, and its traffic chart, in decimal bit
+  units (bps, Kbps, Mbps, Gbps, Tbps), as links are rated. Byte totals stay in
+  bytes (#257).
+
+### Added
+
+- **NIC manufacturer and model.** Each physical interface in `NetworkInfo`
+  now carries its `bus` (`pci` or `usb`), `vendor_id` and `device_id`, a PCI
+  board's `subsystem_vendor_id` and `subsystem_device_id`, and the `vendor`,
+  `model` and `subsystem_vendor` names from `pci.ids` or `usb.ids` (a USB
+  adapter's own strings when `usb.ids` is absent). The network panel shows
+  them on one line per NIC; virtual interfaces report none (#258).
+
+### Added
+
+- **Wifi link detail.** The Network panel shows a wifi interface's link
+  quality, signal level and noise floor (dBm), which the collector already
+  read from `/proc/net/wireless`. The collector now also reports the SSID and
+  BSSID of the associated network (`wireless.ssid`, `wireless.bssid`), read
+  unprivileged from nl80211, and the Network panel and the CLI show them.
+  Wired interfaces are unchanged (#259).
+
+### Added
+
+- **Peak disk throughput.** Each disk card in the Storage panel shows the peak
+  read and write rates since the server started (`peak_read_bytes_rate`,
+  `peak_write_bytes_rate`), beside the peak utilisation and queue length (#260).
+
+### Added
+
+- `GET /healthz` (liveness) and `GET /readyz` (readiness). `/readyz` answers
+  503 with a reason when the latest snapshot is older than three stream
+  intervals (never less than 10s) or the server is draining (#261).
+
+### Changed
+
+- The container `HEALTHCHECK` and `docker-compose.yml` probe `/readyz` instead
+  of `/`, so a stalled collector marks the container unhealthy (#261).
+
+### Added
+
+- **Trusted reverse proxies.** `server.trusted_proxies` (`--trusted-proxies`,
+  `SYSMON_SERVER_TRUSTED_PROXIES`) lists the CIDR prefixes of the proxies in
+  front of a node. For a request from one of them, go-sysmon reads `Forwarded`,
+  else `X-Forwarded-For` and `X-Forwarded-Proto`, and uses the client's scheme
+  and address to send HSTS and to log the real client. Other peers' forwarding
+  headers are ignored, malformed headers are ignored rather than refused, and an
+  invalid prefix stops startup. Empty by default, so nothing changes unless it
+  is set (#262).
+
+### Security
+
+- **`golang.org/x/net` v0.60.0 and Go 1.27.3.** x/net moves from v0.57.0 to
+  v0.60.0 for CVE-2026-78669, and the Go toolchain from 1.27.2 to 1.27.3 for
+  GO-2026-6809 (`crypto/x509`). `golang.org/x/crypto`, `golang.org/x/sys` and
+  `golang.org/x/text` move with x/net (#263).
+
+### Fixed
+
+- **systemd notifications can no longer block forever.** Each `READY`,
+  `WATCHDOG` and `STATUS` write to `NOTIFY_SOCKET` now has a one-second
+  deadline (`sdnotify.SendTimeout`); a manager that stops draining its socket
+  produces a `*types.NotifySendError` instead of stalling the watchdog loop.
+  The abstract-socket unit test binds a name unique per run, so concurrent
+  test runs sharing a network namespace cannot collide (#265).
+
+### Changed
+
+- **CI runs in two tiers.** Every pull request runs the PR tier: Format, Vet &
+  Lint, Unit Tests (race), Build Binaries and Bundle Currency. The full tier
+  adds Security Scan, FIPS, Integration Tests, Browser Tests, Desktop Extension
+  Tests and Container Image, and runs on a push to `main`, on
+  `workflow_dispatch`, and on a pull request that carries the `ci:full` label
+  when it is opened. Adding the label later starts no run; dispatch the
+  workflow on the PR's branch instead. CI Passed accepts a full-tier job as
+  skipped only in a run that did not ask for the full tier (#267).
+- **No scheduled workflows.** The desktop session tests and the toolchain
+  currency check lost their `schedule:` triggers; their nightly runs are
+  dispatched with `workflow_dispatch` (#267).
+
 ## [0.3.0-alpha] - 2026-10-05
 
 ### Added
