@@ -18,11 +18,11 @@ image="${REGISTRY}/${repo}"
 printf '%s' "${GITEA_TOKEN}" \
   | docker login "${REGISTRY}" --username "${GITHUB_ACTOR}" --password-stdin
 
-# :latest is the stable image. An -alpha release is a pre-release and never
-# moves it.
+# :latest is the stable image. A pre-release (-alpha or -rc.N: any tag with a
+# hyphen; check-changelog has already refused every other shape) never moves it.
 tags=(-t "${image}:${VERSION}")
 case "${RELEASE_TAG}" in
-  *-alpha) ;;
+  *-*) ;;
   *) tags+=(-t "${image}:latest") ;;
 esac
 
@@ -38,6 +38,6 @@ bash "$(dirname "$0")/confirm-release-ref.sh"
 
 docker push "${image}:${VERSION}"
 case "${RELEASE_TAG}" in
-  *-alpha) echo "pushed ${image}:${VERSION} (pre-release: :latest left alone)" ;;
+  *-*) echo "pushed ${image}:${VERSION} (pre-release: :latest left alone)" ;;
   *) docker push "${image}:latest"; echo "pushed ${image}:${VERSION} and :latest" ;;
 esac

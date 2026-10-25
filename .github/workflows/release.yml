@@ -315,11 +315,12 @@ jobs:
           IMAGE="ghcr.io/${{ github.repository }}"
           IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
           VERSION="${{ needs.verify.outputs.version }}"
-          # :latest is the stable image. An -alpha release is a pre-release
-          # and never moves it.
+          # :latest is the stable image. A pre-release (-alpha or -rc.N: any
+          # version with a hyphen; check-changelog has already refused every
+          # other shape) never moves it.
           tags=(-t "${IMAGE}:${VERSION}")
           case "${VERSION}" in
-            *-alpha) ;;
+            *-*) ;;
             *) tags+=(-t "${IMAGE}:latest") ;;
           esac
           # One digest file per architecture, named for the digest. Collect
@@ -423,7 +424,8 @@ jobs:
           body_path: NOTES.md
           files: artifacts/*
           draft: false
-          prerelease: ${{ endsWith(needs.verify.outputs.tag, '-alpha') }}
+          # Any pre-release suffix (-alpha, -rc.N); only a plain vX.Y.Z is not.
+          prerelease: ${{ contains(needs.verify.outputs.tag, '-') }}
           generate_release_notes: true
 
   # The Gitea equivalent of build + image + publish, in one job.

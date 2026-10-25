@@ -179,7 +179,7 @@ INTERVAL ?= 1000
 .PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report check-bundle-current frontend-deps test \
         coverage check-package-targets check-coverage-exceptions integration-test \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
-        ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog clean-dist \
+        ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog release release-candidate release-alpha clean-dist \
         build-both generate check-generated check-ts check-nolint \
         check-build-tags test-fips check-pins check-latest \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
@@ -922,11 +922,11 @@ release-build-desktop: build-frontend
 unexport RELEASE ASM_RELEASE CHK_RELEASE RELEASE_TAG_RE
 
 # RELEASE_TAG_RE is the shape a release tag must have: vX.Y.Z with no leading
-# zeroes, optionally -alpha. Those are the only two kinds of release; there is
-# no -rc.N or -beta (release-versioning.md §1a). It is matched with grep -z,
-# so the whole value must match: a value with a newline in it is refused, where
-# plain grep would accept it on its first line alone.
-override RELEASE_TAG_RE := ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha)?$$
+# zeroes, optionally -alpha or -rc.N (N from 1). Those are the only three kinds
+# of release; there is no -beta (release-versioning.md §1a). It is matched with
+# grep -z, so the whole value must match: a value with a newline in it is
+# refused, where plain grep would accept it on its first line alone.
+override RELEASE_TAG_RE := ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha|-rc\.[1-9][0-9]*)?$$
 
 # changelog-assemble folds the changelog.d fragments into a new CHANGELOG.md
 # section and deletes them (release-versioning.md §5).
@@ -942,7 +942,7 @@ override RELEASE_TAG_RE := ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-
 changelog-assemble: override export ASM_RELEASE := $(value RELEASE)
 changelog-assemble:
 	@test -n "$$ASM_RELEASE" || { echo 'ERROR: state the version explicitly: make changelog-assemble RELEASE=vX.Y.Z-alpha'; exit 1; }
-	@printf '%s' "$$ASM_RELEASE" | grep -Ezq '$(RELEASE_TAG_RE)' || { echo "ERROR: not a release tag (vX.Y.Z, optionally -alpha): $$ASM_RELEASE"; exit 1; }
+	@printf '%s' "$$ASM_RELEASE" | grep -Ezq '$(RELEASE_TAG_RE)' || { echo "ERROR: not a release tag (vX.Y.Z, optionally -alpha or -rc.N): $$ASM_RELEASE"; exit 1; }
 	@set -eu; \
 	ver="$${ASM_RELEASE#v}"; \
 	frags=$$(ls changelog.d/*.md 2>/dev/null || true); \
@@ -975,7 +975,7 @@ changelog-assemble:
 check-changelog: override export CHK_RELEASE := $(value RELEASE)
 check-changelog:
 	@test -n "$$CHK_RELEASE" || { echo 'ERROR: state the tag: make check-changelog RELEASE=vX.Y.Z-alpha'; exit 1; }
-	@printf '%s' "$$CHK_RELEASE" | grep -Ezq '$(RELEASE_TAG_RE)' || { echo "ERROR: not a release tag (vX.Y.Z, optionally -alpha): $$CHK_RELEASE"; exit 1; }
+	@printf '%s' "$$CHK_RELEASE" | grep -Ezq '$(RELEASE_TAG_RE)' || { echo "ERROR: not a release tag (vX.Y.Z, optionally -alpha or -rc.N): $$CHK_RELEASE"; exit 1; }
 	@printf '%s\n' "$${CHK_RELEASE#v}" | cmp -s - VERSION || { echo "ERROR: VERSION is not exactly $${CHK_RELEASE#v}; bump it in the release commit. It holds:"; od -c VERSION; exit 1; }
 	@frags=$$(ls changelog.d/*.md 2>/dev/null || true); \
 	test -z "$$frags" || { echo "ERROR: changelog.d still holds unassembled fragments:"; echo "$$frags" | sed 's/^/  /'; echo "Run: make changelog-assemble RELEASE=$$CHK_RELEASE, review, commit, then tag."; exit 1; }
@@ -991,3 +991,45 @@ check-changelog:
 	  index($$0, ver) == 1 { f = 1 } \
 	  END { exit f ? 0 : 1 }' CHANGELOG.md || { echo "ERROR: CHANGELOG.md has no \"$$ver\" section heading outside a code block"; exit 1; }
 	@echo "CHANGELOG.md is ready for $$CHK_RELEASE."
+
+# release, release-candidate and release-alpha cut one signed release of their
+# kind (release-versioning.md §1, §2) through the one scripts/release.sh: every
+# check runs before anything is written, then one signed commit and one atomic
+# push of main and the tag to dev hand off to release.yml. The version is
+# explicit, never derived, and each target refuses the other kinds.
+#
+#   make release           VERSION=vX.Y.Z
+#   make release-candidate VERSION=vX.Y.Z-rc.N
+#   make release-alpha     VERSION=vX.Y.Z-alpha
+#
+# AGENT_GIT is the commit/signing wrapper. It has no default on purpose and the
+# release fails closed without it: set it in the environment or a local.mk.
+# REPO_NAME must be the LITERAL repo name, never $(notdir $(CURDIR)): it selects
+# the signing identity, which must not depend on the checkout directory name.
+-include local.mk
+AGENT_GIT ?=
+REPO_NAME ?= go-sysmon
+# After the defaults above: unexport declares a variable, and ?= leaves a
+# declared one alone.
+unexport VERSION AGENT_GIT REPO_NAME
+
+# The three inputs are read LITERALLY, for the reason RELEASE is above:
+# `$(value ...)` takes the text unexpanded, and the `unexport` above keeps the
+# originals out of the recipe environment, where make would expand them. VERSION is taken
+# only when it was given, because the Makefile's own VERSION (the file's
+# contents) is not a release version.
+release release-candidate release-alpha: override export REL_VERSION := $(if $(filter command line environment,$(origin VERSION)),$(value VERSION))
+release release-candidate release-alpha: override export REL_AGENT_GIT := $(value AGENT_GIT)
+release release-candidate release-alpha: override export REL_REPO_NAME := $(value REPO_NAME)
+
+# Tag and push a production release (refuses -alpha and -rc.N).
+release:
+	@RELEASE_TAG_RE='$(RELEASE_TAG_RE)' sh scripts/release.sh release
+
+# Tag and push a release candidate (refuses the other kinds).
+release-candidate:
+	@RELEASE_TAG_RE='$(RELEASE_TAG_RE)' sh scripts/release.sh candidate
+
+# Tag and push an alpha release (refuses the other kinds).
+release-alpha:
+	@RELEASE_TAG_RE='$(RELEASE_TAG_RE)' sh scripts/release.sh alpha

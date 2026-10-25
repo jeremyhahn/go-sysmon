@@ -30,12 +30,13 @@ if isinstance(d, dict):
     v = d.get(sys.argv[1], "")
     print(v if v is not None else "")' "$1"; }
 
-# An -alpha tag, the one pre-release kind (release-versioning.md §1a), is
-# published as a pre-release, so it is never offered as the latest stable
-# release. Set on create AND on a re-run: a release made before this rule,
-# or edited by hand, is corrected rather than left marked stable.
+# A tag with a pre-release suffix (-alpha or -rc.N, release-versioning.md §1a;
+# check-changelog has already refused every other shape) is published as a
+# pre-release, so it is never offered as the latest stable release. Set on
+# create AND on a re-run: a release made before this rule, or edited by hand,
+# is corrected rather than left marked stable.
 prerelease=false
-case "${RELEASE_TAG}" in *-alpha) prerelease=true ;; esac
+case "${RELEASE_TAG}" in *-*) prerelease=true ;; esac
 
 # Re-releasing a tag should update it, not fail.
 release_id="$(curl -sS -H "${AUTH}" "${BASE}/tags/${RELEASE_TAG}" | json_get id)"

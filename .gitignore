@@ -29,3 +29,6 @@ integration-test.log
 # Note: cmd/sysmon/frontend/dist/ IS committed, deliberately. //go:embed
 # all:frontend/dist means a clone without it cannot `go build`, `go test` or
 # `go install` at all. Three files, 1.4 MB; rebuild with `make build-frontend`.
+
+# Maintainer-local make overrides (AGENT_GIT for the release targets)
+local.mk

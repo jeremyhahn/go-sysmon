@@ -61,7 +61,7 @@ Every feature, its requirements and its status are in the
 | Scan the frontend | `make audit` |
 | Build release binaries | `make release-build`, `make release-build-desktop` |
 | Record a change for the next release | Add `changelog.d/<issue>-<slug>.md`, holding the Keep a Changelog subsections it belongs under |
-| Cut a release | Set `VERSION` and run `make changelog-assemble RELEASE=vX.Y.Z-alpha`. Get that commit onto `main`, then push the signed tag `vX.Y.Z-alpha` on it |
+| Cut a release | `make release-alpha VERSION=vX.Y.Z-alpha`, `make release-candidate VERSION=vX.Y.Z-rc.N` or `make release VERSION=vX.Y.Z`, from an up-to-date `main` ([below](#cutting-a-release)) |
 | Deploy to a host | [deployment/user.md](deployment/user.md) — `make deploy` |
 | Build prerequisites and the bare-binary path | [server/deployment.md](server/deployment.md) |
 
@@ -76,6 +76,26 @@ A pushed `v*` tag runs `release.yml`. Before it builds anything,
 published as a pre-release. Every job after the check builds the
 commit that passed it, and each job that publishes first confirms the tag
 still names that commit.
+
+### Cutting a release
+
+The three release targets run the one `scripts/release.sh`. The version is
+explicit, and each target refuses the other kinds (`release-alpha` takes only
+`vX.Y.Z-alpha`, `release-candidate` only `vX.Y.Z-rc.N`, `release` only
+`vX.Y.Z`). Set `AGENT_GIT` (the commit-signing wrapper; it has no default and
+the release fails closed without it) in the environment or a gitignored
+`local.mk`, and give `FORGE_API_URL`, `FORGE_REPOSITORY` and a read-only
+`FORGE_TOKEN` so the script can read the forge's combined status for `main`.
+
+Before it writes anything the script refuses: a version that is the wrong kind
+or not newer than `VERSION` and every `v*` tag; a tag that exists locally or on
+`dev`; a dirty tree; a `HEAD` that is not `dev`'s freshly fetched `main`; and a
+`main` whose combined status is not green (or cannot be read). It then writes
+`VERSION`, folds `changelog.d/` into `CHANGELOG.md`
+(`make changelog-assemble`), and runs `make check-changelog`, which is what
+`release.yml`'s verify job runs, so a tag it pushes is not refused there. One
+signed commit and one `--atomic` push of `main` and the tag to `dev` follow;
+pushing the tag starts `release.yml`.
 
 ## Documentation layout
 
