@@ -528,12 +528,21 @@ jobs:
       # self-hosted runner. This behaves the same on both.
       - name: Scan the image and its binaries
         run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:latest image \
+          # The scanner gets the tarball by `docker cp`, never by a bind mount
+          # (the daemon resolves bind paths on its own host, not in this job
+          # container) and never the host Docker socket.
+          scanner="trivy-${{ github.run_id }}-${{ github.run_attempt }}"
+          trap 'docker rm -f "$scanner" >/dev/null 2>&1; rm -f go-sysmon-ci.tar' EXIT
+          docker save go-sysmon:ci -o go-sysmon-ci.tar
+          # aquasec/trivy:latest as of 2026-10-25
+          docker create --name "$scanner" \
+            aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c image \
+              --input /tmp/go-sysmon-ci.tar \
               --severity CRITICAL,HIGH \
               --no-progress \
-              --format json \
-              go-sysmon:ci > trivy-results.json
+              --format json
+          docker cp go-sysmon-ci.tar "$scanner:/tmp/go-sysmon-ci.tar"
+          docker start -a "$scanner" > trivy-results.json
 
       # Findings with a fix available fail the build; findings the distribution
       # has not patched are reported and do not. Blocking on unfixable CVEs
