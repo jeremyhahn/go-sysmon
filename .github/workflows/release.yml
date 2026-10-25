@@ -493,6 +493,7 @@ jobs:
       # pulls, so it is allowed to fail without losing the binary release --
       # see infra/gitea/docs/lessons.md.
       - name: Push the container image
+        id: image
         continue-on-error: true
         env:
           REGISTRY: ${{ steps.meta.outputs.registry }}
@@ -514,4 +515,5 @@ jobs:
           GITEA_REPO: ${{ github.repository }}
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
           RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          IMAGE_OUTCOME: ${{ steps.image.outcome }}
         run: bash .github/scripts/gitea-release.sh

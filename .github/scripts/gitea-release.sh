@@ -15,6 +15,9 @@
 #   GITEA_REPO   owner/name
 #   GITEA_TOKEN  token with write access to the repository
 #   RELEASE_TAG  e.g. v0.1.0
+# Optional environment:
+#   IMAGE_OUTCOME  outcome of the image push step; the notes claim an image only
+#                  when it is "success"
 set -euo pipefail
 
 : "${GITEA_API:?}"; : "${GITEA_REPO:?}"; : "${GITEA_TOKEN:?}"; : "${RELEASE_TAG:?}"
@@ -38,23 +41,42 @@ if isinstance(d, dict):
 prerelease=false
 case "${RELEASE_TAG}" in *-*) prerelease=true ;; esac
 
+# The notes state what this run actually did. The image push is best effort
+# (continue-on-error in the workflow), so only a step outcome of "success"
+# may claim an image; failed, skipped, or unset must not.
+if [ "${IMAGE_OUTCOME:-}" = success ]; then
+  image_note="The container image for this version was pushed to
+this instance's registry."
+else
+  image_note="No container image was published for this version; only the
+binaries below were released."
+fi
+body="Automated release from Gitea Actions.
+
+Binaries are attached below. ${image_note}"
+
 # Re-releasing a tag should update it, not fail.
 release_id="$(curl -sS -H "${AUTH}" "${BASE}/tags/${RELEASE_TAG}" | json_get id)"
 
 if [ -n "${release_id}" ]; then
   echo "release ${RELEASE_TAG} already exists (id ${release_id}); replacing assets"
-  updated="$(printf '{"prerelease": %s}' "${prerelease}" \
+  patch="$(python3 -c 'import json,sys; print(json.dumps({
+    "prerelease": sys.argv[1] == "true",
+    "body": sys.argv[2],
+}))' "${prerelease}" "${body}")"
+  response="$(printf '%s' "${patch}" \
     | curl -sS -X PATCH -H "${AUTH}" -H 'Content-Type: application/json' \
-        --data-binary @- "${BASE}/${release_id}" | json_get prerelease)"
+        --data-binary @- "${BASE}/${release_id}")"
+  updated="$(printf '%s' "${response}" | json_get prerelease)"
   if [ "${updated}" != "$([ "${prerelease}" = true ] && echo True || echo False)" ]; then
     echo "failed to set prerelease=${prerelease} on release ${RELEASE_TAG}" >&2
     exit 1
   fi
+  if [ "$(printf '%s' "${response}" | json_get body)" != "${body}" ]; then
+    echo "failed to set the notes on release ${RELEASE_TAG}" >&2
+    exit 1
+  fi
 else
-  body="Automated release from Gitea Actions.
-
-Binaries are attached below. The container image for this version was pushed to
-this instance's registry."
   payload="$(python3 -c 'import json,sys; print(json.dumps({
     "tag_name": sys.argv[1],
     "name": "go-sysmon " + sys.argv[1],
