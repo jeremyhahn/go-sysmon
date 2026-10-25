@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
@@ -20,6 +21,12 @@ const (
 // production period.
 func stallWatch(t *testing.T) (string, *Manager, chan slog.Record) {
 	t.Helper()
+	return stallWatchTimed(t, watchTiming{debounce: watchDebounce, stall: stallWarnForTest})
+}
+
+// stallWatchTimed is stallWatch with the watcher's timers chosen by the test.
+func stallWatchTimed(t *testing.T, timing watchTiming) (string, *Manager, chan slog.Record) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "sysmon.yaml")
 	if err := os.WriteFile(path, []byte(stallStart), 0o644); err != nil {
 		t.Fatal(err)
@@ -31,7 +38,6 @@ func stallWatch(t *testing.T) (string, *Manager, chan slog.Record) {
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
 	records := make(chan slog.Record, 256)
-	timing := watchTiming{debounce: watchDebounce, stall: stallWarnForTest}
 	if err := mgr.watch(done, slog.New(channelHandler{records}), nil, timing); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +120,16 @@ func TestWatch_WriterThatNeverClosesIsWarned(t *testing.T) {
 // complete when it was closed. What must not happen is what happened before:
 // the reopened writer's changes held with nothing ever logged.
 func TestWatch_CloseThenReopenWithoutClosingIsWarned(t *testing.T) {
-	path, mgr, records := stallWatch(t)
+	// The close arms a reload, and the reopened writer's append must cancel
+	// it. The debounce here outlasts the test, so the append reaches the
+	// watcher while the reload is still pending however a loaded host
+	// schedules the writer: with the production 250ms, a stall between the
+	// close and the append lets the reload fire first and read the append
+	// legitimately, which says nothing about the watcher. A reload that
+	// the append failed to cancel would still be waiting out the debounce,
+	// so what proves the cancellation is the stall warning, which only a
+	// held reload produces.
+	path, mgr, records := stallWatchTimed(t, watchTiming{debounce: time.Hour, stall: stallWarnForTest})
 
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
@@ -139,17 +154,7 @@ func TestWatch_CloseThenReopenWithoutClosingIsWarned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A reload of the partway-closed file may come first; the warning must
-	// follow the reopened writer's stall however that race went.
-	for {
-		r := await.Recv(t, "the warning that the reopened writer has stalled", records)
-		if r.Message == msgStall {
-			break
-		}
-		if r.Level > slog.LevelInfo {
-			t.Fatalf("waiting for the stall warning the watcher logged %s %q", r.Level, r.Message)
-		}
-	}
+	awaitStallWarning(t, records)
 	if a := mgr.Current().Alerts; a.MemoryPct == 71 {
 		t.Fatalf("memory_pct = 71 while the reopened writer still holds the file: its unclosed write was published")
 	}
