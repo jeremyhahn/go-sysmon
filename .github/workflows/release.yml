@@ -443,6 +443,7 @@ jobs:
   # Rulings 169 and 173: a push to the Gitea registry runs on the release
   # runner alone, and reads that runner's RELEASE_REGISTRY, RELEASE_REGISTRY_USER
   # and RELEASE_REGISTRY_TOKEN from its env file; the workflow sets none of them.
+  # The image goes under agent-ci-images/, that runner's registry user (#342).
   # Over plain HTTP the registry needs insecure-registries on the pushing daemon
   # and on every daemon that pulls -- see infra/gitea/docs/lessons.md. A failure
   # here never costs the binary release: gitea-release runs regardless.

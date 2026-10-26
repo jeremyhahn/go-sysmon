@@ -35,9 +35,12 @@ DOCKER_CONFIG="$(mktemp -d)"
 export DOCKER_CONFIG
 trap 'rm -rf "${DOCKER_CONFIG}"' EXIT
 
-# Registry paths must be lowercase.
-repo="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
-image="${RELEASE_REGISTRY}/${repo}"
+# Ruling 169: release images go under agent-ci-images/, the release runner's
+# registry user's own namespace. A user-owned namespace such as jeremyhahn/
+# takes writes only from that user or a site admin, so the registry refuses
+# the push there (claude-agents #342). Registry paths must be lowercase.
+name="$(printf '%s' "${GITHUB_REPOSITORY##*/}" | tr '[:upper:]' '[:lower:]')"
+image="${RELEASE_REGISTRY}/agent-ci-images/${name}"
 
 printf '%s' "${RELEASE_REGISTRY_TOKEN}" \
   | docker login "${RELEASE_REGISTRY}" --username "${RELEASE_REGISTRY_USER}" --password-stdin
