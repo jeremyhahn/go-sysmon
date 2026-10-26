@@ -391,11 +391,17 @@ func TestHistory_ACounterOutageIsAGap(t *testing.T) {
 func TestHistory_AbandonedRequestLeavesTheLookbackUncached(t *testing.T) {
 	db := newTSDB(t)
 	release := make(chan struct{})
+	// fetchEnded is sent to when the aggregator's own fetch of the abandoned
+	// request ends: the client going away does not end it until the server
+	// notices the disconnect, and a fetch answered before then is a real
+	// answer that is rightly cached.
+	fetchEnded := make(chan struct{}, 1)
 	db.set(func(db *tsdb) {
 		db.flagsHook = func(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-release:
 			case <-r.Context().Done():
+				fetchEnded <- struct{}{}
 				return
 			}
 			writeEnvelope(w, http.StatusOK, map[string]any{"status": "success",
@@ -424,6 +430,7 @@ func TestHistory_AbandonedRequestLeavesTheLookbackUncached(t *testing.T) {
 	if err := await.Recv(t, "the abandoned request to end", abandoned); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the abandoned request ended with %v, want it cancelled", err)
 	}
+	await.Recv(t, "the aggregator's fetch for the abandoned request to end", fetchEnded)
 
 	close(release)
 	status, body := harness.Get(t, url)
