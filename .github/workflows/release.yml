@@ -440,10 +440,35 @@ jobs:
   # in a single job and does not depend on the artifact service at all. Gitea's runners do carry artifacts
   # (docs/testing/ci-artifacts.md), but only through each runner's cache
   # server, so a release that needed them would fail whenever one is down.
-  gitea-release:
-    name: Gitea Release
+  # Rulings 169 and 173: a push to the Gitea registry runs on the release
+  # runner alone, and reads that runner's RELEASE_REGISTRY, RELEASE_REGISTRY_USER
+  # and RELEASE_REGISTRY_TOKEN from its env file; the workflow sets none of them.
+  # Over plain HTTP the registry needs insecure-registries on the pushing daemon
+  # and on every daemon that pulls -- see infra/gitea/docs/lessons.md. A failure
+  # here never costs the binary release: gitea-release runs regardless.
+  gitea-image:
+    name: Gitea Image
     needs: verify
     if: github.server_url != 'https://github.com'
+    runs-on: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+
+      - name: Push the container image
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
+        run: bash .github/scripts/gitea-image.sh
+
+  gitea-release:
+    name: Gitea Release
+    needs: [verify, gitea-image]
+    # Runs when the image job failed or was skipped: the binaries never depend
+    # on the image.
+    if: ${{ always() && needs.verify.result == 'success' && github.server_url != 'https://github.com' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -467,14 +492,7 @@ jobs:
 
       - name: Resolve the instance
         id: meta
-        run: |
-          {
-            # github.server_url is the Gitea instance; the registry is the same
-            # host and port with the scheme stripped.
-            server="${{ github.server_url }}"
-            echo "registry=${server#*://}"
-            echo "api=${server}/api/v1"
-          } >> "$GITHUB_OUTPUT"
+        run: echo "api=${{ github.server_url }}/api/v1" >> "$GITHUB_OUTPUT"
 
       - name: Build binaries
         run: |
@@ -488,21 +506,6 @@ jobs:
             "$b" version
           done
 
-      # Gitea's built-in container registry. Over plain HTTP this needs
-      # insecure-registries on the pushing daemon and on every daemon that
-      # pulls, so it is allowed to fail without losing the binary release --
-      # see infra/gitea/docs/lessons.md.
-      - name: Push the container image
-        id: image
-        continue-on-error: true
-        env:
-          REGISTRY: ${{ steps.meta.outputs.registry }}
-          VERSION: ${{ needs.verify.outputs.version }}
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
-        run: bash .github/scripts/gitea-image.sh
-
       - name: Confirm the tag still names the verified commit
         env:
           RELEASE_TAG: ${{ needs.verify.outputs.tag }}
@@ -515,5 +518,5 @@ jobs:
           GITEA_REPO: ${{ github.repository }}
           GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
           RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-          IMAGE_OUTCOME: ${{ steps.image.outcome }}
+          IMAGE_OUTCOME: ${{ needs.gitea-image.result }}
         run: bash .github/scripts/gitea-release.sh
