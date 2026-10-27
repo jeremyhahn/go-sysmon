@@ -390,6 +390,7 @@ func Write(m Sink, snap *types.Snapshot) {
 			}
 		}
 	}
+	writeDriveSlots(m, &snap.DriveSlots)
 
 	// Network
 	for i := range snap.Networks {
@@ -446,6 +447,38 @@ func writeDataUnits(m Sink, d *types.DiskInfo, ident []string) {
 			float64(d.DataUnitsRead), ident...)
 		m.Counter("sysmon_disk_read_bytes_total", "Bytes read over the drive's life, from NVMe data units.",
 			float64(d.DataUnitsRead)*nvmeDataUnitBytes, ident...)
+	}
+}
+
+// slotHealthValue is the number sysmon_drive_slot_health carries. A slot whose
+// health the BMC did not report is absent from the map, and its series is
+// omitted rather than written as a healthy zero.
+var slotHealthValue = map[types.DriveSlotHealth]float64{
+	types.DriveSlotHealthOK:       0,
+	types.DriveSlotHealthWarning:  1,
+	types.DriveSlotHealthCritical: 2,
+}
+
+// writeDriveSlots exports the drive bays as the BMC reports them (#289),
+// labelled by the slot's ID. The BMC's address and credentials are never a
+// label: nothing here comes from the bmc config section.
+func writeDriveSlots(m Sink, s *types.DriveSlots) {
+	m.Gauge("sysmon_drive_slots_available", "1 when the BMC answered for the drive bays, by Redfish or IPMI.", Bool01(s.Available))
+	for i := range s.Slots {
+		slot := &s.Slots[i]
+		id := []string{"slot", slot.ID}
+		m.Gauge("sysmon_drive_slot_present", "1 when the BMC reports a drive in the bay.", Bool01(slot.Present), id...)
+		m.Gauge("sysmon_drive_slot_fault", "1 when the BMC reports a fault on the bay.", Bool01(slot.Fault), id...)
+		m.Gauge("sysmon_drive_slot_failure_predicted", "1 when the BMC reports the bay's drive predicts its own failure.",
+			Bool01(slot.FailurePredicted), id...)
+		m.Gauge("sysmon_drive_slot_rebuilding", "1 while the bay's drive is being rebuilt.", Bool01(slot.Rebuilding), id...)
+		if v, ok := slotHealthValue[slot.Health]; ok {
+			m.Gauge("sysmon_drive_slot_health", "The bay's health as the BMC reports it: 0 ok, 1 warning, 2 critical.", v, id...)
+		}
+		if slot.MediaLifeReported {
+			m.Gauge("sysmon_drive_slot_media_life_left_percent", "Media life the BMC reports left on the bay's drive.",
+				slot.MediaLifeLeftPercent, id...)
+		}
 	}
 }
 

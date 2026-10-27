@@ -1,0 +1,28 @@
+# In-band IPMI as a BMC with four drive bays answers it, bay 3 faulted.
+# "sdr" lines are SDR records in repository order, header first; the record
+# ID is their first two bytes. "reading" lines are Get Sensor Reading
+# responses by sensor number, completion code first.
+
+# Compact record, temperature (type 0x01): not a drive slot.
+sdr 01 00 51 02 25 20 00 04 07 01 40 40 01 01 07 00 07 00 07 00 C0 00 00 01 00 00 00 00 00 00 00 CA 49 6E 6C 65 74 20 54 65 6D 70
+
+# Compact record, drive slot (type 0x0D, reading type 0x6F), "Drive 0", sensor 0x30.
+sdr 02 00 51 02 22 20 00 30 1A 00 40 40 0D 6F 07 00 07 00 07 00 C0 00 00 01 00 00 00 00 00 00 00 C7 44 72 69 76 65 20 30
+
+# Compact record shared by two sensors, 0x31 and 0x32, "Drive " numbered from 1.
+sdr 03 00 51 02 21 20 00 31 1A 01 40 40 0D 6F 07 00 07 00 07 00 C0 00 00 02 01 00 00 00 00 00 00 C6 44 72 69 76 65 20
+
+# FRU device locator (type 0x11): not a sensor.
+sdr 05 00 51 11 03 20 00 00
+
+# Full record, drive slot, "Bay 3", sensor 0x40.
+sdr 04 00 51 01 30 20 00 40 1A 03 40 40 0D 6F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 C5 42 61 79 20 33
+
+# Drive 0: present.
+reading 30 00 00 C0 01 00
+# Drive 1: present, rebuild in progress.
+reading 31 00 00 C0 81 00
+# Drive 2: empty bay.
+reading 32 00 00 C0 00 00
+# Bay 3: present, drive fault.
+reading 40 00 00 C0 03 00

@@ -297,9 +297,27 @@ sudo systemctl enable --now sysmon
 systemctl status sysmon
 ```
 
-Running as `nobody` costs you SMART data and DIMM temperatures, which need
-privileges. Add `disk` to `SupplementaryGroups=` to get SMART back, or accept
-the reduced detail — `sysmon doctor` will tell you exactly what you lost.
+Running as `nobody` costs you SMART data, DIMM detail and the drive-slot IPMI
+fallback, which need device access. To get them back, add the lines the
+`make deploy` unit (`deploy/go-sysmon.service`) carries:
+
+```ini
+PrivateDevices=no
+SupplementaryGroups=disk
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+```
+
+- The disk group opens `/dev/sdX`.
+- `CAP_SYS_ADMIN` lets the service make the NVMe and MegaRAID SMART
+  passthroughs.
+- `CAP_DAC_OVERRIDE` lets it open the `root:root` `/dev/nvmeN` and `/dev/ipmi0`
+  nodes.
+
+Leave out `CAP_SYS_RAWIO`. On Dell BOSS and PERC disks its ATA passthrough
+crashes the service ([why](../deployment/architecture.md#privileges)). You can
+also accept the reduced detail: `sysmon doctor` tells you exactly what you
+lost.
 
 ## Behind a reverse proxy
 
@@ -454,5 +472,6 @@ which is convenient and, on an untrusted network, a mistake.
 
 Two smaller notes:
 
-- SMART and DIMM detail need root or the `disk` group.
+- SMART and DIMM detail need root, or the device access listed under
+  [Running it as a service](#running-it-as-a-service).
 - RAPL energy readings need read access to `/sys/class/powercap/`.

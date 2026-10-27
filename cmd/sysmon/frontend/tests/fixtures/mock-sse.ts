@@ -15,7 +15,7 @@ import snapshot from "./snapshot.json" with { type: "json" };
  * undefined.
  */
 import templates from "./entry-templates.json" with { type: "json" };
-import type { Alert, NetworkInfo, StackDetection } from "../../src/lib/types";
+import type { Alert, DriveSlots, NetworkInfo, StackDetection } from "../../src/lib/types";
 import { TAB_IDS, type TabLabel } from "./tabs";
 
 /**
@@ -120,6 +120,11 @@ export interface MockOptions {
    * per tab, the noisiest state the tab bar can be in (#163).
    */
   alerts?: Alert[];
+  /**
+   * The node's drive bays as its BMC reports them (#289). Default: not sent
+   * at all, the shape of a server that predates the collector.
+   */
+  driveSlots?: DriveSlots;
 }
 
 /**
@@ -341,7 +346,11 @@ export async function mockSnapshotFeed(page: Page, opts: MockOptions = {}) {
   // The fixture file has no alerts key, so it is not part of Snapshot, which is
   // the fixture's own shape; the frame gets one here. An empty list, not the
   // host's, unless a spec asks for alerts.
-  const frame = { ...payload, alerts: opts.alerts ?? [] };
+  const frame = {
+    ...payload,
+    alerts: opts.alerts ?? [],
+    ...(opts.driveSlots == null ? {} : { drive_slots: opts.driveSlots }),
+  };
 
   // A "full" frame of the delta protocol, which is what the dashboard opens
   // the stream in. One frame is all the UI needs to render; the sequence number

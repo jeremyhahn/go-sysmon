@@ -1,0 +1,10 @@
+{
+  "/redfish/v1/Systems": {
+    "Members": [],
+    "Members@odata.nextLink": "/redfish/v1/Systems?$skip=1"
+  },
+  "/redfish/v1/Systems?$skip=1": {
+    "Members": [],
+    "Members@odata.nextLink": "/redfish/v1/Systems"
+  }
+}

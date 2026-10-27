@@ -872,7 +872,7 @@ func TestCheckMemoryInventory_SaysHowToGrantAccess(t *testing.T) {
 				t.Errorf("Status = %q, want %q (%s)", got.Status, tt.status, got.Detail)
 			}
 			if tt.wantFix {
-				for _, want := range []string{"run as root", "CAP_DAC_READ_SEARCH", "tmpfiles.d"} {
+				for _, want := range []string{"run as root", "deploy/go-sysmon.service", "CAP_DAC_OVERRIDE", "tmpfiles.d"} {
 					if !strings.Contains(got.Fix, want) {
 						t.Errorf("Fix = %q, want it to offer %q", got.Fix, want)
 					}

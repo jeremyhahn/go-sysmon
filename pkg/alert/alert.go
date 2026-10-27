@@ -77,6 +77,13 @@ const (
 	// condition of the service rather than a reading of the hardware, raised
 	// and cleared by the check that measures it (see Raise).
 	RuleHistoryCadence = "history_cadence_unchartable"
+
+	// RuleDriveSlotFault fires on a drive bay the BMC flags (#289): critical
+	// for a fault, warning for a predicted failure or a degraded bay. It is
+	// the same signal as the bay's amber LED, read from the same place, so a
+	// drive the OS cannot see -- or one behind a controller that hides it --
+	// still raises it.
+	RuleDriveSlotFault = "drive_slot_fault"
 )
 
 // CategoryHost files an alert under the dashboard's Host tab: a condition of
@@ -300,6 +307,7 @@ func (e *Evaluator) Evaluate(cfg config.Alerts, snap *types.Snapshot, now time.T
 		elapsed = 0
 	}
 	e.evalStorage(b, snap)
+	evalDriveSlots(b, &snap.DriveSlots)
 	e.evalCPUAndMemory(b, snap, elapsed)
 	e.evalNetwork(b, snap, elapsed)
 	evalGPU(b, snap)
@@ -551,6 +559,35 @@ func (e *Evaluator) evalStorage(b *builder, snap *types.Snapshot) {
 					fmt.Sprintf("/dev/%s is at %.0f°C", d.Name, d.Temperature), d.Temperature, t.TempWarnC)
 			}
 		}
+	}
+}
+
+// evalDriveSlots raises RuleDriveSlotFault for each bay the BMC flags. The
+// slot's ID is the resource, so each bay is its own alert and clears on its
+// own when the BMC stops flagging it.
+//
+// Presence is not a gate. A fault asserted on a bay the BMC also reports as
+// empty is a contradiction, and it is reported, not resolved in silence.
+func evalDriveSlots(b *builder, slots *types.DriveSlots) {
+	for i := range slots.Slots {
+		s := &slots.Slots[i]
+		var severity types.Severity
+		var what string
+		switch {
+		case s.Fault || s.Health == types.DriveSlotHealthCritical:
+			severity, what = types.SeverityCritical, "reports a fault"
+		case s.FailurePredicted:
+			severity, what = types.SeverityWarning, "predicts its drive will fail"
+		case s.Health == types.DriveSlotHealthWarning:
+			severity, what = types.SeverityWarning, "reports a warning"
+		default:
+			continue
+		}
+		message := fmt.Sprintf("drive slot %s %s", s.Slot, what)
+		if s.State != "" {
+			message += " (" + s.State + ")"
+		}
+		b.add(RuleDriveSlotFault, severity, catStorage, s.ID, message, 0, 0)
 	}
 }
 

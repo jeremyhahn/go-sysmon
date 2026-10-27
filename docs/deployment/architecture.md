@@ -177,37 +177,48 @@ half periods. With `Restart=always` that is a restart.
 
 ## Privileges
 
-**The service runs with no capabilities at all**, as a dedicated unprivileged
-system account. That is a measured result, not an assumption: every metric
-surface was collected as root and as an unprivileged user on the same host and
-compared. CPU package temperatures, PSI pressure stalls, per-interface counters
-with driver and bond detail, cgroup v2 container metrics, load averages, disk
-utilisation and the full process list with command lines are identical either
-way.
+**The service runs as a dedicated unprivileged system account with two
+capabilities**, and each is there for a device node (Company Agent ruling 226):
 
-Two metrics are not, and neither justifies a grant:
+| Unit line | Why |
+|---|---|
+| `PrivateDevices=no` | Shows the host's `/dev` to the service. `/dev/nvmeN`, `/dev/sdX` and `/dev/ipmi0` are hidden otherwise, and no grant reaches them. |
+| `SupplementaryGroups=disk` | Opens the `root:disk 0660` block nodes, such as `/dev/sdX`. |
+| `AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE` | `CAP_SYS_ADMIN` lets the service make the NVMe admin passthrough ioctl (SMART on `/dev/nvmeN`) and the MegaRAID passthrough (drives behind a PERC). `CAP_DAC_OVERRIDE` lets it open those `root:root 0600` nodes, and `/dev/ipmi0` for the [drive-slot](../collector/drive-slots.md) IPMI fallback. |
+| `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE` | Has to list the ambient set. An empty bounding set drops it. |
 
-**SMART disk health.** Reading it needs the device node, which means the `disk`
-group or root. On the reference target that buys nothing: as root, the
-`HDIO_DRIVE_CMD(0xD0)` ioctl on the SATA SSD returns `EIO` — the drive refuses
-the legacy ATA passthrough regardless of privilege. Verify on any new host with
-`sysmon-server doctor` as root **before** granting anything; if it reports SMART
-as unavailable there too, the grant is pure cost.
+That is a measured result. Every other metric surface was collected as root and
+as an unprivileged user on the same host, and the results were identical: CPU
+package temperatures, PSI pressure stalls, per-interface counters with driver
+and bond detail, cgroup v2 container metrics, load averages, disk utilisation,
+and the full process list with command lines. On ci-node-2, without the grants
+every disk read `smart_status` "unreadable". With them, it read "readable on 4
+of 10 devices".
+
+**The cost.** `CAP_DAC_OVERRIDE` bypasses every file permission check, so
+`/etc/shadow` is readable to the process. `ProtectSystem=strict` and
+`ProtectHome=yes` still keep the filesystem read-only and `/home` hidden, and
+the service never serves a file it reads. `CAP_SYS_ADMIN` is broad. The
+syscall filter, `RestrictNamespaces=`, the `ProtectKernel*=` lines and
+`NoNewPrivileges=` stay in place to fence it.
+
+**`CAP_SYS_RAWIO` is deliberately withheld.** It enables the SG_IO/HDIO ATA
+passthrough for SATA/SAS SMART. On the dellemc hosts, that path's
+`HDIO_DRIVE_CMD` ioctl against the DELLBOSS M.2 virtual disk and the
+PERC-backed SAS disks overruns its buffer. The service then segfaults in
+`runtime.mallocgc` and `Restart=always` loops it forever. That was confirmed by
+bisection. Leave the capability out until the bug is fixed and re-verified on
+that hardware. Without it, an ATA disk's SMART reads as "refused by the
+kernel", and `sysmon-server doctor` reports that.
 
 **SMBIOS DIMM detail** (module manufacturer, part number, serial, speed, form
 factor). The collector reads `/sys/firmware/dmi/tables/DMI`, which is `0400
-root:root`, only when the process may; it never escalates (no `sudo`, no
-setuid helper). Running as the service account, the read fails and the
-module details come from ghw where it has them. On the reference target the
-fields are AMI placeholder strings (`Manufacturer00`, `SerNum00`) so nothing
-real is lost. `sysmon doctor` reports the state and how to grant access.
-
-Recovering DIMM detail would take a `tmpfiles.d` rule making the table
-readable by the service's group, or `AmbientCapabilities=CAP_DAC_READ_SEARCH`,
-and that capability bypasses **every**
-file read permission on the host, including `/etc/shadow`. For an unauthenticated
-dashboard that already publishes process command lines, that is a bad trade for
-a placeholder string. It is the owner's call, not the deploying agent's.
+root:root`, only when the process may. It never escalates: there is no `sudo`
+and no setuid helper. Under the shipped unit, `CAP_DAC_OVERRIDE` covers this
+read as well. Without that capability, the read fails and the module details
+come from ghw where it has them. On the reference target the fields are AMI
+placeholder strings (`Manufacturer00`, `SerNum00`). `sysmon doctor` reports the
+state and how to grant access.
 
 ### The `/proc` hardening trap
 

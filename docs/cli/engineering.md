@@ -25,7 +25,9 @@ are unexported.
 - A rate (CPU, network, disk, swap paging) is the difference of two readings.
   One-shot mode takes two readings 500 ms apart (`oneShotSampleInterval`,
   `cmd/sysmon/snapshot.go`) and prints the second. A rate that could not be
-  measured prints `-`, never `0`.
+  measured prints `-`, never `0`. The second reading also waits for the
+  drive-slot poll the first one started (`WaitDriveSlots`, bounded at two
+  minutes), so it carries the drive bays.
 - `--refresh` builds one `SystemCollector` with tiering off, so every frame is
   re-read, and sleeps for the interval minus the work done, until `SIGINT`.
 - The first write error is remembered by `errWriter` and returned once at the

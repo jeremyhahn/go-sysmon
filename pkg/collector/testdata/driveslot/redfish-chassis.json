@@ -1,0 +1,32 @@
+{
+  "/redfish/v1/Systems": {
+    "Members": [{"@odata.id": "/redfish/v1/Systems/1"}]
+  },
+  "/redfish/v1/Systems/1": {
+    "Id": "1"
+  },
+  "/redfish/v1/Chassis": {
+    "Members": [{"@odata.id": "/redfish/v1/Chassis/1"}]
+  },
+  "/redfish/v1/Chassis/1": {
+    "Id": "1",
+    "Drives": {"@odata.id": "/redfish/v1/Chassis/1/Drives"},
+    "Links": {"Drives": [{"@odata.id": "/redfish/v1/Chassis/1/Drives/NVMe0"}]}
+  },
+  "/redfish/v1/Chassis/1/Drives": {
+    "Members": [
+      {"@odata.id": "/redfish/v1/Chassis/1/Drives/NVMe0"},
+      {"@odata.id": "/redfish/v1/Chassis/1/Drives/NVMe1"}
+    ]
+  },
+  "/redfish/v1/Chassis/1/Drives/NVMe0": {
+    "Name": "NVMe slot 0",
+    "Status": {"State": "Enabled", "Health": "Warning"},
+    "Protocol": "NVMe",
+    "CapacityBytes": -1
+  },
+  "/redfish/v1/Chassis/1/Drives/NVMe1": {
+    "Id": "NVMe1",
+    "Status": {"State": "Absent"}
+  }
+}

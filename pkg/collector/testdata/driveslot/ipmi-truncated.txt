@@ -1,0 +1,3 @@
+# A compact drive-slot record whose header claims 34 body bytes (0x22) and
+# whose repository holds 15.
+sdr 02 00 51 02 22 20 00 30 1A 00 40 40 0D 6F 07 00 07 00 07 00

@@ -291,11 +291,44 @@ func (p Prometheus) Timeout() time.Duration {
 }
 
 // Config is the complete effective configuration.
+// BMC is how the drive-slot collector reaches this node's baseboard
+// management controller for per-bay drive health (#289).
+//
+// With no RedfishURL the Redfish path is off, and the collector reads the
+// in-band IPMI device instead, which needs no credentials. Every key is read
+// once, at startup.
+type BMC struct {
+	// RedfishURL is the BMC's https origin, e.g. https://10.0.0.5. Only its
+	// scheme and host are used; the walk always starts at /redfish/v1.
+	RedfishURL string `mapstructure:"redfish_url"`
+	// Username and PasswordFile authenticate to the BMC. The password itself
+	// is never in this file: it is read from PasswordFile on each poll, and
+	// that file must not be readable by other users.
+	Username     string `mapstructure:"username"`
+	PasswordFile string `mapstructure:"password_file"`
+	// CAFile verifies the BMC's certificate against a named authority instead
+	// of the system roots. A self-signed BMC certificate is trusted by naming
+	// the certificate itself here, which keeps verification on.
+	CAFile string `mapstructure:"ca_file"`
+	// InsecureSkipVerify accepts whatever certificate the BMC offers. The
+	// password is then sent to anyone on the path who answers in the BMC's
+	// name, so it is named rather than implied, and ca_file is the better fix.
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify"`
+	// TimeoutMs bounds each request to the BMC.
+	TimeoutMs int `mapstructure:"timeout_ms"`
+}
+
+// Timeout returns TimeoutMs as a duration.
+func (b BMC) Timeout() time.Duration {
+	return time.Duration(b.TimeoutMs) * time.Millisecond
+}
+
 type Config struct {
 	Server     Server     `mapstructure:"server"`
 	Alerts     Alerts     `mapstructure:"alerts"`
 	Fleet      Fleet      `mapstructure:"fleet"`
 	Prometheus Prometheus `mapstructure:"prometheus"`
+	BMC        BMC        `mapstructure:"bmc"`
 }
 
 // Defaults returns the built-in configuration. These are chosen to be useful
@@ -348,6 +381,12 @@ func Defaults() Config {
 			FlushIntervalMs:  30000,
 			BatchSize:        1000,
 			TimeoutMs:        10000,
+		},
+		// No URL, so Redfish is off and the collector uses IPMI if the node
+		// has it. A BMC answers a Storage walk in a few hundred milliseconds,
+		// and ten seconds leaves room for one that is busy.
+		BMC: BMC{
+			TimeoutMs: 10000,
 		},
 	}
 }
@@ -561,6 +600,13 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 	if err := checkExternalLabels(c.Prometheus.ExternalLabels); err != nil {
 		return err
 	}
+	if c.BMC.TimeoutMs <= 0 {
+		c.BMC.TimeoutMs = d.BMC.TimeoutMs
+		repairedToDefault(sources, "bmc.timeout_ms")
+	}
+	if err := checkBMC(c.BMC); err != nil {
+		return err
+	}
 	if _, err := ParseTrustedProxies(c.Server.TrustedProxies); err != nil {
 		return err
 	}
@@ -748,6 +794,7 @@ var reservedLabels = map[string]bool{
 	"resource":  true,
 	"rule":      true,
 	"severity":  true,
+	"slot":      true,
 	"source":    true,
 }
 
@@ -810,6 +857,32 @@ func checkPromURL(key, raw string) error {
 	}
 	if reason := peerURLReason(u); reason != "" {
 		return &PrometheusURLError{Key: key, Reason: reason}
+	}
+	return nil
+}
+
+// checkBMC refuses a bmc section the drive-slot collector could not use, at
+// load rather than as a reason on the first poll. The URL is never quoted: a
+// mistyped one may carry the password.
+func checkBMC(b BMC) error {
+	if b.RedfishURL == "" {
+		return nil
+	}
+	u, err := url.Parse(b.RedfishURL)
+	if err != nil {
+		return &BMCURLError{Reason: urlParseReason(err)}
+	}
+	// Credentials first, before anything copies or quotes the URL.
+	if u.User != nil {
+		return &BMCCredentialsError{Host: u.Host}
+	}
+	switch {
+	case u.Scheme != "https":
+		return &BMCURLError{Reason: "it must be https: the BMC password is sent with every request"}
+	case u.Host == "":
+		return &BMCURLError{Reason: "no host"}
+	case b.Username == "" || b.PasswordFile == "":
+		return &BMCURLError{Reason: "it needs bmc.username and bmc.password_file"}
 	}
 	return nil
 }
@@ -936,6 +1009,12 @@ func bootOnlyKeys() []string {
 		"fleet.tls.cert_file",
 		"fleet.tls.key_file",
 		"fleet.tls.insecure_skip_verify",
+		"bmc.redfish_url",
+		"bmc.username",
+		"bmc.password_file",
+		"bmc.ca_file",
+		"bmc.insecure_skip_verify",
+		"bmc.timeout_ms",
 	}
 }
 

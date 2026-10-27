@@ -1,0 +1,28 @@
+{
+  "/redfish/v1/Chassis": {
+    "@odata.id": "/redfish/v1/Chassis",
+    "Members": [{"@odata.id": "/redfish/v1/Chassis/Enclosure"}]
+  },
+  "/redfish/v1/Chassis/Enclosure": {
+    "@odata.id": "/redfish/v1/Chassis/Enclosure",
+    "Id": "Enclosure",
+    "Drives": {"@odata.id": "/redfish/v1/Chassis/Enclosure/Drives"}
+  },
+  "/redfish/v1/Chassis/Enclosure/Drives": {
+    "@odata.id": "/redfish/v1/Chassis/Enclosure/Drives",
+    "Members": [
+      {"@odata.id": "/redfish/v1/Chassis/Enclosure/Drives/Bay0"},
+      {"@odata.id": "/redfish/v1/Chassis/Enclosure/Drives/Bay1"}
+    ]
+  },
+  "/redfish/v1/Chassis/Enclosure/Drives/Bay0": {
+    "@odata.id": "/redfish/v1/Chassis/Enclosure/Drives/Bay0",
+    "Id": "Bay0",
+    "Status": {"State": "Enabled", "Health": "OK"}
+  },
+  "/redfish/v1/Chassis/Enclosure/Drives/Bay1": {
+    "@odata.id": "/redfish/v1/Chassis/Enclosure/Drives/Bay1",
+    "Id": "Bay1",
+    "Status": {"State": "Enabled", "Health": "Critical"}
+  }
+}

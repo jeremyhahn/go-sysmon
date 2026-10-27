@@ -236,6 +236,7 @@ for the systemd unit and hardening notes.
 | [docs/cli/architecture.md](docs/cli/architecture.md) | How the CLI renders |
 | [docs/collector/architecture.md](docs/collector/architecture.md) | Data flow from sysfs to screen |
 | [docs/collector/sensors.md](docs/collector/sensors.md) | Temperature, power and PSI sources |
+| [docs/collector/drive-slots.md](docs/collector/drive-slots.md) | Drive-bay health from the BMC (Redfish, IPMI) |
 | [docs/collector/disk-and-network.md](docs/collector/disk-and-network.md) | Queue depth, peaks, interface classification, DNS |
 | [docs/collector/virtualization.md](docs/collector/virtualization.md) | Containers, VMs and image inventory |
 | [docs/monitor/architecture.md](docs/monitor/architecture.md) | Snapshot aggregation and broadcasting |

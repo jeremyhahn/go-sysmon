@@ -58,6 +58,13 @@ func richSnapshot() *types.Snapshot {
 				RAID: &types.RAIDInfo{Level: "raid1", Degraded: false, ActiveDevices: 2, TotalDevices: 2},
 			},
 		},
+		DriveSlots: types.DriveSlots{
+			Available: true, Source: types.DriveSlotSourceRedfish,
+			Slots: []types.DriveSlot{{
+				ID: "Disk.Bay.3", Slot: "Bay 3", Present: true, Health: types.DriveSlotHealthCritical,
+				Fault: true, MediaLifeLeftPercent: 3, MediaLifeReported: true,
+			}},
+		},
 		Networks: []types.NetworkInfo{
 			{Name: "eno1", IsUp: true, BytesRecvRate: 10, BytesSentRate: 20, ErrorsIn: 1, DropsOut: 2},
 			{Name: "lo", IsLoopback: true, IsUp: true},

@@ -338,7 +338,8 @@ the way `top -n1` and `mpstat` do. CPU usage and every other rate — network,
 disk, swap paging — is the difference of two readings, so a single reading
 could never show one. A figure the second reading still could not measure,
 such as a core whose `/proc/stat` line was malformed, prints as `-`, never as
-0.
+0. The second reading also waits for the BMC's drive-bay poll to finish, so a
+slow BMC can delay the output, by at most two minutes.
 
 ## Refresh mode
 

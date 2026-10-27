@@ -250,6 +250,7 @@ authenticating proxy — so it reports **whether** each of these is set up, as
 | `prometheus.remote_write_url`, `prometheus.query_url` | The address of the fleet's time-series database. |
 | `config_file` | An absolute path is a map of the host's filesystem layout. |
 | `fleet.peers.<name>` | Another machine's scheme, host and port. |
+| `bmc.redfish_url`, `bmc.username`, `bmc.password_file`, `bmc.ca_file` | The BMC's address, its account, and where its password and CA are kept. |
 
 Peers keep their **names**. The name is how the dashboard, the fleet proxy and
 the history queries all address a node, and the browser reaches a peer through
@@ -281,6 +282,22 @@ on the other.
 host name the node reports; a peer that has never answered shows its `name`.
 A poll error is worded without the address — see
 [`GET /api/fleet`](api.md#get-apifleet).
+
+### BMC
+
+The `bmc` section configures the [drive-slot collector](../collector/drive-slots.md).
+With the section absent, only the in-band IPMI fallback is tried.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `bmc.redfish_url` | — | The BMC's `https` Redfish endpoint. It must not contain credentials. |
+| `bmc.username` | — | The Redfish account, required with `redfish_url`. |
+| `bmc.password_file` | — | The password file, required with `redfish_url`. It is read on every poll and refused if other users can read it. |
+| `bmc.ca_file` | — | A PEM bundle that pins the BMC's CA. |
+| `bmc.insecure_skip_verify` | `false` | Turns certificate verification off. Explicit only. |
+| `bmc.timeout_ms` | `10000` | The timeout for one Redfish request. |
+
+All six keys are boot-only.
 
 ## Alerts
 
@@ -349,6 +366,7 @@ override is usually the first thing reached for.
 | storage | `smart_unhealthy` | — (always on) | — | critical |
 | storage | `raid_member_offline` | — (always on) | — | critical |
 | storage | `smart_unreadable` | — (always on) | — | warning |
+| storage | `drive_slot_fault` ([drive slots](../collector/drive-slots.md)) | — (always on) | — | critical (fault) / warning (predicted, degraded) |
 | storage | `raid_resync` / `raid_mismatch` | — | — | info / warning |
 | storage | `nvme_spare_low` | `nvme_spare_pct` | 10 | critical |
 | storage | `nvme_wear_high` | `nvme_wear_pct` | 80 | warning |

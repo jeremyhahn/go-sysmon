@@ -20,6 +20,7 @@ Every feature, its requirements and its status are in the
 | [Virtualization](collector/virtualization.md) | Containers and VMs, without a runtime socket |
 | [Disk and network detail](collector/disk-and-network.md) | Queue depth, peaks, interface classification, DNS |
 | [Sensors](collector/sensors.md) | Where temperatures, power and PSI come from |
+| [Drive slots](collector/drive-slots.md) | Drive-bay health from the BMC, over Redfish or IPMI |
 | [Monitor](monitor/architecture.md) | Polling, and broadcasting to subscribers |
 | [Server](server/architecture.md) | HTTP, server-sent events and TLS |
 | [Container](server/container.md) | Running in Docker, and what it needs from the host |

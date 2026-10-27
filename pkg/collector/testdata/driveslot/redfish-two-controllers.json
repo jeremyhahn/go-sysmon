@@ -1,0 +1,40 @@
+{
+  "/redfish/v1/Systems": {
+    "@odata.id": "/redfish/v1/Systems",
+    "Members": [{"@odata.id": "/redfish/v1/Systems/1"}]
+  },
+  "/redfish/v1/Systems/1": {
+    "@odata.id": "/redfish/v1/Systems/1",
+    "Id": "1",
+    "Storage": {"@odata.id": "/redfish/v1/Systems/1/Storage"}
+  },
+  "/redfish/v1/Systems/1/Storage": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage",
+    "Members": [
+      {"@odata.id": "/redfish/v1/Systems/1/Storage/NVMe"},
+      {"@odata.id": "/redfish/v1/Systems/1/Storage/SAS"}
+    ]
+  },
+  "/redfish/v1/Systems/1/Storage/NVMe": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/NVMe",
+    "Id": "NVMe",
+    "Drives": [{"@odata.id": "/redfish/v1/Systems/1/Storage/NVMe/Drives/0"}]
+  },
+  "/redfish/v1/Systems/1/Storage/SAS": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/SAS",
+    "Id": "SAS",
+    "Drives": [{"@odata.id": "/redfish/v1/Systems/1/Storage/SAS/Drives/0"}]
+  },
+  "/redfish/v1/Systems/1/Storage/NVMe/Drives/0": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/NVMe/Drives/0",
+    "Id": "0",
+    "Name": "NVMe drive 0",
+    "Status": {"State": "Enabled", "Health": "OK"}
+  },
+  "/redfish/v1/Systems/1/Storage/SAS/Drives/0": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage/SAS/Drives/0",
+    "Id": "0",
+    "Name": "SAS drive 0",
+    "Status": {"State": "Enabled", "Health": "Critical"}
+  }
+}

@@ -58,17 +58,23 @@ const oneShotSampleInterval = 500 * time.Millisecond
 // reads, so a test can hand it readings of its choosing.
 type systemSnapshotter interface {
 	Snapshot(ctx context.Context) (types.Snapshot, error)
+	WaitDriveSlots(ctx context.Context) error
 }
 
 // sampleSnapshot takes a priming reading, waits oneShotSampleInterval through
 // wait, and returns the second reading, whose rates are measured across the
 // wait. A figure the second reading still could not measure -- a core whose
-// /proc/stat line is malformed -- stays marked unknown in it.
+// /proc/stat line is malformed -- stays marked unknown in it. The priming
+// reading starts the drive-slot poll in the background; the second reading
+// waits for it to conclude, so it carries the bays rather than "not taken yet".
 func sampleSnapshot(ctx context.Context, sc systemSnapshotter, wait func(context.Context, time.Duration) error) (*types.Snapshot, error) {
 	if _, err := sc.Snapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := wait(ctx, oneShotSampleInterval); err != nil {
+		return nil, err
+	}
+	if err := sc.WaitDriveSlots(ctx); err != nil {
 		return nil, err
 	}
 	snap, err := sc.Snapshot(ctx)

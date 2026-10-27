@@ -2,6 +2,7 @@
 
   import { history } from "$stores/history.svelte";  import GaugeChart from "./GaugeChart.svelte";
   import DataTable from "./DataTable.svelte";
+  import DriveSlotsCard from "./DriveSlotsCard.svelte";
   import AlertBanner from "./AlertBanner.svelte";
   import { alertBorderClass } from "$lib/alerts";
   import type { Column } from "$lib/table";
@@ -759,6 +760,8 @@
         </div>
       </div>
     {/each}
+
+    <DriveSlotsCard slots={snapshot?.drive_slots} />
   {:else}
     <div class="flex justify-center items-center h-32">
       <span class="loading loading-spinner loading-md text-primary"></span>

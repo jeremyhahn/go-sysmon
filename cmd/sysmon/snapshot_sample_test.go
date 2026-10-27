@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,15 +19,49 @@ type scriptedSnapshotter struct {
 	readings []types.Snapshot
 	err      error
 	taken    int
+
+	// slowPoll, when set, stands in for the drive-slot poll a real collector's
+	// first reading starts: it runs in the background, and every later reading
+	// carries the bays it returned once it has returned.
+	slowPoll func() types.DriveSlots
+	waitErr  error
+	polled   chan struct{}
+	bays     atomic.Pointer[types.DriveSlots]
 }
 
 func (s *scriptedSnapshotter) Snapshot(context.Context) (types.Snapshot, error) {
 	if s.err != nil {
 		return types.Snapshot{}, s.err
 	}
+	if s.taken == 0 && s.slowPoll != nil {
+		s.polled = make(chan struct{})
+		go func() {
+			defer close(s.polled)
+			bays := s.slowPoll()
+			s.bays.Store(&bays)
+		}()
+	}
 	snap := s.readings[s.taken]
 	s.taken++
+	if bays := s.bays.Load(); bays != nil {
+		snap.DriveSlots = *bays
+	}
 	return snap, nil
+}
+
+func (s *scriptedSnapshotter) WaitDriveSlots(ctx context.Context) error {
+	if s.waitErr != nil {
+		return s.waitErr
+	}
+	if s.polled == nil {
+		return nil
+	}
+	select {
+	case <-s.polled:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // recordingWait records the durations it was asked to wait, and returns at once.
@@ -100,6 +135,28 @@ func TestSampleSnapshot_UnmeasurableSecondReading(t *testing.T) {
 	}
 }
 
+// TestSampleSnapshot_WaitsForTheDrivePoll verifies a one-shot command whose
+// BMC answers slower than the sample interval still reports the bays: the
+// second reading is taken only after the poll the first one started is done.
+func TestSampleSnapshot_WaitsForTheDrivePoll(t *testing.T) {
+	sc := &scriptedSnapshotter{
+		readings: []types.Snapshot{unmeasured, unmeasured},
+		slowPoll: func() types.DriveSlots {
+			time.Sleep(50 * time.Millisecond)
+			return types.DriveSlots{Available: true, Source: "redfish"}
+		},
+	}
+	w := &recordingWait{}
+
+	snap, err := sampleSnapshot(context.Background(), sc, w.wait)
+	if err != nil {
+		t.Fatalf("sampleSnapshot: %v", err)
+	}
+	if !snap.DriveSlots.Available || snap.DriveSlots.Source != "redfish" {
+		t.Errorf("drive slots = %+v, want the slow poll's reading", snap.DriveSlots)
+	}
+}
+
 // TestSampleSnapshot_Failures verifies a failed reading or an interrupted wait
 // is returned, and that nothing is read after it.
 func TestSampleSnapshot_Failures(t *testing.T) {
@@ -121,6 +178,15 @@ func TestSampleSnapshot_Failures(t *testing.T) {
 	}
 	if sc.taken != 1 {
 		t.Errorf("took %d readings after an interrupted wait, want 1", sc.taken)
+	}
+
+	errBays := errors.New("injected drive-slot wait failure")
+	sc = &scriptedSnapshotter{readings: []types.Snapshot{unmeasured, unmeasured}, waitErr: errBays}
+	if _, err := sampleSnapshot(context.Background(), sc, w.wait); !errors.Is(err, errBays) {
+		t.Errorf("failed drive-slot wait: error %v, want %v", err, errBays)
+	}
+	if sc.taken != 1 {
+		t.Errorf("took %d readings after a failed drive-slot wait, want 1", sc.taken)
 	}
 }
 

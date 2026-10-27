@@ -33,6 +33,14 @@ const (
 	tierSlow                        // every slowInterval ticks
 )
 
+// driveSlotTier is the drive-slot collector's tier: every tick. Its Collect
+// only checks its own driveSlotInterval and starts a background poll when one
+// is due, so calling it each tick costs nothing and a slow BMC never holds
+// the tick. A slower tier would starve that throttle: in the slow tier at the
+// 60-second snapshot interval it was asked every 30 minutes, and a new bay
+// fault could go unseen for that long.
+const driveSlotTier = tierFast
+
 // Collector refreshes a specific category of system metrics.
 type Collector interface {
 	Collect() error
@@ -51,8 +59,11 @@ type SystemCollector struct {
 	process *ProcessCollector
 	load    *LoadCollector
 	sensor  *SensorCollector
-	virt    *VirtCollector
-	runtime *RuntimeCollector
+	// driveSlot reads the drive bays from the BMC. It is replaced, not
+	// mutated, when ConfigureDriveSlots supplies the Redfish settings.
+	driveSlot atomic.Pointer[DriveSlotCollector]
+	virt      *VirtCollector
+	runtime   *RuntimeCollector
 	// runtimeDisk measures the runtime's data root, which the runtime
 	// collector reports when its API answers.
 	runtimeDisk *RuntimeDiskCollector
@@ -88,8 +99,30 @@ func NewSystemCollector(logger *slog.Logger) *SystemCollector {
 		logger:  logger,
 	}
 	sc.runtimeDisk = NewRuntimeDiskCollector(sc.runtimeRootDir)
+	sc.driveSlot.Store(newDriveSlotCollector(logger, DefaultIPMIDevice))
 	sc.tiering.Store(true) // enabled by default for streaming mode
 	return sc
+}
+
+// ConfigureDriveSlots points the drive-slot collector at the node's BMC. Until
+// it is called the collector reads in-band IPMI from DefaultIPMIDevice only.
+func (s *SystemCollector) ConfigureDriveSlots(cfg DriveSlotConfig) error {
+	c, err := NewDriveSlotCollector(s.logger, cfg)
+	if err != nil {
+		return err
+	}
+	s.driveSlot.Store(c)
+	return nil
+}
+
+// WaitDriveSlots blocks until the drive-slot poll in flight concludes, so a
+// one-shot snapshot carries the bays rather than "not taken yet". The wait is
+// bounded by driveSlotPollTimeout, the bound on the poll itself, so a poll that
+// overruns its own deadline cannot hold the caller any longer.
+func (s *SystemCollector) WaitDriveSlots(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, driveSlotPollTimeout)
+	defer cancel()
+	return s.driveSlot.Load().Wait(ctx)
 }
 
 // SetTiering enables or disables frequency tiering. When disabled, all
@@ -159,6 +192,8 @@ func (s *SystemCollector) Snapshot(ctx context.Context) (types.Snapshot, error) 
 		// reason an idle NPU never powers down.
 		{"disk", s.disk.Collect, tierSlow},
 		{"npu", s.npu.Collect, tierSlow},
+		// Drive bays from the BMC (#289); see driveSlotTier.
+		{"drive-slot", func() error { return s.driveSlot.Load().Collect() }, driveSlotTier},
 	}
 
 	for _, c := range collectors {
@@ -191,6 +226,7 @@ func (s *SystemCollector) assemble(snap *types.Snapshot) {
 	snap.NPUs = s.npu.Info()
 	snap.Memory = s.memory.Info()
 	snap.Disks = s.disk.Info()
+	snap.DriveSlots = s.driveSlot.Load().Info()
 	snap.Networks = s.network.Info()
 	snap.Processes = s.process.Info()
 	snap.LoadAvg = s.load.Info()

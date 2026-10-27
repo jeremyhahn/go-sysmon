@@ -12,14 +12,17 @@ import "time"
 
 // Snapshot contains a complete system state at a point in time.
 type Snapshot struct {
-	Timestamp  time.Time      `json:"timestamp"`
-	Host       HostInfo       `json:"host"`
-	CPUSummary CPUSummary     `json:"cpu_summary"`
-	CPUs       []CPUInfo      `json:"cpus"`
-	GPUs       []GPUInfo      `json:"gpus"`
-	NPUs       []NPUInfo      `json:"npus"`
-	Memory     MemoryInfo     `json:"memory"`
-	Disks      []DiskInfo     `json:"disks"`
+	Timestamp  time.Time  `json:"timestamp"`
+	Host       HostInfo   `json:"host"`
+	CPUSummary CPUSummary `json:"cpu_summary"`
+	CPUs       []CPUInfo  `json:"cpus"`
+	GPUs       []GPUInfo  `json:"gpus"`
+	NPUs       []NPUInfo  `json:"npus"`
+	Memory     MemoryInfo `json:"memory"`
+	Disks      []DiskInfo `json:"disks"`
+	// DriveSlots is the BMC's view of the drive bays, read from Redfish or
+	// in-band IPMI (#289): the one place a bay's fault LED is visible.
+	DriveSlots DriveSlots     `json:"drive_slots"`
 	Networks   []NetworkInfo  `json:"networks"`
 	LoadAvg    LoadAverage    `json:"load_avg"`
 	Processes  ProcessSummary `json:"processes"`
@@ -1734,6 +1737,94 @@ const (
 // than one of the ways of having none.
 func (s SMARTStatus) HasReading() bool {
 	return s == SMARTOK || s == SMARTFailing
+}
+
+// DriveSlotSource names where a node's drive-slot readings came from.
+type DriveSlotSource string
+
+const (
+	// DriveSlotSourceNone means nothing was read: DriveSlots.Reason says why.
+	DriveSlotSourceNone DriveSlotSource = ""
+	// DriveSlotSourceRedfish is the BMC's Redfish service, over HTTPS.
+	DriveSlotSourceRedfish DriveSlotSource = "redfish"
+	// DriveSlotSourceIPMI is the BMC's drive-slot sensors (sensor type 0x0D),
+	// read in band through the kernel IPMI device.
+	DriveSlotSourceIPMI DriveSlotSource = "ipmi"
+)
+
+// DriveSlots is the node's drive bays as its baseboard management controller
+// reports them (#289).
+//
+// It is a separate reading from Disks on purpose. A bay's fault LED is the
+// BMC's judgement, made from the backplane and the RAID controller, and it
+// can be lit while every block device the kernel sees is healthy: ci-node-2
+// bay 3 showed an orange LED that no host-side collector could see.
+type DriveSlots struct {
+	// Available is true when a source answered and Slots is its reading.
+	Available bool `json:"available"`
+	// Source is the source that answered, or DriveSlotSourceNone.
+	Source DriveSlotSource `json:"source"`
+	// Reason says why Available is false: no BMC configured and no IPMI
+	// device, or the error the configured source returned. When Redfish
+	// failed and IPMI answered instead, it carries the Redfish error.
+	Reason string `json:"reason"`
+	// Slots is one record per bay, sorted by ID.
+	Slots []DriveSlot `json:"slots"`
+}
+
+// DriveSlotHealth is a bay's health on one scale for both sources.
+type DriveSlotHealth string
+
+const (
+	// DriveSlotHealthUnknown is a bay the BMC gave no health for: an empty
+	// bay, or a sensor whose reading is unavailable.
+	DriveSlotHealthUnknown DriveSlotHealth = ""
+	// DriveSlotHealthOK is a bay the BMC reports healthy.
+	DriveSlotHealthOK DriveSlotHealth = "ok"
+	// DriveSlotHealthWarning is a bay that needs attention: a predicted
+	// failure, a member of a degraded array, or Redfish Health "Warning".
+	DriveSlotHealthWarning DriveSlotHealth = "warning"
+	// DriveSlotHealthCritical is a faulted bay: the orange LED.
+	DriveSlotHealthCritical DriveSlotHealth = "critical"
+)
+
+// DriveSlot is one drive bay.
+type DriveSlot struct {
+	// ID is the bay's stable identity, used as the metric label and the alert
+	// resource: the Redfish Drive Id, or the IPMI sensor's ID string.
+	ID string `json:"id"`
+	// Slot is the bay's label as printed on the chassis where the BMC knows
+	// it (Redfish PhysicalLocation), and otherwise the same as ID.
+	Slot string `json:"slot"`
+	// Present is whether a drive is in the bay.
+	Present bool `json:"present"`
+	// Health is the bay's health on the shared scale.
+	Health DriveSlotHealth `json:"health"`
+	// State is the source's own state word: Redfish Status.State ("Enabled",
+	// "Absent", ...), or the asserted IPMI sensor offsets, comma-separated.
+	State string `json:"state"`
+	// Fault is a drive fault: Redfish Health "Critical", or the IPMI Drive
+	// Fault or In Failed Array offset.
+	Fault bool `json:"fault"`
+	// FailurePredicted is the drive predicting its own failure: Redfish
+	// FailurePredicted, or the IPMI Predictive Failure offset.
+	FailurePredicted bool `json:"failure_predicted"`
+	// Rebuilding is a rebuild or remap in progress on the bay.
+	Rebuilding bool `json:"rebuilding"`
+	// MediaLifeLeftPercent is Redfish PredictedMediaLifeLeftPercent. It is
+	// meaningful only when MediaLifeReported is true: IPMI has no such
+	// reading, and a BMC may omit it for spinning drives.
+	MediaLifeLeftPercent float64 `json:"media_life_left_percent"`
+	MediaLifeReported    bool    `json:"media_life_reported"`
+	// Manufacturer, Model, SerialNumber, MediaType ("SSD", "HDD"), Protocol
+	// ("SAS", "SATA", "NVMe") and CapacityBytes are Redfish inventory; IPMI
+	// leaves them empty.
+	Manufacturer  string `json:"manufacturer"`
+	Model         string `json:"model"`
+	SerialNumber  string `json:"serial_number"`
+	MediaType     string `json:"media_type"`
+	Protocol      string `json:"protocol"`
+	CapacityBytes uint64 `json:"capacity_bytes"`
 }
 
 // SMARTAttr is a single SMART attribute.

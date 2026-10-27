@@ -283,8 +283,8 @@ func checkMemoryInventory() checkResult {
 			Name:   memoryCheckName,
 			Status: "degraded",
 			Detail: "SMBIOS table unreadable (" + err.Error() + "); module details come from ghw where it has them",
-			Fix: "grant read access to /sys/firmware/dmi/tables/DMI: run as root; or give the unit " +
-				"AmbientCapabilities=CAP_DAC_READ_SEARCH (it bypasses every file read permission); or make the " +
+			Fix: "grant read access to /sys/firmware/dmi/tables/DMI: run as root; or run under the shipped " +
+				"deploy/go-sysmon.service, whose CAP_DAC_OVERRIDE (granted for the NVMe and IPMI nodes) covers it; or make the " +
 				"table group-readable at boot with a tmpfiles.d line `z /sys/firmware/dmi/tables/DMI 0440 root <group>`",
 		}
 	}

@@ -195,18 +195,43 @@ TasksMax=64
 
 # --- privileges ------------------------------------------------------------
 #
-# Empty, and measured rather than assumed: every metric surface sysmon collects
-# was compared as root and as an unprivileged user on the target and the output
-# was identical. CPU package temperatures, DIMM/SMBIOS detail, per-interface
-# counters, cgroup container metrics and the process list all read fine with no
-# capability at all.
+# Two capabilities, each there for a device node and nothing else (Company
+# Agent ruling 226, carrying ci-node-2's ruling-108 drop-in into this unit).
+# Everything else sysmon collects was compared as root and as an unprivileged
+# user and read the same with no capability at all: CPU package temperatures,
+# per-interface counters, cgroup container metrics and the process list.
 #
-# The one metric that is not identical is SMART disk health, and no capability
-# recovers it here: as root the HDIO_DRIVE_CMD(0xD0) ioctl on the target's SATA
-# SSD returns EIO, so the drive itself refuses the legacy ATA passthrough. See
-# docs/deployment/architecture.md, "Privileges", before granting anything.
-CapabilityBoundingSet=
-AmbientCapabilities=
+#   CAP_SYS_ADMIN     the NVMe admin passthrough ioctl that reads SMART from
+#                     /dev/nvmeN, and the MegaRAID passthrough that reads the
+#                     drives behind a PERC controller.
+#   CAP_DAC_OVERRIDE  opening those root:root 0600 nodes, and /dev/ipmi0 for
+#                     the drive-slot collector's IPMI fallback
+#                     (docs/collector/drive-slots.md).
+#
+# Verified on ci-node-2: without them every disk read smart_status
+# "unreadable"; with them, "readable on 4 of 10 devices".
+#
+# The bounding set has to list the ambient set: an empty bounding set drops
+# every ambient capability.
+#
+# CAP_DAC_OVERRIDE bypasses every file permission check on the host, so
+# /etc/shadow is readable to this process. ProtectSystem=strict and
+# ProtectHome=yes below still keep the filesystem read-only and /home hidden,
+# and sysmon serves no file it reads.
+#
+# CAP_SYS_RAWIO IS DELIBERATELY OMITTED, and its absence is load-bearing. It
+# enables the SG_IO/HDIO ATA passthrough used for SATA/SAS SMART, and on the
+# dellemc hosts that path segfaults the service into a permanent crash loop:
+# the HDIO_DRIVE_CMD ioctl in ataHDIOCommand() (pkg/collector/smart_ata.go)
+# against the DELLBOSS M.2 virtual disk and the PERC-backed SAS disks overruns
+# the buffer it passes to the kernel, and the next allocation dies in
+# runtime.mallocgc. Bisected there: no grant = stable; +CAP_SYS_RAWIO = crash
+# loop; CAP_SYS_ADMIN+CAP_DAC_OVERRIDE only = stable with NVMe SMART. Do not
+# add it until that bug is fixed and re-verified on that hardware. Without it
+# an ATA disk's SMART reads as refused by the kernel, and `sysmon-server
+# doctor` says so.
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 
@@ -221,12 +246,16 @@ ProtectHome=yes
 PrivateTmp=yes
 UMask=0077
 
-# PrivateDevices hides /dev/sda, which is where SMART would be read from. That
-# costs nothing on a host whose disks refuse the SMART ioctl anyway (see
-# "privileges" above). On a host with SMART-capable disks, remove this line and
-# add SupplementaryGroups=disk -- and confirm with `sysmon-server doctor` that
-# it actually bought data before leaving it that way.
-PrivateDevices=yes
+# PrivateDevices=yes would give the service a private /dev without the disk
+# and IPMI nodes, and the capabilities above would then reach nothing: every
+# disk read smart_status "unreadable" that way on ci-node-2, bay 3's nvme1
+# included. The host's /dev is needed for /dev/nvmeN and /dev/sdX (SMART) and
+# /dev/ipmi0 (drive slots).
+#
+# The disk group opens the root:disk 0660 block nodes, /dev/sdX among them,
+# without a capability.
+PrivateDevices=no
+SupplementaryGroups=disk
 
 # --- /proc ------------------------------------------------------------------
 #

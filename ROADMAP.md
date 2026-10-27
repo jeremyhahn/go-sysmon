@@ -32,6 +32,7 @@ Runs as infrastructure and aggregates a fleet of hosts.
 - **container-image** — Docker and Kubernetes against the host — [v0.3.0-alpha](../../releases/tag/v0.3.0-alpha) — done
 - **release-pipeline** — changelog fragments and tag-driven releases — [v0.3.0-alpha](../../releases/tag/v0.3.0-alpha) — done
 - **disk-metrics** — disks report peak throughput since start — [#260](../../issues/260) — done
+- **drive-slot** — drive-bay health read from the BMC, with a fault alert — [#289](../../issues/289) — done
 - **network-metrics** — network rates display in bits per second — [#257](../../issues/257) — done
 - **network-metrics** — network interfaces report NIC vendor and model — [#258](../../issues/258) — done
 - **network-metrics** — wifi adapter detail shows in the GUI — [#259](../../issues/259) — done

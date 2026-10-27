@@ -26,6 +26,7 @@ It has no in-house module dependencies. Deployment into go-trusted-platform is p
 | cpu-metrics | shipped | Show every CPU with per-core usage, temperature and frequency. Show the manufacturer, model, speed, caches and flags. | docs/collector/ |
 | memory-metrics | shipped | Show used, cached, buffered, free and swap memory with swap paging. Show the module manufacturer and speed where the host exposes them. | docs/collector/ |
 | disk-metrics | shipped | Show every disk with its model, specs, usage, rates, queue depth and SMART health. Show peak throughput since start. Tell a missing device from an unreadable one. | docs/collector/ |
+| drive-slot | shipped | Read per-bay drive health from the BMC (Redfish, IPMI fallback), read-only; alert on fault or predicted failure. | docs/collector/drive-slots.md |
 | network-metrics | shipped | Show every interface with its addresses, netmask, DNS, state and rates in bits per second. Classify bridges, bonds, VLANs and wifi adapters, and show the wifi link detail. Show the NIC manufacturer and model. | docs/collector/ |
 | accelerator-metrics | shipped | Show GPUs and NPUs with usage, memory and temperature. NVIDIA detail needs the `nvml` build tag. | docs/collector/ |
 | virtualization | shipped | List containers, VMs and images from the host side, without a runtime socket. Hide those tabs when the host has neither. | docs/collector/ |

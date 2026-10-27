@@ -31,6 +31,19 @@ export type ConfigSource =
   | "flag"
   | "runtime";
 
+/** DriveSlotHealth is a bay's health on one scale for both sources. */
+export type DriveSlotHealth =
+  | ""
+  | "ok"
+  | "warning"
+  | "critical";
+
+/** DriveSlotSource names where a node's drive-slot readings came from. */
+export type DriveSlotSource =
+  | ""
+  | "redfish"
+  | "ipmi";
+
 /**
  * HistoryUnit is the unit a history series is measured in, which is what
  * picks its axis and its value formatting. It is a named type so the
@@ -547,6 +560,83 @@ export interface DiskMember {
   smart_healthy: boolean;
   smart_status: SMARTStatus;
   smart_reason: string;
+}
+
+/** DriveSlot is one drive bay. */
+export interface DriveSlot {
+  /**
+   * ID is the bay's stable identity, used as the metric label and the alert
+   * resource: the Redfish Drive Id, or the IPMI sensor's ID string.
+   */
+  id: string;
+  /**
+   * Slot is the bay's label as printed on the chassis where the BMC knows
+   * it (Redfish PhysicalLocation), and otherwise the same as ID.
+   */
+  slot: string;
+  /** Present is whether a drive is in the bay. */
+  present: boolean;
+  /** Health is the bay's health on the shared scale. */
+  health: DriveSlotHealth;
+  /**
+   * State is the source's own state word: Redfish Status.State ("Enabled",
+   * "Absent", ...), or the asserted IPMI sensor offsets, comma-separated.
+   */
+  state: string;
+  /**
+   * Fault is a drive fault: Redfish Health "Critical", or the IPMI Drive
+   * Fault or In Failed Array offset.
+   */
+  fault: boolean;
+  /**
+   * FailurePredicted is the drive predicting its own failure: Redfish
+   * FailurePredicted, or the IPMI Predictive Failure offset.
+   */
+  failure_predicted: boolean;
+  /** Rebuilding is a rebuild or remap in progress on the bay. */
+  rebuilding: boolean;
+  /**
+   * MediaLifeLeftPercent is Redfish PredictedMediaLifeLeftPercent. It is
+   * meaningful only when MediaLifeReported is true: IPMI has no such
+   * reading, and a BMC may omit it for spinning drives.
+   */
+  media_life_left_percent: number;
+  media_life_reported: boolean;
+  /**
+   * Manufacturer, Model, SerialNumber, MediaType ("SSD", "HDD"), Protocol
+   * ("SAS", "SATA", "NVMe") and CapacityBytes are Redfish inventory; IPMI
+   * leaves them empty.
+   */
+  manufacturer: string;
+  model: string;
+  serial_number: string;
+  media_type: string;
+  protocol: string;
+  capacity_bytes: number;
+}
+
+/**
+ * DriveSlots is the node's drive bays as its baseboard management controller
+ * reports them (#289).
+ *
+ * It is a separate reading from Disks on purpose. A bay's fault LED is the
+ * BMC's judgement, made from the backplane and the RAID controller, and it
+ * can be lit while every block device the kernel sees is healthy: ci-node-2
+ * bay 3 showed an orange LED that no host-side collector could see.
+ */
+export interface DriveSlots {
+  /** Available is true when a source answered and Slots is its reading. */
+  available: boolean;
+  /** Source is the source that answered, or DriveSlotSourceNone. */
+  source: DriveSlotSource;
+  /**
+   * Reason says why Available is false: no BMC configured and no IPMI
+   * device, or the error the configured source returned. When Redfish
+   * failed and IPMI answered instead, it carries the Redfish error.
+   */
+  reason: string;
+  /** Slots is one record per bay, sorted by ID. */
+  slots: DriveSlot[];
 }
 
 /** FanInfo is a fan speed reading from hwmon. */
@@ -2001,6 +2091,11 @@ export interface Snapshot {
   npus: NPUInfo[];
   memory: MemoryInfo;
   disks: DiskInfo[];
+  /**
+   * DriveSlots is the BMC's view of the drive bays, read from Redfish or
+   * in-band IPMI (#289): the one place a bay's fault LED is visible.
+   */
+  drive_slots: DriveSlots;
   networks: NetworkInfo[];
   load_avg: LoadAverage;
   processes: ProcessSummary;

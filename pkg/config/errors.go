@@ -248,6 +248,28 @@ func (e *PrometheusCredentialsError) Error() string {
 		"put them in a reverse proxy or an authenticating sidecar instead", e.Key, e.Host)
 }
 
+// BMCURLError reports a bmc.redfish_url the drive-slot collector cannot use.
+// The URL itself is never quoted, for the reason PrometheusURLError gives.
+type BMCURLError struct {
+	Reason string
+}
+
+func (e *BMCURLError) Error() string {
+	return "config: bmc.redfish_url is unusable: " + e.Reason
+}
+
+// BMCCredentialsError reports a bmc.redfish_url carrying embedded credentials.
+// The password belongs in bmc.password_file, where it is read per poll and
+// never held in the config; only the host is named, never the URL.
+type BMCCredentialsError struct {
+	Host string
+}
+
+func (e *BMCCredentialsError) Error() string {
+	return fmt.Sprintf("config: bmc.redfish_url must not carry credentials (host %s); "+
+		"set bmc.username and bmc.password_file instead", e.Host)
+}
+
 // PrometheusLabelError reports an entry in prometheus.external_labels that
 // Prometheus would refuse, or that collides with a label go-sysmon sets itself.
 //

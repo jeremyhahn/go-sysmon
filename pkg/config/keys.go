@@ -55,6 +55,12 @@ func scalarKeys() []string {
 		"prometheus.flush_interval_ms",
 		"prometheus.batch_size",
 		"prometheus.timeout_ms",
+		"bmc.redfish_url",
+		"bmc.username",
+		"bmc.password_file",
+		"bmc.ca_file",
+		"bmc.insecure_skip_verify",
+		"bmc.timeout_ms",
 	}
 }
 
@@ -105,6 +111,13 @@ func defaultMap(c Config) map[string]any {
 		"fleet.tls.key_file":             c.Fleet.TLS.KeyFile,
 		"fleet.tls.insecure_skip_verify": c.Fleet.TLS.InsecureSkipVerify,
 		"fleet.tls.require_tls":          c.Fleet.TLS.RequireTLS,
+
+		"bmc.redfish_url":          c.BMC.RedfishURL,
+		"bmc.username":             c.BMC.Username,
+		"bmc.password_file":        c.BMC.PasswordFile,
+		"bmc.ca_file":              c.BMC.CAFile,
+		"bmc.insecure_skip_verify": c.BMC.InsecureSkipVerify,
+		"bmc.timeout_ms":           c.BMC.TimeoutMs,
 	}
 }
 
@@ -130,6 +143,10 @@ var withheld = map[string]bool{
 	"fleet.tls.key_file":          true,
 	"prometheus.remote_write_url": true,
 	"prometheus.query_url":        true,
+	"bmc.redfish_url":             true,
+	"bmc.username":                true,
+	"bmc.password_file":           true,
+	"bmc.ca_file":                 true,
 }
 
 // value renders a key's effective value for display, withholding the settings
@@ -230,6 +247,18 @@ func (c *Config) raw(key string) string {
 		return strconv.Itoa(c.Prometheus.BatchSize)
 	case "prometheus.timeout_ms":
 		return strconv.Itoa(c.Prometheus.TimeoutMs)
+	case "bmc.redfish_url":
+		return c.BMC.RedfishURL
+	case "bmc.username":
+		return c.BMC.Username
+	case "bmc.password_file":
+		return c.BMC.PasswordFile
+	case "bmc.ca_file":
+		return c.BMC.CAFile
+	case "bmc.insecure_skip_verify":
+		return strconv.FormatBool(c.BMC.InsecureSkipVerify)
+	case "bmc.timeout_ms":
+		return strconv.Itoa(c.BMC.TimeoutMs)
 	}
 	return ""
 }

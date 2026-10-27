@@ -1,0 +1,51 @@
+{
+  "/redfish/v1/Systems": {
+    "@odata.id": "/redfish/v1/Systems",
+    "Members": [{"@odata.id": "/redfish/v1/Systems/1"}],
+    "Members@odata.count": 2,
+    "Members@odata.nextLink": "/redfish/v1/Systems?$skip=1"
+  },
+  "/redfish/v1/Systems?$skip=1": {
+    "@odata.id": "/redfish/v1/Systems",
+    "Members": [{"@odata.id": "/redfish/v1/Systems/2"}],
+    "Members@odata.count": 2
+  },
+  "/redfish/v1/Systems/1": {
+    "@odata.id": "/redfish/v1/Systems/1",
+    "Storage": {"@odata.id": "/redfish/v1/Systems/1/Storage"}
+  },
+  "/redfish/v1/Systems/1/Storage": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage",
+    "Members": [{"@odata.id": "/redfish/v1/Systems/1/Storage/A"}],
+    "Members@odata.nextLink": "/redfish/v1/Systems/1/Storage?$skip=1"
+  },
+  "/redfish/v1/Systems/1/Storage?$skip=1": {
+    "@odata.id": "/redfish/v1/Systems/1/Storage",
+    "Members": [{"@odata.id": "/redfish/v1/Systems/1/Storage/B"}]
+  },
+  "/redfish/v1/Systems/1/Storage/A": {
+    "Drives": [{"@odata.id": "/redfish/v1/Systems/1/Storage/A/Drives/0"}]
+  },
+  "/redfish/v1/Systems/1/Storage/B": {
+    "Drives": [{"@odata.id": "/redfish/v1/Systems/1/Storage/B/Drives/0"}]
+  },
+  "/redfish/v1/Systems/2": {
+    "@odata.id": "/redfish/v1/Systems/2",
+    "Storage": {"@odata.id": "/redfish/v1/Systems/2/Storage"}
+  },
+  "/redfish/v1/Systems/2/Storage": {
+    "Members": [{"@odata.id": "/redfish/v1/Systems/2/Storage/C"}]
+  },
+  "/redfish/v1/Systems/2/Storage/C": {
+    "Drives": [{"@odata.id": "/redfish/v1/Systems/2/Storage/C/Drives/0"}]
+  },
+  "/redfish/v1/Systems/1/Storage/A/Drives/0": {
+    "Id": "0", "Name": "A drive 0", "Status": {"State": "Enabled", "Health": "OK"}
+  },
+  "/redfish/v1/Systems/1/Storage/B/Drives/0": {
+    "Id": "0", "Name": "B drive 0", "Status": {"State": "Enabled", "Health": "Critical"}
+  },
+  "/redfish/v1/Systems/2/Storage/C/Drives/0": {
+    "Id": "0", "Name": "C drive 0", "Status": {"State": "Enabled", "Health": "OK"}, "FailurePredicted": true
+  }
+}

@@ -154,6 +154,9 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	applyMemoryLimit("", os.Getenv, slog.Default())
 
 	sc := collector.NewSystemCollector(slog.Default())
+	if err := sc.ConfigureDriveSlots(driveSlotConfig(cfgMgr.Current().BMC)); err != nil {
+		return err
+	}
 	// The build, the node's name and the alerts are attached by the server's
 	// decorator on this monitor, the same for every path that serves a
 	// snapshot; see server.NewWithConfig. alerts is its evaluator, created
@@ -328,6 +331,23 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	afterListen(bound)
 
 	return serveUntilSignal(ctx, srv, mon, status)
+}
+
+// driveSlotConfig maps the bmc section onto the drive-slot collector. The keys
+// are boot-only, so this runs once; the in-band IPMI device is the
+// collector's default and has no key.
+func driveSlotConfig(b config.BMC) collector.DriveSlotConfig {
+	return collector.DriveSlotConfig{
+		RedfishURL:   b.RedfishURL,
+		Username:     b.Username,
+		PasswordFile: b.PasswordFile,
+		TLS: outbound.TLS{
+			CAFile:             b.CAFile,
+			InsecureSkipVerify: b.InsecureSkipVerify,
+		},
+		Timeout:    b.Timeout(),
+		IPMIDevice: collector.DefaultIPMIDevice,
+	}
 }
 
 // watchdogFor builds the systemd watchdog for a running server, or a Watchdog
