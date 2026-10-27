@@ -141,7 +141,10 @@ monitor had accumulated — a second, unnamed action riding on "polling interval
 
 **Boot-only:** `server.addr`, `server.tls_cert`, `server.tls_key`,
 `server.trusted_proxies` and `server.watch`. These are consumed once, when the
-process starts and the socket binds. A reload reports each changed one in `deferred` **and keeps the boot
+process starts and the socket binds. The peer-transport keys under
+`fleet.tls` (all but `require_tls`) and every `bmc` key are boot-only for the
+same reason: the poller's HTTP client and the drive-slot collector are built at
+startup. A reload reports each changed one in `deferred` **and keeps the boot
 value as the effective one**, so `GET /api/config` can never report a setting
 that is not actually in force — a value the file asks for but the running
 service never adopted would be worse than no answer at all.

@@ -2,6 +2,8 @@ package config_test
 
 import (
 	"errors"
+	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +130,85 @@ bmc:
 	}
 	if found != len(withheld) {
 		t.Fatalf("found %d withheld bmc entries in the settings view, want %d", found, len(withheld))
+	}
+}
+
+// bmcKeys are the bmc section's settings, every one of them boot-only.
+var bmcKeys = []string{
+	"bmc.redfish_url",
+	"bmc.username",
+	"bmc.password_file",
+	"bmc.ca_file",
+	"bmc.insecure_skip_verify",
+	"bmc.timeout_ms",
+}
+
+// The drive-slot collector and its Redfish client are built at startup, so a
+// reload that switches the BMC on reports every bmc key as needing a restart,
+// and Current() and the settings view keep the boot value with its source.
+func TestBMC_ReloadDefersEveryBMCSetting(t *testing.T) {
+	path := writeConfig(t, "alerts:\n  cpu_pct: 90\n")
+	mgr, err := config.NewManager(config.NewLoader(path))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	boot := mgr.Current().BMC
+	bootSources := mgr.Sources()
+
+	if err := os.WriteFile(path, []byte(`
+bmc:
+  redfish_url: "https://bmc.example.test"
+  username: "monitor"
+  password_file: "/etc/go-sysmon/bmc-password"
+  ca_file: "/etc/go-sysmon/bmc-ca.pem"
+  insecure_skip_verify: true
+  timeout_ms: 9000
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deferred, err := mgr.Reload()
+	if err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	for _, key := range bmcKeys {
+		if !slices.Contains(deferred, key) {
+			t.Errorf("deferred = %v, want it to name %s", deferred, key)
+		}
+	}
+	if got := mgr.Current().BMC; got != boot {
+		t.Errorf("Current().BMC = %+v after a reload, want the boot %+v", got, boot)
+	}
+	src := mgr.Sources()
+	for _, key := range bmcKeys {
+		if s := src[key]; s != bootSources[key] || s == types.ConfigSourceFile {
+			t.Errorf("%s source = %q, want the boot %q: the file's value was not applied", key, s, bootSources[key])
+		}
+	}
+}
+
+// A reload whose bmc section the loader refuses leaves the running
+// configuration in place, as any unusable file does.
+func TestBMC_ReloadWithAnUnusableURLKeepsTheRunningConfig(t *testing.T) {
+	path := writeConfig(t, "bmc:\n  redfish_url: \"https://10.0.0.5\"\n  username: monitor\n  password_file: /p\n")
+	mgr, err := config.NewManager(config.NewLoader(path))
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	boot := mgr.Current().BMC
+
+	if err := os.WriteFile(path, []byte("bmc:\n  redfish_url: \"http://10.0.0.6\"\n  username: monitor\n  password_file: /p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deferred, err := mgr.Reload()
+	var urlErr *config.BMCURLError
+	if !errors.As(err, &urlErr) {
+		t.Fatalf("Reload() = %v, want *BMCURLError", err)
+	}
+	if len(deferred) != 0 {
+		t.Errorf("deferred = %v from a refused reload, want none", deferred)
+	}
+	if got := mgr.Current().BMC; got != boot {
+		t.Errorf("Current().BMC = %+v after a refused reload, want the running %+v", got, boot)
 	}
 }

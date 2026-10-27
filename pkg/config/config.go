@@ -975,16 +975,13 @@ type Manager struct {
 	// separate pointers let a reader land between the two stores and pair a
 	// value from one generation with the source that explains another.
 	live atomic.Pointer[snapshot]
-	// boot records the settings that are consumed once, when the process starts
-	// and the listener binds. They cannot change in place, so they are pinned
-	// back into every reloaded Config: reporting a value that is not in effect
-	// would make the settings view lie about the running service.
-	boot Server
-	// bootFleetTLS records the peer-transport settings, which are consumed once
-	// when the poller's HTTP client is built. allow_plaintext is deliberately
-	// NOT among them: it is read per peer per cycle, so enforcement can be
-	// switched on by a reload while the material it enforces against cannot.
-	bootFleetTLS FleetTLS
+	// boot records the configuration the process started with. The settings in
+	// bootSettings are consumed once -- when the listener binds, the poller's
+	// HTTP client and the drive-slot collector are built -- and cannot change in
+	// place, so they are pinned back from here into every reloaded Config:
+	// reporting a value that is not in effect would make the settings view lie
+	// about the running service.
+	boot Config
 	// bootSources records where each boot-only value came from. Provenance is
 	// pinned with the value it describes: reporting the boot value under the
 	// new file's source would produce a value/source pair that contradicts
@@ -996,26 +993,72 @@ type Manager struct {
 	validators []Validator
 }
 
-// bootOnlyKeys are the settings consumed at startup. They are reported as
-// needing a restart and their boot values are retained as the effective ones.
+// bootOnlyKeys are the settings consumed at startup, the keys of bootSettings.
+// They are reported as needing a restart and their boot values are retained as
+// the effective ones.
 func bootOnlyKeys() []string {
-	return []string{
-		"server.addr",
-		"server.tls_cert",
-		"server.tls_key",
-		"server.trusted_proxies",
-		"server.watch",
-		"fleet.tls.ca_file",
-		"fleet.tls.cert_file",
-		"fleet.tls.key_file",
-		"fleet.tls.insecure_skip_verify",
-		"bmc.redfish_url",
-		"bmc.username",
-		"bmc.password_file",
-		"bmc.ca_file",
-		"bmc.insecure_skip_verify",
-		"bmc.timeout_ms",
+	keys := make([]string, len(bootSettings))
+	for i, s := range bootSettings {
+		keys[i] = s.key
 	}
+	return keys
+}
+
+// bootSetting is one setting consumed at startup. A reload reports it as
+// deferred when the file changes it, and pins its boot value back.
+type bootSetting struct {
+	key string
+	// changed reports whether next differs from the boot value.
+	changed func(next, boot *Config) bool
+	// pin copies the boot value into next.
+	pin func(next, boot *Config)
+}
+
+// bootField builds the bootSetting for a comparable field, located by one
+// accessor so the comparison and the pin cannot address different fields.
+func bootField[T comparable](key string, field func(*Config) *T) bootSetting {
+	return bootSetting{
+		key:     key,
+		changed: func(next, boot *Config) bool { return *field(next) != *field(boot) },
+		pin:     func(next, boot *Config) { *field(next) = *field(boot) },
+	}
+}
+
+// bootSettings are the boot-only settings, in the order a reload reports
+// them. A key is listed by the same entry that compares and pins it, so no
+// key can be boot-only in name but reloaded in fact.
+var bootSettings = []bootSetting{
+	bootField("server.addr", func(c *Config) *string { return &c.Server.Addr }),
+	// Reported as the two separate keys they are, so deferred entries and
+	// BootOnly() speak one vocabulary and a caller can match either list
+	// against the settings view by key.
+	bootField("server.tls_cert", func(c *Config) *string { return &c.Server.TLSCert }),
+	bootField("server.tls_key", func(c *Config) *string { return &c.Server.TLSKey }),
+	// The trusted proxies are handed to the HTTP server when it is built.
+	{
+		key: "server.trusted_proxies",
+		changed: func(next, boot *Config) bool {
+			return !slices.Equal(next.Server.TrustedProxies, boot.Server.TrustedProxies)
+		},
+		pin: func(next, boot *Config) { next.Server.TrustedProxies = boot.Server.TrustedProxies },
+	},
+	bootField("server.watch", func(c *Config) *bool { return &c.Server.Watch }),
+	// The peer transport is baked into the poller's HTTP client at startup, so
+	// a reload that changes it describes a client that is not running.
+	// allow_plaintext is deliberately NOT here: it is read per peer per cycle,
+	// so enforcement can be switched on by a reload while the material it
+	// enforces against cannot.
+	bootField("fleet.tls.ca_file", func(c *Config) *string { return &c.Fleet.TLS.CAFile }),
+	bootField("fleet.tls.cert_file", func(c *Config) *string { return &c.Fleet.TLS.CertFile }),
+	bootField("fleet.tls.key_file", func(c *Config) *string { return &c.Fleet.TLS.KeyFile }),
+	bootField("fleet.tls.insecure_skip_verify", func(c *Config) *bool { return &c.Fleet.TLS.InsecureSkipVerify }),
+	// The drive-slot collector and its Redfish client are built at startup.
+	bootField("bmc.redfish_url", func(c *Config) *string { return &c.BMC.RedfishURL }),
+	bootField("bmc.username", func(c *Config) *string { return &c.BMC.Username }),
+	bootField("bmc.password_file", func(c *Config) *string { return &c.BMC.PasswordFile }),
+	bootField("bmc.ca_file", func(c *Config) *string { return &c.BMC.CAFile }),
+	bootField("bmc.insecure_skip_verify", func(c *Config) *bool { return &c.BMC.InsecureSkipVerify }),
+	bootField("bmc.timeout_ms", func(c *Config) *int { return &c.BMC.TimeoutMs }),
 }
 
 // NewManager loads the configuration once and returns a Manager holding it.
@@ -1026,8 +1069,7 @@ func NewManager(l *Loader) (*Manager, error) {
 	}
 	m := &Manager{loader: l}
 	m.live.Store(&snapshot{cfg: cfg, src: src, fileLoaded: l.FileLoaded()})
-	m.boot = cfg.Server
-	m.bootFleetTLS = cfg.Fleet.TLS
+	m.boot = *cfg
 	m.bootSources = make(map[string]types.ConfigSource, len(bootOnlyKeys()))
 	for _, key := range bootOnlyKeys() {
 		m.bootSources[key] = src[key]
@@ -1155,38 +1197,10 @@ func (m *Manager) reload(empty emptyFilePolicy) ([]string, error) {
 	// values actually in force, so Current() and the settings view describe the
 	// running service rather than the file on disk.
 	var deferred []string
-	if cfg.Server.Addr != m.boot.Addr {
-		deferred = append(deferred, "server.addr")
-	}
-	// Reported as the two separate keys they are, so deferred entries and
-	// BootOnly() speak one vocabulary and a caller can match either list
-	// against the settings view by key.
-	if cfg.Server.TLSCert != m.boot.TLSCert {
-		deferred = append(deferred, "server.tls_cert")
-	}
-	if cfg.Server.TLSKey != m.boot.TLSKey {
-		deferred = append(deferred, "server.tls_key")
-	}
-	// The trusted proxies are handed to the HTTP server when it is built.
-	if !slices.Equal(cfg.Server.TrustedProxies, m.boot.TrustedProxies) {
-		deferred = append(deferred, "server.trusted_proxies")
-	}
-	if cfg.Server.Watch != m.boot.Watch {
-		deferred = append(deferred, "server.watch")
-	}
-	// The peer transport is baked into the poller's HTTP client at startup, so
-	// a reload that changes it describes a client that is not running.
-	if cfg.Fleet.TLS.CAFile != m.bootFleetTLS.CAFile {
-		deferred = append(deferred, "fleet.tls.ca_file")
-	}
-	if cfg.Fleet.TLS.CertFile != m.bootFleetTLS.CertFile {
-		deferred = append(deferred, "fleet.tls.cert_file")
-	}
-	if cfg.Fleet.TLS.KeyFile != m.bootFleetTLS.KeyFile {
-		deferred = append(deferred, "fleet.tls.key_file")
-	}
-	if cfg.Fleet.TLS.InsecureSkipVerify != m.bootFleetTLS.InsecureSkipVerify {
-		deferred = append(deferred, "fleet.tls.insecure_skip_verify")
+	for _, s := range bootSettings {
+		if s.changed(cfg, &m.boot) {
+			deferred = append(deferred, s.key)
+		}
 	}
 
 	// Validate before publishing: a configuration this process cannot use must
@@ -1197,15 +1211,9 @@ func (m *Manager) reload(empty emptyFilePolicy) ([]string, error) {
 		}
 	}
 
-	cfg.Server.Addr = m.boot.Addr
-	cfg.Server.TLSCert = m.boot.TLSCert
-	cfg.Server.TLSKey = m.boot.TLSKey
-	cfg.Server.TrustedProxies = m.boot.TrustedProxies
-	cfg.Fleet.TLS.CAFile = m.bootFleetTLS.CAFile
-	cfg.Fleet.TLS.CertFile = m.bootFleetTLS.CertFile
-	cfg.Fleet.TLS.KeyFile = m.bootFleetTLS.KeyFile
-	cfg.Fleet.TLS.InsecureSkipVerify = m.bootFleetTLS.InsecureSkipVerify
-	cfg.Server.Watch = m.boot.Watch
+	for _, s := range bootSettings {
+		s.pin(cfg, &m.boot)
+	}
 
 	// Restore each pinned value's provenance along with the value itself. The
 	// settings view is where an operator goes to resolve exactly this kind of

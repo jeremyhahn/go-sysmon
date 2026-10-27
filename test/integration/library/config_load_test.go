@@ -223,7 +223,8 @@ func TestConfigReload_BootOnlySettingsAreDeferredNotApplied(t *testing.T) {
 	}
 
 	writeFile(t, path, "server:\n  addr: 127.0.0.1:9090\n  tls_cert: /etc/cert.pem\n  tls_key: /etc/key.pem\n  trusted_proxies: [10.0.0.0/8]\n  watch: true\n"+
-		"fleet:\n  tls:\n    ca_file: /etc/ca.pem\n    cert_file: /etc/c.pem\n    key_file: /etc/k.pem\n    insecure_skip_verify: true\n")
+		"fleet:\n  tls:\n    ca_file: /etc/ca.pem\n    cert_file: /etc/c.pem\n    key_file: /etc/k.pem\n    insecure_skip_verify: true\n"+
+		"bmc:\n  redfish_url: https://bmc.example.test\n  username: monitor\n  password_file: /etc/bmc-password\n  ca_file: /etc/bmc-ca.pem\n  insecure_skip_verify: true\n  timeout_ms: 7000\n")
 	deferred, err := mgr.Reload()
 	if err != nil {
 		t.Fatalf("Reload: %v", err)
@@ -238,6 +239,9 @@ func TestConfigReload_BootOnlySettingsAreDeferredNotApplied(t *testing.T) {
 	}
 	if got := mgr.Current().Server.TrustedProxies; len(got) != 0 {
 		t.Errorf("server.trusted_proxies = %v after a reload, want the running (empty) list", got)
+	}
+	if got := mgr.Current().BMC.RedfishURL; got != "" {
+		t.Errorf("bmc.redfish_url = %q after a reload, want the running (empty) value", got)
 	}
 }
 
