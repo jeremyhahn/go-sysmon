@@ -9,6 +9,42 @@ Changes waiting for the next release are kept as fragments in `changelog.d/`,
 one file per change named `<issue>-<slug>.md`. Each release folds them into
 its own section.
 
+## [0.3.3-alpha] - 2026-10-28
+
+### Added
+
+- **Drive-slot (bay) health from the BMC.** A new read-only collector reads
+  each drive bay's presence, health, fault LED, predicted failure, rebuild
+  state and media life left over Redfish (`bmc.redfish_url`) or, when Redfish
+  is not configured or fails, in-band IPMI. The result is the snapshot's
+  `drive_slots` field, a **Drive bays** card on the Storage tab and the
+  `sysmon_drive_slot_*` series. See `docs/collector/drive-slots.md` (#289).
+- **A `drive_slot_fault` alert** fires for a faulted bay, which the kernel's
+  block devices do not show when the drive sits behind a RAID controller.
+- **Six `bmc.*` config keys**: `redfish_url`, `username`, `password_file`,
+  `ca_file`, `insecure_skip_verify` and `timeout_ms`. All are boot-only.
+- **The unit's device access.** `deploy/go-sysmon.service` now grants the
+  service access to the IPMI device for the in-band source.
+
+### Fixed
+
+- **`Reload` defers and pins the `bmc.*` boot-only keys.** It compared and
+  pinned only `server.*` and `fleet.tls.*`, so a new `bmc.redfish_url` went
+  live at runtime while the settings view showed the boot source beside it.
+  The six `bmc.*` keys are now reported as deferred and keep their boot values.
+  The boot-only settings are one table, so a key can no longer be listed
+  boot-only without `Reload` enforcing it.
+- **A Redfish failure after the deadline is a timeout.** A response body cut
+  off by the request deadline, or a response that arrives after it, is now
+  reported as a timed-out `RedfishRequestError`, not as a decode error. Each
+  request now takes the client timeout as its context deadline.
+
+### Security
+
+- **`golang.org/x/net` v0.60.0 -> v0.62.0** for GO-2026-6866 and
+  GO-2026-6860, with the matching `golang.org/x/sys`, `golang.org/x/crypto`
+  and `golang.org/x/text`.
+
 ## [0.3.2-alpha] - 2026-10-26
 
 ### Fixed
