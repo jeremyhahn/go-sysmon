@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -436,11 +437,11 @@ func TestRedfishDriveSlots_Timeout(t *testing.T) {
 	f := newFakeBMC(t, "redfish-dellemc02.json")
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
-	f.handlers["/redfish/v1/Systems"] = func(_ http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-		case <-release:
-		}
+	// The handler waits for release only. Returning when its context ends
+	// would let net/http write an empty 200 that can reach the client after
+	// its deadline (red main, run 69908).
+	f.handlers["/redfish/v1/Systems"] = func(http.ResponseWriter, *http.Request) {
+		<-release
 	}
 	cfg := f.config(t)
 	cfg.Timeout = 50 * time.Millisecond
@@ -451,6 +452,94 @@ func TestRedfishDriveSlots_Timeout(t *testing.T) {
 	}
 	if err.Error() != "GET /redfish/v1/Systems timed out" {
 		t.Errorf("error = %q", err)
+	}
+}
+
+// TestRedfishDriveSlots_TimeoutReadingBody covers a deadline that fires
+// after the status line arrives but while the body is still being read: it
+// is a timeout, not a body the client failed to decode.
+func TestRedfishDriveSlots_TimeoutReadingBody(t *testing.T) {
+	f := newFakeBMC(t, "redfish-dellemc02.json")
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f.handlers["/redfish/v1/Systems"] = func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.WriteString(w, `{"Members": [`); err != nil {
+			return
+		}
+		w.(http.Flusher).Flush()
+		<-release
+	}
+	cfg := f.config(t)
+	cfg.Timeout = 50 * time.Millisecond
+	_, err := redfishSlots(t, cfg)
+	var req *RedfishRequestError
+	if !errors.As(err, &req) || !req.Timeout {
+		t.Fatalf("driveSlots() error = %v, want a timed-out RedfishRequestError", err)
+	}
+	if err.Error() != "GET /redfish/v1/Systems timed out" {
+		t.Errorf("error = %q", err)
+	}
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestRedfishDriveSlots_ResponseAfterDeadline covers the race behind red
+// main run 69908: the transport hands back an empty response only once the
+// request's deadline has passed. The failure that follows is still a
+// timeout.
+func TestRedfishDriveSlots_ResponseAfterDeadline(t *testing.T) {
+	f := newFakeBMC(t, "redfish-dellemc02.json")
+	cfg := f.config(t)
+	cfg.Timeout = 50 * time.Millisecond
+	c, err := newRedfishClient(cfg)
+	if err != nil {
+		t.Fatalf("newRedfishClient() error = %v", err)
+	}
+	next := c.http.Transport
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/redfish/v1/Systems" {
+			return next.RoundTrip(r)
+		}
+		<-r.Context().Done()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody, Request: r}, nil
+	})
+	_, err = c.driveSlots(context.Background())
+	var req *RedfishRequestError
+	if !errors.As(err, &req) || !req.Timeout {
+		t.Fatalf("driveSlots() error = %v, want a timed-out RedfishRequestError", err)
+	}
+	if err.Error() != "GET /redfish/v1/Systems timed out" {
+		t.Errorf("error = %q", err)
+	}
+}
+
+func TestTimedOut(t *testing.T) {
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	canceled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	tests := map[string]struct {
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		"deadline passed":       {expired, io.EOF, true},
+		"timeout error":         {context.Background(), context.DeadlineExceeded, true},
+		"live request":          {context.Background(), io.EOF, false},
+		"canceled, not expired": {canceled, io.ErrUnexpectedEOF, false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := timedOut(tt.ctx, tt.err); got != tt.want {
+				t.Errorf("timedOut() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

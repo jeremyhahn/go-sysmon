@@ -166,6 +166,14 @@ func (c *redfishClient) get(ctx context.Context, auth, ref string, dst any) (err
 	if err != nil {
 		return err
 	}
+	// The request carries the client timeout as its own deadline, so a
+	// failure that follows the deadline (a late response, a body cut short)
+	// is still reported as the timeout it is.
+	if c.http.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.http.Timeout)
+		defer cancel()
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return &RedfishRequestError{Path: u.Path, Err: err}
@@ -180,7 +188,7 @@ func (c *redfishClient) get(ctx context.Context, auth, ref string, dst any) (err
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil && err == nil {
-			err = &RedfishRequestError{Path: u.Path, Err: closeErr}
+			err = &RedfishRequestError{Path: u.Path, Timeout: timedOut(ctx, closeErr), Err: closeErr}
 		}
 	}()
 
@@ -188,6 +196,9 @@ func (c *redfishClient) get(ctx context.Context, auth, ref string, dst any) (err
 		return &RedfishStatusError{Path: u.Path, StatusCode: resp.StatusCode}
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, redfishMaxBody)).Decode(dst); err != nil {
+		if timedOut(ctx, err) {
+			return &RedfishRequestError{Path: u.Path, Timeout: true, Err: err}
+		}
 		return &RedfishDecodeError{Path: u.Path, Err: err}
 	}
 	return nil
@@ -218,6 +229,13 @@ func isTimeout(err error) bool {
 	}
 	var ne net.Error
 	return errors.As(err, &ne) && ne.Timeout()
+}
+
+// timedOut reports whether err, met after the response arrived, belongs to
+// a request whose deadline has passed: a late or truncated response is
+// then a timeout, not a malformed resource.
+func timedOut(ctx context.Context, err error) bool {
+	return isTimeout(err) || errors.Is(ctx.Err(), context.DeadlineExceeded)
 }
 
 // redfishWalk is one poll's traversal: the credential it carries and the
