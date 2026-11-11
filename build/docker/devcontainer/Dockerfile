@@ -4,7 +4,7 @@
 #
 # The image Go version is pinned to match go.mod's go directive exactly, so
 # toolchain has to be downloaded on every build.
-FROM golang:1.27.3-trixie
+FROM golang:1.27.4-trixie
 
 # Install runtime tools used by the collector (smartmontools, dmidecode), and
 # iproute2, with which the collector suite builds bridges, bonds, VLANs and

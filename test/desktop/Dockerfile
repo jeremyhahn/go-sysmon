@@ -8,7 +8,7 @@
 # The server is built in its own stage so the Cinnamon image does not carry a Go
 # toolchain and a C compiler. The Go version must satisfy the "go" directive in
 # go.mod, otherwise the toolchain has to be downloaded on every build.
-FROM golang:1.27.3-trixie AS builder
+FROM golang:1.27.4-trixie AS builder
 
 WORKDIR /src
 
