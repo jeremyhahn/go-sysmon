@@ -48,11 +48,11 @@ const contentSecurityPolicy = "default-src 'self'; " +
 // Each is denied to the page and to anything it could ever embed. Only
 // features Chromium recognises are listed: an unrecognised name is not an
 // error, but it prints a console warning on every page load, and a warning
-// that is always there teaches everyone to ignore the console.
+// that is always there teaches everyone to ignore the console. browsing-topics
+// is not listed: Chromium 159 no longer has the Topics API and warns on it.
 var deniedFeatures = []string{
 	"accelerometer",
 	"autoplay",
-	"browsing-topics",
 	"camera",
 	"clipboard-read",
 	"clipboard-write",
