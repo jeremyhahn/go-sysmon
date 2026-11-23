@@ -19,3 +19,7 @@
   vite 8.3.8's own `^8.5.32` requirement. TypeScript stays at 6.0.3:
   svelte-check 4.7.8 rejects TypeScript 7 unless TypeScript 6 is installed
   beside it and its experimental `--tsgo` flag is used.
+- **The Permissions-Policy header no longer names `browsing-topics`.**
+  Chromium 159, the browser Playwright 1.65.1 drives, no longer has the Topics
+  API, and it logged a warning about the unrecognised feature on every page
+  load. The header lists only features Chromium recognises.
