@@ -100,10 +100,10 @@ test-shape-% test-fips integration-test integration-test-% test-extensions-deskt
 # Every pin is the latest stable release (owner rule 2026-09-22). `make
 # check-latest` fails when one is not, and the daily check-latest workflow files
 # an issue for it (#183).
-GOLANGCI_LINT_VERSION := v2.14.0
+GOLANGCI_LINT_VERSION := v2.15.0
 ACTIONLINT_VERSION := v1.7.12
 GOSEC_VERSION := v2.30.0
-GOVULNCHECK_VERSION := v1.9.0
+GOVULNCHECK_VERSION := v1.10.0
 
 # The module each tool is released from, which is what check-latest asks for
 # the latest version of, and the package inside it that is installed.
