@@ -179,8 +179,8 @@ func TestWorkflowActions(t *testing.T) {
       - uses: noref
       - run: echo
 `,
-		".gitea/workflows/n.yaml": "jobs:\n  b:\n    steps:\n      - uses: actions/checkout@" + sha701 + " # v7.0.1\n",
-		"docs/ci.yml":             "jobs:\n  c:\n    steps:\n      - uses: other/thing@v1\n",
+		".github/workflows/n.yaml": "jobs:\n  b:\n    steps:\n      - uses: actions/checkout@" + sha701 + " # v7.0.1\n",
+		"docs/ci.yml":              "jobs:\n  c:\n    steps:\n      - uses: other/thing@v1\n",
 	})
 
 	got, err := WorkflowActions(root)
@@ -188,9 +188,9 @@ func TestWorkflowActions(t *testing.T) {
 		t.Fatalf("WorkflowActions() error = %v", err)
 	}
 	want := []ActionRef{
-		{File: ".gitea/workflows/n.yaml", Line: 4, Repo: "actions/checkout", Ref: sha701},
 		{File: ".github/workflows/ci.yml", Line: 5, Repo: "actions/checkout", Ref: "v7"},
 		{File: ".github/workflows/ci.yml", Line: 6, Repo: "github/codeql-action", Ref: "v3"},
+		{File: ".github/workflows/n.yaml", Line: 4, Repo: "actions/checkout", Ref: sha701},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("WorkflowActions() =\n%+v\nwant\n%+v", got, want)

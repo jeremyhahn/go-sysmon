@@ -62,7 +62,7 @@ func isYAML(name string) bool {
 // isWorkflow reports whether the file at p is an Actions workflow.
 func isWorkflow(p, name string) bool {
 	dir := path.Dir(p)
-	return isYAML(strings.ToLower(name)) && (dir == ".github/workflows" || dir == ".gitea/workflows")
+	return isYAML(strings.ToLower(name)) && dir == ".github/workflows"
 }
 
 // parseYAML returns the top-level mapping of a YAML document, or nil for an

@@ -17,8 +17,8 @@ const RunnerImagesURL = "https://raw.githubusercontent.com/actions/runner-images
 
 // hostedUbuntuLabel matches a versioned GitHub-hosted Ubuntu runner label,
 // "ubuntu-26.04" or "ubuntu-26.04-arm", and captures the release and the arm
-// suffix. ubuntu-latest is deliberately not matched: on the Gitea plane it is
-// a self-hosted label, which is company infrastructure, not a pin.
+// suffix. ubuntu-latest is deliberately not matched: it names whichever
+// release GitHub currently serves, so it is not a pin.
 var hostedUbuntuLabel = regexp.MustCompile(`\bubuntu-([0-9]{2}\.[0-9]{2})(-arm)?\b`)
 
 // RunnerLabel is one label in the runner-images table.

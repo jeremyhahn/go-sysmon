@@ -134,19 +134,12 @@ jobs:
   build:
     name: Build (${{ matrix.arch }})
     needs: verify
-    runs-on: ${{ (github.server_url == 'https://github.com' && matrix.runner) || 'ubuntu-latest' }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       # arm64 builds natively on an ARM runner rather than cross-compiling: CGO
       # is mandatory (NVIDIA NVML), and a native toolchain avoids maintaining a
       # cross-compilation setup for a cgo dependency.
-      #
-      # That runner label only exists on GitHub. A self-hosted Gitea runner
-      # advertises ubuntu-latest and ubuntu-22.04, so an arm64 leg there is
-      # never scheduled -- it sits in "waiting" forever and the run never
-      # finishes, even though every other job succeeded and the release
-      # published. So the matrix itself drops arm64 off GitHub rather than
-      # queueing work nothing can pick up.
       matrix:
         include:
           - arch: amd64
@@ -154,35 +147,23 @@ jobs:
           - arch: arm64
             runner: ubuntu-26.04-arm
 
-    # Whether this leg runs on the architecture it targets. Off GitHub there is
-    # no arm64 runner, so the arm64 leg lands on an amd64 host: installing
-    # arm64 GTK and executing the built binary would both be wrong, so its
-    # steps are skipped. A job-level `if` cannot express this -- GitHub does
-    # not expose the matrix context to one.
-    env:
-      NATIVE: ${{ matrix.arch == 'amd64' || github.server_url == 'https://github.com' }}
-
     steps:
       - uses: actions/checkout@v7
-        if: env.NATIVE == 'true'
         with:
           ref: ${{ needs.verify.outputs.sha }}
 
       - uses: actions/setup-go@v7
-        if: env.NATIVE == 'true'
         with:
           go-version-file: ${{ env.GO_VERSION_FILE }}
           cache: true
 
       - uses: actions/setup-node@v7
-        if: env.NATIVE == 'true'
         with:
           node-version-file: ${{ env.NODE_VERSION_FILE }}
           cache: npm
           cache-dependency-path: cmd/sysmon/frontend/package-lock.json
 
       - name: Install desktop build dependencies
-        if: env.NATIVE == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -192,7 +173,6 @@ jobs:
       # a headless host. The desktop binary additionally links GTK and WebKit
       # and only runs where those are installed.
       - name: Build release binaries
-        if: env.NATIVE == 'true'
         env:
           VERSION: ${{ needs.verify.outputs.version }}
         run: |
@@ -200,19 +180,14 @@ jobs:
           make release-build-desktop VERSION="${VERSION}"
 
       - name: Verify the binaries run
-        if: env.NATIVE == 'true'
         run: |
           for b in dist/sysmon-server-*-linux-*; do
             case "$b" in *.sha256) continue;; esac
             "$b" version
           done
 
-      # The hand-off to the publish job, which is GitHub-only because it talks
-      # to the GitHub Releases API. On Gitea nothing would download this, so it
-      # is not uploaded there: gitea-release below builds and publishes in one
-      # job. The binaries are still built and verified on Gitea.
+      # The hand-off to the publish job.
       - uses: actions/upload-artifact@v7
-        if: github.server_url == 'https://github.com'
         with:
           name: release-${{ matrix.arch }}
           path: dist/
@@ -226,20 +201,10 @@ jobs:
   # one multi-arch tag is assembled afterwards.
   image:
     name: Image (${{ matrix.arch }})
-    # ghcr.io and its GITHUB_TOKEN credential only exist on GitHub, and the
-    # buildx `type=gha` cache is unreachable from Gitea's job containers. On
-    # Gitea this job is skipped rather than failing the release; gitea-release
-    # pushes the image to Gitea's own registry instead.
-    if: github.server_url == 'https://github.com'
     needs: verify
-    # Docker jobs run on the release-only runner on Gitea: no PR job lands there.
-    runs-on: ${{ github.server_url == 'https://github.com' && matrix.runner || 'release' }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      # Written out literally for the same reason as the build matrix: Gitea
-      # does not expand a computed `include`. The whole job is GitHub-only,
-      # and runs-on resolves to a schedulable label elsewhere so the `if`
-      # above is actually reached and skips it.
       matrix:
         include:
           - arch: amd64
@@ -298,9 +263,8 @@ jobs:
 
   image-manifest:
     name: Publish Image Manifest
-    if: github.server_url == 'https://github.com'
     needs: [verify, image]
-    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'release' }}
+    runs-on: ubuntu-latest
     steps:
       # Checked out only so the tag can be confirmed before it is published.
       - uses: actions/checkout@v7
@@ -357,10 +321,8 @@ jobs:
 
   publish:
     name: Publish Release
-    # softprops/action-gh-release talks to the GitHub Releases API.
-    if: github.server_url == 'https://github.com'
     needs: [verify, build, image-manifest]
-    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'release' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
@@ -452,97 +414,3 @@ jobs:
           prerelease: ${{ needs.verify.outputs.latest != 'true' }}
           make_latest: ${{ needs.verify.outputs.latest == 'true' && 'legacy' || 'false' }}
           generate_release_notes: true
-
-  # The Gitea equivalent of build + image + publish, in one job.
-  #
-  # It cannot reuse the jobs above: they publish to ghcr.io and the GitHub
-  # Releases API, which Gitea does not have.
-  #
-  # Single architecture, because no Gitea runner advertises an arm64 label (see
-  # the build matrix above). GitHub produces amd64 and arm64 from native
-  # runners; here you get the runner's own architecture. With one architecture
-  # there is nothing to hand between jobs, so this builds, pushes and publishes
-  # in a single job and does not depend on the artifact service at all. Gitea's runners do carry artifacts
-  # (docs/testing/ci-artifacts.md), but only through each runner's cache
-  # server, so a release that needed them would fail whenever one is down.
-  # Rulings 169 and 173: a push to the Gitea registry runs on the release
-  # runner alone, and reads that runner's RELEASE_REGISTRY, RELEASE_REGISTRY_USER
-  # and RELEASE_REGISTRY_TOKEN from its env file; the workflow sets none of them.
-  # The image goes under agent-ci-images/, that runner's registry user (#342).
-  # Over plain HTTP the registry needs insecure-registries on the pushing daemon
-  # and on every daemon that pulls -- see infra/gitea/docs/lessons.md. A failure
-  # here never costs the binary release: gitea-release runs regardless.
-  gitea-image:
-    name: Gitea Image
-    needs: verify
-    if: github.server_url != 'https://github.com'
-    runs-on: release
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.verify.outputs.sha }}
-
-      - name: Push the container image
-        env:
-          VERSION: ${{ needs.verify.outputs.version }}
-          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
-        run: bash .github/scripts/gitea-image.sh
-
-  gitea-release:
-    name: Gitea Release
-    needs: [verify, gitea-image]
-    # Runs when the image job failed or was skipped: the binaries never depend
-    # on the image.
-    if: ${{ always() && needs.verify.result == 'success' && github.server_url != 'https://github.com' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.verify.outputs.sha }}
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
-          cache: true
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: ${{ env.NODE_VERSION_FILE }}
-
-      - name: Install desktop build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
-
-      - name: Resolve the instance
-        id: meta
-        run: echo "api=${{ github.server_url }}/api/v1" >> "$GITHUB_OUTPUT"
-
-      - name: Build binaries
-        run: |
-          make release-build VERSION="${{ needs.verify.outputs.version }}"
-          make release-build-desktop VERSION="${{ needs.verify.outputs.version }}"
-
-      - name: Verify the binaries run
-        run: |
-          for b in dist/sysmon-server-*-linux-*; do
-            case "$b" in *.sha256) continue;; esac
-            "$b" version
-          done
-
-      - name: Confirm the tag still names the verified commit
-        env:
-          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-          RELEASE_SHA: ${{ needs.verify.outputs.sha }}
-        run: bash .github/scripts/confirm-release-ref.sh
-
-      - name: Publish the release
-        env:
-          GITEA_API: ${{ steps.meta.outputs.api }}
-          GITEA_REPO: ${{ github.repository }}
-          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
-          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
-          IMAGE_OUTCOME: ${{ needs.gitea-image.result }}
-        run: bash .github/scripts/gitea-release.sh
