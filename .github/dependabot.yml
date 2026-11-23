@@ -8,12 +8,19 @@
 # those images are ignored here and `make check-latest` reports them instead,
 # alongside the Makefile's tool pins (golangci-lint, gosec, govulncheck,
 # actionlint), which no Dependabot ecosystem covers.
+#
+# Every update PR is opened with `ci:full`, so CI runs its full tier on it
+# (security, FIPS, integration, browser, desktop and container image jobs) and
+# CI Passed covers all of it before dependabot-automerge.yml lets it merge. A
+# merge that auto-merge makes with GITHUB_TOKEN starts no CI run on main, so the
+# PR's own run is the only one these changes get.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: daily
+    labels: [dependencies, "ci:full"]
     groups:
       go-modules:
         patterns: ["*"]
@@ -22,6 +29,7 @@ updates:
     directory: /cmd/sysmon/frontend
     schedule:
       interval: daily
+    labels: [dependencies, "ci:full"]
     # package.json pins exact versions; keep it that way.
     versioning-strategy: increase
     ignore:
@@ -40,6 +48,7 @@ updates:
     directory: /
     schedule:
       interval: daily
+    labels: [dependencies, "ci:full"]
     groups:
       actions:
         patterns: ["*"]
@@ -51,6 +60,7 @@ updates:
       - /test/desktop
     schedule:
       interval: daily
+    labels: [dependencies, "ci:full"]
     ignore:
       - dependency-name: golang
       - dependency-name: node
