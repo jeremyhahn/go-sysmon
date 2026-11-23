@@ -25,6 +25,12 @@ readonly X_DISPLAY=":99"
 readonly APPLET_INTERVAL_MS=500
 readonly SERVER_START_INTERVAL_MS=2000
 
+# The interval the last check saves to the settings file once Cinnamon has
+# upgraded it. 500 and 60000 are the first and last of the schema's options:
+# while update-interval was a spinbutton with min 500 and max 60000, Cinnamon's
+# upgrade check (min < value < max) reset both to the default.
+readonly RELOAD_INTERVAL_MS=60000
+
 # Overridable so extensions/tests/desktop-runner.test.js can drive this script
 # against stand-in tools in a scratch directory. In the container they keep
 # their defaults.
@@ -37,6 +43,10 @@ readonly CINNAMON_LOG="${CINNAMON_LOG:-${LOG_DIR}/cinnamon.log}"
 readonly STARTUP_TIMEOUT="${STARTUP_TIMEOUT:-90}"
 readonly DATA_TIMEOUT="${DATA_TIMEOUT:-30}"
 readonly XORG_CONFIG="${XORG_CONFIG:-/etc/X11/xorg-dummy.conf}"
+# The schema of the installed applet. Cinnamon stores the MD5 of this file's
+# text as __md5__ in the settings file, and upgrades any settings file whose
+# __md5__ differs.
+readonly APPLET_SCHEMA="${APPLET_SCHEMA:-${HOME}/.local/share/cinnamon/applets/${UUID}/settings-schema.json}"
 
 # What mutter logs when it cannot use the display's mode. With a timing-less
 # mode it reads "Invalid mode 1280x1024 (-nan)"; any variant of it means the
@@ -496,17 +506,32 @@ gsettings set org.cinnamon enable-polkit-agent false ||
 # The server deliberately listens on the applet's default address, so the
 # connection does not depend on this file; the interval checks below do.
 readonly SETTINGS_DIR="${HOME}/.config/cinnamon/spices/${UUID}"
-mkdir -p "$SETTINGS_DIR" || abort "could not create ${SETTINGS_DIR}"
-cat > "${SETTINGS_DIR}/${UUID}.json" <<EOF || abort "could not write the applet's settings file"
+readonly SETTINGS_FILE="${SETTINGS_DIR}/${UUID}.json"
+
+# write_settings writes the applet's settings file with the given update
+# interval. An md5 argument is written as __md5__, which makes the file one
+# Cinnamon reads as it is; without one, Cinnamon upgrades the file on load.
+write_settings() {
+    local interval="$1" md5="${2:-}" md5_line=""
+
+    [[ -n "$md5" ]] && md5_line="  \"__md5__\": \"${md5}\","
+    cat > "${SETTINGS_FILE}.tmp" <<EOF || return 1
 {
+${md5_line}
   "server-address": { "type": "entry", "default": "localhost:8080", "value": "${SERVER_ADDR}" },
-  "update-interval": { "type": "spinbutton", "default": 1000, "value": ${APPLET_INTERVAL_MS} },
+  "update-interval": { "type": "combobox", "default": 1000, "value": ${interval} },
   "show-cpu": { "type": "switch", "default": true, "value": true },
   "show-memory": { "type": "switch", "default": true, "value": true },
   "show-network": { "type": "switch", "default": true, "value": true },
   "show-disk": { "type": "switch", "default": true, "value": true }
 }
 EOF
+    # One rename, so Cinnamon's file monitor never reads a half-written file.
+    mv "${SETTINGS_FILE}.tmp" "$SETTINGS_FILE"
+}
+
+mkdir -p "$SETTINGS_DIR" || abort "could not create ${SETTINGS_DIR}"
+write_settings "$APPLET_INTERVAL_MS" || abort "could not write the applet's settings file"
 
 echo "== starting Cinnamon =="
 cinnamon --replace >"$CINNAMON_LOG" 2>&1 &
@@ -627,11 +652,10 @@ server_interval() {
     printf '%s' "${BASH_REMATCH[1]}"
 }
 
-# server_at_applet_interval reports whether the server runs at the applet's
-# interval yet.
+# server_at_interval reports whether the server runs at the given interval yet.
 # shellcheck disable=SC2317 # invoked through wait_until
-server_at_applet_interval() {
-    [[ "$(server_interval)" == "$APPLET_INTERVAL_MS" ]]
+server_at_interval() {
+    [[ "$(server_interval)" == "$1" ]]
 }
 
 # The effective interval is the server's: the applet pushes its setting with
@@ -639,7 +663,7 @@ server_at_applet_interval() {
 # different one, so this passes only once that push has landed.
 if (( session_proven == 0 )); then
     inconclusive "the server runs at the applet's interval (not run: the session was never proven)"
-elif wait_until "$DATA_TIMEOUT" server_at_applet_interval; then
+elif wait_until "$DATA_TIMEOUT" server_at_interval "$APPLET_INTERVAL_MS"; then
     pass "the server runs at the applet's interval"
     log "interval: $(server_interval) ms"
 else
@@ -821,6 +845,29 @@ fi
 assert_eval "applying a snapshot is fast again" \
     "(function () { var applet = ${APPLET_JS}; delete applet._refreshMenu; return String(!Object.prototype.hasOwnProperty.call(applet, '_refreshMenu')); })()" \
     "true"
+
+echo
+echo "== the settings file, once Cinnamon has upgraded it =="
+
+# The file now carries the schema's __md5__, as Cinnamon saves it, so this is
+# the read path a user's own settings take: Cinnamon's file monitor reloads the
+# file and the applet pushes the new interval. It runs last because the checks
+# above need snapshots every APPLET_INTERVAL_MS.
+if (( session_proven == 0 )); then
+    inconclusive "the applet follows its saved settings file (not run: the session was never proven)"
+elif ! schema_md5="$(md5sum "$APPLET_SCHEMA" 2>/dev/null)"; then
+    fail "the applet follows its saved settings file"
+    log "could not read the applet's schema at ${APPLET_SCHEMA}"
+elif ! write_settings "$RELOAD_INTERVAL_MS" "${schema_md5%% *}"; then
+    fail "the applet follows its saved settings file"
+    log "could not rewrite ${SETTINGS_FILE}"
+elif wait_until "$DATA_TIMEOUT" server_at_interval "$RELOAD_INTERVAL_MS"; then
+    pass "the applet follows its saved settings file"
+    log "interval: $(server_interval) ms"
+else
+    fail "the applet follows its saved settings file"
+    log "interval: $(server_interval || printf 'unreadable') ms, expected ${RELOAD_INTERVAL_MS} ms"
+fi
 
 echo
 echo "== the log, after the run =="

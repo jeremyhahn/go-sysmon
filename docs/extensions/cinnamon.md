@@ -73,11 +73,19 @@ Right-click the applet and choose Configure.
 | Setting         | Type       | Default          | What it does                    |
 |-----------------|------------|------------------|---------------------------------|
 | Server address  | text       | `localhost:8080` | Where the sysmon server is      |
-| Update interval | spinbutton | 1000 ms          | Poll rate, 500 to 60000 ms      |
+| Update interval | dropdown   | 1 second         | Poll rate: 500 ms, 1, 5, 10, 15 or 30 s, or 1 min |
 | Show CPU        | toggle     | on               | Per-core bars                   |
 | Show memory     | toggle     | on               | Memory bar                      |
 | Show network    | toggle     | on               | Throughput text                 |
 | Show disk       | toggle     | on               | Disk usage bar                  |
+
+The interval choices are exactly the ones the server accepts
+(`config.AllowedIntervalMs`), and a test in `pkg/config` fails if the two
+drift apart. The setting is a dropdown rather than a number box because of
+how Cinnamon upgrades settings when an applet's schema changes. It keeps a
+dropdown value that is still one of the options, but it drops a number-box
+value that sits exactly on the minimum or maximum, so 500 ms and 60000 ms
+used to reset to the default.
 
 Changing the update interval changes it for every client connected to that
 server, not just this applet — there is one poll loop behind all of them.

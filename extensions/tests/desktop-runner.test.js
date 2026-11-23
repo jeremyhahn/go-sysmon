@@ -20,6 +20,9 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const RUNNER = path.join(__dirname, "..", "..", "test", "desktop", "run-cinnamon-tests.sh");
+// The applet's real schema: the runner hashes it into the settings file it
+// saves for the last check.
+const SCHEMA = path.join(__dirname, "..", "cinnamon", "sysmon-go@sysmon", "settings-schema.json");
 
 // What mutter logged on every run while the display was Xvfb, whose only mode
 // has no timings.
@@ -41,12 +44,19 @@ exec sleep 60 </dev/null >/dev/null 2>&1
 `,
     // curl answers GET /api/interval with the interval the server runs at:
     // the applet's 500 ms once its push has landed, or the schema default's
-    // 1000 ms when the applet never read its settings file.
+    // 1000 ms when the applet never read its settings file. Once the runner
+    // saves a settings file carrying __md5__, an applet that follows it
+    // (FAKE_RELOAD=followed) has pushed that file's interval instead.
     curl: `#!/bin/sh
 [ "$FAKE_SERVER" = "down" ] && exit 7
 for url; do :; done
+settings="$HOME/.config/cinnamon/spices/sysmon-go@sysmon/sysmon-go@sysmon.json"
+interval="$FAKE_SERVER_INTERVAL"
+if [ "$FAKE_RELOAD" = "followed" ] && grep -q __md5__ "$settings" 2>/dev/null; then
+    interval=$(sed -n 's/.*"update-interval".*"value": *\\([0-9]*\\).*/\\1/p' "$settings")
+fi
 case "$url" in
-    */api/interval) printf '{"interval_ms":%s,"fleet_interval_ms":0}\n' "$FAKE_SERVER_INTERVAL" ;;
+    */api/interval) printf '{"interval_ms":%s,"fleet_interval_ms":0}\n' "$interval" ;;
 esac
 exit 0
 `,
@@ -236,6 +246,8 @@ function runRunner(scenario = {}) {
                 FAKE_LATE_LOG: scenario.lateLog ?? "",
                 FAKE_POPUP: scenario.popup ?? "fresh",
                 FAKE_SERVER_INTERVAL: scenario.serverInterval ?? "500",
+                FAKE_RELOAD: scenario.reload ?? "followed",
+                APPLET_SCHEMA: scenario.schema ?? SCHEMA,
             },
         });
         assert.ifError(result.error);
@@ -270,7 +282,7 @@ test("a healthy session passes every check and exits zero", () => {
     assert.strictEqual(run.status, 0, run.stdout);
     assert.deepStrictEqual(run.failed, []);
     assert.deepStrictEqual(run.notRun, []);
-    assert.strictEqual(run.ok.length, 30, run.stdout);
+    assert.strictEqual(run.ok.length, 31, run.stdout);
     assert.match(run.stdout, /inconclusive: 0/);
 });
 
@@ -322,7 +334,7 @@ test("a session that never finishes starting passes nothing", () => {
     assert.deepStrictEqual(run.failed, [
         "FAIL Cinnamon never finished starting (runState did not reach RUNNING)",
     ]);
-    assert.strictEqual(run.notRun.length, 29, run.stdout);
+    assert.strictEqual(run.notRun.length, 30, run.stdout);
     // "Never" is a verdict on several observations, not on however few fit in
     // the timeout on a loaded host.
     assert.ok(run.runStatePolls >= 3, `the runner gave up after ${run.runStatePolls} polls`);
@@ -500,6 +512,26 @@ test("an applet that never read its settings file fails the run", () => {
     ]);
     assert.match(run.stdout, /got: +interval: 1000 ms, server: localhost:8080/);
     assert.match(run.stdout, /interval: 1000 ms, expected 500 ms/);
+});
+
+// Cinnamon reloads a saved settings file through its file monitor. An applet
+// that missed the reload would keep pushing the interval it started with.
+test("an applet that ignores its saved settings file fails the run", () => {
+    const run = runRunner({ reload: "ignored" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL the applet follows its saved settings file"]);
+    assert.match(run.stdout, /interval: 500 ms, expected 60000 ms/);
+});
+
+// The saved file's __md5__ is the schema's: without the schema there is no
+// file to save that Cinnamon would read as it is.
+test("an unreadable applet schema fails the saved-settings check", () => {
+    const run = runRunner({ schema: "/nonexistent/settings-schema.json" });
+
+    assert.strictEqual(run.status, 1, run.stdout);
+    assert.deepStrictEqual(run.failed, ["FAIL the applet follows its saved settings file"]);
+    assert.match(run.stdout, /could not read the applet's schema at \/nonexistent\/settings-schema.json/);
 });
 
 // Issue #233: an applet that rebuilds its popup on every snapshot, open or
