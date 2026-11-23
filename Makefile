@@ -102,7 +102,7 @@ test-shape-% test-fips integration-test integration-test-% test-extensions-deskt
 # an issue for it (#183).
 GOLANGCI_LINT_VERSION := v2.14.0
 ACTIONLINT_VERSION := v1.7.12
-GOSEC_VERSION := v2.29.0
+GOSEC_VERSION := v2.30.0
 GOVULNCHECK_VERSION := v1.9.0
 
 # The module each tool is released from, which is what check-latest asks for

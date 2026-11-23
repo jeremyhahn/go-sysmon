@@ -160,22 +160,22 @@ func TestPage_Bounds(t *testing.T) {
 // the case rule the node order uses.
 func TestPage_SearchMatchesNameOrHostnameIgnoringCase(t *testing.T) {
 	nodes := namedNodes(
-		[]string{"ci-node-1", "FS", "gpu-host", "mon0", "vm-host-1", "vm-host-2"},
-		map[string]string{"gpu-host": "GPU-Box.lan", "mon0": "monitor"},
+		[]string{"ci-node-1", "FS", "gpu0", "mon0", "vm-host-1", "vm-host-2"},
+		map[string]string{"gpu0": "GPU-Box.lan", "mon0": "monitor"},
 	)
 	tests := []struct {
 		search string
 		want   []string
 	}{
-		{"vstation", []string{"vm-host-1", "vm-host-2"}},
-		{"VSTATION-0", []string{"vm-host-1", "vm-host-2"}},
+		{"vm-host", []string{"vm-host-1", "vm-host-2"}},
+		{"VM-HOST-", []string{"vm-host-1", "vm-host-2"}},
 		{"fs", []string{"FS"}},
-		{"gpu-box", []string{"gpu-host"}}, // hostname only
+		{"gpu-box", []string{"gpu0"}}, // hostname only
 		{"monitor", []string{"mon0"}},
-		{"-01", []string{"ci-node-1", "vm-host-1"}},
+		{"-1", []string{"ci-node-1", "vm-host-1"}},
 		{"-host", []string{"ci-node-1", "FS", "vm-host-1", "vm-host-2"}},
 		{"nothing-like-it", []string{}},
-		{"", []string{"ci-node-1", "FS", "gpu-host", "mon0", "vm-host-1", "vm-host-2"}},
+		{"", []string{"ci-node-1", "FS", "gpu0", "mon0", "vm-host-1", "vm-host-2"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.search, func(t *testing.T) {
