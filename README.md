@@ -51,19 +51,28 @@ embedded in the binary, so deploying it is copying one file.
 
 ## Install
 
-Download a binary from [Releases](https://github.com/jeremyhahn/go-sysmon/releases):
+Download a binary from [Releases](https://github.com/jeremyhahn/go-sysmon/releases).
+Every release has Linux builds for `amd64` and `arm64`, each with a `.sha256` file:
 
 ```bash
 tag=$(curl -fsSLo /dev/null -w '%{url_effective}' https://github.com/jeremyhahn/go-sysmon/releases/latest)
 tag=${tag##*/}
-curl -LO "https://github.com/jeremyhahn/go-sysmon/releases/download/${tag}/sysmon-server-${tag#v}-linux-amd64"
-sudo install -m 0755 "sysmon-server-${tag#v}-linux-amd64" /usr/local/bin/sysmon-server
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  aarch64 | arm64) arch=arm64 ;;
+esac
+bin="sysmon-server-${tag#v}-linux-${arch}"
+curl -LO "https://github.com/jeremyhahn/go-sysmon/releases/download/${tag}/${bin}"
+curl -LO "https://github.com/jeremyhahn/go-sysmon/releases/download/${tag}/${bin}.sha256"
+sha256sum -c "${bin}.sha256"
+sudo install -m 0755 "${bin}" /usr/local/bin/sysmon-server
 sysmon-server serve --addr :8080
 ```
 
 Then open `http://localhost:8080/`.
 
-Or as a container, **on a Linux host**:
+Or as a container, **on a Linux host**. The image is multi-arch (`linux/amd64` and
+`linux/arm64`), so Docker pulls the build that matches the host:
 
 ```bash
 docker run -d --name sysmon \
