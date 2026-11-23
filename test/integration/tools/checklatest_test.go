@@ -458,13 +458,13 @@ func TestChecklatest_AMalformedCommandLineExitsTwo(t *testing.T) {
 	}
 }
 
-// fileIssueArgs are the -file-issue arguments against the Gitea stand-in.
-func fileIssueArgs(g *giteaStandIn, extra ...string) []string {
-	return append([]string{"-file-issue", "-gitea-api", g.api(), "-repo", "o/r", "-run-url", "https://ci.example/runs/42"}, extra...)
+// fileIssueArgs are the -file-issue arguments against the GitHub stand-in.
+func fileIssueArgs(g *githubStandIn, extra ...string) []string {
+	return append([]string{"-file-issue", "-github-api", g.api(), "-repo", "o/r", "-run-url", "https://ci.example/runs/42"}, extra...)
 }
 
-// tokenEnv is the environment checklatest reads the Gitea token from.
-var tokenEnv = []string{"GITEA_TOKEN=" + giteaToken}
+// tokenEnv is the environment checklatest reads the GitHub token from.
+var tokenEnv = []string{"GITHUB_TOKEN=" + githubToken}
 
 // TestChecklatest_FileIssueFilesTheLagOnce checks the daily workflow's path:
 // a lag is filed as one labelled issue listing what lags, and a second run
@@ -472,7 +472,7 @@ var tokenEnv = []string{"GITEA_TOKEN=" + giteaToken}
 func TestChecklatest_FileIssueFilesTheLagOnce(t *testing.T) {
 	w := newWorld(t)
 	w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
-	g := newGitea(t)
+	g := newGitHub(t)
 	root := currentRepo(t, w.setupGo)
 
 	r := w.checklatest(t, root, tokenEnv, fileIssueArgs(g)...)
@@ -495,33 +495,33 @@ func TestChecklatest_FileIssueFilesTheLagOnce(t *testing.T) {
 	wantExit(t, again, exitCurrent)
 	wantContains(t, "stdout", again.Stdout, "issue #1 is still open for this; not filing a duplicate")
 	if g.posted() != posted {
-		t.Errorf("the second run posted to Gitea while issue #1 was open")
+		t.Errorf("the second run posted to GitHub while issue #1 was open")
 	}
 }
 
 // TestChecklatest_FileIssueFindsAnOpenIssueOnALaterPage checks the search for
-// an open issue pages through Gitea's 50-item pages, and that a pull request
+// an open issue pages through GitHub's 100-item pages, and that a pull request
 // carrying the marker is not mistaken for the issue.
 func TestChecklatest_FileIssueFindsAnOpenIssueOnALaterPage(t *testing.T) {
 	w := newWorld(t)
 	w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
-	g := newGitea(t)
+	g := newGitHub(t)
 	for i := 1; i <= pageSize; i++ {
-		is := giteaIssue{Number: int64(i), Title: "unrelated " + strconv.Itoa(i)}
+		is := githubIssue{Number: int64(i), Title: "unrelated " + strconv.Itoa(i)}
 		if i == 3 {
 			is.Body = "quoting <!-- go-sysmon:check-latest --> in a pull request"
 			is.PullRequest = &struct{}{}
 		}
 		g.issues = append(g.issues, is)
 	}
-	g.issues = append(g.issues, giteaIssue{Number: 51, Body: "<!-- go-sysmon:check-latest -->\nlag"})
+	g.issues = append(g.issues, githubIssue{Number: pageSize + 1, Body: "<!-- go-sysmon:check-latest -->\nlag"})
 
 	r := w.checklatest(t, currentRepo(t, w.setupGo), tokenEnv, fileIssueArgs(g)...)
 
 	wantExit(t, r, exitCurrent)
-	wantContains(t, "stdout", r.Stdout, "issue #51 is still open")
+	wantContains(t, "stdout", r.Stdout, "issue #101 is still open")
 	if g.posted() != 0 {
-		t.Errorf("filed while issue #51 was open")
+		t.Errorf("filed while issue #101 was open")
 	}
 }
 
@@ -530,7 +530,7 @@ func TestChecklatest_FileIssueFindsAnOpenIssueOnALaterPage(t *testing.T) {
 func TestChecklatest_FileIssueDryRunPrintsTheIssue(t *testing.T) {
 	w := newWorld(t)
 	w.up.module(lintModule, "v2.14.0", "v2.15.0")
-	g := newGitea(t)
+	g := newGitHub(t)
 
 	r := w.checklatest(t, currentRepo(t, w.setupGo), tokenEnv, fileIssueArgs(g, "-dry-run")...)
 
@@ -538,33 +538,33 @@ func TestChecklatest_FileIssueDryRunPrintsTheIssue(t *testing.T) {
 	wantContains(t, "stdout", r.Stdout, "check-latest: dry run; would file this issue with label task:ready")
 	wantContains(t, "stdout", r.Stdout, "| lint | v2.14.0 | v2.15.0 | behind |")
 	if g.posted() != 0 {
-		t.Errorf("a dry run posted to Gitea: %v", g.requests)
+		t.Errorf("a dry run posted to GitHub: %v", g.requests)
 	}
 }
 
 // TestChecklatest_FileIssueWithNothingLaggingFilesNothing checks a current
-// repository is reported as such and nothing is asked of Gitea.
+// repository is reported as such and nothing is asked of GitHub.
 func TestChecklatest_FileIssueWithNothingLaggingFilesNothing(t *testing.T) {
 	w := newWorld(t)
-	g := newGitea(t)
+	g := newGitHub(t)
 
 	r := w.checklatest(t, currentRepo(t, w.setupGo), tokenEnv, fileIssueArgs(g)...)
 
 	wantExit(t, r, exitCurrent)
 	wantContains(t, "stdout", r.Stdout, "nothing to file")
 	if len(g.requests) != 0 {
-		t.Errorf("Gitea was asked %v with nothing to file", g.requests)
+		t.Errorf("GitHub was asked %v with nothing to file", g.requests)
 	}
 }
 
-// TestChecklatest_FileIssueReappliesALabelThatDidNotStick covers Gitea
-// acknowledging a label without applying it: the label is applied again and
-// read back, and only a second failure is reported, naming the issue.
+// TestChecklatest_FileIssueReappliesALabelThatDidNotStick covers GitHub
+// answering success without applying the label: the label is applied again
+// and checked, and only a second failure is reported, naming the issue.
 func TestChecklatest_FileIssueReappliesALabelThatDidNotStick(t *testing.T) {
 	t.Run("once", func(t *testing.T) {
 		w := newWorld(t)
 		w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
-		g := newGitea(t)
+		g := newGitHub(t)
 		g.dropLabels = 1
 
 		r := w.checklatest(t, currentRepo(t, w.setupGo), tokenEnv, fileIssueArgs(g)...)
@@ -577,7 +577,7 @@ func TestChecklatest_FileIssueReappliesALabelThatDidNotStick(t *testing.T) {
 	t.Run("twice", func(t *testing.T) {
 		w := newWorld(t)
 		w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
-		g := newGitea(t)
+		g := newGitHub(t)
 		g.dropLabels = 2
 
 		r := w.checklatest(t, currentRepo(t, w.setupGo), tokenEnv, fileIssueArgs(g)...)
@@ -587,60 +587,55 @@ func TestChecklatest_FileIssueReappliesALabelThatDidNotStick(t *testing.T) {
 	})
 }
 
-// TestChecklatest_FileIssueReportsGiteaFailures checks each way the tracker
+// TestChecklatest_FileIssueReportsGitHubFailures checks each way the tracker
 // can fail ends the run with no verdict and the reason.
-func TestChecklatest_FileIssueReportsGiteaFailures(t *testing.T) {
+func TestChecklatest_FileIssueReportsGitHubFailures(t *testing.T) {
 	tests := map[string]struct {
-		setup func(g *giteaStandIn)
+		setup func(g *githubStandIn)
 		env   []string
 		want  string
 	}{
 		"the issue list fails": {
-			setup: func(g *giteaStandIn) { g.failList = 500 },
+			setup: func(g *githubStandIn) { g.failList = 500 },
 			env:   tokenEnv,
 			want:  "HTTP 500",
 		},
 		"the token is refused": {
-			setup: func(*giteaStandIn) {},
-			env:   []string{"GITEA_TOKEN=wrong"},
+			setup: func(*githubStandIn) {},
+			env:   []string{"GITHUB_TOKEN=wrong"},
 			want:  "HTTP 401",
 		},
 		"the repository has no task:ready label": {
-			setup: func(g *giteaStandIn) { g.labels = g.labels[:pageSize] },
+			setup: func(g *githubStandIn) { g.labels = g.labels[:1] },
 			env:   tokenEnv,
 			want:  `the repository has no label "task:ready"`,
 		},
-		"the label list fails": {
-			setup: func(g *giteaStandIn) { g.failLabels = 503 },
+		"the label lookup fails": {
+			setup: func(g *githubStandIn) { g.failLabel = 503 },
 			env:   tokenEnv,
-			want:  "gitea: GET /repos/o/r/labels?limit=50&page=1: HTTP 503",
+			want:  "github: GET /repos/o/r/labels/task:ready: HTTP 503",
 		},
 		"the issue cannot be created": {
-			setup: func(g *giteaStandIn) { g.failCreate = 422 },
+			setup: func(g *githubStandIn) { g.failCreate = 422 },
 			env:   tokenEnv,
-			want:  "gitea: POST /repos/o/r/issues: HTTP 422",
-		},
-		"the new issue cannot be read back": {
-			setup: func(g *giteaStandIn) { g.failGet = 500 },
-			env:   tokenEnv,
-			want:  "gitea: GET /repos/o/r/issues/1: HTTP 500",
+			want:  "github: POST /repos/o/r/issues: HTTP 422",
 		},
 		"the label cannot be applied again": {
-			setup: func(g *giteaStandIn) { g.dropLabels, g.failApply = 1, 500 },
+			setup: func(g *githubStandIn) { g.dropLabels, g.failApply = 1, 500 },
 			env:   tokenEnv,
-			want:  "gitea: POST /repos/o/r/issues/1/labels: HTTP 500",
+			want:  "github: POST /repos/o/r/issues/1/labels: HTTP 500",
 		},
 		"the issue list is not JSON": {
-			setup: func(g *giteaStandIn) { g.garbled = true },
+			setup: func(g *githubStandIn) { g.garbled = true },
 			env:   tokenEnv,
-			want:  "gitea: GET /repos/o/r/issues?limit=50&page=1&state=open&type=issues: invalid character",
+			want:  "github: GET /repos/o/r/issues?page=1&per_page=100&state=open: invalid character",
 		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
 			w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
-			g := newGitea(t)
+			g := newGitHub(t)
 			tt.setup(g)
 
 			r := w.checklatest(t, currentRepo(t, w.setupGo), tt.env, fileIssueArgs(g)...)
@@ -651,12 +646,12 @@ func TestChecklatest_FileIssueReportsGiteaFailures(t *testing.T) {
 	}
 }
 
-// TestChecklatest_FileIssueCutsALongErrorBody checks a Gitea error answered
+// TestChecklatest_FileIssueCutsALongErrorBody checks a GitHub error answered
 // with a large body is reported with the start of it, not all of it.
 func TestChecklatest_FileIssueCutsALongErrorBody(t *testing.T) {
 	w := newWorld(t)
 	w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
-	g := newGitea(t)
+	g := newGitHub(t)
 	g.failList, g.verbose = 500, true
 
 	r := w.checklatest(t, currentRepo(t, w.setupGo), tokenEnv, fileIssueArgs(g)...)
@@ -668,23 +663,23 @@ func TestChecklatest_FileIssueCutsALongErrorBody(t *testing.T) {
 	}
 }
 
-// TestChecklatest_FileIssueReportsAnUnreachableGitea covers a Gitea that is
-// not there, and an API root that is not a URL.
-func TestChecklatest_FileIssueReportsAnUnreachableGitea(t *testing.T) {
+// TestChecklatest_FileIssueReportsAnUnreachableGitHub covers a GitHub API
+// that is not there, and an API root that is not a URL.
+func TestChecklatest_FileIssueReportsAnUnreachableGitHub(t *testing.T) {
 	w := newWorld(t)
 	w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
-	gone := newGitea(t)
+	gone := newGitHub(t)
 	gone.srv.Close()
 	root := currentRepo(t, w.setupGo)
 
 	down := w.checklatest(t, root, tokenEnv, fileIssueArgs(gone)...)
 	wantExit(t, down, exitUnchecked)
-	wantContains(t, "stderr", down.Stderr, "gitea: GET /repos/o/r/issues")
+	wantContains(t, "stderr", down.Stderr, "github: GET /repos/o/r/issues")
 	wantContains(t, "stderr", down.Stderr, "connection refused")
 
-	bad := w.checklatest(t, root, tokenEnv, "-file-issue", "-gitea-api", "http://gitea.example:port/api/v1", "-repo", "o/r")
+	bad := w.checklatest(t, root, tokenEnv, "-file-issue", "-github-api", "http://github.example:port/api/v3", "-repo", "o/r")
 	wantExit(t, bad, exitUnchecked)
-	wantContains(t, "stderr", bad.Stderr, "gitea: GET /repos/o/r/issues")
+	wantContains(t, "stderr", bad.Stderr, "github: GET /repos/o/r/issues")
 	wantContains(t, "stderr", bad.Stderr, "invalid port")
 }
 
@@ -695,7 +690,7 @@ func TestChecklatest_FileIssueFilesTheLagEvenWithAnUncheckedItem(t *testing.T) {
 	w := newWorld(t)
 	w.up.set("/go/VERSION", reply{body: "go1.27.2\n"})
 	w.up.set("/node/index.json", reply{status: 502})
-	g := newGitea(t)
+	g := newGitHub(t)
 
 	r := w.checklatest(t, currentRepo(t, w.setupGo), tokenEnv, fileIssueArgs(g)...)
 
@@ -709,16 +704,23 @@ func TestChecklatest_FileIssueFilesTheLagEvenWithAnUncheckedItem(t *testing.T) {
 func TestChecklatest_FileIssueNeedsItsSettings(t *testing.T) {
 	w := newWorld(t)
 	root := currentRepo(t, w.setupGo)
-	g := newGitea(t)
+	g := newGitHub(t)
 
-	noAPI := w.checklatest(t, root, tokenEnv, "-file-issue", "-repo", "o/r")
+	noAPI := w.checklatest(t, root, tokenEnv, "-file-issue", "-github-api=", "-repo", "o/r")
 	wantExit(t, noAPI, exitUnchecked)
-	wantContains(t, "stderr", noAPI.Stderr, "-file-issue needs -gitea-api and -repo owner/name")
+	wantContains(t, "stderr", noAPI.Stderr, "-file-issue needs -github-api and -repo owner/name")
 
-	noToken := w.checklatest(t, root, []string{"GITEA_TOKEN="}, fileIssueArgs(g)...)
+	noRepo := w.checklatest(t, root, tokenEnv, "-file-issue", "-github-api", g.api())
+	wantExit(t, noRepo, exitUnchecked)
+	wantContains(t, "stderr", noRepo.Stderr, "-file-issue needs -github-api and -repo owner/name")
+
+	noToken := w.checklatest(t, root, []string{"GITHUB_TOKEN="}, fileIssueArgs(g)...)
 	wantExit(t, noToken, exitUnchecked)
 	wantContains(t, "stderr", noToken.Stderr, "-file-issue needs an API token")
-	if noAPI.Stdout != "" || noToken.Stdout != "" {
-		t.Errorf("a misconfigured run judged items: %q %q", noAPI.Stdout, noToken.Stdout)
+	if noAPI.Stdout != "" || noRepo.Stdout != "" || noToken.Stdout != "" {
+		t.Errorf("a misconfigured run judged items: %q %q %q", noAPI.Stdout, noRepo.Stdout, noToken.Stdout)
+	}
+	if len(g.requests) != 0 {
+		t.Errorf("a misconfigured run called GitHub: %v", g.requests)
 	}
 }

@@ -4,7 +4,7 @@
 // checklatest, buildtags and tsgen -- against this repository and against
 // synthetic ones. Every service checklatest reaches is an in-process stand-in:
 // the release documents, a Go module proxy, git mirrors of the action
-// repositories and the Gitea API.
+// repositories and the GitHub REST API.
 package tools
 
 import (

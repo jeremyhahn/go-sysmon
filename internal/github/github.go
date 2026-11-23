@@ -1,12 +1,13 @@
-// Package gitea is the small part of the Gitea REST API that go-sysmon's own
-// automation needs: find an open issue, resolve a label and file an issue
-// that verifiably carries it.
-package gitea
+// Package github is the small part of the GitHub REST API that go-sysmon's own
+// automation needs: find an open issue and file an issue that verifiably
+// carries its label.
+package github
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,17 +15,22 @@ import (
 	"strings"
 )
 
-// pageSize is the page size requested when listing. Gitea caps pages at its
-// MAX_RESPONSE_ITEMS, 50 by default, so a larger request would be cut short
-// and read as the last page.
-const pageSize = 50
+// DefaultBaseURL is the API root of github.com.
+const DefaultBaseURL = "https://api.github.com"
+
+// apiVersion is the REST API version every request asks for, so a change to
+// GitHub's default cannot change what the client reads.
+const apiVersion = "2022-11-28"
+
+// pageSize is the page size requested when listing: the most GitHub serves.
+const pageSize = 100
 
 // maxErrorBody bounds how much of an error response is kept for the message.
 const maxErrorBody = 512
 
 // Client calls one repository's API as the owner of Token.
 type Client struct {
-	// BaseURL is the API root, "https://gitea.example/api/v1".
+	// BaseURL is the API root, DefaultBaseURL on github.com.
 	BaseURL string
 	// Owner and Repo name the repository.
 	Owner, Repo string
@@ -34,9 +40,8 @@ type Client struct {
 	HTTP  *http.Client
 }
 
-// Label is an issue label.
+// Label is an issue label. GitHub names labels on the wire.
 type Label struct {
-	ID   int64  `json:"id"`
 	Name string `json:"name"`
 }
 
@@ -51,10 +56,15 @@ type Issue struct {
 	PullRequest *struct{} `json:"pull_request"`
 }
 
-// HasLabel reports whether the issue carries the label with id.
-func (i Issue) HasLabel(id int64) bool {
-	for _, l := range i.Labels {
-		if l.ID == id {
+// HasLabel reports whether the issue carries the label called name.
+func (i Issue) HasLabel(name string) bool {
+	return hasLabel(i.Labels, name)
+}
+
+// hasLabel reports whether labels holds the label called name.
+func hasLabel(labels []Label, name string) bool {
+	for _, l := range labels {
+		if l.Name == name {
 			return true
 		}
 	}
@@ -66,10 +76,9 @@ func (i Issue) HasLabel(id int64) bool {
 func (c *Client) FindOpen(ctx context.Context, marker string) (int64, error) {
 	for page := 1; ; page++ {
 		q := url.Values{
-			"state": {"open"},
-			"type":  {"issues"},
-			"page":  {strconv.Itoa(page)},
-			"limit": {strconv.Itoa(pageSize)},
+			"state":    {"open"},
+			"page":     {strconv.Itoa(page)},
+			"per_page": {strconv.Itoa(pageSize)},
 		}
 		var issues []Issue
 		if err := c.do(ctx, http.MethodGet, c.repoPath("issues")+"?"+q.Encode(), nil, &issues); err != nil {
@@ -86,69 +95,48 @@ func (c *Client) FindOpen(ctx context.Context, marker string) (int64, error) {
 	}
 }
 
-// LabelID resolves a repository label name to its id. Labels are ids on the
-// wire; a name the repository does not have is a *LabelNotFoundError.
-func (c *Client) LabelID(ctx context.Context, name string) (int64, error) {
-	for page := 1; ; page++ {
-		q := url.Values{"page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(pageSize)}}
-		var labels []Label
-		if err := c.do(ctx, http.MethodGet, c.repoPath("labels")+"?"+q.Encode(), nil, &labels); err != nil {
-			return 0, err
-		}
-		for _, l := range labels {
-			if l.Name == name {
-				return l.ID, nil
-			}
-		}
-		if len(labels) < pageSize {
-			return 0, &LabelNotFoundError{Label: name}
-		}
-	}
-}
-
 // Create files an issue carrying label and returns its number.
 //
-// Gitea has answered a label request with success without applying the
-// label, and an issue without its label is invisible to every sweeper that
-// queries by label. So the new issue is read back; a missing label is applied
-// once more and read back again, and if it is still missing the result is a
-// *LabelNotAppliedError naming the issue that was filed.
+// The label must already exist: a name the repository does not have is a
+// *LabelNotFoundError and nothing is filed. GitHub drops a label it will not
+// apply without failing the request, and an issue without its label is
+// invisible to everything that queries by label. So the label is checked on
+// the issue GitHub returns; a missing one is applied once more and checked
+// again, and if it is still missing the result is a *LabelNotAppliedError
+// naming the issue that was filed.
 func (c *Client) Create(ctx context.Context, title, body, label string) (int64, error) {
-	id, err := c.LabelID(ctx, label)
-	if err != nil {
+	if err := c.requireLabel(ctx, label); err != nil {
 		return 0, err
 	}
 	var created Issue
-	req := map[string]any{"title": title, "body": body, "labels": []int64{id}}
+	req := map[string]any{"title": title, "body": body, "labels": []string{label}}
 	if err := c.do(ctx, http.MethodPost, c.repoPath("issues"), req, &created); err != nil {
 		return 0, err
 	}
 	n := created.Number
-	ok, err := c.labelled(ctx, n, id)
-	if err != nil || ok {
-		return n, err
+	if created.HasLabel(label) {
+		return n, nil
 	}
 	var applied []Label
-	if err := c.do(ctx, http.MethodPost, c.repoPath("issues", strconv.FormatInt(n, 10), "labels"), map[string]any{"labels": []int64{id}}, &applied); err != nil {
+	if err := c.do(ctx, http.MethodPost, c.repoPath("issues", strconv.FormatInt(n, 10), "labels"), map[string]any{"labels": []string{label}}, &applied); err != nil {
 		return n, err
 	}
-	ok, err = c.labelled(ctx, n, id)
-	if err != nil {
-		return n, err
-	}
-	if !ok {
+	if !hasLabel(applied, label) {
 		return n, &LabelNotAppliedError{Issue: n, Label: label}
 	}
 	return n, nil
 }
 
-// labelled re-reads issue n and reports whether it carries label id.
-func (c *Client) labelled(ctx context.Context, n, id int64) (bool, error) {
-	var is Issue
-	if err := c.do(ctx, http.MethodGet, c.repoPath("issues", strconv.FormatInt(n, 10)), nil, &is); err != nil {
-		return false, err
+// requireLabel fails unless the repository has the label called name. A
+// missing label is a *LabelNotFoundError.
+func (c *Client) requireLabel(ctx context.Context, name string) error {
+	var l Label
+	err := c.do(ctx, http.MethodGet, c.repoPath("labels", name), nil, &l)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		return &LabelNotFoundError{Label: name}
 	}
-	return is.HasLabel(id), nil
+	return err
 }
 
 // repoPath joins path segments under the repository's API path, escaping each.
@@ -175,8 +163,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if err != nil {
 		return &RequestError{Method: method, Path: path, Cause: err}
 	}
-	req.Header.Set("Authorization", "token "+c.Token)
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", apiVersion)
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

@@ -1,0 +1,35 @@
+name: Dependabot Auto-merge
+
+# Turns on GitHub's native auto-merge for every Dependabot PR, GitHub's
+# documented Dependabot auto-merge pattern. Branch protection on main requires
+# the `CI Passed` check, so GitHub squash-merges the PR only once CI is green;
+# this workflow merges nothing itself.
+#
+# pull_request_target runs the workflow as main defines it, with a token that
+# can write, so it must never check out or run the PR's code -- and it does
+# neither: the PR is named by its URL and nothing else is read from it. The job
+# runs only when Dependabot itself opened the PR and triggered the event.
+#
+# dependabot/fetch-metadata is not used: it only reports the update's type and
+# ecosystem, and every Dependabot PR is enabled alike -- CI is the gate.
+
+on:
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    name: Enable auto-merge
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

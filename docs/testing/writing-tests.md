@@ -201,9 +201,9 @@ verdict.
 
 **A guarantee that holds for a reason nobody wrote down.** Signed commits are
 required on `main`, and unsigned commits were found on a feature branch — which
-looked like the guarantee failing. It was not. Measured: a Gitea **squash merge
-discards the branch's commit objects entirely** and authors a new single-parent
-commit signed with its own key, so a branch's signatures never had a path onto
+looked like the guarantee failing. It was not. Measured: the forge's **squash
+merge discards the branch's commit objects entirely** and authors a new
+single-parent commit signed with its own key, so a branch's signatures never had a path onto
 `main`; and `main`'s protection separately sets `require_signed_commits`, which
 covers the direct-push path.
 
@@ -355,10 +355,10 @@ logic error:
 - **A version pin guarded against a dependency this repository never had.** It
   avoided a staticcheck RC that panicked on `sentry-go`; `go.sum` has never
   contained `sentry-go`, and the released version had fixed it besides.
-- **A runner label named two different machines.** `runs-on: ubuntu-latest` is
-  our image on Gitea and GitHub's hosted image on github.com. A fix that
-  required a file only our image has was correct in one place and inoperative
-  in the other.
+- **A runner label named two different machines.** `runs-on: ubuntu-latest`
+  was a self-hosted image on one forge and GitHub's hosted image on another. A
+  fix that required a file only the self-hosted image had was correct in one
+  place and inoperative in the other.
 
 **All three are a name resolving to something other than what the code
 assumed.** None looks wrong on inspection, because each is a correct check

@@ -45,7 +45,7 @@ func TestFiler_FilesOneLabelledIssue(t *testing.T) {
 	tr := &tracker{createN: 240}
 	var out bytes.Buffer
 
-	got, err := Filer{Tracker: tr, RunURL: "https://gitea.example/r/actions/runs/7", Out: &out}.File(context.Background(), laggingReport)
+	got, err := Filer{Tracker: tr, RunURL: "https://github.com/o/r/actions/runs/7", Out: &out}.File(context.Background(), laggingReport)
 	if err != nil {
 		t.Fatalf("File() error = %v", err)
 	}
@@ -56,7 +56,7 @@ func TestFiler_FilesOneLabelledIssue(t *testing.T) {
 		t.Fatalf("filed %q with labels %q, want one %q with task:ready", tr.created, tr.labels, IssueTitle)
 	}
 	body := tr.bodies[0]
-	for _, want := range []string{IssueMarker, "| golangci-lint | v2.13.2 | v2.14.0 | behind |", "https://gitea.example/r/actions/runs/7"} {
+	for _, want := range []string{IssueMarker, "| golangci-lint | v2.13.2 | v2.14.0 | behind |", "https://github.com/o/r/actions/runs/7"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body lacks %q:\n%s", want, body)
 		}

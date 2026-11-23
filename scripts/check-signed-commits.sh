@@ -2,26 +2,24 @@
 #
 # Fails when a commit on this branch is unsigned.
 #
-# Signed commits are ratified for every agent and enforced on main -- but every
-# merge is a Gitea SQUASH, a new commit Gitea signs itself, so the enforcement
-# on main never sees a branch's commits at all. Nothing checked them, and the
-# guarantee was decorative on the one path that could break it (#41).
+# Signed commits are required and enforced on main -- but every merge is a
+# GitHub SQUASH, a new commit GitHub signs itself, so the enforcement on main
+# never sees a branch's commits at all. Nothing checked them, and the guarantee
+# was decorative on the one path that could break it (#41).
 #
 # The path that breaks it: THE SIGNING DECISION IS FIXED WHEN A REBASE STARTS.
-# A rebase begun with plain `git rebase` recreates every commit unsigned, and
-# `agent-git.sh rebase --continue` on it reports success. agent-git.sh says so
-# in its own header, which did not stop it happening on eight commits of one
-# branch -- or on this repository's own #82, where a plain rebase produced an
-# unsigned commit that was only re-signed because the author happened to amend
-# it through the wrapper afterwards for an unrelated reason.
+# A rebase begun without signing enabled recreates every commit unsigned, and
+# `git rebase --continue` on it reports success. It happened on eight commits
+# of one branch, and on this repository's own #82.
 #
 # `git cat-file` is used rather than `--format=%G?`, and that is not a
 # preference. %G? prints N for BOTH "unsigned" and "signed but unverifiable
-# without gpg.ssh.allowedSignersFile" -- which no agent has -- so it reports N
-# on correctly signed commits and cannot tell the two apart. A check built on it
-# would fail everything and be disabled within a day. The presence of a gpgsig
-# header is the question being asked here; whether the signature verifies is
-# branch protection's job, and it has the allowed-signers file to do it.
+# without gpg.ssh.allowedSignersFile" -- which a CI checkout does not have --
+# so it reports N on correctly signed commits and cannot tell the two apart. A
+# check built on it would fail everything and be disabled within a day. The
+# presence of a gpgsig header is the question being asked here; whether the
+# signature verifies is GitHub's job, and it has each author's signing keys to
+# do it.
 set -euo pipefail
 
 base="${SIGNED_SCAN_BASE:-}"
@@ -60,14 +58,15 @@ for commit in "${unsigned[@]}"; do
 done
 cat <<'MSG'
 
-Every commit needs a signature. The usual cause is a rebase started with plain
-`git rebase`: the signing decision is fixed at that moment, so every commit it
-recreates is unsigned and `agent-git.sh rebase --continue` reports success.
+Every commit needs a signature. The usual cause is a rebase started without
+signing enabled: the signing decision is fixed at that moment, so every commit
+it recreates is unsigned and `git rebase --continue` reports success.
 
-To fix, redo the rebase THROUGH the wrapper from the start:
+To fix, re-sign every commit on the branch and force-push it:
 
-    software/scripts/agent-git.sh <repo> rebase <base>
+    git rebase --exec 'git commit --amend --no-edit -S' <base>
 
-Re-running it that way signs every recreated commit.
+With commit.gpgsign set (git config commit.gpgsign true), every later rebase
+signs the commits it recreates.
 MSG
 exit 1

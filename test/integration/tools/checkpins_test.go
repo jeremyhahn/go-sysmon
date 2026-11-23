@@ -81,7 +81,7 @@ func TestCheckpins_EveryKindOfReferenceAgrees(t *testing.T) {
 		// mapping, a job with no steps or with steps that are not a list,
 		// a step running a script, and a service with no image. An empty
 		// workflow holds nothing.
-		".gitea/workflows/odd.yaml": `jobs:
+		".github/workflows/odd.yaml": `jobs:
   mapped:
     container:
       image: golang:1.27.1-trixie
@@ -95,7 +95,7 @@ func TestCheckpins_EveryKindOfReferenceAgrees(t *testing.T) {
   scalar:
     steps: make
 `,
-		".gitea/workflows/empty.yml": "",
+		".github/workflows/empty.yml": "",
 		".github/workflows/ci.yml": `env:
   GO: 1.27.1
 jobs:
@@ -260,9 +260,9 @@ func TestCheckpins_UnreadablePinsAndSourcesFail(t *testing.T) {
 		"a workflow that is not YAML": {
 			files: map[string]string{
 				"go.mod": "module example.com/m\n\ngo 1.27.1\n", ".node-version": "24.21.0\n",
-				".gitea/workflows/nightly.yaml": "jobs: [\n",
+				".github/workflows/nightly.yaml": "jobs: [\n",
 			},
-			want: ".gitea/workflows/nightly.yaml",
+			want: ".github/workflows/nightly.yaml",
 		},
 		"a compose file that is not YAML": {
 			files: map[string]string{

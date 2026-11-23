@@ -10,12 +10,13 @@
 // a plain failure; the message says which it was.) An item whose latest
 // release is unknown is never reported as current.
 //
-// With -file-issue it files the lag as one task:ready issue on the Gitea
-// repository instead of failing, and files none while one is still open; add
-// -dry-run to print that issue rather than file it. This is what the daily
-// check-latest workflow runs. The token is read from the environment variable
-// named by -token-env, never from a flag, so it does not appear in a process
-// listing.
+// With -file-issue it files the lag as one task:ready issue on the GitHub
+// repository -repo names instead of failing, and files none while one is still
+// open; add -dry-run to print that issue rather than file it. This is what the
+// daily check-latest workflow runs. -github-api is the API root, github.com's
+// by default. The token is read from the environment variable named by
+// -token-env, GITHUB_TOKEN by default, never from a flag, so it does not appear
+// in a process listing.
 //
 // Each source is fetched from a URL a flag names, defaulting to the public
 // one: -go-releases-url, -node-index-url, -debian-dists-url,
@@ -34,7 +35,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremyhahn/go-sysmon/internal/gitea"
+	"github.com/jeremyhahn/go-sysmon/internal/github"
 	"github.com/jeremyhahn/go-sysmon/internal/pins"
 )
 
@@ -141,11 +142,11 @@ func parseOptions(args []string, getenv func(string) string, stdout, stderr io.W
 	hostedRunner := fs.String("hosted-runner", "", "pinned Ubuntu release of GitHub-hosted runner labels")
 	fs.Var(&tools, "tool", "a pinned tool as name=module@version; repeat for each")
 	timeout := fs.Duration("timeout", 5*time.Minute, "limit on the whole check")
-	fileIssue := fs.Bool("file-issue", false, "file the lag as a Gitea issue instead of failing")
+	fileIssue := fs.Bool("file-issue", false, "file the lag as a GitHub issue instead of failing")
 	dryRun := fs.Bool("dry-run", false, "with -file-issue: print the issue instead of filing it")
-	api := fs.String("gitea-api", "", "with -file-issue: Gitea API root, https://host/api/v1")
+	api := fs.String("github-api", github.DefaultBaseURL, "with -file-issue: GitHub REST API root")
 	repo := fs.String("repo", "", "with -file-issue: owner/name of the repository")
-	tokenEnv := fs.String("token-env", "GITEA_TOKEN", "with -file-issue: environment variable holding the API token")
+	tokenEnv := fs.String("token-env", "GITHUB_TOKEN", "with -file-issue: environment variable holding the API token")
 	runURL := fs.String("run-url", "", "with -file-issue: workflow run to link from the issue")
 	goReleases := &sourceURL{url: pins.GoVersionURL, schemes: httpSchemes}
 	nodeIndex := &sourceURL{url: pins.NodeIndexURL, schemes: httpSchemes}
@@ -248,7 +249,7 @@ func items(o options, p pins.Pins, src sources) ([]pins.Item, error) {
 	return append(list, pins.RunnerItems(labels, src.runners)...), nil
 }
 
-// run checks every pin and returns the exit status. client is what a Gitea
+// run checks every pin and returns the exit status. client is what a GitHub
 // filer calls the API with.
 func run(ctx context.Context, o options, src sources, client *http.Client) int {
 	// Resolve the filer first: a misconfigured workflow should fail before it
@@ -305,7 +306,7 @@ func run(ctx context.Context, o options, src sources, client *http.Client) int {
 }
 
 // noTokenError is returned when -file-issue is set and the token variable
-// named by -token-env is empty. A blank token would not be inert: Gitea answers
+// named by -token-env is empty. A blank token would not be inert: GitHub answers
 // an unauthenticated caller, and the failure would look like a permissions
 // problem.
 type noTokenError struct{}
@@ -314,12 +315,12 @@ func (e *noTokenError) Error() string {
 	return "checklatest: -file-issue needs an API token in the variable named by -token-env"
 }
 
-// filerFlagsError is returned when -file-issue is set without -gitea-api and
-// an owner/name -repo.
+// filerFlagsError is returned when -file-issue is set with an empty
+// -github-api or without an owner/name -repo.
 type filerFlagsError struct{}
 
 func (e *filerFlagsError) Error() string {
-	return "checklatest: -file-issue needs -gitea-api and -repo owner/name"
+	return "checklatest: -file-issue needs -github-api and -repo owner/name"
 }
 
 func newFiler(o options, client *http.Client) (*pins.Filer, error) {
@@ -331,7 +332,7 @@ func newFiler(o options, client *http.Client) (*pins.Filer, error) {
 		return nil, &noTokenError{}
 	}
 	return &pins.Filer{
-		Tracker: &gitea.Client{BaseURL: o.api, Owner: owner, Repo: name, Token: o.token, HTTP: client},
+		Tracker: &github.Client{BaseURL: o.api, Owner: owner, Repo: name, Token: o.token, HTTP: client},
 		DryRun:  o.dryRun,
 		RunURL:  o.runURL,
 		Out:     o.stdout,

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-sysmon/internal/github"
 	"github.com/jeremyhahn/go-sysmon/internal/pins"
 )
 
@@ -87,14 +88,14 @@ func newOptions(t *testing.T, stdout, stderr *bytes.Buffer) options {
 	}
 }
 
-// fakeGitea serves an empty issue list, one task:ready label, and records the
+// fakeGitHub serves an empty issue list, one task:ready label, and records the
 // issues filed.
-type fakeGitea struct {
+type fakeGitHub struct {
 	mu     sync.Mutex
 	posted []string
 }
 
-func (f *fakeGitea) serve(t *testing.T) *httptest.Server {
+func (f *fakeGitHub) serve(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -104,19 +105,17 @@ func (f *fakeGitea) serve(t *testing.T) *httptest.Server {
 				t.Errorf("encode: %v", err)
 			}
 		}
-		base := "/api/v1/repos/jeremyhahn/go-sysmon"
-		labels := []map[string]any{{"id": 7, "name": "task:ready"}}
+		base := "/repos/jeremyhahn/go-sysmon"
+		label := map[string]any{"name": "task:ready"}
 		switch r.Method + " " + strings.TrimPrefix(r.URL.Path, base) {
 		case "GET /issues":
 			reply([]any{})
-		case "GET /labels":
-			reply(labels)
+		case "GET /labels/task:ready":
+			reply(label)
 		case "POST /issues":
 			f.posted = append(f.posted, r.URL.Path)
 			w.WriteHeader(http.StatusCreated)
-			reply(map[string]any{"number": 300, "labels": labels})
-		case "GET /issues/300":
-			reply(map[string]any{"number": 300, "labels": labels})
+			reply(map[string]any{"number": 300, "labels": []any{label}})
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -187,13 +186,13 @@ func TestRun_MissingModFileExitsTwo(t *testing.T) {
 
 func TestRun_FilerMisconfigurationFailsBeforeChecking(t *testing.T) {
 	tests := map[string]func(*options){
-		"no token": func(o *options) { o.api, o.repo = "http://gitea.invalid/api/v1", "jeremyhahn/go-sysmon" },
+		"no token": func(o *options) { o.api, o.repo = "http://github.invalid", "jeremyhahn/go-sysmon" },
 		"no api":   func(o *options) { o.repo, o.token = "jeremyhahn/go-sysmon", "t" },
 		"repo not owner/name": func(o *options) {
-			o.api, o.repo, o.token = "http://gitea.invalid/api/v1", "go-sysmon", "t"
+			o.api, o.repo, o.token = "http://github.invalid", "go-sysmon", "t"
 		},
 		"repo with extra path": func(o *options) {
-			o.api, o.repo, o.token = "http://gitea.invalid/api/v1", "a/b/c", "t"
+			o.api, o.repo, o.token = "http://github.invalid", "a/b/c", "t"
 		},
 	}
 	for name, configure := range tests {
@@ -218,14 +217,14 @@ func TestRun_FilerMisconfigurationFailsBeforeChecking(t *testing.T) {
 // TestNewFiler_NamesWhatIsMissing verifies each misconfiguration is its own
 // error type, so the missing flags and the missing token are told apart.
 func TestNewFiler_NamesWhatIsMissing(t *testing.T) {
-	base := options{api: "http://gitea.invalid/api/v1", repo: "jeremyhahn/go-sysmon", token: "t"}
+	base := options{api: "http://github.invalid", repo: "jeremyhahn/go-sysmon", token: "t"}
 
 	noAPI := base
 	noAPI.api = ""
 	_, err := newFiler(noAPI, http.DefaultClient)
 	var flagsErr *filerFlagsError
 	if !errors.As(err, &flagsErr) {
-		t.Errorf("newFiler(no -gitea-api) error = %v, want a *filerFlagsError", err)
+		t.Errorf("newFiler(no -github-api) error = %v, want a *filerFlagsError", err)
 	}
 
 	noToken := base
@@ -245,14 +244,14 @@ func TestNewFiler_NamesWhatIsMissing(t *testing.T) {
 func fileOptions(t *testing.T, srv *httptest.Server, stdout, stderr *bytes.Buffer) options {
 	o := newOptions(t, stdout, stderr)
 	o.fileIssue = true
-	o.api = srv.URL + "/api/v1"
+	o.api = srv.URL
 	o.repo = "jeremyhahn/go-sysmon"
 	o.token = "t"
 	return o
 }
 
 func TestRun_FileIssueFilesALagAndExitsZero(t *testing.T) {
-	g := &fakeGitea{}
+	g := &fakeGitHub{}
 	srv := g.serve(t)
 	var stdout, stderr bytes.Buffer
 	calls := 0
@@ -268,7 +267,7 @@ func TestRun_FileIssueFilesALagAndExitsZero(t *testing.T) {
 }
 
 func TestRun_DryRunFilesNothing(t *testing.T) {
-	g := &fakeGitea{}
+	g := &fakeGitHub{}
 	srv := g.serve(t)
 	var stdout, stderr bytes.Buffer
 	calls := 0
@@ -286,7 +285,7 @@ func TestRun_DryRunFilesNothing(t *testing.T) {
 }
 
 func TestRun_FileIssueStillFailsForAnUncheckedItem(t *testing.T) {
-	g := &fakeGitea{}
+	g := &fakeGitHub{}
 	srv := g.serve(t)
 	var stdout, stderr bytes.Buffer
 	calls := 0
@@ -375,7 +374,7 @@ func TestParseOptions_ReadsEveryFlag(t *testing.T) {
 		"-root", "/repo", "-node-file", ".nvmrc", "-debian", "trixie", "-ubuntu", "26.04",
 		"-hosted-runner", "26.04", "-tool", "golangci-lint=" + lintModule + "@v2.14.0",
 		"-tool", "gosec=github.com/securego/gosec/v2@v2.29.0", "-timeout", "90s",
-		"-file-issue", "-dry-run", "-gitea-api", "https://gitea.example/api/v1",
+		"-file-issue", "-dry-run", "-github-api", "https://ghe.example/api/v3",
 		"-repo", "o/r", "-token-env", "MY_TOKEN", "-run-url", "https://ci.example/run/1",
 		"-go-releases-url", "https://mirror.example/go/VERSION",
 		"-node-index-url", "https://mirror.example/node/index.json",
@@ -398,7 +397,7 @@ func TestParseOptions_ReadsEveryFlag(t *testing.T) {
 			{Name: "golangci-lint", Module: lintModule, Version: "v2.14.0"},
 			{Name: "gosec", Module: "github.com/securego/gosec/v2", Version: "v2.29.0"},
 		},
-		fileIssue: true, dryRun: true, api: "https://gitea.example/api/v1", repo: "o/r",
+		fileIssue: true, dryRun: true, api: "https://ghe.example/api/v3", repo: "o/r",
 		token: "secret", runURL: "https://ci.example/run/1",
 		urls: sourceURLs{
 			goReleases:   "https://mirror.example/go/VERSION",
@@ -456,6 +455,20 @@ func TestParseOptions_SourcesDefaultToThePublicURLs(t *testing.T) {
 	}
 	if o.urls != want {
 		t.Errorf("urls = %+v, want the public sources %+v", o.urls, want)
+	}
+}
+
+// TestParseOptions_FilerDefaultsToGitHub verifies a command line that names no
+// API files on github.com with the workflow's GITHUB_TOKEN.
+func TestParseOptions_FilerDefaultsToGitHub(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	env := map[string]string{"GITHUB_TOKEN": "from-the-workflow"}
+	o, _, err := parseOptions([]string{"-file-issue", "-repo", "o/r"}, func(k string) string { return env[k] }, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if o.api != github.DefaultBaseURL || o.token != "from-the-workflow" {
+		t.Errorf("api, token = %q, %q; want %q and GITHUB_TOKEN's value", o.api, o.token, github.DefaultBaseURL)
 	}
 }
 

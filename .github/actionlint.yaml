@@ -1,19 +1,14 @@
-# actionlint only knows GitHub's hosted runner labels, so every label served by
-# a self-hosted runner has to be declared here or `runs-on:` fails the lint.
-# `release` is the release runner (rulings 169, 173): the only runner that
-# pushes to the Gitea registry. The other two are company review runners on the
-# Gitea plane (conventions/sdlc.md §8): `codex` mounts the Codex review
-# credential, `claude` the Claude session credential. Source of truth for the workflows that use them:
-# software/templates/github-actions/ in the automatethethings repo.
+# Every workflow runs on GitHub-hosted runners. actionlint checks each
+# `runs-on:` label against its own list of hosted labels, and that list lags
+# GitHub's: actionlint v1.7.12 stops at ubuntu-24.04-arm. The labels below are
+# GitHub-hosted runners actionlint does not know yet, declared here so the lint
+# still fails on any other unknown label. They are the HOSTED_RUNNER_RELEASE
+# labels the Makefile pins (`make check-pins` checks each workflow's use of
+# them); remove an entry once actionlint lists it.
 self-hosted-runner:
   labels:
-    - claude
-    - code-review
-    - codex
-    - release
+    - ubuntu-26.04-arm
 
-# AUTOMERGE_APPROVERS_ONLY is an optional repository variable: the approver
-# list for a restricted repo, read by the automerge workflow template. Any
-# other `vars.*` reference is a typo.
-config-variables:
-  - AUTOMERGE_APPROVERS_ONLY
+# No workflow reads a repository variable, so an empty list makes any `vars.*`
+# reference a lint failure rather than a silently empty value.
+config-variables: []

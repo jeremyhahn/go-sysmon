@@ -135,7 +135,7 @@ func TestCheckAgreement_StalePinsFail(t *testing.T) {
         with:
           node-version-file: package.json
 `,
-		".gitea/workflows/nightly.yaml": "jobs:\n  b:\n    container:\n      image: golang:1.26.5-trixie\n" +
+		".github/workflows/nightly.yaml": "jobs:\n  b:\n    container:\n      image: golang:1.26.5-trixie\n" +
 			"  c:\n    # ubuntu-22.04 in a comment is not a label\n    runs-on: ubuntu-24.04-arm\n",
 		"compose.yaml": "services:\n  dev:\n    image: library/ubuntu:noble\n",
 	})
@@ -143,8 +143,6 @@ func TestCheckAgreement_StalePinsFail(t *testing.T) {
 	_, err := CheckAgreement(root, current)
 	got := mismatchesOf(t, err)
 	want := []string{
-		".gitea/workflows/nightly.yaml:4: golang:1.26.5-trixie",
-		".gitea/workflows/nightly.yaml:7: ubuntu-24.04-arm",
 		".github/workflows/ci.yml:4: actions/setup-go",
 		".github/workflows/ci.yml:7: 1.26.5",
 		".github/workflows/ci.yml:10: .tool-versions",
@@ -152,6 +150,8 @@ func TestCheckAgreement_StalePinsFail(t *testing.T) {
 		".github/workflows/ci.yml:16: ${{ env.UNSET }}",
 		".github/workflows/ci.yml:19: 24",
 		".github/workflows/ci.yml:22: package.json",
+		".github/workflows/nightly.yaml:4: golang:1.26.5-trixie",
+		".github/workflows/nightly.yaml:7: ubuntu-24.04-arm",
 		"Dockerfile:1: golang:1.27.0-trixie",
 		"Dockerfile:2: node:22-bookworm-slim",
 		"Dockerfile:3: debian:bookworm-slim",

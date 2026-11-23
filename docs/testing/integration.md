@@ -15,7 +15,7 @@ build tag, one package per area:
 | `test/integration/config` | Configs refused at startup, flag/env/file layering, SIGHUP and file-watch reloads (ConfigMap swaps included), logging, systemd notify and watchdog, shutdown, memory limits from real cgroups |
 | `test/integration/server` | Every API endpoint, security headers, static TLS, a reverse proxy, SSE in whole and delta form (decoded with `pkg/delta`), alerts, shutdown, and `pkg/server` embedded as a library |
 | `test/integration/prom` | The `prometheus,nvml` build against a Prometheus stand-in: remote write, history queries, lookback, the history cadence watch, `/metrics` |
-| `test/integration/tools` | `checklatest`, `checkpins`, `buildtags` and `tsgen` against stand-ins for every release source, a Go module proxy, git mirrors and Gitea |
+| `test/integration/tools` | `checklatest`, `checkpins`, `buildtags` and `tsgen` against stand-ins for every release source, a Go module proxy, git mirrors and the GitHub REST API |
 | `test/integration/collector` | A Docker API stand-in, real qemu and Firecracker-named processes, real container cgroups, network devices in a private namespace, install detection, `sysmon doctor` |
 
 Each suite's `TestMain` is `os.Exit(harness.Main(m))`. The harness builds the
