@@ -1,0 +1,51 @@
+# Dependabot keeps every dependency at its latest release (owner rule
+# 2026-09-22: always latest stable). It opens one grouped PR per ecosystem a
+# day, and CI gates it like any other PR.
+#
+# The Go toolchain and Node.js are pinned in pairs that Dependabot cannot move
+# together: go.mod's go directive with the golang images, and .node-version
+# with the node image. `make check-pins` fails when either pair disagrees, so
+# those images are ignored here and `make check-latest` reports them instead,
+# alongside the Makefile's tool pins (golangci-lint, gosec, govulncheck,
+# actionlint), which no Dependabot ecosystem covers.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+    groups:
+      go-modules:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /cmd/sysmon/frontend
+    schedule:
+      interval: daily
+    # package.json pins exact versions; keep it that way.
+    versioning-strategy: increase
+    groups:
+      frontend:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /build/docker/devcontainer
+      - /test/desktop
+    schedule:
+      interval: daily
+    ignore:
+      - dependency-name: golang
+      - dependency-name: node
+    groups:
+      images:
+        patterns: ["*"]

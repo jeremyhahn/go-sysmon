@@ -62,25 +62,55 @@ Every feature, its requirements and its status are in the
 | Scan the frontend | `make audit` |
 | Build release binaries | `make release-build`, `make release-build-desktop` |
 | Record a change for the next release | Add `changelog.d/<issue>-<slug>.md`, holding the Keep a Changelog subsections it belongs under |
-| Cut a release | `make release-alpha VERSION=vX.Y.Z-alpha`, `make release-candidate VERSION=vX.Y.Z-rc.N` or `make release VERSION=vX.Y.Z`, from an up-to-date `main` ([below](#cutting-a-release)) |
+| Cut a release | In a PR: `make changelog-assemble RELEASE=vX.Y.Z-alpha` and set `VERSION` to `X.Y.Z-alpha`. Merging it publishes the release once CI is green ([below](#cutting-a-release)) |
 | Deploy to a host | [deployment/user.md](deployment/user.md) — `make deploy` |
 | Build prerequisites and the bare-binary path | [server/deployment.md](server/deployment.md) |
 
-The workflows themselves are `.github/workflows/ci.yml` and
-`.github/workflows/release.yml`. `make ci` runs the same targets in the same
+The workflows themselves are `.github/workflows/ci.yml`,
+`.github/workflows/auto-release.yml` and `.github/workflows/release.yml`. `make ci` runs the same targets in the same
 order, so a green local run means a green CI run.
 
-A pushed `v*` tag runs `release.yml`. Before it builds anything,
-`make check-changelog` refuses a tag that doesn't match `VERSION`, a
-`CHANGELOG.md` without a section for the version, and fragments still left in
-`changelog.d/`. The verify job also refuses a tag whose commit is not on `main`. An `-alpha` tag is
-published as a pre-release. Every job after the check builds the
+`release.yml` publishes a release: the binaries and checksums, the GitHub
+release, and the multi-arch `ghcr.io/jeremyhahn/go-sysmon` image. Before it
+builds anything, `make check-changelog` refuses a tag that doesn't match
+`VERSION`, a `CHANGELOG.md` without a section for the version, and fragments
+still left in `changelog.d/`. The verify job also refuses a tag whose commit is
+not on `main`, then runs `make ci-fast`. Every job after the check builds the
 commit that passed it, and each job that publishes first confirms the tag
 still names that commit.
 
+Before 1.0 every release becomes GitHub's Latest release and the image's
+`:latest`, `-alpha` included. From 1.0 on only a plain `vX.Y.Z` does, and an
+`-alpha` or `-rc.N` is published as a pre-release. The verify job makes that
+decision once, and the image and release jobs both follow it.
+
 ### Cutting a release
 
-The three release targets run the one `scripts/release.sh`. The version is
+A release is a PR that sets `VERSION` and assembles the changelog:
+
+```bash
+make changelog-assemble RELEASE=v0.3.5-alpha   # folds changelog.d/ into CHANGELOG.md
+printf '0.3.5-alpha\n' > VERSION
+make check-changelog RELEASE=v0.3.5-alpha
+```
+
+Merge it. When CI goes green on the merge commit, `auto-release.yml` finds that
+`v$VERSION` is not a tag yet. It runs `make check-changelog` and
+`scripts/release-version-check.sh` (the version must be newer than the previous
+`VERSION` and every `v*` tag), tags the commit, and calls `release.yml`. A
+merge that leaves `VERSION` alone publishes nothing. Only the tip of `main`
+is released: if a newer commit is already on `main`, its own green CI run
+decides.
+
+To re-run a published release, start `release.yml` by hand with the tag
+(`gh workflow run release.yml -f version=v0.3.4-alpha`). Pushing a `v*` tag
+yourself also still starts it.
+
+#### The Gitea release targets
+
+`make release-alpha`, `make release-candidate` and `make release` predate the
+move to GitHub. They tag through `agent-git.sh` and push to the `dev` Gitea
+remote. The three release targets run the one `scripts/release.sh`. The version is
 explicit, and each target refuses the other kinds (`release-alpha` takes only
 `vX.Y.Z-alpha`, `release-candidate` only `vX.Y.Z-rc.N`, `release` only
 `vX.Y.Z`). Set `AGENT_GIT` (the commit-signing wrapper; it has no default and
