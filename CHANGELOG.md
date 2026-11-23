@@ -9,6 +9,17 @@ Changes waiting for the next release are kept as fragments in `changelog.d/`,
 one file per change named `<issue>-<slug>.md`. Each release folds them into
 its own section.
 
+## [0.3.4-alpha] - 2026-11-23
+
+### Security
+
+- **Go toolchain 1.27.4 for GO-2026-6859, net/http.** govulncheck reports
+  GO-2026-6859 in the go1.27.3 standard library, fixed in go1.27.4
+  (2026-11-02). Every Go version pin moves to 1.27.4: the `go.mod` go
+  directive, the digest-pinned `golang:1.27.4-trixie` builder in
+  `Dockerfile`, and the `golang:1.27.4-trixie` images of the devcontainer and
+  the desktop test.
+
 ## [0.3.3-alpha] - 2026-10-28
 
 ### Added
