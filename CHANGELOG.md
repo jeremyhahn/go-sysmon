@@ -19,6 +19,11 @@ its own section.
   directive, the digest-pinned `golang:1.27.4-trixie` builder in
   `Dockerfile`, and the `golang:1.27.4-trixie` images of the devcontainer and
   the desktop test.
+- **echo v4.16.3, vite 8.3.8 and source-map-js 1.2.4.** These close the open
+  advisories against `github.com/labstack/echo/v4` v4.16.1 (an indirect
+  dependency through Wails' dev server), and against vite 8.2.1 and
+  source-map-js 1.2.1 in the dashboard's build toolchain. The committed bundle
+  in `cmd/sysmon/frontend/dist` is rebuilt with vite 8.3.8.
 
 ## [0.3.3-alpha] - 2026-10-28
 
