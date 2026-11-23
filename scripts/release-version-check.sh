@@ -3,7 +3,7 @@
 #
 # Usage: scripts/release-version-check.sh <vX.Y.Z[-pre]>   (from the repository root)
 #
-# scripts/release.sh runs this before it writes anything. release-versioning §3:
+# auto-release.yml runs this before it tags a release. release-versioning §3:
 # a VERSION file is never lowered and a published tag is never superseded by a
 # lower one. So the new version must be STRICTLY greater, by SemVer 2.0.0
 # precedence (§11), than the version VERSION holds now (unprefixed) and every

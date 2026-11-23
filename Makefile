@@ -131,8 +131,8 @@ UBUNTU_RELEASE := 26.04
 # HOSTED_RUNNER_RELEASE is the Ubuntu release of every versioned GitHub-hosted
 # runner label the workflows use (ubuntu-26.04, ubuntu-26.04-arm): the newest
 # generally available one in actions/runner-images, which lags Ubuntu's own
-# releases, so it is its own pin. ubuntu-latest is not one of these: on the
-# Gitea plane it is a self-hosted runner label, which is company infra.
+# releases, so it is its own pin. ubuntu-latest is not one of these: it names
+# whichever release GitHub currently serves, so there is nothing to pin.
 HOSTED_RUNNER_RELEASE := 26.04
 PIN_ARGS = -node-file $(NODE_VERSION_FILE) -debian $(DEBIAN_RELEASE) -ubuntu $(UBUNTU_RELEASE) -hosted-runner $(HOSTED_RUNNER_RELEASE)
 
@@ -179,7 +179,7 @@ INTERVAL ?= 1000
 .PHONY: all deps build build-desktop build-server build-frontend dev serve audit audit-report check-bundle-current frontend-deps test \
         coverage check-package-targets check-coverage-exceptions integration-test \
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
-        ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog release release-candidate release-alpha clean-dist \
+        ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog clean-dist \
         build-both generate check-generated check-ts check-nolint \
         check-build-tags test-fips check-pins check-latest \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
@@ -652,9 +652,10 @@ check-pins:
 # check-latest fails when any pin is not at its latest stable release: Go,
 # each pinned tool, Node.js LTS, the Debian and Ubuntu releases, and every
 # action the workflows use. It needs the network, so it is NOT part of lint -- an upstream release
-# must never fail an unrelated PR. The daily check-latest workflow runs it and
-# files an issue instead. Exit 1 means something lags; 2 means an item could
-# not be checked, which is never read as current.
+# must never fail an unrelated PR. The daily check-latest workflow runs it with
+# CHECK_LATEST_FLAGS="-file-issue -github-api ... -repo owner/name" and files a
+# GitHub issue instead. Exit 1 means something lags; 2 means an item could not
+# be checked, which is never read as current.
 CHECK_LATEST_ARGS = $(PIN_ARGS) $(foreach t,$(PINNED_TOOLS),-tool $(call tool_name,$(t))=$($(t)_MOD)@$($(t)_VERSION))
 tool_name = $(notdir $($(1)_PKG))
 check-latest:
@@ -991,45 +992,3 @@ check-changelog:
 	  index($$0, ver) == 1 { f = 1 } \
 	  END { exit f ? 0 : 1 }' CHANGELOG.md || { echo "ERROR: CHANGELOG.md has no \"$$ver\" section heading outside a code block"; exit 1; }
 	@echo "CHANGELOG.md is ready for $$CHK_RELEASE."
-
-# release, release-candidate and release-alpha cut one signed release of their
-# kind (release-versioning.md §1, §2) through the one scripts/release.sh: every
-# check runs before anything is written, then one signed commit and one atomic
-# push of main and the tag to dev hand off to release.yml. The version is
-# explicit, never derived, and each target refuses the other kinds.
-#
-#   make release           VERSION=vX.Y.Z
-#   make release-candidate VERSION=vX.Y.Z-rc.N
-#   make release-alpha     VERSION=vX.Y.Z-alpha
-#
-# AGENT_GIT is the commit/signing wrapper. It has no default on purpose and the
-# release fails closed without it: set it in the environment or a local.mk.
-# REPO_NAME must be the LITERAL repo name, never $(notdir $(CURDIR)): it selects
-# the signing identity, which must not depend on the checkout directory name.
--include local.mk
-AGENT_GIT ?=
-REPO_NAME ?= go-sysmon
-# After the defaults above: unexport declares a variable, and ?= leaves a
-# declared one alone.
-unexport VERSION AGENT_GIT REPO_NAME
-
-# The three inputs are read LITERALLY, for the reason RELEASE is above:
-# `$(value ...)` takes the text unexpanded, and the `unexport` above keeps the
-# originals out of the recipe environment, where make would expand them. VERSION is taken
-# only when it was given, because the Makefile's own VERSION (the file's
-# contents) is not a release version.
-release release-candidate release-alpha: override export REL_VERSION := $(if $(filter command line environment,$(origin VERSION)),$(value VERSION))
-release release-candidate release-alpha: override export REL_AGENT_GIT := $(value AGENT_GIT)
-release release-candidate release-alpha: override export REL_REPO_NAME := $(value REPO_NAME)
-
-# Tag and push a production release (refuses -alpha and -rc.N).
-release:
-	@RELEASE_TAG_RE='$(RELEASE_TAG_RE)' sh scripts/release.sh release
-
-# Tag and push a release candidate (refuses the other kinds).
-release-candidate:
-	@RELEASE_TAG_RE='$(RELEASE_TAG_RE)' sh scripts/release.sh candidate
-
-# Tag and push an alpha release (refuses the other kinds).
-release-alpha:
-	@RELEASE_TAG_RE='$(RELEASE_TAG_RE)' sh scripts/release.sh alpha
