@@ -77,10 +77,11 @@ get wrong:
   collector tries the versioned one first and falls back to the deprecated one
   rather than losing the reading on an older driver.
 - **Memory temperature** is not a temperature sensor at all as far as NVML is
-  concerned. `nvmlTemperatureSensors_t` defines a single sensor,
-  `TEMPERATURE_GPU`; its other member `TEMPERATURE_COUNT` is the enum's bound,
-  and asking for it returns `ERROR_INVALID_ARGUMENT`. The reading comes from the
-  field-value API instead, as `FI_DEV_MEMORY_TEMP`.
+  concerned. `nvmlTemperatureSensors_t` defines only die sensors,
+  `TEMPERATURE_GPU` and `TEMPERATURE_GPU_MAX` (the hottest point on the die);
+  its last member `TEMPERATURE_COUNT` is the enum's bound, and asking for it
+  returns `ERROR_INVALID_ARGUMENT`. The reading comes from the field-value API
+  instead, as `FI_DEV_MEMORY_TEMP`.
 
 `GetFieldValues` reports two independent statuses — one for the batch and one
 per field — and returns success for the batch even when the field in it is

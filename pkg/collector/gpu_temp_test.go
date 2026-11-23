@@ -149,18 +149,28 @@ func TestNvmlFieldNumber_RejectsUnsuccessfulReads(t *testing.T) {
 
 // TestNvmlMemoryTemperature_RequestsTheMemoryTempField pins the field the
 // collector asks for. Memory temperature is not a GetTemperature sensor:
-// nvmlTemperatureSensors_t defines only TEMPERATURE_GPU, and its other member
-// TEMPERATURE_COUNT is the enum bound. Requesting the wrong field id here would
+// nvmlTemperatureSensors_t defines only the die sensors TEMPERATURE_GPU and
+// TEMPERATURE_GPU_MAX, and its last member TEMPERATURE_COUNT is the enum bound.
+// The whole enum is pinned so that a new member, which could be a memory
+// sensor, fails here and is reviewed. Requesting the wrong field id would
 // restore the original bug, in which memory temperature never reported at all.
 func TestNvmlMemoryTemperature_RequestsTheMemoryTempField(t *testing.T) {
 	if nvml.FI_DEV_MEMORY_TEMP != 82 {
 		t.Errorf("FI_DEV_MEMORY_TEMP = %d, want 82", nvml.FI_DEV_MEMORY_TEMP)
 	}
-	if nvml.TEMPERATURE_COUNT != 1 {
-		t.Errorf("TEMPERATURE_COUNT = %d, want 1; it is the enum bound, not a memory sensor",
-			nvml.TEMPERATURE_COUNT)
+	sensors := map[string]struct {
+		got  nvml.TemperatureSensors
+		want nvml.TemperatureSensors
+	}{
+		"TEMPERATURE_GPU":     {nvml.TEMPERATURE_GPU, 0},
+		"TEMPERATURE_GPU_MAX": {nvml.TEMPERATURE_GPU_MAX, 1},
+		"TEMPERATURE_COUNT":   {nvml.TEMPERATURE_COUNT, 2},
 	}
-	if nvml.TEMPERATURE_GPU != 0 {
-		t.Errorf("TEMPERATURE_GPU = %d, want 0", nvml.TEMPERATURE_GPU)
+	for name, s := range sensors {
+		if s.got != s.want {
+			t.Errorf("%s = %d, want %d; a changed sensor enum needs review: "+
+				"a memory sensor there would replace the FI_DEV_MEMORY_TEMP field",
+				name, s.got, s.want)
+		}
 	}
 }

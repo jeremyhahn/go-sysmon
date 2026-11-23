@@ -354,10 +354,11 @@ func nvmlGPUTemperature(dev nvml.Device) (float64, bool) {
 // nvmlMemoryTemperature reads the memory (VRAM) temperature in degrees Celsius.
 //
 // This is deliberately not a GetTemperature call. nvmlTemperatureSensors_t
-// defines exactly one sensor, TEMPERATURE_GPU; its other member,
-// TEMPERATURE_COUNT, is the enum's bound rather than a second sensor, and
-// passing it returns ERROR_INVALID_ARGUMENT. Memory temperature is reachable
-// only through the field-value API, as FI_DEV_MEMORY_TEMP.
+// defines only die sensors: TEMPERATURE_GPU and TEMPERATURE_GPU_MAX, the
+// hottest point on the die. Its last member, TEMPERATURE_COUNT, is the enum's
+// bound rather than a sensor, and passing it returns ERROR_INVALID_ARGUMENT.
+// Memory temperature is reachable only through the field-value API, as
+// FI_DEV_MEMORY_TEMP.
 //
 // Most consumer cards do not implement the field, so a false return is the
 // normal result rather than a failure worth logging.

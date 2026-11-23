@@ -656,8 +656,8 @@ func TestStop_IsAtomicAgainstAConcurrentStart(t *testing.T) {
 	}
 	// The collection is still held, so Stop cannot have finished either.
 	select {
-	case <-stopped:
-		t.Fatal("Stop finished while the poll loop was still held inside a collection")
+	case err := <-stopped:
+		t.Fatalf("Stop finished (%v) while the poll loop was still held inside a collection", err)
 	default:
 	}
 
