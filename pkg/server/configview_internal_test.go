@@ -193,7 +193,7 @@ fleet:
 	body := rec.Body.String()
 
 	for _, secret := range []string{
-		path,                     // the config file's absolute path
+		path,                    // the config file's absolute path
 		"198.51.100.10", "8081", // a peer's host and port
 		"198.51.100.91", "9443",
 		"198.51.100.90",
