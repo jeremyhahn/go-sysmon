@@ -11,7 +11,7 @@
 # --- frontend ---------------------------------------------------------------
 # The dashboard is embedded in the binary via //go:embed, so it has to exist
 # before the Go build runs.
-FROM node:24.21.0-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS frontend
+FROM node:26.13.1-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc AS frontend
 
 WORKDIR /src/cmd/sysmon/frontend
 
@@ -26,7 +26,7 @@ RUN npm run build
 # --- binary -----------------------------------------------------------------
 # The image Go version must satisfy the "go" directive in go.mod, or the
 # toolchain gets downloaded on every build.
-FROM golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS builder
+FROM golang:1.27.4-trixie@sha256:f18c3d73a184fb0582828510722e723b63a93f7188d11dd223d9be6f6880e65d AS builder
 
 WORKDIR /src
 
@@ -63,7 +63,7 @@ RUN go build -trimpath -tags nvml \
 # --- runtime ----------------------------------------------------------------
 # Debian rather than Alpine: CGO means the binary is linked against glibc, and
 # a musl base would need a separate toolchain for no real gain.
-FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # curl is here for the healthcheck only. The image has no shell-based tooling
 # otherwise, and "is the process alive" is a weak check for a monitor: the
