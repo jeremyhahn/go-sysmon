@@ -9,6 +9,56 @@ Changes waiting for the next release are kept as fragments in `changelog.d/`,
 one file per change named `<issue>-<slug>.md`. Each release folds them into
 its own section.
 
+## [0.3.5-alpha] - 2026-11-23
+
+### Changed
+
+- **A green merge to `main` that bumps `VERSION` publishes the release.**
+  `auto-release.yml` runs when CI passes on `main`. If `v$VERSION` is not a
+  tag yet, it checks the changelog and the version order, tags the commit and
+  calls `release.yml`, which publishes the binaries, the GitHub release and the
+  `ghcr.io` image. Merges that leave `VERSION` alone publish nothing.
+- **Before 1.0, every release is the Latest release and `:latest`.** An
+  `-alpha` used to be a GitHub pre-release that never moved the image's
+  `:latest`, so both stayed on 0.1.2. From 1.0 on only a plain `vX.Y.Z` does.
+  The install examples now follow the latest release instead of naming one.
+- **Dependabot keeps Go modules, frontend packages, GitHub Actions and base
+  images current**, with one grouped PR per ecosystem a day.
+- **Node.js 26.13.1 LTS.** `.node-version` and the Dockerfile's frontend stage
+  move from Node.js 24.21.0 to 26.13.1, the current LTS line (Lithium). The
+  `golang:1.27.4-trixie` and `debian:trixie-slim` image digests move to the
+  current builds of the same tags.
+- **Analysis tools at their latest releases.** golangci-lint v2.14.0 -> v2.15.0
+  and govulncheck v1.9.0 -> v1.10.0.
+- **Go modules at their latest releases.** go-nvml v0.13.4-1, ghw v0.27.0,
+  gopsutil v4.26.10, Wails v2.17.1, `go.yaml.in/yaml/v3` v3.0.6,
+  `golang.org/x/mod` v0.43.0, `golang.org/x/net` v0.63.0, `golang.org/x/sys`
+  v0.50.0, and every indirect module. No call site changed. go-nvml's NVML
+  header adds a second die sensor, `TEMPERATURE_GPU_MAX`; memory temperature
+  still comes from `FI_DEV_MEMORY_TEMP`.
+- **Dashboard dependencies at their latest releases.** @playwright/test 1.65.1,
+  svelte 5.59.1, svelte-check 4.7.8, @sveltejs/vite-plugin-svelte 7.3.2,
+  tailwindcss and @tailwindcss/vite 4.3.5, daisyui 5.8.2 and @types/node 26.6.6.
+  The postcss override moves from 8.5.26 to 8.5.33, because 8.5.26 sat below
+  vite 8.3.8's own `^8.5.32` requirement. TypeScript stays at 6.0.3:
+  svelte-check 4.7.8 rejects TypeScript 7 unless TypeScript 6 is installed
+  beside it and its experimental `--tsgo` flag is used.
+- **The Permissions-Policy header no longer names `browsing-topics`.**
+  Chromium 159, the browser Playwright 1.65.1 drives, no longer has the Topics
+  API, and it logged a warning about the unrecognised feature on every page
+  load. The header lists only features Chromium recognises.
+
+### Fixed
+
+- **The Cinnamon applet keeps a 500 ms or 1 minute update interval when it is
+  updated.** The interval was a spinbutton bounded at 500 and 60000 ms.
+  Cinnamon's settings upgrade keeps a spinbutton value only when it lies
+  strictly between those bounds, so an applet update reset both values to
+  1000 ms. The setting is now a dropdown of exactly the intervals the server
+  accepts, and Cinnamon keeps a dropdown value that is still one of the
+  options. The desktop test now checks both the upgrade path and a saved
+  settings file.
+
 ## [0.3.4-alpha] - 2026-11-23
 
 ### Security
