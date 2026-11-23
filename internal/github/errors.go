@@ -1,4 +1,4 @@
-package gitea
+package github
 
 import "strconv"
 
@@ -11,12 +11,12 @@ type RequestError struct {
 }
 
 func (e *RequestError) Error() string {
-	return "gitea: " + e.Method + " " + e.Path + ": " + e.Cause.Error()
+	return "github: " + e.Method + " " + e.Path + ": " + e.Cause.Error()
 }
 
 func (e *RequestError) Unwrap() error { return e.Cause }
 
-// APIError reports a request Gitea answered with a status other than 2xx.
+// APIError reports a request GitHub answered with a status other than 2xx.
 type APIError struct {
 	Method string
 	Path   string
@@ -25,7 +25,7 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	msg := "gitea: " + e.Method + " " + e.Path + ": HTTP " + strconv.Itoa(e.Status)
+	msg := "github: " + e.Method + " " + e.Path + ": HTTP " + strconv.Itoa(e.Status)
 	if e.Body != "" {
 		msg += ": " + e.Body
 	}
@@ -38,7 +38,7 @@ type LabelNotFoundError struct {
 }
 
 func (e *LabelNotFoundError) Error() string {
-	return "gitea: the repository has no label " + strconv.Quote(e.Label)
+	return "github: the repository has no label " + strconv.Quote(e.Label)
 }
 
 // LabelNotAppliedError reports an issue that was filed but does not carry its
@@ -50,6 +50,6 @@ type LabelNotAppliedError struct {
 }
 
 func (e *LabelNotAppliedError) Error() string {
-	return "gitea: issue #" + strconv.FormatInt(e.Issue, 10) + " was filed but label " +
+	return "github: issue #" + strconv.FormatInt(e.Issue, 10) + " was filed but label " +
 		strconv.Quote(e.Label) + " did not stick; label it by hand"
 }
