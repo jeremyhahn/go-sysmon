@@ -8,6 +8,16 @@ on:
       version:
         description: 'Version to release (e.g. v0.2.0)'
         required: true
+  # auto-release.yml calls this once CI is green on a main commit whose VERSION
+  # has no tag yet. It creates the tag first, so everything below sees the same
+  # tag a manual run would. A tag pushed with GITHUB_TOKEN starts no workflow,
+  # which is why this is a call and not a tag push.
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to release (e.g. v0.2.0)'
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -31,6 +41,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
       sha: ${{ steps.release.outputs.sha }}
+      latest: ${{ steps.release.outputs.latest }}
     steps:
       # A manual run releases the tag it names, so that tag is what is verified.
       - uses: actions/checkout@v7
@@ -99,10 +110,22 @@ jobs:
             echo "::error::${RELEASE_TAG} names $(git rev-parse HEAD), which is not on main. Merge it, then tag the commit on main."
             exit 1
           }
+          # Whether this release becomes GitHub's Latest release and the
+          # image's :latest. Before 1.0 every release does, -alpha included,
+          # so the repository and `docker pull ...:latest` show what is
+          # current (owner ruling 2026-11-23). From 1.0 on only a plain
+          # vX.Y.Z does, and a pre-release is published as one.
+          version="${RELEASE_TAG#v}"
+          case "${version}" in
+            0.*) latest=true ;;
+            *-*) latest=false ;;
+            *) latest=true ;;
+          esac
           {
             echo "tag=${RELEASE_TAG}"
-            echo "version=${RELEASE_TAG#v}"
+            echo "version=${version}"
             echo "sha=$(git rev-parse HEAD)"
+            echo "latest=${latest}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Run the release gate
@@ -315,14 +338,12 @@ jobs:
           IMAGE="ghcr.io/${{ github.repository }}"
           IMAGE="$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')"
           VERSION="${{ needs.verify.outputs.version }}"
-          # :latest is the stable image. A pre-release (-alpha or -rc.N: any
-          # version with a hyphen; check-changelog has already refused every
-          # other shape) never moves it.
+          # :latest follows the verify job's one decision: every release
+          # before 1.0, and from 1.0 on only a plain vX.Y.Z.
           tags=(-t "${IMAGE}:${VERSION}")
-          case "${VERSION}" in
-            *-*) ;;
-            *) tags+=(-t "${IMAGE}:latest") ;;
-          esac
+          if [ "${{ needs.verify.outputs.latest }}" = true ]; then
+            tags+=(-t "${IMAGE}:latest")
+          fi
           # One digest file per architecture, named for the digest. Collect
           # them into an array rather than relying on an unquoted expansion to
           # word-split, which is what shellcheck objects to (SC2046) and is
@@ -424,8 +445,12 @@ jobs:
           body_path: NOTES.md
           files: artifacts/*
           draft: false
-          # Any pre-release suffix (-alpha, -rc.N); only a plain vX.Y.Z is not.
-          prerelease: ${{ contains(needs.verify.outputs.tag, '-') }}
+          # The verify job's one decision: before 1.0 every release is the
+          # Latest release; from 1.0 on a -alpha or -rc.N is a pre-release.
+          # `legacy` lets GitHub pick Latest by date and SemVer, so re-running
+          # an older release never takes Latest from a newer one.
+          prerelease: ${{ needs.verify.outputs.latest != 'true' }}
+          make_latest: ${{ needs.verify.outputs.latest == 'true' && 'legacy' || 'false' }}
           generate_release_notes: true
 
   # The Gitea equivalent of build + image + publish, in one job.

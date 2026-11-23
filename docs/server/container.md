@@ -42,7 +42,7 @@ docker run -d --name sysmon \
   -v /sys:/sys:ro \
   -v /sys/fs/cgroup:/sys/fs/cgroup:ro \
   -v /etc/os-release:/etc/os-release:ro \
-  ghcr.io/jeremyhahn/go-sysmon:0.3.4-alpha \
+  ghcr.io/jeremyhahn/go-sysmon:latest \
   serve --addr :8080
 ```
 
@@ -156,9 +156,9 @@ mapping.
 
 ## The image
 
-- `ghcr.io/jeremyhahn/go-sysmon:0.3.4-alpha`, the current release
-- `:latest` is always the newest stable release: an `-alpha` release is tagged
-  with its version only, so `:latest` stays on the last stable version
+- `ghcr.io/jeremyhahn/go-sysmon:<version>` for every release, e.g. `:0.3.4-alpha`. Pin one in production
+- `:latest`, which until 1.0 follows every release, `-alpha` included. From
+  1.0 on it follows only stable `vX.Y.Z` releases
 - linux/amd64 and linux/arm64
 - ~100 MB, Debian-based
 
@@ -180,7 +180,7 @@ spec:
   hostNetwork: true
   containers:
     - name: sysmon
-      image: ghcr.io/jeremyhahn/go-sysmon:0.3.4-alpha
+      image: ghcr.io/jeremyhahn/go-sysmon:latest
       args: ["serve", "--addr", ":8080"]
       securityContext:
         privileged: true     # only if you want SMART; see above

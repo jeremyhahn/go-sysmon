@@ -13,7 +13,7 @@
 
 services:
   sysmon:
-    image: ghcr.io/jeremyhahn/go-sysmon:0.3.4-alpha
+    image: ghcr.io/jeremyhahn/go-sysmon:latest  # or pin a release, e.g. :0.3.4-alpha
     container_name: sysmon
     restart: unless-stopped
 
