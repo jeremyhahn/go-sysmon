@@ -9,7 +9,9 @@
 - **Go modules at their latest releases.** go-nvml v0.13.4-1, ghw v0.27.0,
   gopsutil v4.26.10, Wails v2.17.1, `go.yaml.in/yaml/v3` v3.0.6,
   `golang.org/x/mod` v0.43.0, `golang.org/x/net` v0.63.0, `golang.org/x/sys`
-  v0.50.0, and every indirect module. No call site changed.
+  v0.50.0, and every indirect module. No call site changed. go-nvml's NVML
+  header adds a second die sensor, `TEMPERATURE_GPU_MAX`; memory temperature
+  still comes from `FI_DEV_MEMORY_TEMP`.
 - **Dashboard dependencies at their latest releases.** @playwright/test 1.65.1,
   svelte 5.59.1, svelte-check 4.7.8, @sveltejs/vite-plugin-svelte 7.3.2,
   tailwindcss and @tailwindcss/vite 4.3.5, daisyui 5.8.2 and @types/node 26.6.6.
