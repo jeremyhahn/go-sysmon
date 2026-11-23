@@ -63,7 +63,7 @@ RUN go build -trimpath -tags nvml \
 # --- runtime ----------------------------------------------------------------
 # Debian rather than Alpine: CGO means the binary is linked against glibc, and
 # a musl base would need a separate toolchain for no real gain.
-FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # curl is here for the healthcheck only. The image has no shell-based tooling
 # otherwise, and "is the process alive" is a weak check for a monitor: the
