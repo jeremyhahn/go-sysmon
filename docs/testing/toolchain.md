@@ -1,6 +1,6 @@
 # Staying on the latest toolchain
 
-> **Status: NORMATIVE** · Scope: Go and tool versions · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: Go and tool versions · Last verified: 2026-11-23
 > Conflicts with this document are defects. Fix them here first.
 
 Owner rule, 2026-09-22: go-sysmon uses the latest stable release of everything
@@ -45,8 +45,8 @@ image and CI build with the same Node.js.
 - Every versioned GitHub-hosted runner label (`ubuntu-26.04`,
   `ubuntu-26.04-arm`) anywhere in a workflow's values: `runs-on`, a matrix
   entry, or a quoted label inside a `runs-on` expression. `ubuntu-latest` is
-  not one. On the Gitea plane it is a self-hosted runner label, which is
-  company infrastructure.
+  not one: it names whichever release GitHub currently serves, so there is
+  nothing to pin.
 
 A floating tag fails, and so do these:
 
@@ -152,34 +152,36 @@ A URL that is not absolute, has no host, or uses a scheme the source cannot be
 fetched over is a usage error (exit 2) before anything is fetched.
 
 The integration suite (`test/integration/tools`) runs the command this way,
-against in-process stand-ins for every source, a module proxy and a Gitea API.
+against in-process stand-ins for every source, a module proxy and the GitHub
+REST API.
 
 check-latest is not in `make lint` or `ci.yml`. An upstream release is not a
 defect in whatever PR happens to be open, and it must not fail one.
 
 ## The daily workflow
 
-`.github/workflows/check-latest.yml` runs `make check-latest` at 05:17 UTC
-with `-file-issue`. When something lags, it files one issue as the project
-agent, using the `AGENT_TOKEN` secret, as `automerge.yml` does (approved 2026-09-24):
+`.github/workflows/check-latest.yml` runs `make check-latest` daily at 05:17
+UTC with `-file-issue`. When something lags, it files one issue through the
+GitHub REST API with the workflow's own `GITHUB_TOKEN` (`issues: write`,
+`contents: read`):
 
-- The issue is labelled `task:ready`. The label is read back after filing, and
-  applied again if Gitea dropped it.
+- The issue is labelled `task:ready`, a label the repository must already
+  have: without it nothing is filed and the run fails. The label is checked on
+  the issue GitHub returns, and applied again if GitHub dropped it.
 - It files nothing while an earlier issue is open. It finds that issue by a
   marker comment in the body, so editing the title does not produce a
-  duplicate.
+  duplicate. It never comments on, edits or closes an issue: a person closes
+  it once the pins are bumped, and the next lag files a new one.
 - The run fails only when an item could not be checked. A lag goes into the
   issue and the run stays green.
 
 It also runs on `workflow_dispatch`, with a `dry_run` input, and on pull
 requests that change the check itself. Pull-request runs are always dry runs.
 A dry run still looks for an open issue, then prints the issue it would file
-and files nothing. To see one locally:
+and files nothing. To see one locally (`-github-api` defaults to
+`https://api.github.com`, and the token is read from `GITHUB_TOKEN`):
 
 ```bash
-GITEA_TOKEN=... make check-latest CHECK_LATEST_FLAGS="-file-issue -dry-run \
-  -gitea-api http://git.example.internal/api/v1 -repo jeremyhahn/go-sysmon"
+GITHUB_TOKEN=$(gh auth token) make check-latest \
+  CHECK_LATEST_FLAGS="-file-issue -dry-run -repo jeremyhahn/go-sysmon"
 ```
-
-The job does not run on the github.com mirror, because that mirror has neither
-the Gitea API nor the agent's token.

@@ -1,6 +1,6 @@
 # CI tiers
 
-> **Status: REFERENCE** · Last verified: 2026-10-21
+> **Status: REFERENCE** · Last verified: 2026-11-23
 > As-built description of when each `ci.yml` job runs (#267, handbook
 > `ci-standard.md` §8).
 
@@ -22,26 +22,25 @@ result.
 
 The unit suite runs once, under `-race` (`make test`), in the PR tier.
 
-The latest-version check is its own workflow, `check-latest.yml`, run with
-`workflow_dispatch` and on a PR that changes the check ([toolchain](toolchain.md)).
+The latest-version check is its own workflow, `check-latest.yml`, run daily on
+a schedule, with `workflow_dispatch`, and on a PR that changes the check
+([toolchain](toolchain.md)).
 
 ## Running the full tier on a pull request
 
 Put the `ci:full` label on the PR when it is opened; every later push then runs
 the full tier while the label stays on. Adding the label to an open PR starts no
 run by itself (the next push picks it up): `ci.yml` does not listen for
-`labeled` or `unlabeled`. The factory's
-`train-pr` sets every label in the create call, and Gitea 1.27.1 turns each
-label add or remove into a `labeled` event, so listening for it would start a
-run per label. To run the full tier on a PR that is already open, dispatch
-`ci.yml` with `workflow_dispatch` on its branch.
+`labeled` or `unlabeled`, which would start a run per label change. To run the
+full tier on a PR that is already open, dispatch `ci.yml` with
+`workflow_dispatch` on its branch.
 
 The workflow reads the label from the PR's label list
-(`github.event.pull_request.labels.*.name`), never from `github.event.label`:
-Gitea 1.27 sends `label_updated` with no label object.
+(`github.event.pull_request.labels.*.name`), never from `github.event.label`,
+which only a `labeled` event carries.
 
-## No scheduled runs
+## Scheduled runs
 
-No workflow has a `schedule:` trigger. What used to run on a timer,
-`desktop.yml`'s real Cinnamon session and `check-latest.yml`, is started with
-`workflow_dispatch`, as is a nightly full-tier run of `ci.yml`.
+`check-latest.yml` is the only workflow with a `schedule:` trigger: it runs
+daily at 05:17 UTC. `desktop.yml`'s real Cinnamon session and a nightly
+full-tier run of `ci.yml` are started with `workflow_dispatch`.

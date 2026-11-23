@@ -50,7 +50,7 @@ Every feature, its requirements and its status are in the
 | [Integration tests](testing/integration.md) | The devcontainer the integration suite runs in, and its make targets |
 | [Build shapes](testing/build-shapes.md) | Every build-tag set the project ships, and the gates that vet, lint and test each one |
 | [CI tiers](testing/ci-tiers.md) | Which CI jobs every pull request runs, which run only on `main`, on demand or with the `ci:full` label, and how CI Passed gates both |
-| [CI failure artifacts](testing/ci-artifacts.md) | What a failed CI job keeps (Playwright traces, screenshots and error context, Go test logs, desktop session logs) and how to download it from Gitea or GitHub |
+| [CI failure artifacts](testing/ci-artifacts.md) | What a failed CI job keeps (Playwright traces, screenshots and error context, Go test logs, desktop session logs) and how to download it |
 | [Latest toolchain](testing/toolchain.md) | Keeping Go, the dev tools, Node.js, the base images and the actions on their latest stable release, and the daily check that files an issue when one falls behind |
 
 ## Building, testing, releasing
@@ -68,7 +68,13 @@ Every feature, its requirements and its status are in the
 
 The workflows themselves are `.github/workflows/ci.yml`,
 `.github/workflows/auto-release.yml` and `.github/workflows/release.yml`. `make ci` runs the same targets in the same
-order, so a green local run means a green CI run.
+order, so a green local run means a green CI run. GitHub is the only forge.
+
+`.github/workflows/dependabot-automerge.yml` turns on GitHub's native
+auto-merge (squash) for each Dependabot PR. Branch protection requires
+**CI Passed**, so a Dependabot PR merges once CI is green and not before. The
+workflow runs on `pull_request_target` for PRs Dependabot opened, and never
+checks out the PR's code.
 
 `release.yml` publishes a release: the binaries and checksums, the GitHub
 release, and the multi-arch `ghcr.io/jeremyhahn/go-sysmon` image. Before it
@@ -105,28 +111,6 @@ decides.
 To re-run a published release, start `release.yml` by hand with the tag
 (`gh workflow run release.yml -f version=v0.3.4-alpha`). Pushing a `v*` tag
 yourself also still starts it.
-
-#### The Gitea release targets
-
-`make release-alpha`, `make release-candidate` and `make release` predate the
-move to GitHub. They tag through `agent-git.sh` and push to the `dev` Gitea
-remote. The three release targets run the one `scripts/release.sh`. The version is
-explicit, and each target refuses the other kinds (`release-alpha` takes only
-`vX.Y.Z-alpha`, `release-candidate` only `vX.Y.Z-rc.N`, `release` only
-`vX.Y.Z`). Set `AGENT_GIT` (the commit-signing wrapper; it has no default and
-the release fails closed without it) in the environment or a gitignored
-`local.mk`, and give `FORGE_API_URL`, `FORGE_REPOSITORY` and a read-only
-`FORGE_TOKEN` so the script can read the forge's combined status for `main`.
-
-Before it writes anything the script refuses: a version that is the wrong kind
-or not newer than `VERSION` and every `v*` tag; a tag that exists locally or on
-`dev`; a dirty tree; a `HEAD` that is not `dev`'s freshly fetched `main`; and a
-`main` whose combined status is not green (or cannot be read). It then writes
-`VERSION`, folds `changelog.d/` into `CHANGELOG.md`
-(`make changelog-assemble`), and runs `make check-changelog`, which is what
-`release.yml`'s verify job runs, so a tag it pushes is not refused there. One
-signed commit and one `--atomic` push of `main` and the tag to `dev` follow;
-pushing the tag starts `release.yml`.
 
 ## Documentation layout
 

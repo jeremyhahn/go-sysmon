@@ -55,7 +55,8 @@ and each remaining slash replaced by a dash. For example, `pkg/collector` is
 "Before" was measured on `release-candidate` at the start of #167
 (2026-09-24), and "after" once #167's tests landed. Unit
 coverage merges every test shape. Integration coverage comes from the suite in
-the devcontainer on gpu-host.
+the devcontainer on gpu-host. `internal/github` was added on 2026-11-23 and
+has no "before"; its figures were measured that day.
 
 - **No tests:** the package has no test files, so nothing measures it.
 - **Not reached:** no binary the integration suite runs contains the package.
@@ -70,7 +71,7 @@ the devcontainer on gpu-host.
 | `internal/await` | 100.0% | 100.0% | 33.3% | 33.3% (test helper, exempt) |
 | `internal/buildtags` | 99.1% | 99.1% | not reached | 98.2% |
 | `internal/deadpeer` | 90.0% | 90.0% | not reached | 38.3% (test helper, exempt) |
-| `internal/gitea` | 92.3% | 92.3% | not reached | 94.5% |
+| `internal/github` | new | 97.4% | new | 94.8% |
 | `internal/pins` | 94.7% | 94.7% | not reached | 95.1% |
 | `internal/tsgen` | 91.6% | 91.6% | not reached | 92.1% |
 | `pkg/alert` | 92.1% | 92.1% | 56.3% | 65.0% (below the floor, owner-approved) |
