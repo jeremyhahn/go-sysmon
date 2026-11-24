@@ -74,10 +74,8 @@ which one it is:
 | `monitor has not collected a snapshot yet` | The poll loop is running and its first collection has not finished. Ordinary on the way up, and it will not be long. |
 | `monitor is not running`                   | Nothing is collecting and nothing has been collected.                       |
 
-Both used to read `monitor is not running`, which named the rarer of the two
-causes and sent readers after a lifecycle bug during an ordinary warm-up
-(#33). The status code, the schema and every field are unchanged; only the
-text of the 503 body is new, and it was never a value to branch on.
+The status code is the same for both (#33); the body text is not a value to
+branch on.
 
 Field-by-field detail is in the [types reference](../types/reference.md).
 
@@ -91,10 +89,10 @@ instead of `/api/snapshot` (#76).
 
 ```json
 {
-    "hostname": "ci-node-1",
+    "hostname": "node-a",
     "version": "0.2.0-alpha",
     "uptime_seconds": 864000,
-    "node_name": "ci-node-1",
+    "node_name": "node-a",
     "collection_interval_ms": 1000,
     "git_commit": "a46f6cf",
     "build_date": "2026-09-22T12:00:00Z",
@@ -265,7 +263,7 @@ authentication of its own, and a peer's URL is its scheme, address and port on
 the internal network. A node is addressed by `name` everywhere, including
 `/api/fleet/{name}/...`; the URL stays in the aggregator's configuration and
 poller. A peer's `error` is worded without the address too: `fleet: request to
-peer fs failed: connection refused`, not the transport's `Get
+peer node-a failed: connection refused`, not the transport's `Get
 "http://198.51.100.10:8081/api/summary": dial tcp …`. The reasons are a fixed
 set — `connection refused` and the kernel's other socket errors, `timed out`,
 `host name not found`, `certificate signed by an unknown authority`, `peer
@@ -547,9 +545,9 @@ Most entries are gauges, queried as a plain selector. A few are **counters** —
 running total, and drawn in **bytes per second**:
 
 ```
-rate(sysmon_swap_out_pages_total{instance="fs"}[120s])
-  * sysmon_memory_page_size_bytes{instance="fs"}
-  and sysmon_swap_out_pages_total{instance="fs"}
+rate(sysmon_swap_out_pages_total{instance="node-a"}[120s])
+  * sysmon_memory_page_size_bytes{instance="node-a"}
+  and sysmon_swap_out_pages_total{instance="node-a"}
 ```
 
 A cumulative total drawn over time is a line that only rises, with a cliff at
@@ -671,7 +669,7 @@ Answers one metric over one date range, for one node.
 ```json
 {
   "enabled": true,
-  "node": "fs",
+  "node": "node-a",
   "metric": "disk_used",
   "label": "Filesystem used",
   "unit": "percent",

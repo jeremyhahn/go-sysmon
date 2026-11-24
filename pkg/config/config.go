@@ -144,8 +144,8 @@ func (f Fleet) Timeout() time.Duration {
 }
 
 // DefaultHeadroomTarget is the utilisation fleet headroom is computed against
-// when fleet.headroom_target is not set: about 80% busy, the level a
-// coordinator keeping nodes loaded but not swapping aims at (#239).
+// when fleet.headroom_target is not set: about 80% busy, loaded but not
+// swapping (#239).
 const DefaultHeadroomTarget = 0.8
 
 // HeadroomTarget returns the utilisation target fleet headroom is computed
@@ -243,10 +243,10 @@ type Server struct {
 // peer's past).
 type Prometheus struct {
 	// RemoteWriteURL is the receiver this node pushes its own metrics to, e.g.
-	// http://mon0:9090/api/v1/write. Empty disables the exporter.
+	// http://prometheus:9090/api/v1/write. Empty disables the exporter.
 	RemoteWriteURL string `mapstructure:"remote_write_url"`
 	// QueryURL is the base address of a Prometheus to read ranges back from,
-	// e.g. http://mon0:9090 -- the server, not one of its endpoints. Empty
+	// e.g. http://prometheus:9090 -- the server, not one of its endpoints. Empty
 	// disables the history API, and the dashboard offers no date range.
 	QueryURL string `mapstructure:"query_url"`
 	// SampleIntervalMs is how often a set of samples is taken for pushing. It
@@ -588,8 +588,8 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 	// Both URLs are held to the same standard as a peer URL, and for the same
 	// reasons. A credential embedded in one would be stored in memory and
 	// rendered into the settings view, which has no authentication of its own;
-	// a string that parses but cannot be fetched -- "mon0:9090", whose scheme
-	// is "mon0" -- would leave the service starting cleanly while every push
+	// a string that parses but cannot be fetched -- "prometheus:9090", whose
+	// scheme is "prometheus" -- would leave the service starting cleanly while every push
 	// silently failed.
 	if err := checkPromURL("prometheus.remote_write_url", c.Prometheus.RemoteWriteURL); err != nil {
 		return err
@@ -635,13 +635,11 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 	peers := c.Fleet.Peers[:0]
 	seen := make(map[string]string, len(c.Fleet.Peers))
 	for i, p := range c.Fleet.Peers {
-		// A peer must be named (owner ruling 2026-09-23, refining #37 under
-		// #120). An unnamed peer used to take its URL's host as its name, and
-		// the name is the one thing about a peer the fleet view, its routes and
-		// its history publish -- so the default put the peer's address back on
-		// the unauthenticated wire as its routing key, the exposure #120
-		// removed. It is checked first, and reported by position, because the
-		// entry has nothing else that may be quoted.
+		// A peer must be named (#37, #120): the name is what the fleet view,
+		// its routes and its history publish, and defaulting it to the URL's
+		// host would put the peer's address on the unauthenticated wire. It is
+		// checked first, and reported by position, because the entry has
+		// nothing else that may be quoted.
 		if p.Name == "" {
 			return &PeerUnnamedError{Position: i + 1}
 		}
@@ -679,7 +677,7 @@ func (c *Config) normalize(sources map[string]types.ConfigSource) error {
 
 		// A peer's name is its fleet-wide identity: the name that node calls
 		// itself (its fleet.local_name) and therefore the Prometheus instance
-		// label its history is written and queried under (ruling on #37).
+		// label its history is written and queried under (#37).
 		//
 		// A name that cannot be that label is a startup error, not a history
 		// request that 400s later or a chart that stays empty: the mistake is

@@ -241,7 +241,7 @@ var labelValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 // instance is the only caller-supplied part. It is validated against
 // nodename's rule AND escaped. The rule alone already leaves nothing to escape;
 // the escaping is underneath it rather than instead of it, so the matcher stays
-// a single literal even if the rule is ever widened (ruling on #37, 2026-09-02).
+// a single literal even if the rule is ever widened (#37).
 func (m Metric) Selector(instance string) (string, error) {
 	matcher, err := instanceMatcher(instance)
 	if err != nil {
@@ -346,7 +346,7 @@ const rateFloorGaps = 2
 // are left-open, (t-w, t]. With no two samples more than gap apart, the last
 // sample at or before t is later than t-gap, and the one before it is later
 // than t-2*gap: both are inside a window of 2*gap. A lost write or a slow
-// collection is not a reason to widen this, because gap is MEASURED from the
+// collection is not a reason to widen this, because gap is measured from the
 // samples actually stored (Querier.SampleGap), so it already includes them.
 func RateWindow(step, gap time.Duration) (time.Duration, error) {
 	if step <= 0 {

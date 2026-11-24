@@ -4,7 +4,7 @@
 #
 # Three linters in .golangci.yml hold rules with no exceptions, and a //nolint
 # directive is the one way around each that the linter cannot report, because
-# the directive IS the linter being told to be quiet:
+# the directive is the linter being told to be quiet:
 #
 #   errcheck   every error is checked, in production and test code alike
 #              (#196, #207). Seven `defer s.Close() //nolint:errcheck` sat in

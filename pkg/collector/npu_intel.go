@@ -19,24 +19,17 @@ var npuDriverReaders = map[string]npuDriverReader{
 }
 
 // readIntelVPUCounters reads the attributes intel_vpu exposes for Intel NPUs
-// (Meteor Lake onwards; measured on Arrow Lake). Every read here can resume a
+// (Meteor Lake onwards). Every read here can resume a
 // runtime-suspended device, so the caller must only call it while the
 // accelerator is already awake.
 //
-// intel_vpu does NOT implement the DRM usage-stats fdinfo interface. Measured
-// 2026-09-16 against a live client -- an OpenVINO model server holding
-// /dev/accel/accel0 -- whose fdinfo carried pos/flags/mnt_id/ino and not one
-// drm- key. So util_percent is structurally zero on Intel NPUs however busy the
-// hardware is, and the client list is the available signal: the collector still
-// reports WHICH processes hold the accelerator, just not how much time they
-// spent on it. That costs privilege, because readlink on another user's file
-// descriptors does not work unprivileged.
+// intel_vpu does not implement the DRM usage-stats fdinfo interface, so
+// util_percent is always zero on Intel NPUs and the client list is the
+// available signal: which processes hold the accelerator, not how much time
+// they spent on it. Reading another user's file descriptors needs privilege.
 //
-// npu_busy_time_us is returned as the raw counter it is. The driver documents
-// it as time spent executing jobs, but on Arrow Lake it was measured advancing
-// at 98.8% of resumed time with no client holding the device, and its lifetime
-// total sat within 2% of runtime_active_time -- it follows D0 residency, not
-// work. types.NPUInfo explains why no percentage is derived from it.
+// npu_busy_time_us is returned as the raw counter. It follows D0 residency,
+// not work; types.NPUInfo explains why no percentage is derived from it.
 func readIntelVPUCounters(devPath string) npuCounters {
 	return npuCounters{
 		busyTimeUs:  readSysfsUint64(filepath.Join(devPath, "npu_busy_time_us")),

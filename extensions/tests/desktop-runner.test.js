@@ -304,15 +304,10 @@ test("a failed run keeps the log that explains it", () => {
     assert.match(run.logs["system-bus.log"] ?? "", /Unknown username "whoopsie"/);
 });
 
-// Job 42277, 2026-09-03: Eval answered and the panel existed before
-// AppletManager.init() had resolved, so a one-shot "is the applet registered"
-// check ran 55 ms too early and failed on a desktop that was about to be fine.
-//
-// The stand-in finishes starting on a poll count, not after a delay, and the
-// runner's wait checks at least WAIT_MIN_POLLS (3) times however slow the host
-// is, so a session that needs its third poll is waited for deterministically.
-// Its timeout alone once decided, and a starved CI runner reported this very
-// session as never starting.
+// The applet can register after Eval answers. The stand-in finishes starting
+// on a poll count, not after a delay, and the runner's wait checks at least
+// WAIT_MIN_POLLS (3) times however slow the host is, so a session that needs
+// its third poll is waited for deterministically.
 test("a session still loading its applets is waited for, not failed", () => {
     const run = runRunner({ runningAfter: "2" });
 
@@ -400,7 +395,7 @@ for (const line of [
     });
 }
 
-// The owner-ruled exemption (2026-09-22): muffin's DPMS probe on a server that
+// The first exemption: muffin's DPMS probe on a server that
 // cannot have DPMS. Exactly this line, and only this line, passes.
 test("the exact DPMS probe line is the one exempt line", () => {
     const dpms = 'Xlib:  extension "DPMS" missing on display ":99".';
@@ -420,7 +415,7 @@ test("the exempt line does not hide another problem beside it", () => {
     assert.ok(!run.stdout.includes(`  ${dpms}`), "the exempt line was reported as a problem");
 });
 
-// The second exemption (owner ruling 2026-09-23): XApp's designed fallback
+// The second exemption: XApp's designed fallback
 // with switcheroo-control absent. GLib's pid and timestamp vary; everything
 // else must match byte for byte.
 const XAPP_FALLBACK =
@@ -438,7 +433,7 @@ test("the exact XApp no-switcheroo fallback line is exempt, whatever its pid and
 // Near misses of the XApp exemption, and the lines XApp logs on its other
 // paths: every one must still fail.
 for (const line of [
-    // the buggy no-default-GPU path the ruling avoids
+    // the buggy no-default-GPU path the exemption avoids
     "(cinnamon:120): XApp-CRITICAL **: 02:18:34.593: Could not get gpu info from switcheroo proxy: (0): No default GPU exists.",
     "(cinnamon:120): GLib-GIO-CRITICAL **: 02:18:34.593: g_task_return_boolean: assertion '!task->ever_returned' failed",
     // the same message at another level
@@ -612,7 +607,7 @@ for (const [name, scenario, reason] of [
     ["a host GPU showing through", { hostGpus: ["card0"] }, "the host's GPUs are visible in DRM_DIR; run through `make test-extensions-desktop`, which masks them"],
     ["a system bus that reports a configuration problem", { systemBus: "complains" }, 'the system bus reported a problem: dbus[1]: Unknown username "whoopsie" in message bus configuration file'],
     ["a udisks2 daemon that never claims its name", { missingService: "org.freedesktop.UDisks2" }, "org.freedesktop.UDisks2 never appeared on the system bus"],
-    // The container must not run switcheroo-control (owner ruling 2026-09-23):
+    // The container must not run switcheroo-control:
     // XApp's exempt fallback line only describes a run without it.
     ["a switcheroo-control that is on the bus after all", { switcheroo: "running" }, "net.hadess.SwitcherooControl is on the system bus, but this container must not run switcheroo-control"],
     ["an applet that cannot be enabled", { gsettings: "fails" }, "could not enable the applet in org.cinnamon enabled-applets"],

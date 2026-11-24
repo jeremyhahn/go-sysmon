@@ -23,9 +23,7 @@ import (
 // A device-mapper node has nothing to ask; a PERC volume has drives behind it
 // that answer perfectly well; a DELLBOSS card answers that it implements no
 // SMART at all; and any ATA device on a host that withholds CAP_SYS_RAWIO is
-// simply refused. Measured on ci-node-1 (2026-09-02), all four were true of
-// different devices on the same machine at the same moment, and all four
-// rendered as "SMART N/A".
+// simply refused. All four can occur on one machine at once.
 //
 // Everything here reads world-readable sysfs, so the classification works on an
 // unprivileged service -- which matters most exactly when the reason is that
@@ -76,16 +74,12 @@ func blockSizeSectors(name string) (uint64, bool) {
 // hasNoMedium reports whether the kernel has a block device node for name with
 // nothing behind it.
 //
-// Any host with the nbd module loaded gets sixteen such stubs at boot. On
-// ci-node-1 they sorted ahead of every real disk, so the disk panel opened on
-// nbd0 through nbd15 -- zero bytes, zero rate, no SMART -- and the owner
-// reported the machine as showing no disk activity while sdb was writing
-// 70 MB/s eighteen rows further down.
+// Any host with the nbd module loaded gets sixteen such stubs at boot, and they
+// sort ahead of the real disks.
 //
 // The test is whether the kernel put a medium behind the name, not a list of
-// names to hide. On that host nbd0 still carried lifetime I/O counters from a
-// since-disconnected export, so filtering on "has it ever done I/O" would have
-// kept precisely the emptiest one.
+// names to hide or whether it has ever done I/O: a disconnected nbd device
+// keeps its lifetime counters.
 func hasNoMedium(name string) bool {
 	sectors, known := blockSizeSectors(name)
 	return known && sectors == 0
@@ -166,10 +160,9 @@ func raidControllerFor(name string) string {
 }
 
 // A refusal has two shapes, and they have different remedies. Conflating them
-// produces confident advice that cannot work: on ci-node-1 the device node
-// opens perfectly well -- the service is in the 'disk' group -- and it is the
-// passthrough ioctl that the kernel refuses, so "add the user to the disk
-// group" is exactly the wrong thing to tell the operator there.
+// produces advice that cannot work: when the device node opens (the service
+// is in the 'disk' group) and the kernel refuses the passthrough ioctl, "add
+// the user to the disk group" is the wrong remedy.
 type refusal int
 
 const (
@@ -231,19 +224,12 @@ var probeATASMARTSupported = ataSMARTSupported
 
 // smartOpenError converts a failure to open a device node into the error the
 // classifier expects, so both the ATA and NVMe paths agree on what a refusal
-// looks like. They had the same three lines copied between them.
+// looks like.
 //
-// os.ErrPermission alone covers every ordinary authorization denial the open
-// can produce, including EPERM -- which is worth stating, because it does not
-// look that way. (A seccomp filter can synthesise any errno it likes; no
-// finite check classifies that, and nothing here pretends to.) A review
-// of this code reported that a device-cgroup or LSM denial returns EPERM from
-// open(2) and would fall through unwrapped to be reported as an ioctl-time
-// refusal, naming a capability that could not help. Measured instead of
-// argued: errors.Is(&os.PathError{Err: syscall.EPERM}, os.ErrPermission) is
-// true, because Go maps both EPERM and EACCES onto ErrPermission. Adding an
-// explicit syscall.EPERM arm changes nothing, and a test proves it: mutating
-// this to check EACCES alone is what fails.
+// os.ErrPermission covers every ordinary authorization denial the open can
+// produce: Go maps both EPERM and EACCES onto it, so a device-cgroup or LSM
+// denial is classified here too. A seccomp filter can return any errno, and no
+// finite check classifies that.
 func smartOpenError(devPath string, err error) error {
 	if errors.Is(err, os.ErrPermission) {
 		return &SMARTPermissionError{DevPath: devPath}
@@ -390,11 +376,9 @@ func transportCompleted(err error) bool {
 // the capability alone will not produce a reading and the operator should know
 // that before granting one.
 //
-// Measured on ci-node-1, which is what makes the ordering safe rather than
-// merely defensible: a PERC volume on a host that DOES hold CAP_SYS_RAWIO
-// fails with "unsupported scsi opcode" -- a check condition, not EPERM -- so
-// behind_controller is still reached on every host where it is the whole
-// truth.
+// The ordering is safe: a PERC volume on a host that holds CAP_SYS_RAWIO fails
+// with "unsupported scsi opcode" (a check condition, not EPERM), so
+// behind_controller is still reached.
 func classifySMARTFailure(devName string, err error, info *types.DiskInfo) {
 	controller := raidControllerFor(devName)
 

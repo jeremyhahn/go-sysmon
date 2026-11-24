@@ -10,13 +10,9 @@ import (
 
 // The busy-host fixture the fleet benchmarks poll.
 //
-// It is shaped on ci-node-1, the fleet's largest snapshot and the host #76's
-// measurements were taken against: a 112-thread hypervisor with 1410
-// processes. Two things dominate its snapshot and both are here at full size,
-// because they are exactly what the summary and the history payload leave
-// behind: the process list, and the CPU flags, which the kernel reports once
-// per THREAD -- the same hundred-odd strings, 112 times. A fixture short of
-// either would measure a payload the aggregator never sees.
+// It is shaped on a 112-thread hypervisor with 1410 processes, with the process
+// list and the per-thread CPU flags at full size, since those are what the
+// summary and the history payload leave out.
 
 const (
 	busyThreads   = 112
@@ -38,7 +34,7 @@ avx512f avx512dq rdseed adx smap clflushopt clwb intel_pt avx512cd avx512bw avx5
 xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local dtherm ida arat pln pts
 hwp hwp_act_window hwp_epp hwp_pkg_req pku ospke avx512_vnni md_clear flush_l1d arch_capabilities`)
 
-// busyHost returns a snapshot of ci-node-1's shape.
+// busyHost returns a snapshot of the busy-host shape.
 func busyHost(host string) *types.Snapshot {
 	s := &types.Snapshot{
 		Timestamp:  time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC),

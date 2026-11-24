@@ -7,17 +7,9 @@
 // it repeatedly costs O(clients x metrics) per tick in encoding alone, before
 // the per-client gzip stream on top.
 //
-// Measured on a 24-core host with 1002 processes, one second apart:
-//
-//	full snapshot          270 kB raw, 24.7 kB gzipped on a warm stream
-//	delta                  3.4 kB raw, 0.6 kB gzipped
-//	delta, list churning   29 kB raw, 7.7 kB gzipped
-//	JSON encoding          0.85 ms per full snapshot, 0.026 ms per delta
-//
-// The encoding saving is the structural one: a delta is computed ONCE per tick
-// against the previous snapshot and the same bytes go to every client that is
-// up to date, so the cost becomes O(metrics) plus O(clients) writes rather than
-// O(clients x metrics).
+// A delta is computed once per tick against the previous snapshot and the same
+// bytes go to every client that is up to date, so the cost becomes O(metrics)
+// plus O(clients) writes rather than O(clients x metrics).
 //
 // # The format
 //

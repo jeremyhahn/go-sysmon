@@ -39,7 +39,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # udisks2 is the system bus service Cinnamon reaches at startup through GVFS's
 # volume monitor. The runner starts it on a real system bus; without it
 # Cinnamon logs a warning, and the runner fails on any warning.
-# switcheroo-control is deliberately NOT installed (owner ruling 2026-09-23).
+# switcheroo-control is not installed.
 # What it reports depends on the host's GPUs, and with them masked XApp takes
 # a buggy no-default-GPU path. Without it XApp takes its designed fallback;
 # see run-cinnamon-tests.sh.

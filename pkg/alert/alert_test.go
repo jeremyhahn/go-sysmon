@@ -648,12 +648,7 @@ func TestEvaluate_VanishedInterfacesAreForgotten(t *testing.T) {
 }
 
 // A failing drive behind a RAID controller must raise the same alert a failing
-// block device raises.
-//
-// This is the half of #45 that makes reading those drives worth doing. Without
-// it the six drives behind ci-node-1's PERC appear on the dashboard and raise
-// nothing, so a failure is visible only to somebody already looking at the
-// page -- which is not what the owner asked for when he asked to see them.
+// block device raises (#45).
 func TestEvaluate_FailingControllerMemberRaisesSMARTAlert(t *testing.T) {
 	snap := &types.Snapshot{
 		Disks: []types.DiskInfo{{
@@ -775,7 +770,7 @@ func TestEvaluate_OfflineMemberIsNamed(t *testing.T) {
 	snap := &types.Snapshot{
 		Disks: []types.DiskInfo{{
 			Name: "sdb",
-			// Deliberately NOT degraded: this is the contradiction case.
+			// Deliberately not degraded: this is the contradiction case.
 			RAID: &types.RAIDInfo{Level: "raid10", State: "active", Degraded: false,
 				TotalDevices: 2, ActiveDevices: 1},
 			Members: []types.DiskMember{
@@ -958,7 +953,7 @@ func TestMemberIdentity_MetricUsesSerialAndAlertUsesPosition(t *testing.T) {
 	metrics.Write(w, snap)
 	series := w.String()
 
-	// The alert is keyed by position and must NOT contain the serial: a serial
+	// The alert is keyed by position and must not contain the serial: a serial
 	// in the ID is the flapping identity this choice exists to avoid.
 	if !strings.Contains(alertID, "64:7") {
 		t.Errorf("alert ID %q does not carry the drive's position", alertID)
@@ -967,7 +962,7 @@ func TestMemberIdentity_MetricUsesSerialAndAlertUsesPosition(t *testing.T) {
 		t.Errorf("alert ID %q carries the serial; it would change whenever that read fails", alertID)
 	}
 
-	// The metric is labelled by serial and must NOT be labelled by position: a
+	// The metric is labelled by serial and must not be labelled by position: a
 	// position in the label is a series that silently continues under a
 	// different drive after a re-bay.
 	if !strings.Contains(series, `serial="L0J4Y3AJ"`) {
@@ -996,7 +991,7 @@ func fires(alerts []types.Alert, rule string) bool {
 }
 
 // TestEvaluate_SMARTUnreadableOnlyAfterADriveHasAnswered is the rule's entire
-// design in one test: a drive that has NEVER answered is a capability fact, a
+// design in one test: a drive that has never answered is a capability fact, a
 // drive that STOPS is an event, and only the second is worth telling anyone
 // about.
 //

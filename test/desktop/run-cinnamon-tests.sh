@@ -70,7 +70,7 @@ readonly LOG_PROBLEM_PATTERN="(WARNING|CRITICAL|ERROR) \\*\\*|JS (ERROR|WARNING)
 # to start on any other view. Overridable for the runner tests.
 readonly DRM_CLASS_DIR="${DRM_CLASS_DIR:-/sys/class/drm}"
 
-# The one exemption, by owner ruling of 2026-09-22. It is matched as a whole
+# The one exemption. It is matched as a whole
 # line, byte for byte, display included -- no pattern -- so any other Xlib
 # line, or this one on another display, still fails the run.
 #
@@ -90,9 +90,8 @@ readonly DRM_CLASS_DIR="${DRM_CLASS_DIR:-/sys/class/drm}"
 #   vkms, which means loading a module into the host kernel.
 readonly DPMS_PROBE_LINE='Xlib:  extension "DPMS" missing on display ":99".'
 
-# The second exemption, by owner ruling of 2026-09-23: XApp's designed
-# fallback when switcheroo-control is not running, which the container
-# deliberately does not run.
+# The second exemption: XApp's designed fallback when switcheroo-control is
+# not running, which the container does not run.
 #
 # Why switcheroo-control is not run: it lists only DRM cards whose driver is
 # nvidia or that udev tagged with ID_PATH_TAG (switcheroo-control 2.6,
@@ -297,12 +296,9 @@ wait_for_eval() {
 # ---- the session gate ---------------------------------------------------------
 #
 # Nothing about the applet may pass until the run has positively proven that
-# Cinnamon finished starting and loaded the applet. Without that proof an
-# applet assertion is not evidence of anything: on 2026-09-03 (job 42277) the
-# "an applet is registered" check ran 55 ms before Cinnamon logged "Loaded
-# applet sysmon-go@sysmon", failed, and was followed by passes that happened to
-# land after it. The gate replaces "check once and hope the timing is right"
-# with "wait for Cinnamon to say it is done, then check once".
+# Cinnamon finished starting and loaded the applet; a check that races the
+# startup log proves nothing. The gate waits for Cinnamon to report it is done,
+# then checks once.
 #
 # session_proven is set only when every gate check has passed. Until then
 # assert_eval reports each assertion as not run rather than evaluating it, so a
@@ -693,10 +689,9 @@ assert_eval "a click opens the popup" \
     "(function () { var applet = ${APPLET_JS}; applet.on_applet_clicked(null); return 'open: ' + applet.menu.isOpen; })()" \
     "open: true"
 
-# Counted twice on purpose -- here against a real Cinnamon session, and in
+# Counted here against a real Cinnamon session and in
 # extensions/tests/applet.test.js against the harness. Adding a section to
-# SECTION_BUILDERS means updating BOTH; the NPU section (2026-09-16) was caught
-# by this one after the harness count had already been raised.
+# SECTION_BUILDERS means updating both.
 assert_eval "popup has one submenu per section" \
     "String(${SECTION_ITEMS}.length)" \
     "10"

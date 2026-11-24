@@ -25,8 +25,8 @@ import (
 // A node that writes history more slowly than the time-series database's query
 // lookback writes series that are stale between their own samples: nothing
 // charts them (config.CheckHistoryCadence). The lookback is the database's, so
-// the check needs the database -- and the owner's ruling (2026-09-23) is that
-// the service never waits on it: START, THEN RE-CHECK WHEN REACHABLE.
+// the check needs the database, and the service never waits on it: start, then
+// re-check when reachable.
 //
 //   - At startup and on every reload the check runs as a configuration
 //     validator, against the lookback already cached -- it asks the database
@@ -128,7 +128,7 @@ func cadenceCheck(c *config.Config, lookbackAt func(base string) (time.Duration,
 }
 
 // historyCadenceValidator is the load-time half. It asks the database nothing
-// -- startup and reloads never wait on it (owner ruling, 2026-09-23) -- and
+// -- startup and reloads never wait on it -- and
 // checks against the lookback already cached: a violation it can see is
 // refused like any other bad configuration, and one it cannot check yet is
 // accepted with the check pending, for the watch to make.

@@ -78,7 +78,7 @@ func TestDetect(t *testing.T) {
 			name:       "a watermark at or above the hard limit is unreachable",
 			cgroupLine: v2Line,
 			high:       "536870912",
-			max:        "134217728", // the state the fleet was in on 2026-09-03
+			max:        "134217728", // MemoryMax below MemoryHigh
 			// Deriving from the watermark here would hand the runtime 460 MiB
 			// while the kernel kills at 128 MiB.
 			want: memlimit.Limits{
@@ -201,7 +201,7 @@ func TestDetect_Errors(t *testing.T) {
 		// Staged as a directory rather than by removing read permission,
 		// because chmod does not stop root and the suite has to behave the
 		// same for both. os.ReadFile on a directory fails with EISDIR, which
-		// is the branch under test: a read error that is NOT "not exist" and
+		// is the branch under test: a read error that is not "not exist" and
 		// must therefore be reported rather than read as an absent ceiling.
 		root := fakeRoot(t, v2Line, "", "805306368")
 		path := filepath.Join(root, "sys", "fs", "cgroup", "system.slice", "go-sysmon.service", "memory.high")

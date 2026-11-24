@@ -129,8 +129,7 @@ fi
 step "checking that port $PROBE_PORT is available"
 remote "port='$PROBE_PORT'
 	if ! command -v ss >/dev/null 2>&1; then
-		# Say so rather than reporting the port free: an absent tool is not
-		# evidence of an absent listener, and systemd will find out the hard way.
+		# An absent tool is not evidence of a free port.
 		echo \"    ss is not installed, cannot check port \$port in advance\"
 		exit 0
 	fi

@@ -1,6 +1,5 @@
-# Dependabot keeps every dependency at its latest release (owner rule
-# 2026-09-22: always latest stable). It opens one grouped PR per ecosystem a
-# day, and CI gates it like any other PR.
+# Dependabot keeps every dependency at its latest stable release. It opens one
+# grouped PR per ecosystem a day, and CI gates it like any other PR.
 #
 # The Go toolchain and Node.js are pinned in pairs that Dependabot cannot move
 # together: go.mod's go directive with the golang images, and .node-version
@@ -33,7 +32,7 @@ updates:
     # package.json pins exact versions; keep it that way.
     versioning-strategy: increase
     ignore:
-      # TypeScript 7 waits for svelte-check (owner ruling 2026-11-23). As of
+      # TypeScript 7 waits for svelte-check. As of
       # svelte-check 4.7.8 its peer range is TypeScript ^5 || ^6, and running
       # it on 7 needs TypeScript 6 and 7 installed side by side plus a --tsgo
       # flag it calls experimental. Remove this once a svelte-check release

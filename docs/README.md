@@ -45,7 +45,7 @@ Every feature, its requirements and its status are in the
 
 | Topic | What it covers |
 |-------|----------------|
-| [Where testing effort pays](testing/writing-tests.md) | Five rules learned the expensive way, with the bugs that taught them |
+| [Where testing effort pays](testing/writing-tests.md) | Six rules for where tests catch real defects, with examples |
 | [Coverage](testing/coverage.md) | How unit and integration coverage are measured per package, the 90% floor, and where each package stands |
 | [Integration tests](testing/integration.md) | The devcontainer the integration suite runs in, and its make targets |
 | [Build shapes](testing/build-shapes.md) | Every build-tag set the project ships, and the gates that vet, lint and test each one |

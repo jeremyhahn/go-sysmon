@@ -18,10 +18,9 @@ import (
 // same envelope a node with no query URL does -- Enabled=false, HTTP 200 --
 // and never a 404.
 //
-// Owner ruling, 2026-09-04: prometheus is optional and behind a build tag. The
-// dashboard hides its date picker when the catalog says history is unavailable;
+// Prometheus is optional and behind a build tag (#100). The dashboard hides its date picker when the catalog says history is unavailable;
 // on a 404 it would be looking at a failure, and the picker's absence would
-// stop being a decision and become a symptom (#100).
+// stop being a decision and become a symptom.
 //
 // The two builds are deliberately indistinguishable to a client that has no
 // history: "this node keeps no history" and "this build cannot" are the same

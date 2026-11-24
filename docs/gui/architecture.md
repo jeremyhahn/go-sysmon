@@ -43,15 +43,8 @@ The server build links three shared libraries and runs anywhere.
 | `GetVersion()`    | Version, commit and build date                   |
 | `SetInterval(ms)` | Retunes the running monitor                      |
 
-`SetInterval` adjusts the cadence in place. It used to **replace** the monitor —
-stop it, build a new one, start it — which meant the same control also discarded
-every reading the monitor had accumulated, and the binding's pointer changed
-while the streaming goroutine was reading it (guarded by an `RWMutex`, one of
-two real data races the race detector caught after this shipped).
-
-The server had always retuned in place, so one control meant two different
-things depending on which build was running, and only the desktop's version
-cleared the charts. **A control named "polling interval" that also restarts
+`SetInterval` adjusts the cadence in place, as the server does, keeping every
+reading the monitor has accumulated. **A control named "polling interval" that also restarts
 collection is a second, unnamed action** (#97). The `RWMutex` remains for `ctx`
 and the stream's cancel function; the monitor pointer no longer changes.
 
@@ -70,14 +63,8 @@ already caused bugs:
   excludes it with `@source not "../dist"`. Without that the CSS grows on every
   rebuild and a clean build and an incremental build disagree on content hashes.
 - A change to the frontend is not complete until `dist/` is rebuilt and
-  committed with it, or the embedded UI and the source drift apart. **This is
-  not hypothetical and the rule was already written when it happened**: on
-  2026-09-03 #89 changed `src/` without rebuilding, and for a day `main` carried
-  a bundle that did not contain the fleet card it had just merged -- a binary
-  built with a bare `go build` served a UI one commit behind, with green CI and
-  a correct source tree (#55). A rule nothing checks is a rule that holds until
-  someone is busy.
-  **Something checks it now** (#129): `make check-bundle-current` builds the
+  committed with it, or the embedded UI and the source drift apart (#55).
+  **A check enforces it** (#129): `make check-bundle-current` builds the
   frontend to a scratch directory and compares it against the committed copy,
   and CI runs it as its own **Bundle Currency** job, which `CI Passed` gates on.
   It happened a third time before the gate existed -- `main` served a dashboard
@@ -91,7 +78,7 @@ already caused bugs:
   flagged, because the question is whether the embedded UI matches what the
   source compiles to -- not whether someone remembered to run a command.
 
-  It is deliberately NOT part of `make lint`: it rebuilds the whole bundle,
+  It is not part of `make lint`: it rebuilds the whole bundle,
   which is a build rather than a check of source, and as its own CI job a stale
   bundle is reported as exactly that. `make lint` does need node, for
   `make check-ts`, but that type-checks and builds nothing.
@@ -143,9 +130,8 @@ and is ignored; a field renamed is simply absent and one cell renders
 `undefined`. Neither refuses the frame -- because a validator that refuses every
 frame blanks the whole dashboard and looks exactly like a connection that will
 not stay up. What is refused is a value of the wrong *kind*: `flags: "x"` where
-a list belongs, or `bytes_sent_rate: "x"`, which used to coerce through
-arithmetic and render as a plausible number while the page reported itself
-connected and current.
+a list belongs, or `bytes_sent_rate: "x"`, which would otherwise coerce through
+arithmetic and render as a plausible number.
 
 Every refusal names its path (`networks[3].flags: expected array, got string`),
 and `$lib/transport` escalates a systematically refused shape to an error that
@@ -233,7 +219,7 @@ later.
 
 `src/stores/history.svelte.ts` holds the selected range for the whole
 dashboard, and `MetricChart` is the only component that knows there are two
-modes. A panel declares what its chart IS — which catalogued metrics its series
+modes. A panel declares what its chart is — which catalogued metrics its series
 correspond to, and which device or interface it is drawing — and never which
 mode it is in.
 
@@ -280,9 +266,8 @@ whether `peerFreshness` happens to be null, since selecting a peer clears the
 freshness and leaves it null until the first poll returns. A selected peer with
 nothing back yet is not live, and neither is one whose poll **fails outright** —
 a non-2xx from the aggregator, a refused connection, a body that is not JSON.
-That last case used to update nothing at all, so the last successful reading
-kept its `reachable: true`, the `stale` badge never appeared, and the page
-presented a frozen snapshot as live in exactly the state the badge exists for. Combining the two facts is wrong in both
+That last case marks the peer unreachable, so a frozen snapshot is never shown
+as live. Combining the two facts is wrong in both
 directions. This host's panels are fed by the event stream, so `connected`
 is the question. A selected peer's are refreshed by an independent HTTP poll,
 so the stream being down says nothing about them — requiring both would tell an
@@ -321,9 +306,8 @@ because "no history here" and "half a chart" are different facts.
 Prometheus evaluates it at `start`, `start + step`, `start + 2*step` and so on,
 and an evaluation with no sample within the database's lookback before it is
 simply left out of the response. ECharts joins whatever points it is given, so
-a two-hour outage used to be drawn as a straight line between the readings
-either side of it — a smooth, plausible value across the time the node was
-gone. `lineWithBreaks` in `src/lib/history.ts` puts a null at the first missing
+without breaks a gap would be drawn as a straight line across the time the node
+was gone. `lineWithBreaks` in `src/lib/history.ts` puts a null at the first missing
 evaluation wherever two consecutive points are more than
 
 ```
@@ -399,7 +383,7 @@ worst and name the node, or show a sum with its denominator — never a mean.*
   unreachable, the search narrows to its card, which says why.
 - **Figures**: the highest CPU, memory, filesystem, load per core and
   swap-out rate, each with its node, and the hottest component with its node
-  and kind (`83.0°C ci-node-1 (GPU)`). Every component that reports a
+  and kind (`83.0°C node-a (GPU)`). Every component that reports a
   temperature counts: CPU cores, drives, GPUs and NPUs. Power is shown with
   its node count (`579.0 W across 3 of 10 nodes`), network (measured at
   each node's physical devices) with how many nodes measure it, and SMART and RAID in devices with the nodes they were
@@ -448,8 +432,8 @@ the same page.
   "index"`) says its figures are not loaded, and why, rather than showing
   zeros.
 - A selected peer whose drill-in answers `404` has left the fleet, and the
-  dashboard returns to this node. The fleet poll used to catch that from the
-  whole node list; a page cannot say whether a node is gone or elsewhere.
+  dashboard returns to this node; a page cannot say whether a node is gone or
+  elsewhere.
 
 The cards keep the per-node figures an operator checks before deciding to
 drill in. Max temp names the component kind it came from. A node with no

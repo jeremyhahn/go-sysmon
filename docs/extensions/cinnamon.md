@@ -84,8 +84,7 @@ The interval choices are exactly the ones the server accepts
 drift apart. The setting is a dropdown rather than a number box because of
 how Cinnamon upgrades settings when an applet's schema changes. It keeps a
 dropdown value that is still one of the options, but it drops a number-box
-value that sits exactly on the minimum or maximum, so 500 ms and 60000 ms
-used to reset to the default.
+value that sits exactly on the minimum or maximum.
 
 Changing the update interval changes it for every client connected to that
 server, not just this applet — there is one poll loop behind all of them.
@@ -106,9 +105,8 @@ file after the UUID rather than the numeric instance id.
    and refreshes the popup sections. The stream callback only parses the
    snapshot; it is applied from an idle source at `G_PRIORITY_DEFAULT_IDLE`,
    below Clutter's redraw priority, and a snapshot that arrives before the
-   last one was applied replaces it. Applying snapshots in the stream callback
-   used to starve Cinnamon's frame clock on a host too slow to apply one per
-   interval, and the desktop stopped painting (#232). A stream that ends shows
+   last one was applied replaces it, so a slow host cannot starve Cinnamon's
+   frame clock (#232). A stream that ends shows
    its last snapshot before reporting the disconnect.
    The popup is only brought up to date while it is open. A snapshot that
    arrives while it is closed marks it stale, and the popup catches up just

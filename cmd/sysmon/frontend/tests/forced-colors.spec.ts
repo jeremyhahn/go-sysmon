@@ -8,9 +8,7 @@ import { dashboardTab, openTab, type TabLabel } from './fixtures/tabs';
  *
  * The browser swaps author colours for a small system palette and drops
  * box-shadows and fills, so a state shown only by colour or by a shadow
- * disappears. A DataTable row marked hover and selection with inset shadows,
- * and both vanished; the active tab was marked by colour alone. Each state
- * here must still read differently from its neighbours under forced colours,
+ * disappears. Each state here must still read differently from its neighbours under forced colours,
  * which is measured on what the browser renders rather than on class names.
  */
 

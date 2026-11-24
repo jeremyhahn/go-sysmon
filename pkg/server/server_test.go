@@ -144,7 +144,7 @@ func TestHandleSnapshot_MonitorNotStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
 	}
-	// Do NOT start the monitor – no snapshot available yet.
+	// Do not start the monitor – no snapshot available yet.
 
 	s := server.New(m, ":0", nil)
 	ts := httptest.NewServer(s)

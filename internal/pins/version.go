@@ -9,7 +9,7 @@ import (
 )
 
 // Status says how a pin relates to the latest stable release of what it pins.
-// Only Current passes: the owner's rule is the latest stable release, exactly.
+// Only Current passes: a pin must be the latest stable release, exactly.
 type Status string
 
 const (

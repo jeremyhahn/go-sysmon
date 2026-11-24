@@ -6,7 +6,7 @@
 # below exists to give sysmon the host's view; each setting maps to specific
 # metrics, and they are documented in docs/server/container.md.
 #
-# This file deliberately does NOT run privileged. That costs you SMART disk
+# This file deliberately does not run privileged. That costs you SMART disk
 # health and DIMM detail; see the note at the bottom for the one-line change if
 # you want them. Run `docker compose exec sysmon sysmon-server doctor` at any
 # time and it will tell you exactly what the current settings allow.
@@ -54,14 +54,9 @@ services:
 
     # Uncomment for SMART/NVMe health, disk temperatures and DIMM detail.
     #
-    # Capabilities alone are NOT enough -- SYS_RAWIO and SYS_ADMIN with
-    # --device both still return 0 disks with SMART. This was measured, not
-    # assumed. Only full privileged access works, because the SMART ioctl needs
-    # unrestricted access to the block device.
-    #
-    # Weigh it honestly: privileged is close to root on the host. On a machine
-    # where you already trust the workloads it is reasonable; on a shared host
-    # it is not, and losing SMART is the better trade.
+    # Capabilities alone are not enough: SYS_RAWIO and SYS_ADMIN with --device
+    # still return no SMART data; the ioctl needs privileged mode. Privileged is
+    # close to root on the host, so avoid it on a shared host.
     #
     # privileged: true
 

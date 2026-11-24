@@ -225,7 +225,7 @@ func TestGetSnapshot_MonitorNotStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("monitor.New: %v", err)
 	}
-	// Do NOT start the monitor – no snapshot is available yet.
+	// Do not start the monitor – no snapshot is available yet.
 	b := NewMonitorBinding(m)
 
 	_, err = b.GetSnapshot()
@@ -339,11 +339,6 @@ func TestSetInterval_AdjustsInPlace(t *testing.T) {
 
 // TestStreamToFrontend_SendsDeltasNotSnapshots is #98's contract on the desktop
 // side: the window gets one whole snapshot and patches after it.
-//
-// It emitted the entire snapshot on every tick, which on a ten-node fleet host
-// measured 367,126 bytes per frame against a delta averaging 7,842 -- 47 times
-// the bytes for identical information, on a machine that already had a correct
-// delta hub it never called.
 func TestStreamToFrontend_SendsDeltasNotSnapshots(t *testing.T) {
 	var mu sync.Mutex
 	var names []string

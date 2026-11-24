@@ -643,7 +643,7 @@ func TestExporter_ReloadDisables(t *testing.T) {
 // TestExporter_ReloadRetargets: pointing at a different receiver has to take
 // effect without a restart, which would drop every connected browser.
 //
-// And the backlog does NOT follow. Samples buffered while the first endpoint
+// And the backlog does not follow. Samples buffered while the first endpoint
 // was unreachable belong to that endpoint; delivering them to the second after
 // a retarget would write one deployment's data into another's database, across
 // whatever administrative or tenant boundary the operator just moved the node
@@ -1079,7 +1079,7 @@ func TestExporter_SubmitWritesUnderTheSubmittedInstance(t *testing.T) {
 // blocking, an unreachable time-series database would stall peer polling and
 // the dashboard's freshness would depend on Prometheus being up.
 //
-// The bound below is deliberately NOT written as submitQueue. An earlier
+// The bound below is deliberately not written as submitQueue. An earlier
 // version asserted "accepted == submitQueue", which the queue depth satisfies
 // whatever it is set to -- raising the constant to 100,000 kept the test green
 // while destroying the property it was meant to protect. What is actually
@@ -1092,7 +1092,7 @@ func TestExporter_SubmitDropsRatherThanBlocks(t *testing.T) {
 	// blocked for good is reported as a deadlock. Nothing here depends on how
 	// fast the machine is.
 	synctest.Test(t, func(t *testing.T) {
-		// Deliberately NOT run: with no loop nothing drains the queue, so this
+		// Deliberately not run: with no loop nothing drains the queue, so this
 		// measures what a caller sees when the exporter cannot keep up. No
 		// request is ever made, so the endpoint need not exist.
 		e := NewExporter(func() Options { return fixedOptions("http://receiver.invalid/api/v1/write") },

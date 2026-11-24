@@ -12,20 +12,11 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// The fixture is a real controller's answer, not a synthetic one.
-//
-// testdata/megaraid-config-dellemc01.bin is 1120 bytes captured from
-// ci-node-1's PERC H740P Mini on 2026-09-02. Its configuration is known
-// independently -- from `smartctl --scan-open`, from the machine's own build
-// notes, and from the drives' INQUIRY responses read through the controller --
-// so the decoder can be checked against an answer nobody derived from the
-// decoder itself:
+// The fixture is a 1120-byte configuration captured from a PERC H740P Mini,
+// whose layout is known independently of the decoder:
 //
 //	target 0, "OS",     RAID1,  2 × SATA SSD,          device IDs 0 and 1
 //	target 1, "raid10", RAID10, 4 × 10K SAS HITACHI,   device IDs 6, 7, 8, 9
-//
-// A synthetic fixture would have encoded my reading of the layout and then
-// confirmed it, which is the failure mode this whole file exists to avoid.
 func realConfig(t *testing.T) []byte {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/megaraid-config-dellemc01.bin")
@@ -65,7 +56,7 @@ func TestParseControllerConfig_ReproducesTheKnownLayout(t *testing.T) {
 			numDrives: 2, spans: 1, members: []uint16{0, 1},
 		},
 		{
-			// Two spans, and BOTH reference the same four-drive array: this
+			// Two spans, and both reference the same four-drive array: this
 			// controller lays two spans over one array rather than building
 			// the volume from two. Walking spans instead of distinct arrays
 			// returns all four drives twice, which is what the first version
@@ -408,12 +399,9 @@ func TestVolumeRAIDInfo_AnOfflineVolumeIsNotOperational(t *testing.T) {
 }
 
 // TestParseArray_ReadsTheControllerVerdictOnEachDrive pins the member state
-// against the real capture. Every drive on ci-node-1 reports
-// MR_PD_STATE_ONLINE (0x18) while both its arrays are optimal, which is the
-// only value this decoder has been able to measure -- so ONLY that value counts
-// as online, and anything else reports a drive as not in service. That errs
-// toward saying an array has fewer working drives than it has, which is the
-// direction that raises attention rather than suppressing it.
+// against the real capture. Only MR_PD_STATE_ONLINE (0x18) counts as online;
+// any other state reports the drive as not in service, erring toward raising
+// attention.
 func TestParseArray_ReadsTheControllerVerdictOnEachDrive(t *testing.T) {
 	cfg, err := parseControllerConfig(realConfig(t))
 	if err != nil {
@@ -480,7 +468,7 @@ func TestVolumeRAIDInfo_UnknownSyncStateIsSilentNotSatisfied(t *testing.T) {
 		}
 	}
 
-	// And an md array, which DOES report its sync state, still alerts. The fix
+	// And an md array, which does report its sync state, still alerts. The fix
 	// must not have bought silence by making the rule unreachable.
 	syncing := &types.RAIDInfo{
 		Level: "raid1", State: "active", SyncAction: "recover", SyncProgressPercent: 42,

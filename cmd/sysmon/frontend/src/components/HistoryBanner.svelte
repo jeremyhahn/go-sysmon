@@ -1,20 +1,8 @@
 <script lang="ts">
   /**
-   * Says, unmistakably, that the charts are not live.
-   *
-   * A chart that has silently stopped updating is the same lie as a frozen peer
-   * reading — numbers that look measured and current and are neither — and here
-   * it would be self-inflicted, so this is a full-width bar rather than a
-   * subtle label. It also states the part that is easy to get wrong by
-   * omission: what the gauges and tables beside the charts are showing, since
-   * a gauge has no historical value to display.
-   *
-   * That second sentence used to read "still show live values", flatly. It is
-   * false in two states this dashboard already knows about and already reports
-   * elsewhere: an unreachable peer, whose last snapshot keeps rendering under a
-   * "stale" badge, and a dropped stream, where every panel freezes on its last
-   * frame. Putting "live" beside either of those is the failure this banner
-   * exists to prevent, printed by the banner itself.
+   * A full-width bar saying the charts are not live, and what the gauges and
+   * tables beside them show. It does not call them live: a stale peer or a
+   * dropped stream leaves them on their last reading.
    */
 
   import { history, LIVE } from "$stores/history.svelte";

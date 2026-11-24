@@ -21,12 +21,9 @@ import (
 //
 // # Why
 //
-// A nil Go slice marshals to JSON null, so a host with no NPUs used to send
-// "npus": null and an NPU with no engines "engines": null. The dashboard
-// dereferences these lists with .map, .length and spreads, and a null in any
-// of them is a thrown exception that blanks a panel. The owner's ruling on #151
-// is that the wire never carries null for a list: an empty list and "none"
-// are the same answer, and the distinction is dropped deliberately.
+// A nil Go slice marshals to JSON null, and the dashboard throws on a null
+// list. The wire never carries null for a list (#151): an empty list and
+// "none" are the same answer.
 //
 // Normalising here, by reflection, rather than at each place a collector
 // builds a list is what makes the guarantee hold for a field that does not

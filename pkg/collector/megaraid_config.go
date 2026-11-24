@@ -15,13 +15,9 @@ import (
 // place that says WHICH drives make up WHICH volume, which is what nesting the
 // members under the right volume requires.
 //
-// Everything here is pure decoding, so it is tested against a real controller's
-// reply rather than a synthetic one: testdata/megaraid-config-dellemc01.bin is
-// 1120 bytes captured from ci-node-1's PERC H740P Mini on 2026-09-02, holding
-// two arrays (four 10K SAS drives, two SATA SSDs) and the two volumes built on
-// them. The offsets below were established against that capture with the answer
-// already known from `smartctl --scan-open` and the machine's own build notes,
-// and the test asserts the decoder reproduces that answer.
+// Everything here is pure decoding, so it is tested against a reply captured
+// from a real PERC H740P Mini (two arrays, two volumes) rather than a
+// synthetic one.
 
 // Offsets in the MR_CONFIG reply header.
 const (
@@ -66,12 +62,9 @@ const (
 // mrPDStateOnline is MR_PD_STATE_ONLINE: a drive in service as part of its
 // array.
 //
-// It is the only physical-drive state named here, and the only one this decoder
-// acts on, because it is the only one measured: all six drives on ci-node-1
-// report 0x18 while both of its arrays are optimal. Counting ONLY this value as
-// active means an unrecognised state is reported as not active, which errs
-// toward saying an array has fewer working drives than it has -- the direction
-// that raises attention rather than suppresses it.
+// It is the only physical-drive state this decoder acts on. Counting only this
+// value as active reports an unrecognised state as not active, which errs
+// toward raising attention.
 const mrPDStateOnline uint16 = 0x18
 
 // MegaRAID logical drive states (MR_LD_STATE).
@@ -269,12 +262,9 @@ func parseVolume(entry []byte) megaraidVolume {
 
 // MembersOf returns every physical drive making up a volume, once each.
 //
-// EACH DISTINCT ARRAY IS VISITED ONCE, not each span, and the difference is not
-// theoretical. ci-node-1's RAID10 has spanDepth 2 and BOTH spans reference the
-// same four-drive array -- the controller models the volume as two spans laid
-// over one array rather than as two arrays -- so walking spans returns every
-// drive twice. A synthetic fixture built from "RAID10 means two arrays" would
-// have agreed with the buggy version and passed.
+// Each distinct array is visited once, not each span: a RAID10 volume can have
+// two spans that reference the same array, so walking spans would return every
+// drive twice.
 //
 // A span whose array reference does not exist contributes nothing rather than a
 // guess: a volume reported with fewer members than it has is a smaller claim

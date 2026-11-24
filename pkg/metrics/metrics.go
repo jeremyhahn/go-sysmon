@@ -261,13 +261,9 @@ func Write(m Sink, snap *types.Snapshot) {
 		m.Gauge("sysmon_npu_counters_age_seconds",
 			"Age of the carried-forward driver counters; 0 when they were read this cycle.",
 			n.CountersAgeSec, "npu", npu)
-		// NPUInfo.BusyTimeUs is deliberately NOT exported here, not even as
-		// a counter. It is a raw cumulative driver counter, but it follows D0
-		// residency rather than job execution: rate() over it is a utilisation
-		// figure pinned near 100% whenever anything keeps the NPU awake,
-		// including this monitor's own polling (measured at 98.8% of resumed
-		// time with no client on the device; see types.NPUInfo). A correctly
-		// typed counter would still invite that reading.
+		// NPUInfo.BusyTimeUs is not exported, not even as a counter: it
+		// follows D0 residency rather than job execution, so rate() over it
+		// reads near 100% whenever the NPU is awake (see types.NPUInfo).
 		// sysmon_npu_residency_percent already reports what it measures, and
 		// says so in its name. The snapshot and the API still carry the raw
 		// counter for anybody debugging a specific driver.
@@ -301,9 +297,9 @@ func Write(m Sink, snap *types.Snapshot) {
 		if d.SMARTEnabled {
 			// The drive's own health and endurance travel with the drive, so
 			// they also carry its serial. A device name is assigned at boot and
-			// NVMe names are not stable across one -- ci-node-1's 2026-08-31
-			// rebuild swapped two of four -- so a query keyed on "device" alone
-			// can join one drive's history to another's. "device" stays for the
+			// NVMe names are not stable across one, so a query keyed on
+			// "device" alone can join one drive's history to another's.
+			// "device" stays for the
 			// queries already written against it. A drive that reports no
 			// serial gets no serial label rather than an empty one: serial=""
 			// is the same label set as no serial at all, so it says nothing.
@@ -324,12 +320,9 @@ func Write(m Sink, snap *types.Snapshot) {
 			}
 		}
 		// Drives behind a hardware RAID controller. They are not block devices
-		// and have no device name, so they are labelled by SERIAL -- the only
-		// identifier that survives a reboot. ci-node-1's 2026-08-31 rebuild
-		// renamed every PERC and BOSS device and swapped two of four NVMe
-		// names; a series keyed on anything else silently becomes a DIFFERENT
-		// series across such a reboot, which is worse than a missing one
-		// because the history looks continuous and is not.
+		// and have no device name, so they are labelled by serial, the only
+		// identifier that survives a reboot; a series keyed on anything else
+		// silently becomes a different series across one.
 		//
 		// The volume the drives sit behind is carried as a second label, so a
 		// query can group an array's members without joining on anything.

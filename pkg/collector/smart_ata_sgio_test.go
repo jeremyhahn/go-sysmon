@@ -143,14 +143,9 @@ func TestIdentifySMARTSupported_RefusesToGuess(t *testing.T) {
 
 // The HDIO_DRIVE_CMD argument block, where byte 3 is a size contract.
 //
-// This is the block that crash-looped ci-node-1 (#20). It carried the SMART
-// signature's 0x4F in byte 3, which HDIO_DRIVE_CMD reads as the SECTOR COUNT,
-// so the kernel copied 512 x 79 = 40,448 bytes back into a 516-byte stack
-// buffer and the next allocation died inside runtime.mallocgc.
-//
-// A wrong value here cannot be caught anywhere downstream: by the time the
-// ioctl returns, the memory is already overwritten. So the block is built by a
-// pure function and pinned, the same treatment buildSMART16CDB gets.
+// HDIO_DRIVE_CMD reads byte 3 as the sector count, so a wrong value overruns
+// the reply buffer before the ioctl returns (#20). The block is built by a pure
+// function and pinned, as buildSMART16CDB is.
 func TestBuildHDIOArgs_SectorCountMatchesTheBufferWeProvide(t *testing.T) {
 	args := buildHDIOArgs(smartCmdReadData)
 

@@ -10,14 +10,11 @@ WITH_SYSTRAY ?= 1
 # Build tags — desktop + systray assembled dynamically
 #
 # SERVER_TAGS carries `prometheus`: remote write and date-range history are
-# compiled into sysmon-server and NOT into the desktop or systray builds, whose
-# users want a realtime monitor with no time-series dependency (owner ruling
-# 2026-09-04, #100). Both shapes are built and tested here and in CI -- a tag
-# that only ever compiles one way is not tested.
-# nvml is on both shipped builds, so go-sysmon's own binaries report NVIDIA GPUs
-# exactly as before. It is NOT on the default build: NVML has no pure-Go
-# implementation, and importing it unconditionally made CGO_ENABLED=0 impossible
-# for anything embedding pkg/collector (#8). See check-cgo-clean below.
+# compiled into sysmon-server only; the desktop and systray builds are realtime
+# with no time-series dependency (#100). Both shapes are built and tested.
+# nvml is on both shipped builds but not the default build: NVML has no pure-Go
+# implementation, and the default must build with CGO_ENABLED=0 (#8). See
+# check-cgo-clean below.
 # systray compiles the tray into the desktop binary (cmd/sysmon/tray_desktop.go);
 # WITH_SYSTRAY=0 leaves it out, and closing the window then quits.
 SERVER_TAGS := prometheus,nvml
@@ -62,7 +59,7 @@ ALL_SHAPES := $(BUILD_SHAPES) nomegaraid integration
 PKG_ALL := ./...
 
 FRONTEND_DIR := cmd/sysmon/frontend
-# Defined here, beside FRONTEND_DIR, and NOT next to the rule that builds it:
+# Defined here, beside FRONTEND_DIR, and not next to the rule that builds it:
 # prerequisites are expanded when make READS a rule, so a := defined further down
 # the file expands to nothing in `build-frontend: $(FRONTEND_STAMP)` above it --
 # which silently left build-frontend with no prerequisites at all and no install
@@ -92,12 +89,12 @@ DESKTOP_LOG_DIR := $(TEST_LOG_DIR)/desktop
 test-shape-% test-fips integration-test integration-test-% test-extensions-desktop: SHELL := /bin/bash
 test-shape-% test-fips integration-test integration-test-% test-extensions-desktop: .SHELLFLAGS := -o pipefail -c
 
-# Analysis tool versions. This is the ONLY place they are pinned: `make lint`,
+# Analysis tool versions. This is the only place they are pinned: `make lint`,
 # `make vulncheck` and `make gosec` refuse a binary built at any other version,
 # and every workflow installs through `make tools`, so a local run and CI run
 # the same tools. Pins are exact module versions, which Go checksums on install.
 #
-# Every pin is the latest stable release (owner rule 2026-09-22). `make
+# Every pin is the latest stable release. `make
 # check-latest` fails when one is not, and the daily check-latest workflow files
 # an issue for it (#183).
 GOLANGCI_LINT_VERSION := v2.15.0
@@ -240,7 +237,7 @@ build-server: build-frontend
 # behind by a regenerated interface, and it needs the generated files to be
 # current -- which is why this VERIFIES them and does not rewrite them.
 #
-# check-generated, NOT generate, and that distinction is the whole point: the
+# check-generated, not generate, and that distinction is the whole point: the
 # build must not mutate a checked-in source file. `ci` runs lint (which contains
 # check-generated) and build in one target, so under `make -j` a generate here
 # would race that check -- and if the generate won, check-generated would compare
@@ -278,7 +275,7 @@ generate:
 # place and asking git: a working tree with legitimate uncommitted work in it
 # must not fail this, and a `git diff` check cannot tell the two apart.
 #
-# EVERY step is joined with `&&`, the closing echo included. With a `;` before
+# Every step is joined with `&&`, the closing echo included. With a `;` before
 # it, a failing mktemp or a generator that does not compile skipped the
 # comparison and then ran the echo, whose zero status became the recipe's --
 # so the gate announced "current" without having compared anything, and
@@ -448,7 +445,7 @@ desktop-docker-build:
 #
 # The suite runs with every package instrumented and reports each package's
 # integration coverage (scripts/pkgtest.sh integration), and fails when any
-# package is below COVERAGE_FLOOR -- leaving out only what the owner-approved
+# package is below COVERAGE_FLOOR -- leaving out only what the approved
 # build/coverage-exceptions names, whose figures are still reported (#167).
 integration-test: docker-build
 	@mkdir -p $(TEST_LOG_DIR)
@@ -531,7 +528,7 @@ tool-govulncheck:
 
 # check-signed fails when a commit on this branch carries no signature.
 #
-# NOT part of `lint`, deliberately. It needs a base commit to have a range to
+# Not part of `lint`, deliberately. It needs a base commit to have a range to
 # scan, so locally it would print SKIPPED on every run -- and a line that is
 # always skipped teaches people to read past it, which is how the next real
 # skip goes unnoticed. CI passes the PR base and it does real work there.
@@ -570,7 +567,7 @@ check-cgo-clean:
 # recently `main` served a dashboard built before #130's PSI card and #132's swap
 # types, with every test passing, because no test reads the bundle.
 #
-# NOT a prerequisite of `lint`, deliberately: it rebuilds the whole bundle,
+# Not a prerequisite of `lint`, deliberately: it rebuilds the whole bundle,
 # which is a build rather than a check of source, and as its own CI job a stale
 # bundle is reported as exactly that. (`lint` does need node since #196, for
 # check-ts; that type-checks the specs and the build configuration and builds
@@ -651,7 +648,7 @@ check-pins:
 
 # check-latest fails when any pin is not at its latest stable release: Go,
 # each pinned tool, Node.js LTS, the Debian and Ubuntu releases, and every
-# action the workflows use. It needs the network, so it is NOT part of lint -- an upstream release
+# action the workflows use. It needs the network, so it is not part of lint -- an upstream release
 # must never fail an unrelated PR. The daily check-latest workflow runs it with
 # CHECK_LATEST_FLAGS="-file-issue -github-api ... -repo owner/name" and files a
 # GitHub issue instead. Exit 1 means something lags; 2 means an item could not
@@ -766,7 +763,7 @@ deploy-binary: build-server
 # G304 (file inclusion via variable) and G115 (integer overflow on conversion)
 # are excluded repo-wide, not because they are unimportant but because they do
 # not discriminate here: reading a /sys or /proc path assembled from a device
-# name IS what this program does, and every sysfs value arrives as a string
+# name is what this program does, and every sysfs value arrives as a string
 # that must be converted to a sized integer. Roughly 40 of the 42 findings were
 # those two rules on exactly that pattern, which drowns out anything real --
 # gosec's own value showed up as G112, a genuinely missing ReadHeaderTimeout.
@@ -791,30 +788,12 @@ vulncheck-shape-%:
 	@$(TOOL) check "$(GOVULNCHECK)" $(GOVULNCHECK_PKG) $(GOVULNCHECK_VERSION)
 	$(GOVULNCHECK) -tags "$(SHAPE_$*)" ./...
 
-# audit checks the frontend dependency tree, and distinguishes the two ways it
-# can come back non-zero.
-#
-# npm audit exits non-zero both for "these packages have advisories" and for "the
-# advisory endpoint did not answer", and only the first is ours. Classifying that
-# by matching npm's error text does not work: an HTTP 429, a 5xx, a TLS or auth
-# failure and npm's own "audit endpoint returned an error" all read differently,
-# and the list has no end. scripts/audit-gate.py detects the SUCCESS case
-# positively instead -- a report carrying auditReportVersion and
-# metadata.vulnerabilities -- and exits 1 for findings, 2 for an audit that never
-# completed.
-#
-# This target keeps a non-zero exit either way: a developer asking about
-# advisories wants a status to act on. CI does not fail on it (owner ruling
-# 2026-09-16) and tells the two apart by that exit code -- see the Frontend
-# vulnerability scan step in .github/workflows/ci.yml.
-# --no-offline is load-bearing, not tidiness. With NPM_CONFIG_OFFLINE=true in the
-# environment (or offline=true in an inherited .npmrc) npm 11.9.0 emits a complete
-# report schema with zero vulnerabilities and exits 0 WITHOUT contacting the
-# advisory endpoint -- measured, and it does so even against a dead registry. The
-# gate would then report a clean audit that never ran, which is a worse failure
-# than the false alarm this target was written to remove: a security check that
-# passes by not looking. With the flag, an unreachable endpoint produces no report
-# and is classified as "could not run".
+# audit checks the frontend dependency tree. scripts/audit-gate.py recognises a
+# completed report (auditReportVersion and metadata.vulnerabilities) and exits 1
+# for findings, 2 for an audit that never completed. CI does not fail on it and
+# tells the two apart by that exit code (Frontend vulnerability scan, ci.yml).
+# --no-offline is required: with offline set, npm reports a clean audit without
+# contacting the advisory endpoint.
 AUDIT_LEVEL ?= low
 # AUDIT_STATUS_FILE, when set, is where the gate records its exit code. GNU make
 # returns 2 for any failed recipe, so a caller cannot tell the gate's 1 from its 2
@@ -833,12 +812,8 @@ audit:
 # audit-report is `audit` without the power to stop a pipeline, and it is what the
 # aggregate ci targets use.
 #
-# devops.md §4: CI runs the same targets a developer runs. The hosted workflow does
-# not fail on advisories or on an unreachable advisory endpoint (owner ruling
-# 2026-09-16), so `make ci` must not either -- otherwise the third party's
-# availability still breaks the local pipeline and the two paths disagree about
-# what a red build means. Direct `make audit` keeps its non-zero status, because a
-# developer asking the question wants an answer to act on.
+# CI does not fail on advisories or an unreachable endpoint, so `make ci` does
+# not either. Direct `make audit` keeps its non-zero status.
 audit-report:
 	@$(MAKE) --no-print-directory audit || true
 

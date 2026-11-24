@@ -17,13 +17,9 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// What an aggregation cycle costs, measured because it could not be inferred.
-//
-// #76 found aggregation was most of mon0's CPU, and that most of THAT was
-// decoding peers' whole snapshots to fill cards that use a dozen fields. The
-// owner's ruling was that peers serve a summary, and that an aggregator
-// recording history also fetches a slimmed history payload. These benchmarks
-// measure all three shapes against the same busy-host peers:
+// What an aggregation cycle costs (#76). Peers serve a summary, and an
+// aggregator recording history also fetches a slimmed history payload. These
+// benchmarks measure all three shapes against the same busy-host peers:
 //
 //	snapshot          every peer polled for its whole snapshot: the shape
 //	                  before #76, and still the shape for a peer too old to
@@ -37,10 +33,8 @@ import (
 //
 //	make bench-fleet
 
-// benchPeerCount matches the deployed fleet: mon0 polls ten peers plus itself.
-// The tenth (gitea) was added 2026-09-06; the count is read from mon0's own
-// sysmon.yaml rather than assumed, because it is the multiplier on everything
-// below.
+// benchPeerCount is the number of peers an aggregator polls, the multiplier
+// on everything below.
 const benchPeerCount = 10
 
 // benchSnapshot builds a peer snapshot of production size; see busyHost.
@@ -144,12 +138,8 @@ func encode(b testing.TB, v any) []byte {
 // BenchmarkPoller_Refresh is one aggregation cycle: every peer fetched
 // concurrently and decoded, in each poll shape.
 //
-// Its ns/op is WALL time, and the peers are fetched in parallel, so it is
-// roughly the slowest round trip and not what the cycle costs a CPU. Do not
-// divide it by the poll interval to get a per-second load: doing exactly that
-// is how #76 concluded aggregation was too small to explain mon0, which it
-// outweighed by more than two orders of magnitude. BenchmarkPoller_RefreshCPU
-// reports the CPU figure directly. KB/cycle is what the peers sent.
+// Its ns/op is wall time with peers fetched in parallel, roughly the slowest
+// round trip, not CPU cost; BenchmarkPoller_RefreshCPU reports the CPU figure. KB/cycle is what the peers sent.
 func BenchmarkPoller_Refresh(b *testing.B) {
 	for _, shape := range pollShapes {
 		b.Run(shape.name, func(b *testing.B) {

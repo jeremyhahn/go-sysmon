@@ -169,10 +169,8 @@ func TestApplyDIMMTemperatures_WarnsOncePerRun(t *testing.T) {
 // properties the cache has to hold at once: the module list is read once and
 // carried forward, and the readings applied onto it are not.
 //
-// The second half is why Collect works on a COPY. Handing applyDIMMTemperatures
-// the cached slice would leave the previous tick's value on a module whose
-// sensor has stopped answering -- a temperature that is no longer being
-// measured, still on the dashboard, indistinguishable from one that is.
+// Collect works on a copy, so a module whose sensor stops answering does not
+// keep the previous tick's temperature.
 func TestMemoryCollector_InventoryIsStableAndTemperaturesAreNot(t *testing.T) {
 	root := t.TempDir()
 	withHwmonRoot(t, root)

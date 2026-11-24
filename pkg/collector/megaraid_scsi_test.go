@@ -69,7 +69,7 @@ func TestParseInquiry_ReadsIdentityAndDeviceType(t *testing.T) {
 		t.Errorf("identity = %q/%q, want DP/BP14G+EXP", vendor, product)
 	}
 	// The device type is what keeps a backplane's enclosure processor from
-	// being counted as a member of an array. ci-node-1 has one, at device 64.
+	// being counted as a member of an array; the fixture has one at device 64.
 	if devType != 0x0D {
 		t.Errorf("device type = 0x%02x, want 0x0D", devType)
 	}

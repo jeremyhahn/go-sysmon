@@ -22,11 +22,8 @@ response comes from the monitor.
 
 ## Every response is the poll the monitor last published
 
-Owner ruling, 2026-09-04: *"the poller does its job, updates a state, and every
-API request and stream serves from that state until the next poll. No endpoint
-may query fresh host state per request."*
-
-That is how the package is built. `Monitor.Snapshot()` is `m.latest.Load()` — an
+The poller updates a state, and every API request and stream serves from that
+state until the next poll. No endpoint queries fresh host state per request. `Monitor.Snapshot()` is `m.latest.Load()` — an
 atomic pointer read of the last completed collection — and every handler goes
 through it: `/api/snapshot`, the event stream, the delta hub's first frame, and
 the Prometheus exporter at `/metrics`. `/api/summary` and `/api/snapshot/history`
@@ -36,14 +33,12 @@ peer summaries, and `/api/fleet/rollup` the whole-fleet roll-up over them, and `
 from that peer when someone drills in (#76), which is the peer's own last poll
 and not fresh host state; `/api/history` queries storage, which is not host state.
 On a tree of aggregators (#190), a parent serves ordering, search, counts and
-routing from the child indexes it polled. The second sanctioned exception, of the
-same kind as drill-in (owner ruling 2026-09-23), is that only a page's subtree
+routing from the child indexes it polled. The second exception, of the same kind as drill-in, is that only a page's subtree
 summaries are fetched from their children on request, and reused for the poll
 interval. History for a subtree node is relayed to the child that records it.
 **`pkg/server` does not import a collector at all.**
 
-The cost of getting this wrong is not abstract: two clients would measure the
-machine twice for one poll, and a slow read — a disk that has spun down, a
+Otherwise two clients would measure the machine twice for one poll, and a slow read — a disk that has spun down, a
 `smartctl` that takes eight seconds — would block a response that had a
 perfectly good reading available.
 
@@ -55,15 +50,8 @@ not just directly: the question is what the request path can do, and a package
 two hops away reads the host just as easily as one imported here. When it fails
 it prints the shortest chain, so the answer arrives with the finding.
 
-A second test asserts the graph actually loaded. Every check of the form "X
-cannot reach Y" passes when nothing was read, and a guard that reports a pass
-having read nothing is the failure this repository keeps finding elsewhere.
-
-This is a test rather than a paragraph for a measured reason. The equivalent
-rule for the frontend bundle **was** written down — "a change to the frontend is
-not complete until `dist/` is rebuilt and committed with it" — and `main` still
-spent a day carrying a bundle that did not match its sources (#55, #89).
-**Prose does not enforce; a failing check does.**
+A second test asserts the graph actually loaded: every check of the form "X
+cannot reach Y" passes when nothing was read.
 
 ### Every path serves the same decorated snapshot
 
@@ -192,15 +180,12 @@ replace it. The event stream resets its own write deadline before every frame,
 so a stream is bounded per event rather than in total — which is the property a
 stream actually wants. Every other handler inherits the 30 seconds. This holds
 over HTTP/2 as well as HTTP/1.1: `SetWriteDeadline` is supported on an HTTP/2
-response and resetting it replaces the server-wide deadline the same way
-(measured, not assumed — a stream would otherwise die every 30 seconds over
-HTTPS and only over HTTPS).
+response and resetting it replaces the server-wide deadline the same way.
 
 The reason it is there at all: without a write deadline, a peer that goes away
 without sending an RST leaves the response parked in TCP retransmission for as
 long as the kernel will retry, holding a goroutine and a connection with nothing
-to release either. On vm-host-2 on 2026-09-03, 53 goroutines were parked in
-`net/http.checkConnErrorWriter.Write`, 44 of them for the same seven minutes.
+to release either.
 
 30 seconds is a release valve, not a service-level target. The slowest
 legitimate response is a history query, which is separately bounded by

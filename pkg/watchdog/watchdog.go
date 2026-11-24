@@ -2,17 +2,11 @@
 // evidence rather than with a timer.
 //
 // systemd's Type=exec reports a unit active while the binary exists, which says
-// nothing about whether a request can be answered. vm-host-2 served nothing
-// for two days in exactly that state: NRestarts=0, unit active, 2929
-// connections queued on a listener nothing was accepting from (issue #65).
+// nothing about whether a request can be answered (#65).
 //
-// The trap this package exists to avoid is subtle and would pass every test
-// written the obvious way: a goroutine that pings on a ticker allocates
-// nothing and touches nothing, so it keeps pinging cheerfully through a stall
-// that has parked every other goroutine in the process. A watchdog like that
-// converts "the service is dead" into "the service is dead and systemd has
-// confirmed it is fine". Every ping here is therefore conditional on evidence
-// gathered in the same interval.
+// A goroutine that pings on a ticker allocates nothing, so it keeps pinging
+// through a stall that has parked every other goroutine. Every ping here is
+// therefore conditional on evidence gathered in the same interval.
 package watchdog
 
 import (
@@ -29,8 +23,8 @@ type Pinger interface {
 
 // Probe exercises the serving path and returns an error when it could not be
 // completed. It is expected to make a real request against the address the
-// server actually bound: accept is what failed on vm-host-2, and a check that
-// does not cross the listener cannot see that failure.
+// server actually bound: a check that does not cross the listener cannot see a
+// listener that stopped accepting.
 type Probe func(context.Context) error
 
 // Collecting reports whether the monitor has produced a snapshot recently

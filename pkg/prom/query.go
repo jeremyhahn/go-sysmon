@@ -47,7 +47,7 @@ type RangeSeries struct {
 // it is re-read per request, so the address can be changed by reloading the
 // config file rather than restarting.
 type QueryOptions struct {
-	// BaseURL is the address of a Prometheus server, e.g. http://mon0:9090 --
+	// BaseURL is the address of a Prometheus server, e.g. http://prometheus:9090 --
 	// the server, not one of its endpoints; /api/v1/query_range is appended
 	// here. Empty means history is not available from this node.
 	BaseURL string

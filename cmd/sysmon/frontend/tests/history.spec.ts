@@ -8,22 +8,16 @@ import { connections, installFakeEventSource, send } from './fixtures/fake-event
 import { expectLine, historyBody } from './fixtures/history';
 
 /**
- * The date range control.
+ * The date range control: one surface with two states, chosen by a control
+ * whose absence gives the live stream.
  *
- * The owner asked to "see the graphs/charts with date range searches ... in
- * addition to the real-time streams (when a date range is not selected)". The
- * parenthetical is the design: one surface with two states, chosen by a control
- * whose absence gives the live stream — not a separate destination, and not a
- * mode carried by each panel.
- *
- * So these tests are about the whole dashboard rather than one view:
+ * These tests are about the whole dashboard rather than one view:
  *
  *  1. A node with no Prometheus has no picker at all, and is the dashboard it
  *     always was.
  *  2. Selecting a range puts the charts on screen into that window, together.
  *  3. It is unmistakable that the charts are not live, and clearing is one
- *     click and no reload. A chart that has silently stopped updating is the
- *     same lie as a frozen peer reading, and here it would be self-inflicted.
+ *     click and no reload.
  */
 
 const CATALOG = {
@@ -360,7 +354,7 @@ test.describe('the date range control', () => {
   });
 
   test('the banner does not claim live values while the stream is down', async ({ page }) => {
-    // The banner says what the charts are NOT showing, and then what the rest
+    // The banner says what the charts are not showing, and then what the rest
     // of the page IS. That second sentence read "Gauges, tables and counters
     // still show live values" unconditionally -- and it is false in the two
     // states this dashboard already reports elsewhere: a dropped stream, where
@@ -654,14 +648,14 @@ test.describe('the date range control', () => {
   });
 
   test('choosing Custom keeps the window that is on screen', async ({ page }) => {
-    // The invariant: whenever a range is applied, the inputs describe THAT
+    // The invariant: whenever a range is applied, the inputs describe that
     // range. Choosing Custom while looking at "Last 1 hour" used to leave the
     // hour applied and the inputs showing something else, so the control said
     // one thing, the banner a second and the charts a third.
     const mock = await mockHistory(page);
     await openPanel(page, 'CPU');
 
-    // Deliberately NOT the one-hour preset. The fallback for "no range
+    // Deliberately not the one-hour preset. The fallback for "no range
     // applied" seeds the last hour, so testing this with 1h passes whether the
     // applied window is carried across or not -- which is exactly how an
     // earlier version of this test survived deleting the carry.

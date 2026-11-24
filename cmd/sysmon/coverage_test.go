@@ -269,18 +269,9 @@ func TestCheckSMART_EveryOutcome(t *testing.T) {
 			wantFix:    true,
 		},
 		{
-			// ci-node-1, and the case that decides where the line is.
-			//
-			// Excluded: dm-0, which has no medium, and sdc, which reports it
-			// implements no SMART. Neither will ever be readable however the
-			// host is configured.
-			//
-			// COUNTED: sda and sdb, which are behind a RAID controller. That
-			// status does not establish they are volumes rather than
-			// passthrough disks -- sysfs cannot say -- so excluding them would
-			// let a JBOD disk that genuinely fails to answer vanish from the
-			// count. "4 of 6" is the honest reading: two devices we could not
-			// get a reading from, for a reason we can state.
+			// Excluded: dm-0 (no medium) and sdc (no SMART). Counted: sda and
+			// sdb behind a RAID controller, since sysfs cannot tell a volume
+			// from a passthrough disk that fails to answer.
 			name: "only devices that can never answer leave the denominator",
 			disks: []types.DiskInfo{
 				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
@@ -300,16 +291,8 @@ func TestCheckSMART_EveryOutcome(t *testing.T) {
 			wantFixHas: "MegaRAID",
 		},
 		{
-			// ci-node-1 as deployed, and the half of #52 that needed #51.
-			// Six of its readable drives are behind the PERC and are in no
-			// disk list at all, so a count summed over the list alone said
-			// four while ten answered -- a denominator that does not know
-			// what it left out.
-			//
-			// The volumes are counted too, and unreadable: a volume we cannot
-			// read directly is a different fact from its members being
-			// readable, and neither substitutes for the other. So the honest
-			// figure is 10 of 12, not "all 10".
+			// RAID members are in no disk list but are counted; the volumes
+			// are counted too, as unreadable, so the figure is 10 of 12.
 			name: "drives behind a controller are counted",
 			disks: []types.DiskInfo{
 				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
@@ -424,10 +407,8 @@ func TestCheckSMART_EveryOutcome(t *testing.T) {
 			wantFixNot: "checksum",
 		},
 		{
-			// The remedy must come from the device, not from a constant. On
-			// ci-node-1 the node opens -- the service IS in the disk group --
-			// and the passthrough ioctl is refused, so the old advice was to
-			// do something already done.
+			// The remedy comes from the device's refusal, not a constant: the
+			// node opens but the passthrough ioctl is refused.
 			name: "the remedy is the reason the device gave",
 			disks: []types.DiskInfo{
 				{Name: "nvme0n1", SMARTEnabled: true, SMARTStatus: types.SMARTOK},
@@ -691,11 +672,9 @@ func TestCheckDesktopGUI_StillReportsForDoctor(t *testing.T) {
 	}
 }
 
-// TestCheckResourceLimits covers the report that would have caught the
-// 2026-09-03 misconfiguration. The incoherent case is the reason the check
-// exists: a MemoryHigh raised above MemoryMax reads as a more generous
-// configuration, and memory.events "high" agrees with it by staying at zero,
-// because the watermark can no longer be reached.
+// TestCheckResourceLimits covers the resource-limit report. A MemoryHigh at or
+// above MemoryMax is unreachable, so memory.events "high" stays at zero and
+// only this check reports it.
 func TestCheckResourceLimits(t *testing.T) {
 	tests := []struct {
 		name       string

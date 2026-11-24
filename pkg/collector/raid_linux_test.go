@@ -198,10 +198,8 @@ func TestIsRedundantRAIDLevel(t *testing.T) {
 	}
 }
 
-// TestApplyRAID_Raid0WithoutDegradedAttr is a regression guard measured on real
-// hardware: the kernel exposes no "degraded" attribute for a raid0, so treating
-// its absence as an unreadable health reading flagged a perfectly healthy
-// stripe set as non-operational.
+// TestApplyRAID_Raid0WithoutDegradedAttr: the kernel exposes no "degraded"
+// attribute for a raid0, and its absence must not mark the array unhealthy.
 func TestApplyRAID_Raid0WithoutDegradedAttr(t *testing.T) {
 	root := t.TempDir()
 	writeMD(t, root, "md1",

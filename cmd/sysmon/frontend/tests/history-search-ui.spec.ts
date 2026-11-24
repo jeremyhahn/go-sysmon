@@ -6,10 +6,9 @@ import { expectLine, historyBody } from "./fixtures/history";
 /**
  * Searching the recorded history, end to end through the dashboard.
  *
- * The owner asked for "the ability to search across historical data points".
  * The matcher is unit-tested in history-search.spec.ts; what is checked here is
  * that typing a resource name gets that resource charted for the selected
- * range, and that the states which are NOT a chart each say what they are --
+ * range, and that the states which are not a chart each say what they are --
  * no range, nothing recorded, nothing matching. An empty box where a chart
  * should be is the failure this feature could most easily ship with.
  */

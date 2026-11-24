@@ -143,8 +143,7 @@ func (e *PeerNameError) Error() string {
 
 func (e *PeerNameError) Unwrap() error { return e.Err }
 
-// PeerUnnamedError reports a fleet peer with no `name:` (owner ruling
-// 2026-09-23, under #120). A peer's name is its fleet-wide identity -- its
+// PeerUnnamedError reports a fleet peer with no `name:` (#120). A peer's name is its fleet-wide identity -- its
 // card, its /api/fleet/{name}/... routes and its Prometheus instance label --
 // and it is published on unauthenticated endpoints. Defaulting it to the URL's
 // host published the peer's address as its routing key, so an unnamed peer is

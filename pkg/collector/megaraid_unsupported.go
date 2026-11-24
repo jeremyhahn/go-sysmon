@@ -16,7 +16,7 @@ import "github.com/jeremyhahn/go-sysmon/pkg/types"
 // this stands in elsewhere. A host that would have had members simply reports
 // none, which is the same thing every host without a RAID controller reports.
 //
-// THE `nomegaraid` TAG EXISTS TO MAKE THIS FILE COMPILABLE. pkg/collector
+// The `nomegaraid` tag exists to make this file compilable. pkg/collector
 // cannot currently be built for a 32-bit target at all -- gpu.go imports NVML,
 // which does not compile there (#8) -- so "the unsupported path builds" was a
 // claim nothing could check. It was wrong when it was written: DiskCollector

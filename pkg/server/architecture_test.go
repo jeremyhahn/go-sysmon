@@ -11,19 +11,10 @@ import (
 	"testing"
 )
 
-// The owner's ruling of 2026-09-04: "the poller does its job, updates a state,
-// and every API request and stream serves from that state until the next poll.
-// No endpoint may query fresh host state per request."
-//
-// The audit for #99 found no violation: every handler reads Monitor.Snapshot(),
-// which is an atomic pointer load of the last completed poll, and pkg/server
-// does not import a collector at all. This test is what keeps that true.
-//
-// It is here rather than in a document because the same rule was already
-// written down for the frontend bundle -- "a change to the frontend is not
-// complete until dist/ is rebuilt and committed with it" -- and main still
-// spent a day carrying a bundle that did not match its sources (#55). Prose
-// does not enforce. A failing check does.
+// The poller updates a state, and every API request and stream serves from that
+// state until the next poll; no endpoint queries fresh host state per request
+// (#99). Handlers read Monitor.Snapshot(), and pkg/server imports no collector;
+// this test keeps that true.
 
 const modulePrefix = "github.com/jeremyhahn/go-sysmon/"
 

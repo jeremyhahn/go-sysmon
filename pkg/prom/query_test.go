@@ -235,7 +235,7 @@ func TestQuerier_ReadsOptionsPerQuery(t *testing.T) {
 	}
 }
 
-// TestQuerier_TrailingSlashInBaseURL: "http://mon0:9090/" is what an operator
+// TestQuerier_TrailingSlashInBaseURL: "http://prometheus:9090/" is what an operator
 // copies out of a browser, and a doubled slash is a 404 from Prometheus.
 func TestQuerier_TrailingSlashInBaseURL(t *testing.T) {
 	var path string

@@ -226,7 +226,7 @@ func TestSnapshot_StartedAndAwaitingFirstCollection(t *testing.T) {
 	if !errors.As(err, &noneYet) {
 		t.Fatalf("Snapshot() error = %T (%v), want *types.NoSnapshotYetError", err, err)
 	}
-	// The distinction is the whole change: the old type must NOT also match,
+	// The distinction is the whole change: the old type must not also match,
 	// or a caller telling the two apart still cannot.
 	var notRunning *types.MonitorNotRunningError
 	if errors.As(err, &notRunning) {
@@ -661,7 +661,7 @@ func TestStop_IsAtomicAgainstAConcurrentStart(t *testing.T) {
 	default:
 	}
 
-	// And the rest of the API is NOT blocked behind it. The wait above is for
+	// And the rest of the API is not blocked behind it. The wait above is for
 	// a collection to finish, and a collection is a syscall into /proc, SMART
 	// or NVML that can hang; a stop that held the lock through it would make
 	// one wedged collector freeze every Running() in the process -- including
@@ -765,7 +765,7 @@ func TestGeneration_DoesNotAdvanceOnARefusedStart(t *testing.T) {
 // Stop deliberately leaves the last collection readable, so a caller can see
 // the final state of a monitor that has finished. Start must not let it
 // survive into the next run: Snapshot() means "the most recent collection",
-// and immediately after a restart the most recent collection of THIS run has
+// and immediately after a restart the most recent collection of this run has
 // not happened yet.
 //
 // It is not an abstract point. The delta hub publishes Snapshot() as the first

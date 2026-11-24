@@ -17,7 +17,7 @@ import (
 )
 
 // Installed-software detection decides whether the dashboard shows the
-// Containers and Virtualization tabs at all (#187). The owner's rulings:
+// Containers and Virtualization tabs at all (#187):
 //
 //   - Containers: a runtime is installed, or containers are seen running.
 //   - Virtualization: a VM stack is installed, or VMs are seen running.
@@ -184,7 +184,7 @@ var containerMarkers = []string{
 // path through a container scope, under the host's. Both are read as
 // "containerised". A host that genuinely keeps processes in the root cgroup --
 // one without systemd -- is misread as a container, and the cost is a tab
-// shown as unknown rather than hidden: the error the rulings allow.
+// shown as unknown rather than hidden, the error the rules above allow.
 const selfCgroupPath = "/proc/self/cgroup"
 
 // selfMountInfo and selfStatus locate the /proc mount's options and this

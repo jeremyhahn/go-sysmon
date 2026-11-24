@@ -84,10 +84,9 @@ func TestDriveSlotCollector_ReadsRedfishFirst(t *testing.T) {
 	}
 }
 
-// The case #289 was filed for: ci-node-2's bay 3 lit its amber LED and
-// nothing in go-sysmon said so. Read through the collector and evaluated as
-// the service does, the recorded BMC must raise the alert for that bay, and a
-// warning for the bay whose drive predicts its own failure.
+// A bay whose fault LED is lit (#289): read through the collector and
+// evaluated as the service does, the recorded BMC must raise the alert for that
+// bay, and a warning for the bay whose drive predicts its own failure.
 func TestDriveSlotCollector_SlotFaultFixtureRaisesTheAlert(t *testing.T) {
 	f := newFakeBMC(t, "redfish-dellemc02.json")
 	c, _ := newTestDriveSlots(t, f.config(t), nil)

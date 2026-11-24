@@ -366,7 +366,7 @@ function connectWails(
   });
 
   // Request an immediate snapshot so the UI is not blank on first load. It is
-  // rendered but NOT adopted as the base for patches: it carries no sequence
+  // rendered but not adopted as the base for patches: it carries no sequence
   // number, so a patch computed against the server's frame would not be
   // describing this object.
   window.go?.main.MonitorBinding.GetSnapshot().then((snap) => {
@@ -448,7 +448,7 @@ function connectEventSource(
 
     // A socket that is open is not a dashboard that is current. The reconnect
     // delay is reset here, because the connection did succeed -- but the status
-    // is NOT, because resync() cleared this transport's snapshot and nothing
+    // is not, because resync() cleared this transport's snapshot and nothing
     // cleared the one already rendered. Reporting "connected" now would relabel
     // those numbers as live the instant the socket opened, and leave them that
     // way for as long as the reopened stream sent nothing: the exact failure
@@ -461,7 +461,7 @@ function connectEventSource(
 
     source.addEventListener("full", (ev: MessageEvent<string>) => {
       applier.full(ev.data);
-      // consecutiveResyncs is deliberately NOT cleared here. Every reopened
+      // consecutiveResyncs is deliberately not cleared here. Every reopened
       // stream begins with a full frame, so treating one as proof of recovery
       // clears the counter a moment after resync() raised it and the limit is
       // never reached. A server that answers each new connection with a good

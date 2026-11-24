@@ -4,12 +4,8 @@ import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { openTab, type TabLabel } from './fixtures/tabs';
 
 /**
- * Readability of the semantic colours.
- *
- * The owner's words on first seeing the light theme: *"the green text is a bit
- * light and hard to read"*. He was right, and measuring showed it was not only
- * the green — every semantic colour daisyUI's light theme ships fails WCAG AA
- * on a card, some worse than the green:
+ * Readability of the semantic colours. daisyUI's stock light-theme semantic
+ * colours fail WCAG AA on a card:
  *
  *     success  #00d390  1.85:1      warning  #fcb700  1.66:1
  *     error    #ff627d  2.71:1      info     #00bafe  2.10:1
@@ -19,7 +15,7 @@ import { openTab, type TabLabel } from './fixtures/tabs';
  * operator a disk is at 94% was rendered in the least readable colour on the
  * page, and a gauge letters its percentage in the chart palette's equivalent.
  *
- * So this measures rather than eyeballs, and it measures what the BROWSER
+ * So this measures rather than eyeballs, and it measures what the browser
  * resolves rather than what the source says, because a daisyUI upgrade that
  * moves these values would otherwise undo the fix in silence.
  */
@@ -194,13 +190,8 @@ test.describe('the muted text ladder stays above the floor', () => {
   /**
    * Every level used for text a reader must read.
    *
-   * `/50` used to be here and measured 3.35:1 in the light theme, on the
-   * secondary description under about a hundred values -- the same complaint
-   * the owner made about the green, one level down the hierarchy. It is
-   * structural rather than a tuning error: on a light surface, 50% opacity text
-   * cannot reach AA with any colour, since pure black at `/50` over #f8f8f8 is
-   * about 3.96:1. So the floor is `/60` and there is no fourth level of muting
-   * to be had from opacity alone.
+   * The floor is `/60`: on a light surface 50% opacity text cannot reach AA
+   * with any colour (pure black at `/50` over #f8f8f8 is about 3.96:1).
    *
    * Anything below `/60` is decoration -- the "/" between two readable values,
    * an outline icon -- and is not measured here.
@@ -284,8 +275,7 @@ test.describe('the muted text ladder stays above the floor', () => {
 /**
  * Exactly the classes usageColor(), tempColor() and the alert helpers return,
  * plus text-primary: the active tab label and several panels' accent figures
- * are painted in it, and in the dark theme daisyUI's stock value measured
- * 3.40:1 on base-100 until app.css lightened it (#156).
+ * are painted in it; app.css lightens daisyUI's stock dark-theme value (#156).
  */
 const SEMANTIC = [
   'text-success',
@@ -312,16 +302,9 @@ test.describe('semantic text is readable on every surface it is painted on', () 
    * the navbar, tab strip and footer. A clickable table row has its own test
    * below, measured on the rendered row rather than on a class name.
    *
-   * The ratios recorded in app.css were measured on base-200 alone, and this
-   * suite used to check nothing else -- which is how a selected table row came
-   * to paint status text on base-300, a surface nobody had measured (#147).
-   *
-   * base-300 is not in this list, by rule rather than by omission. In the
-   * light theme the four status colours measure 4.20-4.26:1 on it, below AA,
-   * so the owner ruled that base-300 carries no semantic text at all: the GPU,
-   * NPU and SMART detail tiles that used to be filled with it now sit on
-   * base-100 with a border (#156). That rule is what the next describe block
-   * enforces, on the rendered tabs rather than on a class name.
+   * base-300 is not in this list: the status colours fall below AA on it, so
+   * it carries no semantic text (#156), which the next describe block enforces
+   * on the rendered tabs.
    */
   const SURFACES = ['bg-base-100', 'bg-base-200'];
 
@@ -398,8 +381,7 @@ async function paintedText(page: Page, classes: string[]): Promise<PaintedText[]
 /**
  * base-300 carries no semantic text (#156).
  *
- * The owner's ruling, enforced where it can actually be broken: on the pages
- * as rendered. Every tab is opened on a fixture that fills in the panels this
+ * Enforced on the pages as rendered. Every tab is opened on a fixture that fills in the panels this
  * was about -- a discrete GPU, an NPU, an NVMe disk reporting wear, spare,
  * media errors and time over its temperature thresholds -- and every visible
  * piece of text is checked for the colour it is painted in and the surface
@@ -529,11 +511,9 @@ async function paintOf(page: Page, index: number): Promise<RowPaint> {
 /**
  * A selected or hovered row keeps the card's surface (#147).
  *
- * It used to be filled with base-300, and the status cells of a row -- the
- * text that says a container is at 94% CPU -- are exactly the semantic
- * colours, whose light-theme values clear AA on base-200 by 0.1 or so. Owner
- * ruling: the row keeps base-200 and marks its state with a rule down the left
- * edge instead, so the tokens stay where they were measured.
+ * A row's status cells use the semantic colours, which clear AA only on
+ * base-200, so the row keeps base-200 and marks its state with a rule down
+ * the left edge.
  */
 test.describe('a selected or hovered table row keeps a readable surface', () => {
   for (const scheme of ['light', 'dark'] as const) {

@@ -252,8 +252,7 @@ func (b *builder) add(rule string, severity types.Severity, category, resource, 
 // memberResource identifies a drive behind a RAID controller for alert
 // de-duplication, which is what an alert ID is built from.
 //
-// IT IS THE PHYSICAL POSITION, NOT THE SERIAL, and the reason is worth stating
-// because the serial looks like the better answer.
+// It is the physical position, not the serial.
 //
 // A serial is read from the drive with a separate command every cycle. When
 // that command fails -- which is exactly what happens to a drive that is on its
@@ -429,10 +428,8 @@ func (e *Evaluator) evalStorage(b *builder, snap *types.Snapshot) {
 
 		// The drives behind a hardware RAID controller. They are not block
 		// devices and are not in this loop's list -- they hang off the volume
-		// as Members -- so without this a failing drive in the owner's PERC
-		// would appear on the dashboard and raise NOTHING. That is the same
-		// gap as reporting health where there is no reading, in the opposite
-		// direction: a real reading that says nothing at all.
+		// as Members -- so without this a failing drive behind a controller
+		// would appear on the dashboard and raise nothing.
 		//
 		// They raise the SAME rules as a block device deliberately. A separate
 		// rule name would mean anyone who has already configured notification

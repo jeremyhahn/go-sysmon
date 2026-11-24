@@ -18,8 +18,7 @@ import (
 // A subtree node is known from polled state by its child's index entry: name,
 // host name, status, age, reasons, build. Its figures are its summary, and the
 // summary is fetched from the child that owns it only when a page shows it --
-// the one thing a parent asks its children for on request (owner ruling
-// 2026-09-23). The fetch is bounded every way an unauthenticated request can
+// the one thing a parent asks its children for on request. The fetch is bounded every way an unauthenticated request can
 // make it large:
 //
 //   - A summary fetched within the poll interval is reused, keyed by the child

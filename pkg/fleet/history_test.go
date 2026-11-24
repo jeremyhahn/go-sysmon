@@ -92,11 +92,10 @@ func fill(v reflect.Value, seq *int, depth int) {
 	}
 }
 
-// TestHistorySnapshot_KeepsEverythingHistoryRecords is the guard the owner's
-// ruling asked for: a field metrics.Write reads cannot be stripped from the
+// TestHistorySnapshot_KeepsEverythingHistoryRecords guards that a field metrics.Write reads cannot be stripped from the
 // history payload without this failing.
 //
-// It is driven by what metrics.Write DOES, not by a list of what it reads. The
+// It is driven by what metrics.Write does, not by a list of what it reads. The
 // snapshot is filled by reflection -- every field, every list populated -- and
 // written twice: whole, and as HistorySnapshot slims it. Whatever the two
 // produce differently is a series the aggregator would stop recording for its

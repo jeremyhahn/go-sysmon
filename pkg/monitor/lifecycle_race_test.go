@@ -83,7 +83,7 @@ func TestUnsubscribeDuringStop_DoesNotPanic(t *testing.T) {
 // covered, it cannot be while the wait exists, and saying so here is better
 // than leaving somebody to delete it and watch everything pass.
 //
-// Stop used to sweep EVERY subscriber rather than the ones belonging to the run
+// Stop used to sweep every subscriber rather than the ones belonging to the run
 // it is ending, so a subscription taken against a later generation could be
 // closed by an earlier stop. The consumer then holds a closed Done on a monitor
 // that is collecting normally -- and "Done closed means the monitor stopped" is

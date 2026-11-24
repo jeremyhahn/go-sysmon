@@ -18,9 +18,8 @@ import (
 // What the dashboard is told about the peer refresh cadence.
 //
 // Run does the work and then sleeps for the interval, so peers are refreshed
-// every interval+work. Reporting the configured value instead restates the
-// config file rather than describing the service, and on mon0 that was a 6.7%
-// lie: 3.20s measured against 3.00s configured (#76).
+// every interval+work, and that observed cadence is reported rather than the
+// configured value (#76).
 
 // slowPeer serves a snapshot that takes delay to produce, by the poller's
 // clock: answering advances clk by delay. Nothing else moves clk, so a refresh

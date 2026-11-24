@@ -44,7 +44,7 @@ func TestRenderTypes(t *testing.T) {
 		t.Error(`output is missing "detail?: Detail | null;"`)
 	}
 
-	// A slice is NOT spelled nullable, even though a nil one marshals to null:
+	// A slice is not spelled nullable, even though a nil one marshals to null:
 	// the null is handled at the wire, in the schema, so several hundred call
 	// sites do not each grow a guard for a state none of them can be handed.
 	if strings.Contains(out, "items: Item[] | null") {

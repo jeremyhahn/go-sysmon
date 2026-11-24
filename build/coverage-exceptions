@@ -50,10 +50,9 @@ internal/await/ | test-helper | test synchronisation helpers; ships in no binary
 internal/deadpeer/ | test-helper | dead-peer socket helper for tests; ships in no binary | approved by owner 2026-09-24
 pkg/types/typestest/ | test-helper | JSON null-slice checker for tests; ships in no binary | approved by owner 2026-09-24
 
-# Packages below the floor, by owner ruling 2026-09-24: the code is not to be
-# reorganised to raise the number, so each is measured, reported and kept
-# under the floor with its reason. The figure is what the suites reached when
-# the ruling was applied (devcontainer on gpu-host, the files above excepted).
+# Packages below the floor: the code is not reorganised to raise the number, so
+# each is measured, reported and kept under the floor with its reason. The
+# figure is what the suites reached in the devcontainer, the files above excepted.
 pkg/collector/ | hardware | 85.0% (2397/2819): what remains needs hardware or host views a container cannot give -- DIMM temperature sensors, SATA drives, AMD k10temp, wifi, Xen, the host's initial PID namespace; unit-covered | approved by owner 2026-09-24
 pkg/alert/ | hardware | 65.0% (180/277): its rules for RAID, SMART, NVMe wear, disk temperature and fullness, swap paging, GPUs and containers fire only on host state a healthy container host does not have; unit-covered | approved by owner 2026-09-24
 pkg/delta/ | defensive | 76.0% (187/246): refusals of malformed patches, which only a corrupted client sends, and encode failures; unit-covered | approved by owner 2026-09-24
@@ -61,4 +60,4 @@ pkg/server/ | defensive | 88.4% (850/962): write failures on dropped connections
 pkg/memlimit/ | defensive | 80.8% (59/73): errors for cgroup files the kernel never writes malformed, and a v1-only host; unit-covered | approved by owner 2026-09-24
 pkg/types/ | defensive | 67.2% (86/128): Error methods of failures a healthy host does not produce (SMART, RAPL, PSI, sysfs and /proc parse errors), and nil-slice walking of shapes no snapshot holds; unit-covered | approved by owner 2026-09-24
 cmd/sysmon/ | defensive | 89.1% (934/1048): the watchdog self-probe and shutdown failure paths, notification-socket failures, and doctor's SMART-degraded report, which needs a drive refusing SMART; unit-covered | approved by owner 2026-09-24
-pkg/cli/ | host-hardware | 90.2% (953/1056) on gpu-host, which has a GPU and an NPU: the CLI renders the host's real devices, so its GPU and NPU report sections (about 140 statements) are reached only where that hardware is, about 77% on a runner without it; unit-covered | approved by owner 2026-09-24
+pkg/cli/ | host-hardware | 90.2% (953/1056) on a host with a GPU and an NPU: the CLI renders the host's real devices, so its GPU and NPU report sections (about 140 statements) are reached only where that hardware is, about 77% on a runner without it; unit-covered | approved by owner 2026-09-24

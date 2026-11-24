@@ -101,9 +101,8 @@ prometheus:
 	}
 }
 
-// TestPrometheus_UnusableURLsAreRejected. "mon0:9090" parses happily, with
-// scheme "mon0" -- the service would start clean and every push would fail
-// silently, which is the failure an operator is least likely to notice.
+// TestPrometheus_UnusableURLsAreRejected. "host:9090" parses with scheme
+// "host"; accepting it would start clean and fail every push silently.
 func TestPrometheus_UnusableURLsAreRejected(t *testing.T) {
 	tests := []struct {
 		name string
@@ -310,12 +309,8 @@ func TestPrometheus_ExternalLabelsAreValidated(t *testing.T) {
 	}
 }
 
-// Topology B (owner ruling 2026-09-04): "a node may be configured to store to
-// local prometheus; when enabled, that node's GUI allows historical searching
-// too -- so if the aggregator dies, the data survives on the nodes."
-//
-// It needs no new mechanism, and this is the check that keeps that claim true:
-// a node pointing both halves at a Prometheus on its own host loads, validates
+// Topology B: a node may store to a local Prometheus and search its own
+// history. A node pointing both halves at a Prometheus on its own host loads, validates
 // and reports both halves enabled, which is what makes the date picker and the
 // history search appear on that node (#101).
 func TestPrometheus_NodeLocalStoreIsAValidTopology(t *testing.T) {

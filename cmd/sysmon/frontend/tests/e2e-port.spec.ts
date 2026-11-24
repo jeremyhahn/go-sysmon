@@ -1,9 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { e2ePort, localPort, bandStart, bandSize } from '../e2e-port';
 
-// The identities below are the real ones from the collision that produced
-// issue #62: two Browser Tests jobs on vm-host-2, four minutes apart, both
-// binding 18080. What these tests assert is that they no longer can.
+// Two job identities on one runner must not choose the same port (#62).
 
 const browserJobOn90 = {
 	GITHUB_RUN_ID: '10645',
@@ -25,9 +23,8 @@ test.describe('e2ePort', () => {
 	});
 
 	test('two jobs of one run do not share a port', () => {
-		// Integration Tests and Browser Tests of the same commit are dispatched
-		// to the same runner in the same second, routinely -- measured across a
-		// hundred runs. They differ only in the job name.
+		// Two jobs of one commit can start on one runner in the same second and
+		// differ only in the job name.
 		const integration = { ...browserJobOn90, GITHUB_JOB: 'integration' };
 		expect(e2ePort(browserJobOn90)).not.toBe(e2ePort(integration));
 	});

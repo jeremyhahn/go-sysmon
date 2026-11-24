@@ -399,9 +399,8 @@ The path measured is the first of these that exists:
 4. `/`, so a node with no runtime at all still reports its free disk.
 
 It is a `statfs` of that path, not a lookup in the disk list. A data root is
-often a bind mount the disk list cannot name: on ci-node-2 `/var/lib/docker`
-is `/dev/nvme2n1p1[/docker]`, which the disk list shows only as
-`/mnt/ci-scratch`. `statfs` needs only traversal of the parent directories, so
+often a bind mount the disk list cannot name: `/var/lib/docker` can be
+`/dev/nvme2n1p1[/docker]`, which the disk list shows only as `/mnt/scratch`. `statfs` needs only traversal of the parent directories, so
 it works for a `sysmon` user outside the docker group, whose runtime API is
 unreachable. `free_bytes` is what an unprivileged writer may use (`f_bavail`,
 `df`'s "Avail").

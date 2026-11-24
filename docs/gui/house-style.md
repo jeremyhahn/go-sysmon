@@ -68,9 +68,8 @@ covers, not on `base-200` alone:
 | a clickable table row, hovered or selected | `DataTable` | same as its card |
 | `base-300` | the page behind the cards, a table header | **4.20:1, fails**: carries no semantic text |
 
-**Mark row state with a rule, not a fill.** A `DataTable` row used to take a
-`base-300` fill when hovered or selected, which took its status cells below AA
-the moment a user clicked it (#147). A row now stays on its card's surface.
+**Mark row state with a rule, not a fill.** A `base-300` fill takes status
+cells below AA (#147), so a row stays on its card's surface.
 Hover shows a 3px `base-content`/40 rule down the left edge, only on devices
 that can hover. Selection draws a 3px `primary` rule on the left and a `primary`
 hairline along the top and bottom of every cell, so the row stays visibly
@@ -155,15 +154,13 @@ One text colour, several levels of emphasis:
 **`/60` is the floor for anything a reader must read.** Below it is decoration:
 a separator, an outline icon. There is no level in between.
 
-That is a limit, not a preference. Measured by compositing the text over the
-card the way the screen does, `/50` is **3.35:1** in the light theme — and no
+That is a limit, not a preference. Composited over the card the way the
+screen does, `/50` is **3.35:1** in the light theme — and no
 colour rescues it, because pure black at `/50` over `#f8f8f8` is about 3.96:1.
 **Opacity gives a light theme fewer usable levels than a dark one.** If you need
 a fourth level of muting, take it from size, weight or letterform instead.
 
-go-sysmon shipped `/50` for secondary descriptions and `/40` for empty-state
-messages — about 130 places — until this was measured. Both are now `/60`, and
-labels stay distinguishable from descriptions by being uppercase rather than by
+Secondary descriptions and empty-state messages use `/60`; labels stay distinguishable from descriptions by being uppercase rather than by
 being darker, which is the same principle `StatCard` uses below.
 
 ---
@@ -267,16 +264,11 @@ Matching go-netmon exactly: one icon button, a sun and a moon, one click
 between them. The two tools are run by the same person and their theme controls
 should not disagree about what a theme control is.
 
-**There was a third state — "follow the operating system" — and it was removed
-even though it worked.** It read `prefers-color-scheme` and tracked OS changes
-live. The reason it went is the one that decides such things: *a user cannot
-tell which state they are in without changing their operating system.* On a
-light-mode machine "system" and "light" render identically, so a third of the
-control was invisible, unverifiable, and indistinguishable from a bug. The
-owner asked whether it was even wired up — which is the question an invisible
-state earns.
+**There is no "follow the operating system" state**: a user cannot tell which
+state they are in without changing their operating system, because on a
+light-mode machine "system" and "light" render identically.
 
-The useful part survives without being a mode: **with nothing stored, the first
+Instead, **with nothing stored, the first
 load takes its theme from `prefers-color-scheme`**, so a dark-mode machine opens
 dark. The first explicit choice replaces that for good.
 
@@ -343,7 +335,7 @@ Use plain CSS with a selector you control:
 **Verify a colour change by reading it back from a rendered page**, not by
 reading the stylesheet.
 
-### The contrast test that measured nonsense
+### Measuring contrast
 
 The obvious way to measure contrast is to read `getComputedStyle(el).color` and
 pull the three numbers out of it. Modern CSS resolves these as `oklch()`, so

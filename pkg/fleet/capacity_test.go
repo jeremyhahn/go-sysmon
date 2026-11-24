@@ -114,7 +114,7 @@ func TestNodeHeadroom(t *testing.T) {
 	}
 }
 
-// TestNodeHeadroom_AtTheDefaultTarget: the 0.8 a coordinator runs with, whose
+// TestNodeHeadroom_AtTheDefaultTarget: the default 0.8, whose
 // arithmetic is not exact in binary, is within a byte and a hair of a core.
 func TestNodeHeadroom_AtTheDefaultTarget(t *testing.T) {
 	n := up("n", capable())

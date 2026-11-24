@@ -8,11 +8,8 @@ import type { HistoryPoint } from "../../src/lib/types";
  * A range query answers on a grid: an evaluation at start, start + step,
  * start + 2*step and so on up to end, each with a value if the series had a
  * sample within the database's lookback, and simply absent if not. The chart
- * reads the space between two points against the step to find an outage
- * (#179), so a mock that hand-writes three points a half-hour apart under a
- * fifteen-second step is not a sparse line -- it is three readings separated
- * by outages, drawn as three dots. Every history mock is built here instead,
- * so none of them can drift off the grid again.
+ * reads the space between two points against the step to find a gap (#179),
+ * so every history mock is built on the grid here.
  */
 
 /** targetPoints is pkg/prom.TargetPoints, the resolution the server draws at. */

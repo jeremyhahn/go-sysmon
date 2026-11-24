@@ -150,7 +150,7 @@ test('a fleet that shrinks under the last page moves to the new last page', asyn
 
 test('a slow answer to an old search never replaces the newer one', async ({ page }) => {
   await mockSnapshotFeed(page);
-  // Registered first: Playwright runs the LAST matching route first, so the
+  // Registered first: Playwright runs the last matching route first, so the
   // delaying route below sees each request before this answers it.
   await serveFleet(page, bigFleet(200));
   // Answer "node-001" slowly and everything else at once, so the first

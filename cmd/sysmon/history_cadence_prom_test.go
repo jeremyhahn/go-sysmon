@@ -138,8 +138,8 @@ func (x *watched) firing() []types.Alert {
 	return out
 }
 
-// TestCadenceWatch_StartsWithTheDatabaseDownThenFindsTheViolation is the
-// ruling end to end: the node starts while its database is down, with a
+// TestCadenceWatch_StartsWithTheDatabaseDownThenFindsTheViolation runs the
+// cadence check end to end: the node starts while its database is down, with a
 // cadence that database cannot chart; the check is pending, not skipped; when
 // the database comes up the violation is found, the node reports itself
 // degraded and the alert fires; a reload that fixes the cadence clears both.

@@ -37,9 +37,7 @@ alerts:
   cpu_pct: 90              # mean usage across logical CPUs
   load_per_core: 2.0
   memory_pct: 90
-  # A paging RATE, not an occupancy: swap that is merely resident costs nothing,
-  # and pages left behind by a burst that ended hours ago stay counted until
-  # something reclaims them. 200 pages/s is 800 KB/s at the usual 4 KiB page.
+  # A paging rate, not swap occupancy. 200 pages/s is 800 KB/s at 4 KiB pages.
   swap_out_pages_per_sec: 200
   psi_full_avg10: 10       # "full" pressure (cpu/memory/io): everything stalled
 
@@ -48,9 +46,8 @@ alerts:
   net_util_pct: 80         # share of the link speed, where the speed is known
 
   # --- gpu ---
-  # Looser than the CPU equivalents on purpose: an accelerator under load is
-  # designed to run hot and near its power limit. High utilisation is
-  # deliberately not an alert -- that is the card doing its job.
+  # Looser than the CPU thresholds: accelerators run hot by design. High
+  # utilisation is not an alert.
   gpu_temp_warn_c: 85
   gpu_temp_crit_c: 95
   gpu_memory_pct: 90       # exhausted video memory fails work outright
@@ -74,82 +71,57 @@ alerts:
 # the browser leaving this origin. Leave empty and the node behaves exactly as a
 # standalone dashboard.
 fleet:
-  # How this node names itself in the fleet view. Defaults to the hostname,
-  # which is usually right -- but a machine repurposed from an earlier role can
-  # carry a hostname that no longer describes it, and relabelling a dashboard is
-  # cheaper than renaming a running host. Held to the same rule as a peer name
-  # below: letters, digits, '.', '_', ':' and '-' only, or the service will not
-  # start -- and if this is unset and the hostname breaks that rule, set it.
-  # local_name: netmon
+  # How this node names itself in the fleet view; defaults to the hostname.
+  # Letters, digits, '.', '_', ':' and '-' only, or the service will not start;
+  # set it when the hostname breaks that rule.
+  # local_name: node-a
   poll_interval_ms: 10000
   timeout_ms: 3000
-  # The utilisation, as a fraction in (0, 1], that each node's headroom in the
-  # fleet view is computed against: 0.8 reports how much CPU and memory work a
-  # node can take before it is 80% busy. Anything outside (0, 1] stops the
-  # service at startup, and a reload with one keeps the running configuration.
+  # Utilisation fraction in (0, 1] that fleet headroom is computed against: 0.8
+  # reports the work a node can take before it is 80% busy. Values outside the
+  # range stop startup; a reload with one keeps the running configuration.
   headroom_target: 0.8
   peers: []
-  # A peer's name is its fleet-wide identity: set it to exactly what that node
-  # calls itself (its fleet.local_name, or its hostname), because it is also the
-  # Prometheus instance label its history is stored under. Letters, digits,
-  # '.', '_', ':' and '-' only; anything else stops the service at startup.
-  # name is required: a peer without one stops the service at startup, because
-  # the name is published on the dashboard's unauthenticated endpoints and a
-  # default would have to be taken from the peer's address.
+  # name is required and must equal what the peer calls itself (its
+  # fleet.local_name or hostname); it is also the Prometheus instance label.
+  # Letters, digits, '.', '_', ':' and '-' only.
   # peers:
-  #   - name: fs
+  #   - name: node-b
   #     url: http://198.51.100.10:8081
-  #   - name: omega
+  #   - name: node-c
   #     url: http://198.51.100.90:8081
 
 # ---------------------------------------------------------------------------
 # Prometheus (optional)
 # ---------------------------------------------------------------------------
 #
-# Leave this section out entirely and the node behaves exactly as it always
-# has: real time only, with no dependency on a Prometheus running anywhere.
-# That is the expected shape for most of a fleet.
+# Without this section the node is real time only, with no Prometheus
+# dependency.
 #
-# The two halves are independent:
+#   remote_write_url  this node pushes its own metrics; set it on every node
+#                     whose history you want to keep.
+#   query_url         this node reads ranges back for its History tab; usually
+#                     set on the aggregator.
 #
-#   remote_write_url  this node PUSHES its own metrics, so a Prometheus that
-#                     cannot reach it still records its history. Set it on
-#                     every node whose past you want to keep.
-#   query_url         this node READS ranges back, which is what puts the
-#                     History tab in its dashboard. Usually set on the one node
-#                     an operator opens -- the aggregator.
-#
-# Each node pushing its own metrics is deliberate. Having the aggregator store
-# what it already polls would make one machine a time-series database whose
-# cost grows with nodes x metrics x retention, on a host chosen for being
-# small. Pushing is constant cost per node and adds nothing to the existing
-# ones as the fleet grows.
-#
-# The series are labelled instance=<fleet.local_name> and job=go-sysmon, so a
-# node relabelled in the fleet view is relabelled in its history too.
+# Series are labelled instance=<fleet.local_name> and job=go-sysmon.
 #
 # prometheus:
-#   remote_write_url: http://mon0:9090/api/v1/write
-#   query_url: http://mon0:9090
+#   remote_write_url: http://prometheus.example.com:9090/api/v1/write
+#   query_url: http://prometheus.example.com:9090
 #
-#   # How often a sample set is taken. Deliberately separate from
-#   # server.interval_ms: that is the dashboard's stream rate, and a browser
-#   # watching at 250ms must not write four samples a second into a database.
+#   # Sampling rate, independent of server.interval_ms (the dashboard stream).
 #   sample_interval_ms: 15000
 #
-#   # How long a sample may wait before being pushed, and how many buffered
-#   # samples force a push early. batch_size also bounds the backlog: ten
-#   # batches worth may accumulate while the receiver is unreachable before the
-#   # oldest are dropped.
+#   # Maximum wait before a push, and the buffered count that forces one early.
+#   # Up to ten batches queue while the receiver is unreachable, then the oldest
+#   # are dropped.
 #   flush_interval_ms: 30000
 #   batch_size: 1000
 #   timeout_ms: 10000
 #
-#   # Labels only a deployment knows. A name go-sysmon already uses -- instance,
-#   # job, or any label its metrics carry (device, interface, resource, gpu,
-#   # core, source, array, level, rule, severity, category) -- is REJECTED at
-#   # load rather than ignored: a series carrying a label twice is refused by
-#   # Prometheus, and it refuses the whole write request with it.
+#   # Deployment labels. A name go-sysmon already uses (instance, job, device,
+#   # interface, resource, gpu, core, source, array, level, rule, severity,
+#   # category) is rejected at load: Prometheus refuses duplicate labels.
 #   external_labels:
 #     site: rack_3
 #
@@ -157,8 +129,6 @@ fleet:
 #
 #   prometheus --web.enable-remote-write-receiver
 #
-# A node that is pushing also exports its own delivery health on /metrics --
+# A pushing node exports its delivery health on /metrics as
 # sysmon_remote_write_{buffered_samples,consecutive_failures,
-# last_success_timestamp_seconds,samples_dropped_total_current}. Alert on them:
-# history that silently stops being recorded looks exactly like history that
-# has not happened yet.
+# last_success_timestamp_seconds,samples_dropped_total_current}; alert on them.

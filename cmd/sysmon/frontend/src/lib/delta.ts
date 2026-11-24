@@ -325,7 +325,7 @@ function identity(element: unknown, key: string): string | null {
       // the differ only emits a keyed patch when the Go side accepted every
       // identity, so a frame carrying such a spelling did not come from one.
       //
-      // ("007" is NOT an example of this: JSON forbids a leading zero, so both
+      // ("007" is not an example of this: JSON forbids a leading zero, so both
       //  decoders reject it before any of this runs. Go's own leading-zero
       //  check guards input that did not come through a JSON decoder at all.)
       if (!Number.isSafeInteger(value)) return null;

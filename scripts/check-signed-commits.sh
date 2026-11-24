@@ -7,13 +7,13 @@
 # never sees a branch's commits at all. Nothing checked them, and the guarantee
 # was decorative on the one path that could break it (#41).
 #
-# The path that breaks it: THE SIGNING DECISION IS FIXED WHEN A REBASE STARTS.
+# The path that breaks it: the signing decision is fixed when a rebase starts.
 # A rebase begun without signing enabled recreates every commit unsigned, and
 # `git rebase --continue` on it reports success. It happened on eight commits
 # of one branch, and on this repository's own #82.
 #
 # `git cat-file` is used rather than `--format=%G?`, and that is not a
-# preference. %G? prints N for BOTH "unsigned" and "signed but unverifiable
+# preference. %G? prints N for both "unsigned" and "signed but unverifiable
 # without gpg.ssh.allowedSignersFile" -- which a CI checkout does not have --
 # so it reports N on correctly signed commits and cannot tell the two apart. A
 # check built on it would fail everything and be disabled within a day. The

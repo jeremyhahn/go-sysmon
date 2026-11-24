@@ -5,12 +5,8 @@
 
 ## The problem
 
-Getting sysmon onto a server used to mean copying the binary and then a set of
-manual steps nobody wrote down twice: pick a port, write a unit file, decide
-whether to run it as root, remember to enable it at boot. The binary landed
-reliably; everything that made it a *service* was folklore.
-
-This feature is the second half: one command that leaves a remote host running
+Running sysmon as a service needs more than the binary: a port, a unit file,
+an account, enablement at boot. This feature is one command that leaves a remote host running
 the dashboard, supervised, surviving reboot, and reproducible on the next host.
 
 ## The shape chosen
@@ -127,9 +123,7 @@ defaults and loses nothing but the operator's own edits.
 ## Liveness: the watchdog
 
 `Type=exec` reports a unit active while the binary exists. It says nothing about
-whether a request can be answered, and the difference is not academic:
-vm-host-2 served nothing for two days with `NRestarts=0`, the unit `active`,
-and 2929 connections queued on a listener nothing was accepting from.
+whether a request can be answered (#65).
 
 The unit is `Type=notify` with `WatchdogSec=60`. The service pings at half that,
 and **only when both of these held in the same interval**:
@@ -145,23 +139,19 @@ and **only when both of these held in the same interval**:
    restarting for it would make the watchdog a source of outages. The interval
    is re-read on every check, since it is settable at runtime.
 
-Each covers what the other cannot. Accept is what failed on vm-host-2, and a
-check that does not cross the listener cannot see it; equally, a server
+Each covers what the other cannot. A check that does not cross the listener
+cannot see a stalled accept; equally, a server
 answering promptly with readings from before its poll loop stalled looks
 perfect to the probe.
 
-**The trap this design exists to avoid.** A goroutine that pings on a `time.Ticker`
-allocates nothing and touches nothing, so it goes on pinging cheerfully through
-exactly the garbage-collection stall that has parked every other goroutine in
-the process. That watchdog converts "the service is dead" into "the service is
-dead and systemd has confirmed it is fine". The tests assert the **absence** of
+**No bare ticker.** A goroutine that pings on a `time.Ticker` allocates
+nothing, so it keeps pinging through a garbage-collection stall that has parked
+every other goroutine in the process. The tests assert the **absence** of
 pings, because a test that only checks pings arriving passes against a bare
 ticker.
 
 The notification variables are cleared from the environment after use, so
-nothing this process starts can satisfy a watchdog it has stopped satisfying —
-a child pinging on behalf of a stalled parent is vm-host-2 again with a
-different actor holding the pen.
+nothing this process starts can satisfy a watchdog it has stopped satisfying.
 
 Each notification write is bounded by one second (`sdnotify.SendTimeout`).
 `sd_notify` is fire-and-forget, and a manager that has stopped draining its
@@ -169,16 +159,14 @@ socket would otherwise block the write — and the watchdog loop with it —
 forever. A send that misses the bound returns `*types.NotifySendError`
 wrapping `os.ErrDeadlineExceeded`.
 
-**Verified end to end**, not only in tests: under a transient unit with
-`WatchdogSec=10`, the service stayed `active` through four watchdog periods, and
-a `SIGSTOP` — a process alive and unable to serve, which is the failure in
-miniature — produced `Watchdog timeout (limit 10s)!` and a kill within one and a
-half periods. With `Restart=always` that is a restart.
+To check it on a host: under a transient unit with `WatchdogSec=10`, a
+`SIGSTOP` produces `Watchdog timeout (limit 10s)!` and a kill within about one
+and a half periods; with `Restart=always` that is a restart.
 
 ## Privileges
 
 **The service runs as a dedicated unprivileged system account with two
-capabilities**, and each is there for a device node (Company Agent ruling 226):
+capabilities**, and each is there for a device node:
 
 | Unit line | Why |
 |---|---|
@@ -187,13 +175,11 @@ capabilities**, and each is there for a device node (Company Agent ruling 226):
 | `AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE` | `CAP_SYS_ADMIN` lets the service make the NVMe admin passthrough ioctl (SMART on `/dev/nvmeN`) and the MegaRAID passthrough (drives behind a PERC). `CAP_DAC_OVERRIDE` lets it open those `root:root 0600` nodes, and `/dev/ipmi0` for the [drive-slot](../collector/drive-slots.md) IPMI fallback. |
 | `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE` | Has to list the ambient set. An empty bounding set drops it. |
 
-That is a measured result. Every other metric surface was collected as root and
-as an unprivileged user on the same host, and the results were identical: CPU
+Every other metric surface reads the same as root and unprivileged: CPU
 package temperatures, PSI pressure stalls, per-interface counters with driver
 and bond detail, cgroup v2 container metrics, load averages, disk utilisation,
-and the full process list with command lines. On ci-node-2, without the grants
-every disk read `smart_status` "unreadable". With them, it read "readable on 4
-of 10 devices".
+and the full process list with command lines. Without the grants, every disk
+reads `smart_status` "unreadable".
 
 **The cost.** `CAP_DAC_OVERRIDE` bypasses every file permission check, so
 `/etc/shadow` is readable to the process. `ProtectSystem=strict` and
@@ -203,12 +189,10 @@ syscall filter, `RestrictNamespaces=`, the `ProtectKernel*=` lines and
 `NoNewPrivileges=` stay in place to fence it.
 
 **`CAP_SYS_RAWIO` is deliberately withheld.** It enables the SG_IO/HDIO ATA
-passthrough for SATA/SAS SMART. On the dellemc hosts, that path's
-`HDIO_DRIVE_CMD` ioctl against the DELLBOSS M.2 virtual disk and the
-PERC-backed SAS disks overruns its buffer. The service then segfaults in
-`runtime.mallocgc` and `Restart=always` loops it forever. That was confirmed by
-bisection. Leave the capability out until the bug is fixed and re-verified on
-that hardware. Without it, an ATA disk's SMART reads as "refused by the
+passthrough for SATA/SAS SMART. On some RAID-backed disks (Dell BOSS M.2
+virtual disks, PERC-backed SAS disks) that path's `HDIO_DRIVE_CMD` ioctl
+overruns its buffer and the service segfaults in a restart loop (#20). Leave
+the capability out until that is fixed and re-verified on that hardware. Without it, an ATA disk's SMART reads as "refused by the
 kernel", and `sysmon-server doctor` reports that.
 
 **SMBIOS DIMM detail** (module manufacturer, part number, serial, speed, form

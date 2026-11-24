@@ -52,11 +52,10 @@ and each remaining slash replaced by a dash. For example, `pkg/collector` is
 
 ## Where each package stands
 
-"Before" was measured on `release-candidate` at the start of #167
-(2026-09-24), and "after" once #167's tests landed. Unit
+"Before" is the start of #167 and "after" is once #167's tests landed. Unit
 coverage merges every test shape. Integration coverage comes from the suite in
-the devcontainer on gpu-host. `internal/github` was added on 2026-11-23 and
-has no "before"; its figures were measured that day.
+the devcontainer on a host with a GPU and an NPU. `internal/github` has no
+"before".
 
 - **No tests:** the package has no test files, so nothing measures it.
 - **Not reached:** no binary the integration suite runs contains the package.
@@ -66,7 +65,7 @@ has no "before"; its figures were measured that day.
 | `cmd/buildtags` | no tests | 96.2% | not reached | 100.0% |
 | `cmd/checklatest` | 41.2% | 90.3% | not reached | 97.4% |
 | `cmd/checkpins` | 58.8% | 95.0% | not reached | 100.0% |
-| `cmd/sysmon` | 74.5% | 90.2% | 45.7% | 89.1% (below the floor, owner-approved) |
+| `cmd/sysmon` | 74.5% | 90.2% | 45.7% | 89.1% (below the floor, excepted) |
 | `cmd/tsgen` | no tests | 90.9% | not reached | 100.0% |
 | `internal/await` | 100.0% | 100.0% | 33.3% | 33.3% (test helper, exempt) |
 | `internal/buildtags` | 99.1% | 99.1% | not reached | 98.2% |
@@ -74,21 +73,21 @@ has no "before"; its figures were measured that day.
 | `internal/github` | new | 97.4% | new | 94.8% |
 | `internal/pins` | 94.7% | 94.7% | not reached | 95.1% |
 | `internal/tsgen` | 91.6% | 91.6% | not reached | 92.1% |
-| `pkg/alert` | 92.1% | 92.1% | 56.3% | 65.0% (below the floor, owner-approved) |
-| `pkg/cli` | 95.9% | 95.9% | 65.9% | 90.2% (host-hardware, owner-approved) |
-| `pkg/collector` | 87.3% | 91.8% | 45.3% | 85.0% (below the floor, owner-approved) |
+| `pkg/alert` | 92.1% | 92.1% | 56.3% | 65.0% (below the floor, excepted) |
+| `pkg/cli` | 95.9% | 95.9% | 65.9% | 90.2% (host-hardware, excepted) |
+| `pkg/collector` | 87.3% | 91.8% | 45.3% | 85.0% (below the floor, excepted) |
 | `pkg/config` | 91.5% | 91.5% | 20.8% | 91.1% |
-| `pkg/delta` | 88.2% | 98.8% | 0.0% | 76.0% (below the floor, owner-approved) |
+| `pkg/delta` | 88.2% | 98.8% | 0.0% | 76.0% (below the floor, excepted) |
 | `pkg/fleet` | 96.8% | 96.8% | 58.8% | 93.2% |
-| `pkg/memlimit` | 94.7% | 94.7% | 49.1% | 80.8% (below the floor, owner-approved) |
+| `pkg/memlimit` | 94.7% | 94.7% | 49.1% | 80.8% (below the floor, excepted) |
 | `pkg/metrics` | 100.0% | 100.0% | 0.0% | 100.0% |
 | `pkg/monitor` | 98.8% | 98.8% | 86.7% | 91.3% |
 | `pkg/nodename` | 100.0% | 100.0% | 20.0% | 90.0% |
 | `pkg/outbound` | 95.8% | 95.8% | 8.3% | 95.8% |
 | `pkg/prom` | 93.1% | 93.1% | not reached | 90.5% |
 | `pkg/sdnotify` | 93.9% | 93.9% | 42.4% | 97.0% |
-| `pkg/server` | 90.7% | 90.7% | 33.9% | 88.4% (below the floor, owner-approved) |
-| `pkg/types` | 90.6% | 90.6% | 45.3% | 67.2% (below the floor, owner-approved) |
+| `pkg/server` | 90.7% | 90.7% | 33.9% | 88.4% (below the floor, excepted) |
+| `pkg/types` | 90.6% | 90.6% | 45.3% | 67.2% (below the floor, excepted) |
 | `pkg/types/typestest` | 98.3% | 98.3% | not reached | 0.0% (test helper, exempt) |
 | `pkg/watchdog` | 97.1% | 97.1% | 14.3% | 91.4% |
 
@@ -96,7 +95,7 @@ has no "before"; its figures were measured that day.
 
 `build/coverage-exceptions` is the one list of what the integration floor
 leaves out, and `scripts/pkgtest.sh integration` reads it. Each entry gives a
-path, a category, a reason and the owner's approval (2026-09-24).
+path, a category, a reason and the owner's approval.
 `make check-coverage-exceptions`, part of `make lint`, rejects an entry that
 is malformed, unapproved, of an unknown category, or names a path that no
 longer exists.
@@ -109,18 +108,17 @@ longer exists.
   on every runner.
 - **Host:** md software RAID. A test array would be a kernel-global device,
   which would modify the host.
-- **GUI:** `cmd/sysmon/bindings.go`, reached only from a desktop session. The
-  owner approved it explicitly.
+- **GUI:** `cmd/sysmon/bindings.go`, reached only from a desktop session.
 - **Test helpers:** `internal/await`, `internal/deadpeer` and
   `pkg/types/typestest` ship in no binary and are exempt as packages.
-- **Below the floor, by owner ruling:** `pkg/collector` and `pkg/alert`
+- **Below the floor:** `pkg/collector` and `pkg/alert`
   (hardware and host state a container host does not have), `pkg/cli` (it
   renders the host's own GPUs and NPUs, so what it reaches depends on the
-  runner's hardware: 90.2% on gpu-host, about 77% without them), and `pkg/delta`,
+  runner's hardware: 90.2% with them, about 77% without), and `pkg/delta`,
   `pkg/server`, `pkg/memlimit`, `pkg/types` and `cmd/sysmon` (defensive
   branches: refusals of malformed input, write failures on dropped
-  connections, kernel output that does not occur). The owner ruled that code is
-  not reorganised to raise the number. Each is measured and reported on every
+  connections, kernel output that does not occur). Code is not reorganised to
+  raise the number. Each is measured and reported on every
   run, with the figure it reached recorded in the file, and never fails the
   gate.
 

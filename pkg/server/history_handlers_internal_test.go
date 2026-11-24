@@ -143,8 +143,7 @@ func (f *fakePrometheus) timestamps(t *testing.T, q url.Values) string {
 		strings.Join(values, ",") + `]}]}}`
 }
 
-// historyConfig is a manager naming this node mon0 with one peer, fs. The
-// history endpoint answers only for nodes it knows, so the tests need a
+// historyConfig is a manager naming this node and one peer. The history endpoint answers only for nodes it knows, so the tests need a
 // configuration that says which those are.
 func historyConfig(t *testing.T) *config.Manager {
 	t.Helper()
@@ -693,7 +692,7 @@ func TestHandleHistory_BadWindowsAreRejected(t *testing.T) {
 // whoever is reading the error: 502 says the dashboard reached go-sysmon and
 // go-sysmon could not reach Prometheus.
 //
-// What it must NOT say is where that Prometheus is, or what it replied. This
+// What it must not say is where that Prometheus is, or what it replied. This
 // endpoint has no authentication of its own, and the address of the fleet's
 // time-series database is reconnaissance -- the same reason the settings view
 // redacts it. The detail belongs in the server log.

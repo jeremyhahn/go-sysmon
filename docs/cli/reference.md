@@ -302,7 +302,7 @@ fails to answer disappear from the count.
 
 **And the drives behind that controller are counted too.** They are not block
 devices and appear in no disk list, so a figure summed over the list alone
-reported ci-node-1 as reading four devices while ten answered. The detail line
+would undercount. The detail line
 says how many came from a controller — `readable on 10 of 12 device(s) that can
 report it (6 behind a RAID controller)` — because otherwise a count larger than
 the number of disks on the page reads as an error rather than as drives nobody
@@ -310,9 +310,7 @@ could see before.
 
 **The remedy comes from the device, not from a constant.** A refused *open* is
 file permissions and the `disk` group fixes it; a refused *passthrough* is a
-capability check that no group membership satisfies. The check used to offer the
-group for both, which on a host already in that group was advice to do something
-already done. When several devices fail for different reasons, the most common
+capability check that no group membership satisfies. When several devices fail for different reasons, the most common
 is shown and the rest are counted — the reasons carry device paths and errno
 detail, so printing them all would put a paragraph on one line.
 

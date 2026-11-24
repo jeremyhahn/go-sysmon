@@ -225,9 +225,8 @@ func (p *Poller) SetClient(c *http.Client) {
 //
 // Every peer is polled every cycle, so each one's connection is wanted again
 // within seconds. With the default pool, a fleet of more than a hundred peers
-// evicted the surplus between cycles and redialled it on the next: measured at
-// 300 peers, 222 new connections every cycle -- each a TLS handshake on an
-// https fleet, on both ends, forever. Per host the default of two idle
+// evicted the surplus between cycles and redialled it on the next, a TLS
+// handshake per connection on an https fleet. Per host the default of two idle
 // connections stays, which covers a peer's summary poll and its history worker
 // at once, and the idle timeout still closes the connections of a peer that has
 // been removed.
@@ -327,18 +326,8 @@ func (p *Poller) Enabled() bool {
 // configuration each cycle so a reload retimes it.
 //
 // This sleeps for the interval AFTER the refresh rather than driving off a
-// ticker, so the real cadence is interval + work. That is measurable: mon0 runs
-// at 3.20s against a configured 3.00s. PollInterval reports the real figure
-// rather than the configured one, so the dashboard is truthful about it.
-//
-// Leaving the loop this way is a DELIBERATE deferral, not an oversight. A true
-// ticker would poll every 3.00s instead of every 3.20s -- 6.7% MORE aggregation
-// on mon0, which is the node this is trying to relieve, and where aggregation
-// was measured as 94% of the process's CPU (#76). That larger question is now
-// settled: the poll carries summaries and never a process list (see
-// poll). With the cycle that much cheaper the ticker costs nothing worth
-// counting, and converting to one is a separate change rather than part of
-// this one.
+// ticker, so the real cadence is interval + work. PollInterval reports the real
+// figure rather than the configured one.
 //
 // The history workers are reconciled after each cycle and stopped, and waited
 // for, when Run returns: no worker outlives the loop that started it.
@@ -424,11 +413,8 @@ func (p *Poller) SetPollInterval(d time.Duration) {
 // one is set, the configuration otherwise, never below the floor -- PLUS the
 // time the last refresh took.
 //
-// The addition is the point. Run does the work and THEN sleeps for the
-// interval, so a configured 3s with a 200ms refresh produces a peer poll every
-// 3.2s, not every 3s. On mon0 that was measured at 3.20s against a configured
-// 3.00s (#76): the aggregation cycle is visible in that node's CPU trace with
-// an autocorrelation peak at exactly 3.20s.
+// Run does the work and then sleeps for the interval, so a configured 3s with
+// a 200ms refresh produces a peer poll every 3.2s (#76).
 //
 // Returning the configured value would restate the file rather than describe
 // the service, which is the defect effectiveInterval's own comment says this
@@ -1158,10 +1144,8 @@ func (p *Poller) nodes(g *generation) (nodes []types.FleetNode, ok bool) {
 	}
 	self := p.selfNode()
 
-	// Alphabetical by name (owner ruling 2026-09-01). Names are unique within a
-	// fleet, so this is a total order and the list cannot reshuffle between
-	// polls -- which was the original reason for sorting here at all, since map
-	// and config order left equal nodes moving around.
+	// Alphabetical by name. Names are unique within a fleet, so this is a
+	// total order and the list cannot reshuffle between polls.
 	//
 	// This used to put the worst status first so a fault led the list. That
 	// reads as "unsorted" to someone looking for a host. A fleet list is used
@@ -1343,7 +1327,8 @@ func (e *PlaintextPeerError) Error() string {
 //
 // The message does not quote the scheme. It is served in the fleet view, which
 // withholds every peer's address (#120), and the likeliest bad scheme is not a
-// scheme at all: "fs.lan:8081" parses as scheme "fs.lan", the peer's host.
+// scheme at all: "node1.example:8081" parses as scheme "node1.example", the
+// peer's host.
 type PeerSchemeError struct {
 	Peer   string
 	Scheme string

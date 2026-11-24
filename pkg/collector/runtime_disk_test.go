@@ -69,8 +69,7 @@ func TestRuntimeDisk_MeasuresTheFirstCandidateThatExists(t *testing.T) {
 	}{
 		{"the runtime's relocated root", "/srv/docker", everything,
 			types.RuntimeDisk{Path: "/srv/docker", TotalBytes: 1000, FreeBytes: 400}},
-		// ci-node-2: sysmon is not in the docker group, the API does not
-		// answer, and /var/lib/docker is a bind mount the disk list cannot
+		// sysmon is not in the docker group, the API does not answer, and /var/lib/docker is a bind mount the disk list cannot
 		// name. statfs on the path measures it all the same.
 		{"API unreachable: docker's default", "", everything,
 			types.RuntimeDisk{Path: "/var/lib/docker", TotalBytes: 2000, FreeBytes: 900}},

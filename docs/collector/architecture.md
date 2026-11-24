@@ -52,11 +52,9 @@ type Collector interface {
 
 `DiskCollector` reports a device only when the kernel has put a medium behind
 it — `/sys/block/<dev>/size` is non-zero. Any host with the `nbd` module loaded
-gets sixteen empty stubs at boot, and on ci-node-1 they sorted ahead of every
-real disk, so the storage panel opened on seventeen rows of zeroes while the
-machine was writing 70 MB/s further down. The test is the medium, not a list of
-names: on that host `nbd0` still carried lifetime I/O counters from a
-disconnected export, so "has it ever done I/O" would have kept the emptiest one.
+gets sixteen empty stubs at boot. The test is the medium, not a list of names
+or "has it ever done I/O": a disconnected `nbd0` can still carry lifetime I/O
+counters.
 
 An unreadable `/sys` reads as *unknown*, not as *empty*, so a host without sysfs
 mounted keeps its disk list instead of losing it.
@@ -67,21 +65,21 @@ hotplug or rescan window are also omitted, the last of them for one cycle until
 the kernel publishes a size.
 
 SMART is then classified rather than merely attempted, because "no reading"
-covers four unrelated situations that used to render identically (see
+covers four unrelated situations (see
 [`smart_status`](../types/reference.md#diskinfo)):
 
 - **No medium to ask.** Only a device with hardware under it has a `device` link
   in sysfs, which makes this structural rather than a list of name prefixes.
-  Device-mapper nodes stay in the disk list — `dm-0` is where `/` lives on
-  ci-node-1, and dropping it would take the root filesystem's usage with it.
+  Device-mapper nodes stay in the disk list: `/` often lives on one, and
+  dropping it would take the root filesystem's usage with it.
 - **Refused.** Reported first, not because it is the most specific answer but
   because it is a fault in how the service was deployed and it is fixable. The
   two shapes of refusal have different remedies and are reported separately:
   the device node could not be **opened** (file permissions — group
   membership), or the node opened and the kernel rejected the **passthrough**
   (a capability check — `CAP_SYS_RAWIO`, which no group membership satisfies).
-  Conflating them produces confident advice that cannot work: on ci-node-1 the
-  node opens and the ioctl is refused. The probe below is skipped once we know
+  Conflating them produces advice that cannot work when the node opens and the
+  ioctl is refused. The probe below is skipped once we know
   we were refused, since it would be refused identically.
 - **Behind a RAID controller** — meaning *served by one and did not answer
   SMART directly*, which is what the evidence supports. The SCSI host driver is
@@ -97,8 +95,7 @@ covers four unrelated situations that used to render identically (see
   bridge returns when it answers *without asking the drive*, so "bytes came
   back" is knowable and "the drive replied" is not. A JBOD disk that was merely refused would likewise be labelled
   as having member drives it does not have, hiding the fixable fault behind the
-  claim. Measured on ci-node-1, the ordering costs nothing: a PERC volume on
-  a host that *does* hold `CAP_SYS_RAWIO` fails with `unsupported scsi opcode`,
+  claim. The ordering costs nothing: a PERC volume on a host that *does* hold `CAP_SYS_RAWIO` fails with `unsupported scsi opcode`,
   a check condition rather than `EPERM`, so this is still reached wherever it is
   the whole truth. When a refusal happens on a RAID controller the controller is
   still named in the reason, because on a volume no capability will produce a
@@ -115,7 +112,7 @@ exactly the case where the reason is that the service is unprivileged.
 ## Drives behind a hardware RAID controller
 
 A hardware RAID volume hides its members. The kernel publishes the volume as one
-SCSI disk — `sda` on ci-node-1 — and the drives that make it up have no device
+SCSI disk, and the drives that make it up have no device
 node, no name in `/sys/block`, no partitions, no filesystem and no I/O counters:
 every field `DiskInfo` is built around. They are reachable only by asking the
 controller to carry a command to them.
@@ -134,9 +131,8 @@ PASS-THROUGH(16) command used for directly attached disks, tunnelled one layer
 deeper.
 
 **This needs `CAP_SYS_ADMIN` and `CAP_DAC_OVERRIDE`, and does not need
-`CAP_SYS_RAWIO`** (measured on ci-node-1, 2026-09-02; either capability alone
-fails). It never touches the SG_IO or HDIO paths that `CAP_SYS_RAWIO` governs —
-including the one that crash-loops that host — so reading these drives costs no
+`CAP_SYS_RAWIO`**; either capability alone fails. It never touches the SG_IO or
+HDIO paths that `CAP_SYS_RAWIO` governs, so reading these drives costs no
 change to how the service is deployed.
 
 Note also that `/dev/bus/0` **does not exist**. It is `smartctl`'s synthetic
@@ -236,21 +232,18 @@ already treats `""` exactly as `idle`. `pkg/metrics` omits
 be told from a measured one: `0` reads as a stalled rebuild and `100` as a
 finished one, on an array that might be neither.
 
-**A rebuild is still not invisible, and for a measured reason rather than an
-assumed one.** A member that is not `MR_PD_STATE_ONLINE` reports `Online: false`
+**A rebuild is still not invisible.** A member that is not `MR_PD_STATE_ONLINE` reports `Online: false`
 and raises a critical `raid_member_offline` naming the bay. That states what can
 be proved — this drive is not in service — instead of guessing at a percentage.
 
-**The same applies to `MismatchCount`, one field over**, and the gate found it
-only after the sync fix was written: a source that does not report background
+**The same applies to `MismatchCount`, one field over**: a source that does not report background
 operations does not report their results either, so zero there is *no check was
 read*, not *the last check was clean*. Those are opposite claims about a
 redundant array and only one of them is reassuring. `sysmon_raid_mismatch_count`
 and the panel's "Mismatch" cell are gated on the same signal.
 
 That signal — an empty `SyncAction` — is documented on `RAIDInfo` itself rather
-than left as a convention between three call sites, because an SDK consumer
-following the old contract would have read `""` as malformed.
+than left as a convention between three call sites.
 
 Decoding real progress needs more DCMDs and a controller in that state to verify
 against; it is follow-up work, not something to approximate.
@@ -266,8 +259,7 @@ readability would have reported a degraded array as whole and a whole one as
 degraded.
 
 Only `MR_PD_STATE_ONLINE` (0x18) counts as in service, because that is the only
-physical-drive state measured — all six drives on ci-node-1 report it while
-both arrays are optimal. An unrecognised state is reported as *not* in service,
+physical-drive state verified on hardware with optimal arrays. An unrecognised state is reported as *not* in service,
 which errs toward saying an array has fewer working drives than it has: the
 direction that raises attention rather than suppressing it.
 
@@ -284,8 +276,8 @@ up. Two extra commands per drive on the slow collection tier is not worth it.
 ### Why the metric label is the serial
 
 A drive behind a controller has no device name, and the names of the things
-around it are not stable. ci-node-1's 2026-08-31 rebuild renamed every PERC and
-BOSS device on the machine and swapped two of four NVMe names. **A series keyed
+around it are not stable: a reboot can rename RAID volumes and swap NVMe
+names. **A series keyed
 on position silently becomes a different series across such a reboot, which is
 worse than a missing one: the history looks continuous and is not.** The serial
 is the only identifier that survives, so `sysmon_disk_member_smart_healthy` and
@@ -302,9 +294,8 @@ The implementation is the 64-bit Linux ABI, so it is built only for
 **That stub is compiled with `go build -tags nomegaraid ./...`, and the tag
 exists for exactly that reason.** `pkg/collector` cannot currently be built for
 a 32-bit target at all — `gpu.go` imports NVML, which does not compile there
-(#8) — so "the unsupported path builds" was a claim nothing could check, and it
-was false: two symbols used by untagged files lived only in the 64-bit ones.
-Checking which files a target *selects* is not the same as compiling them.
+(#8) — so the tag is the only way to compile the unsupported path. Checking
+which files a target *selects* is not the same as compiling them.
 
 Anything shared between the two paths therefore belongs in an untagged file.
 `megaraid_config.go` holds the pure decoders, the error types they raise, and
@@ -315,10 +306,10 @@ the mapping onto `RAIDInfo` for that reason.
 The ioctl path cannot run in CI: it needs the hardware. What **is** covered by
 tests is everything either side of it — the packet layout against the offsets a
 C compiler produced from the driver's structures, the controller configuration
-decoder against **a real 1120-byte reply captured from ci-node-1**, the SCSI
-log page and INQUIRY decoders, and the mapping onto `RAIDInfo`. The ioctl itself
-was verified by running the built binary on ci-node-1 as the service's own user
-and reading its output; a green test suite does not mean that path was exercised.
+decoder against **a real 1120-byte controller reply**, the SCSI log page and
+INQUIRY decoders, and the mapping onto `RAIDInfo`. The ioctl itself is verified
+only by running the built binary on a host with the controller, as the
+service's own user; a green test suite does not exercise that path.
 
 ## NVIDIA GPUs and the `nvml` build tag
 
@@ -399,22 +390,19 @@ invisible rather than wrong. A 0 here on a busy device means "not measurable
 from this process", and the device's residency and state are unaffected.
 
 **On Intel, that zero is permanent, and it is the driver's doing.** `intel_vpu`
-does not implement usage-stats at all: measured on 2026-09-16 against a live
-client — an OpenVINO model server holding `/dev/accel/accel0` — whose `fdinfo`
-carried `pos`, `flags`, `mnt_id` and `ino`, and not one `drm-` key. So on an
+does not implement usage-stats at all: a live client's `fdinfo` carries `pos`,
+`flags`, `mnt_id` and `ino`, and no `drm-` key. So on an
 Intel NPU the utilisation figure is structurally zero however hard the hardware
 is working, and what the collector can still tell you is **which** processes hold
 the accelerator open, from the device-node link rather than from any counter.
 That much needs privilege: run unprivileged and another user's client is
-invisible, which on that host meant a client count of 0 as `jhahn` and 1 (`ovms`,
-pid 1240079) as root. Residency remains the figure to watch on Intel, and `amdxdna`
+invisible. Residency remains the figure to watch on Intel, and `amdxdna`
 is the driver expected to make utilisation real, since it does implement the
 interface.
 
-**`busy_time_us` is a raw cumulative driver counter and stays raw.** On Arrow
-Lake it was measured advancing at 98.8% of resumed time with no client holding
-the device at all, and its lifetime total sat within 2% of
-`runtime_active_time`: it follows D0 residency, not job execution. Dividing it
+**`busy_time_us` is a raw cumulative driver counter and stays raw.** It
+advances with D0 residency even with no client holding the device: it tracks
+`runtime_active_time`, not job execution. Dividing it
 by the sampling interval yields a utilisation figure pinned near 100% whenever
 anything keeps the NPU awake — including this monitor's own polling. So no
 percentage is derived from it anywhere, and `pkg/metrics` does not export it at
@@ -499,29 +487,14 @@ where you asked for a reading and should get a fresh one.
 ### What a tick actually costs
 
 Tiering means there is no such thing as "the cost of a tick": one tick in five
-costs several times what the other four do. That distinction is not academic —
-reading the *average* is what hid a two-day outage (issue #65), because a
-service can sit well under a CPU allowance on average while every expensive
-tick is a burst the allowance cannot absorb.
-
-Sampled on ci-node-1 at 250 ms resolution, `cpu.stat` deltas in milliseconds of
-CPU:
-
-```
-367 367 472 0 0 0 0 0 0 202 0 0 0 0 0 0 158 0 0 0 0 5 0 0 89 0 0 0 0 0 0 0
-361 347 425 449 352 399 438 393 400 384 0 0 0 0 9 200 0 0 ...
-      ^ the medium tick: ~3.9 s of CPU over 2.5 s of wall clock
-```
-
-The median sample is **zero**. Every 2 s a fast tick costs a couple of hundred
-milliseconds, and every fifth one a medium tick spends seconds — using more than
-one core, because collectors overlap.
+costs several times what the other four do. A service can sit well under a CPU
+allowance on average while every expensive tick is a burst the allowance cannot
+absorb (#65): the median 250 ms sample is zero, and a medium tick can use more
+than one core for seconds, because collectors overlap.
 
 Per-collector figures come from `make bench-collector`, which reads the real
 host and reports the process count beside every result. **They are comparable
-only within one host**; quoting one machine's numbers for another is the mistake
-that put an Atom D510's figures in the deployment unit. On gpu-host (1070
-processes):
+only within one host**. On a 24-core host with 1070 processes:
 
 | Tier | Collector | Per call | Allocated |
 |---|---|---|---|
@@ -546,15 +519,10 @@ and why it cannot be covered by a test.
 
 ### Host identity is read once, not every tick
 
-`HostCollector` used to call `host.Info()` on every tick. That call **counts
-every entry in `/proc`** to fill a `Procs` field nothing here reads — a second
-walk of the process table, every two seconds, for a number thrown away. On mon0
-the collector cost **41 ms per tick on the host with the fewest processes**,
-against 0.84 ms on the host with the most.
-
-Board, BIOS, kernel version, kernel architecture and boot time cannot change
-while the running kernel is up, so they are read once in the constructor and
-carried forward. Measured: **777.7 us to 20.1 us per collection, 39x.**
+`host.Info()` **counts every entry in `/proc`** to fill a `Procs` field nothing
+here reads, so it is not called every tick. Board, BIOS, kernel version, kernel
+architecture and boot time cannot change while the running kernel is up, so they
+are read once in the constructor and carried forward.
 
 Three fields are still read every tick, and the boundary is the point:
 
@@ -569,25 +537,17 @@ still the old one — but that changes **how fresh a field is**, which is a
 decision about what the dashboard promises rather than a saving to be taken
 quietly.
 
-**That sentence used to end "`PlatformInformation` costs a couple of file reads
-and does not count processes", and it was wrong on two of ten hosts.** gopsutil
-reads `/etc/lsb-release` when it exists and otherwise **forks
-`/usr/bin/lsb_release`**, a Python script on Debian. fs and mon0 are the only
-two nodes without that file, and they were the only two whose `HostCollector`
-cost tens of milliseconds — 38.65 ms on fs, 19.33 ms/s, **29% of that machine's
-entire CPU**, spent starting an interpreter to report a distribution name. Ten
-hosts, no exceptions.
-
-The cost was measured on a workstation that has the file and generalised to the
-fleet, which is the same error as the Atom D510 figures in the deployment unit.
+gopsutil reads `/etc/lsb-release` when it exists and otherwise **forks
+`/usr/bin/lsb_release`**, a Python script on Debian, which costs tens of
+milliseconds per tick on a host without that file.
 
 `platformInformation` in `host.go` now short-circuits exactly the case where
 gopsutil would fork **and** its answer is fully determined by files that can be
 read: no `/etc/lsb-release`, an `lsb_release` binary present, `ID=debian` in
 os-release, and no `raspi-config`. Everything else calls gopsutil unchanged.
-Measured on fs: **38.65 ms to 0.19 ms, 206x**, with the reported values
-identical — `debian 12.13`, the point release from `/etc/debian_version`, which
-is what gopsutil returns and is *not* what os-release's `VERSION_ID` says.
+The reported values are identical: the point release from
+`/etc/debian_version`, which is what gopsutil returns and is *not* what
+os-release's `VERSION_ID` says.
 
 **Split on the property, not on the path.** The same sysfs tree holds fixed
 identity and live state side by side: DIMM *topology* cannot change, a DIMM
@@ -613,14 +573,6 @@ refused) and, when access is refused, how to grant it:
   [deployment architecture](../deployment/architecture.md), "Privileges"); or
 - make the table readable by the service's group at boot, with a
   `tmpfiles.d` line: `z /sys/firmware/dmi/tables/DMI 0440 root <group>`.
-
-| host | before | after | |
-|---|---|---|---|
-| gpu-host (1070 procs, 24 cores) | 8.32 ms | 2.72 ms | −67% |
-| fs (119 procs, 4 cores) | **34.74 ms** | **1.20 ms** | **−96.6%** |
-
-The saving is larger on the smaller machine, which by now is the expected shape:
-this cost was never in the process table, and the modest hosts pay most of it.
 
 Temperatures come from hwmon and are read every tick, applied onto a **copy** of
 the inventory. The copy is the correctness of the whole arrangement: writing
