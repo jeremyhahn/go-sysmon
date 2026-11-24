@@ -85,6 +85,11 @@ not on `main`, then runs `make ci-fast`. Every job after the check builds the
 commit that passed it, and each job that publishes first confirms the tag
 still names that commit.
 
+The binaries are built inside the `Dockerfile`'s builder image, not with the
+runner's own C toolchain, and `make check-cpu-baseline` then fails the release
+if one demands a CPU above its architecture's baseline
+([why](server/deployment.md#which-cpus-a-binary-starts-on)).
+
 Before 1.0 every release becomes GitHub's Latest release and the image's
 `:latest`, `-alpha` included. From 1.0 on only a plain `vX.Y.Z` does, and an
 `-alpha` or `-rc.N` is published as a pre-release. The verify job makes that
