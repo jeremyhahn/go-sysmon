@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jeremyhahn/go-sysmon/actions/workflows/ci.yml/badge.svg)](https://github.com/jeremyhahn/go-sysmon/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/jeremyhahn/go-sysmon.svg)](https://pkg.go.dev/github.com/jeremyhahn/go-sysmon)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 Real-time Linux system monitor with a desktop GUI, web dashboard, CLI, system
 tray, and Cinnamon panel applet — from a single Go codebase.
@@ -346,4 +346,4 @@ deploy/              systemd unit and example configuration
 
 ## License
 
-[MIT](LICENSE)
+Copyright 2026 Jeremy Hahn. Licensed under the [Apache License, Version 2.0](LICENSE).

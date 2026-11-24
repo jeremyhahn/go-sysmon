@@ -103,4 +103,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 LABEL org.opencontainers.image.title="go-sysmon" \
       org.opencontainers.image.description="Real-time Linux system monitor with an embedded web dashboard" \
       org.opencontainers.image.source="https://github.com/jeremyhahn/go-sysmon" \
-      org.opencontainers.image.licenses="MIT"
+      org.opencontainers.image.licenses="Apache-2.0"
