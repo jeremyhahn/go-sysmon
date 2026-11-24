@@ -1,6 +1,6 @@
 # CLI reference
 
-> **Status: NORMATIVE** · Scope: the go-sysmon CLI commands and flags · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: the go-sysmon CLI commands and flags · Last verified: 2026-11-23
 > Conflicts with this document are defects. Fix them here first.
 
 Every command takes `--json` and `--refresh`. Run `sysmon` with no arguments
@@ -125,6 +125,34 @@ much there.
 ```bash
 sysmon gpu
 ```
+
+### npu
+
+Compute accelerators in the kernel accel class (`/sys/class/accel`): name,
+driver, vendor, PCI address, power state, clocks and governor, NUMA node and
+local CPUs, and temperature and power where the driver registers an hwmon node.
+Then two bars that are deliberately kept apart:
+
+- **Residency** is the share of the interval the device was powered up. It is
+  not workload: an NPU something holds awake sits near 100% while idle.
+- **Utilization** is compute engine busy time from the DRM usage stats in
+  `fdinfo`, per engine and per client process. `intel_vpu` does not publish
+  them, so on an Intel NPU it reads 0 however busy the hardware is.
+
+A suspended NPU is not woken to read its driver counters. They are shown as
+cached with their age, or as not sampled on a one-shot run against an idle
+device. Clients owned by other users are listed only when run as root.
+[Collector architecture](../collector/architecture.md#compute-accelerators-npus)
+has the detail.
+
+```bash
+sysmon npu
+sysmon npu --index 0 --json
+```
+
+| Flag      | Type | Default | Description                                  |
+|-----------|------|---------|----------------------------------------------|
+| `--index` | int  | `-1`    | NPU index to display (0-based); `-1` shows all |
 
 ### containers
 
@@ -309,7 +337,7 @@ sysmon serve --addr :8080 --interval 1000
 | `--trusted-proxies` | strings | *(none)* | CIDR prefixes of reverse proxies whose forwarding headers are believed; see [deployment](../server/deployment.md#trusted-proxies) |
 | `--config`   | string | `/etc/go-sysmon/sysmon.yaml` | YAML configuration; missing is not an error |
 
-The full verb and flag index, including `host`, `npu` and the `--index` flag, is
+The full verb and flag index, including `host` and the `--index` flag, is
 in [cli.md](cli.md).
 
 ### version

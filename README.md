@@ -8,8 +8,8 @@ Real-time Linux system monitor with a desktop GUI, web dashboard, CLI, system
 tray, and Cinnamon panel applet — from a single Go codebase.
 
 Everything is read from the kernel: `/proc`, `/sys`, cgroups and ioctls. There
-is no agent, no database, no configuration file, and the web dashboard is
-embedded in the binary, so deploying it is copying one file.
+is no agent and no database, the configuration file is optional, and the web
+dashboard is embedded in the binary, so deploying it is copying one file.
 
 ---
 
@@ -21,9 +21,11 @@ embedded in the binary, so deploying it is copying one file.
 |---|---|
 | **CPU** | Per-core usage and frequency, per-core temperature, model, vendor, topology (sockets/cores/threads), cache, microcode, and the full CPU flag list |
 | **Memory** | Used/free/available/cached/buffered/slab, swap, and per-DIMM manufacturer, part number, serial, type, speed, voltage and temperature from SMBIOS |
-| **Storage** | Per-disk model, serial, size, partitions and usage; SMART and NVMe health (wear level, spare, media errors, power-on hours); temperature; **read/write rates, queue depth, average queue length, %util, and peaks since start** |
+| **Storage** | Per-disk model, serial, size, partitions and usage; SMART and NVMe health (wear level, spare, media errors, power-on hours); temperature; **read/write rates, queue depth, average queue length, %util, and peaks since start**; md and MegaRAID (PERC) arrays, with SMART for each drive behind the controller |
+| **Drive bays** | Per-bay presence, health, fault, predicted failure, rebuild and media life left, read from the BMC over Redfish (`bmc.redfish_url`) or in-band IPMI (`/dev/ipmi0`) as the fallback. Read-only |
 | **Network** | Per-interface addresses, MTU, speed, duplex, driver, traffic counters and rates; **interface classification** (ethernet/wifi/bridge/bond/vlan/tun/veth/loopback); operational state distinct from the admin flag; **DNS servers and search domains**; bridge ports; bond mode, slaves and master; wireless signal, quality and noise |
 | **GPU** | NVIDIA via NVML (utilisation, memory, temperature, power, clocks, PCIe throughput, ECC), AMD and Intel via sysfs |
+| **NPU** | Every device in the kernel accel class (`intel_vpu`, `amdxdna`, `qaic`, `habanalabs`, `rocket`): identity and PCIe link, power state and powered-up residency, compute utilisation per engine and per client process (where the driver publishes DRM usage stats), clocks, temperature and power. A suspended NPU is left asleep and its driver counters are marked stale |
 | **Processes** | Per-process CPU, memory, I/O rates, priority and state, with counts by state including idle kernel threads |
 | **Sensors** | Core temperatures, voltages, RAPL package power, thermal zones, throttle counters, fan speeds and PSI pressure |
 | **Containers** | Per-container CPU, memory, PIDs and I/O from cgroup v2 — plus **CPU throttling, OOM kills, memory peak, swap, major faults, PID limits and PSI stall pressure**. No runtime socket required |
@@ -36,14 +38,24 @@ embedded in the binary, so deploying it is copying one file.
 - **Desktop GUI** — Wails v2 native window
 - **CLI** — formatted terminal output, `--json` on every command, `--refresh` for continuous updates
 - **System tray** — live CPU/RAM/swap/GPU/load in the notification area
-- **Cinnamon applet** — Cairo-rendered per-core bars and gauges in the panel
-- **REST + streaming API** — `GET /api/snapshot` and `GET /api/events` for your own clients, with optional TLS
+- **Cinnamon applet** — Cairo-rendered per-core bars and gauges in the panel, and a popup section per subsystem, NPUs included
+- **REST + streaming API** — `GET /api/snapshot` and `GET /api/events` for your own clients, with optional TLS; every endpoint is in [docs/server/api.md](docs/server/api.md)
+- **Prometheus** — `GET /metrics` exports the readings and the alert state
+
+### Server
+
+- **Alerts** — threshold rules from the configuration, evaluated on the server; the dashboard, `GET /api/snapshot` and `/metrics` report the same set of firing rules
+- **Fleet** — a node with peers polls their summaries and rolls them up; aggregators nest into a tree, and the fleet view is paged server-side
+- **History** — with a `prometheus` config section, each node remote-writes its own series and the dashboard charts ranges back from Prometheus (`sysmon-server` only; the desktop build is real-time)
+- **Configuration** — an optional YAML file (`/etc/go-sysmon/sysmon.yaml`), `SYSMON_*` environment variables and flags, in rising precedence. `SIGHUP` (`systemctl reload`) or `server.watch: true` reloads it without a restart
+
+See [docs/server/alerting-fleet-config.md](docs/server/alerting-fleet-config.md).
 
 ### Engineering
 
 - **Race-free** — the full suite runs under `-race` in CI
 - **Lock-free hot path** — atomics rather than mutexes where it counts
-- **Frequency tiering** — expensive collectors (SMART, GPU, images) run less often than cheap ones
+- **Frequency tiering** — expensive collectors (SMART, NPU, GPU, images) run less often than cheap ones
 - **Quiet by design** — conditions that cannot change during a run are logged once, not once per poll
 - **Self-diagnosing** — `sysmon doctor` reports what the build can do on the current host and how to fix what it cannot
 
@@ -180,15 +192,18 @@ sysmon
 
 # CLI — every command supports --json and --refresh
 sysmon                  # one-shot overview
+sysmon host             # hostname, OS, kernel, uptime, boot time
 sysmon cpu              # topology, per-core usage, temperatures, flags
 sysmon memory           # usage, swap, per-DIMM detail
 sysmon storage          # disks, SMART, queue depth, peaks
 sysmon network          # interfaces, DNS, bridges, bonds, wifi
 sysmon gpu              # NVIDIA, AMD and Intel
+sysmon npu --index 0    # accelerators: residency, utilisation, clients
 sysmon containers       # containers with throttling and OOM history
 sysmon vms              # virtual machines
 sysmon images           # image inventory and reclaimable space
 sysmon doctor           # what works here, and how to fix what does not
+sysmon version          # version, commit, build date
 ```
 
 Full reference: **[docs/cli/reference.md](docs/cli/reference.md)**.
@@ -213,6 +228,8 @@ is unavailable and why:
 |---|---|
 | SMART / NVMe health, disk temperature | root, or membership of the `disk` group |
 | DIMM detail from SMBIOS | root |
+| Drive-bay health | a BMC Redfish account (`bmc.redfish_url`), or read access to `/dev/ipmi0` |
+| NPU clients owned by other users | root (their `/proc/<pid>/fd` links are not readable otherwise) |
 | Container image inventory | the `docker` group |
 | Container metrics | cgroup v2 (no privileges) |
 | VM metrics | none |
@@ -243,20 +260,25 @@ for the systemd unit and hardening notes.
 | Document | Contents |
 |---|---|
 | [docs/](docs/) | Documentation index |
+| [docs/SPEC.md](docs/SPEC.md) | Every feature, its requirements and its status |
 | [docs/cli/reference.md](docs/cli/reference.md) | Every command and flag |
 | [docs/cli/architecture.md](docs/cli/architecture.md) | How the CLI renders |
-| [docs/collector/architecture.md](docs/collector/architecture.md) | Data flow from sysfs to screen |
+| [docs/collector/architecture.md](docs/collector/architecture.md) | Data flow from sysfs to screen, RAID members, NPUs |
 | [docs/collector/sensors.md](docs/collector/sensors.md) | Temperature, power and PSI sources |
 | [docs/collector/drive-slots.md](docs/collector/drive-slots.md) | Drive-bay health from the BMC (Redfish, IPMI) |
 | [docs/collector/disk-and-network.md](docs/collector/disk-and-network.md) | Queue depth, peaks, interface classification, DNS |
 | [docs/collector/virtualization.md](docs/collector/virtualization.md) | Containers, VMs and image inventory |
 | [docs/monitor/architecture.md](docs/monitor/architecture.md) | Snapshot aggregation and broadcasting |
 | [docs/server/api.md](docs/server/api.md) | REST and event-stream API |
+| [docs/server/alerting-fleet-config.md](docs/server/alerting-fleet-config.md) | Configuration and reload, alerts, fleet, Prometheus and history |
+| [docs/server/delta-streaming.md](docs/server/delta-streaming.md) | Sending only what changed between snapshots |
 | [docs/server/deployment.md](docs/server/deployment.md) | Build, deploy, systemd, modes |
+| [docs/deployment/user.md](docs/deployment/user.md) | `make deploy` to a remote host as a systemd service |
 | [docs/server/container.md](docs/server/container.md) | Docker and Kubernetes, and the privileges each metric needs |
 | [docs/gui/architecture.md](docs/gui/architecture.md) | Frontend structure and table conventions |
 | [docs/types/](docs/types/) | Shared data structures and error types |
 | [docs/extensions/](docs/extensions/) | Cinnamon applet and system tray |
+| [docs/testing/](docs/testing/) | Coverage, integration tests, build shapes, CI tiers, toolchain |
 
 ---
 
@@ -293,16 +315,31 @@ for it. See [docs/testing/toolchain.md](docs/testing/toolchain.md).
 ```
 cmd/sysmon/          CLI, GUI entry point, embedded frontend
   frontend/          Svelte 5 + Tailwind web dashboard
+cmd/tsgen/           Regenerates the dashboard's TypeScript wire types
+cmd/checkpins/       Fails when a version reference disagrees with its pin
+cmd/checklatest/     Fails when a pin is behind its latest stable release
+cmd/buildtags/       Fails when a build tag is set by no shipped build shape
 pkg/collector/       Metric collection from /proc, /sys, cgroups and ioctls
 pkg/monitor/         Snapshot aggregation and subscriber broadcast
 pkg/delta/           Sparse patches between consecutive snapshots
+pkg/alert/           Threshold rules evaluated against a snapshot
+pkg/config/          Layered settings, reloadable without a restart
+pkg/fleet/           Peer polling, roll-up and the aggregator tree
+pkg/nodename/        What a fleet node's name may be
 pkg/metrics/         What a snapshot is as Prometheus metrics, scraped or pushed
 pkg/prom/            Remote write and range queries: the optional history path
 pkg/server/          HTTP server, event streaming and TLS
+pkg/outbound/        HTTP clients for peers, remote write and queries
+pkg/memlimit/        Go memory limit from the cgroup ceiling
+pkg/sdnotify/        systemd notification protocol
+pkg/watchdog/        systemd watchdog liveness from evidence
 pkg/cli/             Terminal rendering
 pkg/types/           Shared data structures and typed errors
+internal/            Build, test and CI tooling: pins, tsgen, buildtags, github, await, deadpeer
 test/integration/    End-to-end tests, run in build/docker/devcontainer
+test/desktop/        The Cinnamon applet tested in a real Cinnamon session
 extensions/          Cinnamon applet
+deploy/              systemd unit and example configuration
 ```
 
 ---

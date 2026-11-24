@@ -1,6 +1,6 @@
 # go-sysmon specification
 
-> **Status: NORMATIVE** · Scope: go-sysmon · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-sysmon · Last verified: 2026-11-23
 > Conflicts with this document are defects. Fix them here first.
 
 ## Purpose
@@ -45,7 +45,7 @@ It has no in-house module dependencies. Deployment into go-trusted-platform is p
 | container-image | shipped | Run in Docker or Kubernetes against the host's procfs and sysfs, with a healthcheck. | docs/server/ |
 | remote-deployment | shipped | Install on a remote host with `make deploy` as a systemd service under its own account, with a watchdog. The watchdog notification never blocks. | docs/deployment/ |
 | ci-pipeline | in progress | Vet, lint, test and scan every shipped build-tag set, with tools at pinned versions. Split CI into a PR tier and a full tier. Run CI without the host Docker socket. | docs/testing/ |
-| release-pipeline | shipped | Assemble the changelog from fragments and release from a signed tag on `main` that matches `VERSION`. | none |
+| release-pipeline | shipped | Assemble the changelog from fragments. Release when a merge to `main` that bumps `VERSION` goes green: CI tags the commit `v$VERSION` and publishes. A `v*` tag pushed by hand still releases. | docs/README.md |
 | release-signing | planned | Sign the release artifacts. | none |
 | project-docs | in progress | Carry this SPEC.md, an agreeing ROADMAP.md and a feature folder per feature. | none |
 
@@ -63,5 +63,5 @@ It has no in-house module dependencies. Deployment into go-trusted-platform is p
 - Every issue on the Release candidate milestone ([ROADMAP.md](../ROADMAP.md)) is closed by a merged PR, except the tag mechanics.
 - CI on `main` is green.
 - The owner has approved this SPEC.md and ROADMAP.md, and they agree.
-- The release candidate is cut by the documented release steps: `VERSION` set, changelog assembled, signed tag on `main`.
+- The release candidate is cut by the documented release steps: `VERSION` set and changelog assembled in a PR, merged to `main`, and tagged by `auto-release.yml` once CI is green.
 - Release signing is not a criterion; it is deferred.

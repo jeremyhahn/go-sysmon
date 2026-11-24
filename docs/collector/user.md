@@ -1,6 +1,6 @@
 # Collector — using it
 
-> **Status: NORMATIVE** · Scope: what the collector can and cannot read on your machine · Last verified: 2026-10-09
+> **Status: NORMATIVE** · Scope: what the collector can and cannot read on your machine · Last verified: 2026-11-23
 > Conflicts with this document are defects. Fix them here first.
 
 The collector is what reads your machine for `sysmon`, the dashboard and the
@@ -23,6 +23,9 @@ one exists. Nothing is changed on the machine.
 | Disk health (SMART, NVMe wear) | Root or the `disk` group; some controllers also need `CAP_SYS_RAWIO` |
 | DIMM temperature | The `spd5118` or `jc42` driver bound to the SMBus ([sensors](sensors.md#dimm-temperatures)); go-sysmon never loads it |
 | NVIDIA GPU detail | The NVML library and the `nvml` build; AMD and Intel report less |
+| NPU clients of other users | Root; unprivileged, only your own processes are listed ([NPUs](architecture.md#compute-accelerators-npus)) |
+| NPU compute utilisation | A driver that publishes DRM usage stats in `fdinfo`; `intel_vpu` does not, so on Intel it stays 0 and residency is the figure to watch |
+| Drive-bay health | `bmc.redfish_url` and a BMC account, or read access to `/dev/ipmi0` ([drive slots](drive-slots.md)) |
 | Containers and VMs | Readable `/proc` and cgroups; no runtime socket needed |
 | Image inventory | Access to the runtime's API socket; only `sysmon images` uses it |
 | Processes of other users | `/proc` not mounted `hidepid` |

@@ -1,6 +1,6 @@
 # go-sysmon roadmap
 
-> **Status: REFERENCE** · Owner: Software Department · Last verified: 2026-10-21
+> **Status: REFERENCE** · Owner: Software Department · Last verified: 2026-11-23
 > Changes are proposed by docs-only PR. Each line names its feature in [docs/SPEC.md](docs/SPEC.md).
 
 ## Mission
@@ -11,7 +11,11 @@ Runs as infrastructure and aggregates a fleet of hosts.
 
 ## Milestones
 
-- [Release candidate](../../milestone/24) — target kind: RC — projected date: set by the department plan. Latest release is v0.3.0-alpha.
+Items marked "Gitea #N" were tracked on the retired Gitea forge; those issues
+were not carried over to GitHub.
+
+
+- [Release candidate](../../milestone/2) — target kind: RC — projected date: set by the department plan. Latest release is v0.3.5-alpha.
 
 ## Complete
 
@@ -31,23 +35,24 @@ Runs as infrastructure and aggregates a fleet of hosts.
 - **wire-types** — one set of snapshot types, generated for the dashboard — [v0.3.0-alpha](../../releases/tag/v0.3.0-alpha) — done
 - **container-image** — Docker and Kubernetes against the host — [v0.3.0-alpha](../../releases/tag/v0.3.0-alpha) — done
 - **release-pipeline** — changelog fragments and tag-driven releases — [v0.3.0-alpha](../../releases/tag/v0.3.0-alpha) — done
-- **disk-metrics** — disks report peak throughput since start — [#260](../../issues/260) — done
-- **drive-slot** — drive-bay health read from the BMC, with a fault alert — [#289](../../issues/289) — done
-- **network-metrics** — network rates display in bits per second — [#257](../../issues/257) — done
-- **network-metrics** — network interfaces report NIC vendor and model — [#258](../../issues/258) — done
-- **network-metrics** — wifi adapter detail shows in the GUI — [#259](../../issues/259) — done
-- **http-api** — server exposes health endpoints — [#261](../../issues/261) — done
-- **http-api** — forwarded headers honoured only from trusted proxies — [#262](../../issues/262) — done
-- **prometheus-metrics** — NVMe devices report write counters — [#253](../../issues/253) — done
-- **remote-deployment** — the watchdog notification never blocks — [#265](../../issues/265) — done
+- **release-pipeline** — a green merge that bumps `VERSION` releases — [#86](../../pull/86) — done
+- **disk-metrics** — disks report peak throughput since start — Gitea #260 — done
+- **drive-slot** — drive-bay health read from the BMC, with a fault alert — Gitea #289 — done
+- **network-metrics** — network rates display in bits per second — Gitea #257 — done
+- **network-metrics** — network interfaces report NIC vendor and model — Gitea #258 — done
+- **network-metrics** — wifi adapter detail shows in the GUI — Gitea #259 — done
+- **http-api** — server exposes health endpoints — Gitea #261 — done
+- **http-api** — forwarded headers honoured only from trusted proxies — Gitea #262 — done
+- **prometheus-metrics** — NVMe devices report write counters — Gitea #253 — done
+- **remote-deployment** — the watchdog notification never blocks — Gitea #265 — done
 
 ## Now
 
-- **ci-pipeline** — govulncheck runs at a pinned version — [#252](../../issues/252) — done
-- **ci-pipeline** — CI runs in a PR tier and a full tier — [#267](../../issues/267) — done
-- **ci-pipeline** — CI workflows run without the host Docker socket — [#243](../../issues/243) — blocked: go-xkms#1332 needs an owner ruling
-- **project-docs** — roadmap lists the RC milestone — [#255](../../issues/255) — done
-- **project-docs** — the project carries docs/SPEC.md and an agreeing ROADMAP.md — [#256](../../issues/256) — open
+- **ci-pipeline** — govulncheck runs at a pinned version — Gitea #252 — done
+- **ci-pipeline** — CI runs in a PR tier and a full tier — Gitea #267 — done
+- **ci-pipeline** — CI workflows run without the host Docker socket — Gitea #243 — blocked: go-xkms#1332 needs an owner ruling
+- **project-docs** — roadmap lists the RC milestone — Gitea #255 — done
+- **project-docs** — the project carries docs/SPEC.md and an agreeing ROADMAP.md — Gitea #256 — open
 
 ## Next
 
@@ -55,7 +60,7 @@ Nothing queued. New work arrives as issues.
 
 ## Later
 
-- **release-signing** — release artifacts are signed; deferred, off the RC milestone — [#244](../../issues/244) — open
+- **release-signing** — release artifacts are signed; deferred, off the RC milestone — Gitea #244 — open
 
 ## Future
 
