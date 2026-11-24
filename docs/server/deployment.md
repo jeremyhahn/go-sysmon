@@ -99,6 +99,7 @@ Makefile, and every lint and scan target refuses a binary at any other version.
 |--------------------------------|-------------------------------------------------|
 | `make release-build`           | Stripped, trimmed server binary into `dist/`    |
 | `make release-build-desktop`   | The same for the desktop binary                 |
+| `make check-cpu-baseline`      | Fails when a binary in `dist/` demands a CPU above its architecture's baseline ([below](#which-cpus-a-binary-starts-on)) |
 | `make deploy HOST=<host>`      | Installs a supervised systemd service — see [../deployment/](../deployment/user.md) |
 | `make deploy-binary HOST=<host>` | Builds, checks the target, copies the binary, verifies |
 | `make install-extension-cinnamon` | Installs the panel applet                    |
@@ -241,7 +242,7 @@ Then open `http://metrics.example.com:8080/`.
 
 | Requirement | Why |
 |---|---|
-| Linux, matching architecture | The binary is compiled for one |
+| Linux, matching architecture | The binary is compiled for one. A released binary needs no more than the architecture's baseline CPU ([below](#which-cpus-a-binary-starts-on)) |
 | glibc at least as new as the build host's | CGO is mandatory (NVML), so the binary is dynamically linked |
 | A free TCP port | That is genuinely all |
 
@@ -254,6 +255,41 @@ objdump -T bin/sysmon-server | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
 If the target's glibc is older, build on the target, or build in a container
 based on the target's distribution. Nothing else needs installing there — no Go
 toolchain, no Node, no runtime.
+
+### Which CPUs a binary starts on
+
+The released binaries start on every CPU of their architecture: any x86-64
+CPU for `linux-amd64`, any ARMv8-A CPU for `linux-arm64`. Go builds for its
+default `GOAMD64=v1`, and its runtime uses newer instructions where it detects
+them, so a newer CPU loses nothing.
+
+The Go setting is not the whole answer, because CGO is mandatory. The C
+toolchain that does the cgo link compiles the C glue and supplies the startup
+code, and a toolchain that targets a newer CPU level records that level in the
+binary's ELF notes. glibc then refuses the binary on an older CPU before
+`main()` runs:
+
+```text
+CPU ISA level is lower than required
+```
+
+`release.yml` builds the binaries inside the `Dockerfile`'s builder image,
+so the binaries and the container image come from one toolchain. `make lint`
+fails if the two images ever differ (`make check-release-builder`). After the
+build, `make check-cpu-baseline` fails the release if a binary's notes demand
+more than the baseline.
+
+To check any binary, such as one you built on your own host:
+
+```bash
+make check-cpu-baseline BINARIES=bin/sysmon-server
+```
+
+A binary built with `make build` takes its CPU level from the host's C
+toolchain. If the check fails, build in the builder image the `Dockerfile`
+names. The check reads the notes the toolchain wrote and does not disassemble
+anything. arm64 has no such note, so for an arm64 binary it can only confirm
+that none is present.
 
 ## Running it as a service
 

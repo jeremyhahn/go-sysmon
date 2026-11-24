@@ -178,7 +178,7 @@ INTERVAL ?= 1000
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog clean-dist \
         build-both generate check-generated check-ts check-nolint \
-        check-build-tags test-fips check-pins check-latest \
+        check-build-tags check-release-builder check-cpu-baseline test-fips check-pins check-latest \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -476,7 +476,7 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-pins check-nolint check-package-targets check-coverage-exceptions check-ts \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-release-builder check-pins check-nolint check-package-targets check-coverage-exceptions check-ts \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
@@ -666,6 +666,17 @@ check-build-tags:
 	@grep -qE '^RUN go build .*-tags $(IMAGE_TAGS) ' Dockerfile || { \
 		echo "Dockerfile does not build with -tags $(IMAGE_TAGS) (IMAGE_TAGS): update one to match the other."; \
 		exit 1; }
+
+# check-release-builder fails unless every job container in release.yml is the
+# Dockerfile's builder image, digest included, and there is at least one. The
+# release binaries and the container image then come from one toolchain.
+check-release-builder:
+	@builder=$$(awk 'toupper($$1) == "FROM" && $$NF == "builder" { print $$2 }' Dockerfile); \
+	test -n "$$builder" || { echo "Dockerfile has no builder stage (FROM <image> AS builder)."; exit 1; }; \
+	awk -v want="$$builder" '$$1 == "container:" { n++; if ($$2 != want) bad = 1 } END { exit n && !bad ? 0 : 1 }' .github/workflows/release.yml || { \
+		echo "release.yml does not build the release binaries in the Dockerfile's builder image ($$builder): update one to match the other."; \
+		exit 1; }
+	@echo "release.yml builds the release binaries in the Dockerfile's builder image."
 
 ## Clean
 
@@ -869,7 +880,11 @@ ci-fast: fmt-check vet lint vulncheck gosec audit-report test test-fips test-ext
 # CGO is mandatory (the NVIDIA NVML dependency does not build without it), so
 # the server binary is dynamically linked against glibc and must be built on,
 # or cross-compiled for, the target architecture. That is why this builds the
-# host architecture only; the release workflow runs it on each runner.
+# host architecture only; the release workflow runs it on a runner of each.
+#
+# The C toolchain that does the cgo link decides which CPUs the binary starts
+# on, whatever GOAMD64 says. release.yml therefore runs this inside the
+# Dockerfile's builder image and then runs check-cpu-baseline on the result.
 RELEASE_DIR ?= dist
 release-build: build-frontend
 	@mkdir -p $(RELEASE_DIR)
@@ -888,6 +903,15 @@ release-build-desktop: build-frontend
 	cd $(RELEASE_DIR) && sha256sum sysmon-$(VERSION)-linux-$(shell go env GOARCH) \
 		> sysmon-$(VERSION)-linux-$(shell go env GOARCH).sha256
 	@echo "Built $(RELEASE_DIR)/sysmon-$(VERSION)-linux-$(shell go env GOARCH)"
+
+# check-cpu-baseline fails when a binary's ELF notes demand a CPU above its
+# architecture's baseline. It checks every binary in RELEASE_DIR and fails on
+# an empty one. Name other binaries with BINARIES:
+#
+#   make check-cpu-baseline BINARIES=bin/sysmon-server
+BINARIES ?= $(filter-out %.sha256,$(wildcard $(RELEASE_DIR)/sysmon-*))
+check-cpu-baseline:
+	@./scripts/check-cpu-baseline.sh $(BINARIES)
 
 # RELEASE is read LITERALLY by the two targets below. A command-line variable
 # is auto-exported, and `$(RELEASE)` would expand it while make builds the

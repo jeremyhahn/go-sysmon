@@ -135,6 +135,15 @@ jobs:
     name: Build (${{ matrix.arch }})
     needs: verify
     runs-on: ${{ matrix.runner }}
+    # The Dockerfile's builder image, not the runner's C toolchain: the
+    # runner's gcc targets x86-64-v3, and a binary linked with it does not
+    # start on an older x86-64 CPU. `make check-release-builder` keeps this
+    # image identical to the Dockerfile's, digest included.
+    container: golang:1.27.4-trixie@sha256:f18c3d73a184fb0582828510722e723b63a93f7188d11dd223d9be6f6880e65d
+    # A container job runs its steps with sh unless a shell is named.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       # arm64 builds natively on an ARM runner rather than cross-compiling: CGO
@@ -152,10 +161,12 @@ jobs:
         with:
           ref: ${{ needs.verify.outputs.sha }}
 
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
-          cache: true
+      # The container runs as root on a checkout the runner's user owns; git
+      # refuses it until it is marked safe, and the build stamps the commit.
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # No setup-go step: the image is the Go toolchain go.mod names.
 
       - uses: actions/setup-node@v7
         with:
@@ -163,10 +174,13 @@ jobs:
           cache: npm
           cache-dependency-path: cmd/sysmon/frontend/package-lock.json
 
+      # No sudo: the container runs as root and the image has none.
       - name: Install desktop build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          apt-get update
+          apt-get install -y --no-install-recommends \
             pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev
 
       # The server binary is the portable artifact: 3 shared libraries, runs on
@@ -178,6 +192,10 @@ jobs:
         run: |
           make release-build VERSION="${VERSION}"
           make release-build-desktop VERSION="${VERSION}"
+
+      # A binary that demands more than the baseline CPU fails the release.
+      - name: Check the binaries start on a baseline CPU
+        run: make check-cpu-baseline
 
       - name: Verify the binaries run
         run: |
