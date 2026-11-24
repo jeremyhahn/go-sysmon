@@ -3,8 +3,9 @@
 # carries the toolchain and the tools the collectors shell out to.
 #
 # The image Go version is pinned to match go.mod's go directive exactly, so
-# toolchain has to be downloaded on every build.
-FROM golang:1.27.4-trixie
+# no toolchain is downloaded during a build. `make check-devcontainer-base`
+# keeps this image identical to the Dockerfile's builder image, digest included.
+FROM golang:1.27.4-trixie@sha256:f18c3d73a184fb0582828510722e723b63a93f7188d11dd223d9be6f6880e65d
 
 # Install runtime tools used by the collector (smartmontools, dmidecode), and
 # iproute2, with which the collector suite builds bridges, bonds, VLANs and

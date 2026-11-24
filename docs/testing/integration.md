@@ -35,6 +35,9 @@ The suite runs in one place only, the devcontainer built from
 
 - The image carries the pinned Go toolchain (the `FROM` line matches `go.mod`,
   which `make check-pins` enforces).
+- Its base is the `Dockerfile`'s builder image, pinned by the same digest
+  (`make check-devcontainer-base` enforces it), so the suite runs on the
+  toolchain that builds the container image and the release binaries.
 - It also carries the tools the collectors shell out to, `smartmontools` and
   `dmidecode`.
 - The container runs `--privileged`, so the collectors see real devices, and

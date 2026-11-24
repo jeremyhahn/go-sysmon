@@ -178,7 +178,7 @@ INTERVAL ?= 1000
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog clean-dist \
         build-both generate check-generated check-ts check-nolint \
-        check-build-tags check-release-builder check-cpu-baseline test-fips check-pins check-latest \
+        check-build-tags check-release-builder check-devcontainer-base check-cpu-baseline test-fips check-pins check-latest \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -476,7 +476,7 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-release-builder check-pins check-nolint check-package-targets check-coverage-exceptions check-ts \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-release-builder check-devcontainer-base check-pins check-nolint check-package-targets check-coverage-exceptions check-ts \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
@@ -667,16 +667,32 @@ check-build-tags:
 		echo "Dockerfile does not build with -tags $(IMAGE_TAGS) (IMAGE_TAGS): update one to match the other."; \
 		exit 1; }
 
+# BUILDER_IMAGE is shell text that prints the Dockerfile's builder image,
+# digest included.
+BUILDER_IMAGE = awk 'toupper($$1) == "FROM" && $$NF == "builder" { print $$2 }' Dockerfile
+
 # check-release-builder fails unless every job container in release.yml is the
 # Dockerfile's builder image, digest included, and there is at least one. The
 # release binaries and the container image then come from one toolchain.
 check-release-builder:
-	@builder=$$(awk 'toupper($$1) == "FROM" && $$NF == "builder" { print $$2 }' Dockerfile); \
+	@builder=$$($(BUILDER_IMAGE)); \
 	test -n "$$builder" || { echo "Dockerfile has no builder stage (FROM <image> AS builder)."; exit 1; }; \
 	awk -v want="$$builder" '$$1 == "container:" { n++; if ($$2 != want) bad = 1 } END { exit n && !bad ? 0 : 1 }' .github/workflows/release.yml || { \
 		echo "release.yml does not build the release binaries in the Dockerfile's builder image ($$builder): update one to match the other."; \
 		exit 1; }
 	@echo "release.yml builds the release binaries in the Dockerfile's builder image."
+
+# check-devcontainer-base fails unless the devcontainer is built from the
+# Dockerfile's builder image, digest included. A digest left behind when the
+# tag moves would otherwise keep building the old toolchain.
+check-devcontainer-base:
+	@builder=$$($(BUILDER_IMAGE)); \
+	test -n "$$builder" || { echo "Dockerfile has no builder stage (FROM <image> AS builder)."; exit 1; }; \
+	base=$$(awk 'toupper($$1) == "FROM" { print $$2; exit }' $(DEVCONTAINER_DOCKERFILE)); \
+	test "$$base" = "$$builder" || { \
+		echo "$(DEVCONTAINER_DOCKERFILE) is built from $$base, not the Dockerfile's builder image ($$builder): update one to match the other."; \
+		exit 1; }
+	@echo "The devcontainer is built from the Dockerfile's builder image."
 
 ## Clean
 
