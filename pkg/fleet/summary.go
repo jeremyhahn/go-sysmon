@@ -121,9 +121,9 @@ func summarizeCapacity(n *types.NodeSummary, cur *types.Snapshot) {
 	}
 
 	// The cgroup list, not the runtime API's count: the API is root-equivalent
-	// and usually unreachable (ci-node-2's sysmon user is not in the docker
-	// group), while the cgroup tree is readable by anyone. Only containers
-	// with processes are listed, so the count is the containers running now.
+	// and usually unreachable, while the cgroup tree is readable by anyone.
+	// Only containers with processes are listed, so the count is the
+	// containers running now.
 	n.ContainersObservable = cur.Virt.Capability.ContainersObservable
 	if !n.ContainersObservable {
 		return
@@ -177,12 +177,10 @@ func summarizeDisks(n *types.NodeSummary, disks []types.DiskInfo) {
 		hotter(n, types.TempDrive, d.Temperature)
 		// The drives behind a hardware RAID controller count too. They are not
 		// block devices and never appear in the disk list, so a denominator
-		// summed over that list alone would report ci-node-1 as having three
-		// SMART-capable devices while six readable drives sat behind its PERC.
-		// That is #44's defect surviving its own fix: a denominator that does
-		// not know what it left out. A member's temperature is the drive's own,
-		// and on a host whose only spinning disks are behind a controller it is
-		// the only disk temperature there is.
+		// summed over that list alone would undercount (#44). A member's
+		// temperature is the drive's own, and on a host whose only spinning
+		// disks are behind a controller it is the only disk temperature there
+		// is.
 		for _, m := range d.Members {
 			hotter(n, types.TempDrive, m.Temperature)
 			if !m.SMARTEnabled {

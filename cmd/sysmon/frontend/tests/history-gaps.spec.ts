@@ -15,7 +15,7 @@ import type { HistoryPoint } from "../src/lib/types";
  * A range query answers on a grid of steps, and Prometheus leaves out an
  * evaluation that found no sample -- the node was down, unreachable or not
  * recording. A chart joins whatever points it is given, so unless the missing
- * steps are marked a two-hour outage is drawn as a plausible straight line
+ * steps are marked a two-hour gap is drawn as a plausible straight line
  * across the time the node was gone. What is checked here:
  *
  *  1. lineWithBreaks marks every missing step, and nothing else -- an evenly

@@ -109,7 +109,7 @@ cgroup tree, and, with `pid: host`, the host's VMs. See
 
 ## SMART needs privileged, and capabilities are not enough
 
-This was measured on a 6-NVMe host, not inferred:
+On a 6-NVMe host:
 
 | Configuration | Disks reporting SMART |
 |---|---|

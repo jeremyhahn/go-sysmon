@@ -94,8 +94,7 @@ func cadenceOf(d time.Duration) *atomic.Int64 {
 	return &c
 }
 
-// TestRecorder_AStalledHistoryEndpointNeverDelaysTheSummary is the owner's
-// requirement on #181: a slow or failing history endpoint must never affect a
+// TestRecorder_AStalledHistoryEndpointNeverDelaysTheSummary (#181): a slow or failing history endpoint must never affect a
 // card or the freshness of the summaries. The history handler here never
 // answers, and the fleet timeout is a minute -- so a poll that waited on it in
 // any way would hang the test rather than pass it.

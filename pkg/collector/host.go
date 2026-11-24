@@ -19,11 +19,8 @@ import (
 // kept. Only the hostname, the uptime and the distribution strings are read per
 // tick.
 //
-// That split is worth 41 ms per tick on mon0 (issue #76), and the reason it was
-// ever that expensive is instructive: this collector called host.Info(), and
-// host.Info() counts every entry in /proc to fill a Procs field nothing here
-// reads. A second walk of the process table, every two seconds, for a number
-// thrown away.
+// host.Info() is not called per tick because it walks /proc to fill a Procs
+// field nothing here reads (#76).
 type HostCollector struct {
 	// identity holds the fields fixed for the life of the running kernel. It is
 	// a value rather than a pointer because it is written once, before the
@@ -134,12 +131,6 @@ var (
 // otherwise FORKS /usr/bin/lsb_release -- a Python script on Debian. On a host
 // without the file that is an interpreter spawned on every collection.
 //
-// Measured 2026-09-03 across the fleet: HostCollector cost 38.65 ms on fs and
-// 40.96 ms on mon0, and about 1 ms everywhere else. Those two are exactly the
-// two hosts with no /etc/lsb-release, ten hosts, no exceptions. On fs that was
-// 19.33 ms/s -- 29% of the machine's entire CPU -- spent forking a script to
-// report a distribution name.
-//
 // The short-circuit below fires only where gopsutil would fork AND its answer
 // is fully determined by files we can read. Everything else calls gopsutil
 // unchanged, so this narrows a hot path rather than replacing a dependency.
@@ -166,9 +157,7 @@ func platformInformation() (platform, version string, err error) {
 //   - /usr/bin/raspi-config absent: its presence makes gopsutil say "raspbian".
 //
 // The version is then the first line of /etc/debian_version verbatim, which is
-// what gopsutil's default branch returns. Verified byte-for-byte on both
-// affected hosts: fs reports "debian 12.13" against a debian_version of
-// "12.13", mon0 "debian 12.15" against "12.15".
+// what gopsutil's default branch returns.
 func debianWithoutFork() (platform, version string, ok bool) {
 	if fileExists(filepath.Join(etcRoot, "lsb-release")) {
 		return "", "", false

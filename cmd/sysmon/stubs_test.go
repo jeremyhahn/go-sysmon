@@ -257,7 +257,7 @@ func TestMonitorBinding_SetIntervalRejectsNonPositive(t *testing.T) {
 }
 
 // TestMonitorBinding_SetIntervalDoesNotStartCollection covers the success path
-// on a monitor that is NOT running.
+// on a monitor that is not running.
 //
 // It used to assert the opposite, because SetInterval stopped the monitor and
 // built a replacement that it started -- so changing the polling rate could

@@ -7,7 +7,7 @@
 // wanted GPU metrics or not -- which is what blocked embedding this collector in
 // a static, cross-compiled or FIPS binary (#8).
 //
-// This is NOT a stub. An NVIDIA card still has an identity and a link in sysfs,
+// This is not a stub. An NVIDIA card still has an identity and a link in sysfs,
 // and its model name resolves from the hwdata pci.ids database, so the default
 // build reports the card rather than pretending there is none. What it cannot
 // report is everything only the driver's own interface knows -- memory,

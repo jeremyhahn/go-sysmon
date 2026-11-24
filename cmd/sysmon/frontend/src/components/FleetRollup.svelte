@@ -40,7 +40,7 @@
   const headline = $derived(rollupHeadline(rollup));
   const attention = $derived(visibleAttention(rollup));
 
-  /** "ci-node-1 (GPU)", or the bare node when the kind is unknown. */
+  /** "node-a (GPU)", or the bare node when the kind is unknown. */
   function hottestWhere(e: FleetExtreme): string {
     const kind = tempSourceLabel(e.kind);
     return kind === "" ? e.node : `${e.node} (${kind})`;

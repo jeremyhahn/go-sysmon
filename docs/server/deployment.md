@@ -205,10 +205,7 @@ is noise that buries everything else. Those conditions are reported once per
 run — once per device, where the condition is per-device — with a `note` field
 saying so.
 
-The difference is not marginal. The SMBIOS warning alone used to be 85% of the
-log: 34 lines in 30 seconds, roughly 12 MB a day at a 1-second interval. The
-same window now produces 9 lines, all at startup, after which the log stops
-growing.
+After startup the log stops growing.
 
 ## Deploying to another host
 

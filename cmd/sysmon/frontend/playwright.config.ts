@@ -1,8 +1,7 @@
 import { defineConfig } from '@playwright/test';
 import { e2ePort } from './e2e-port';
 
-// One port per CI job rather than one for the whole fleet: see e2e-port.ts for
-// why it is derived and not probed, and issue #62 for what a constant cost us.
+// One port per CI job; see e2e-port.ts.
 const port = e2ePort();
 
 export default defineConfig({

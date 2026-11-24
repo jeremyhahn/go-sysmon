@@ -68,13 +68,10 @@ type Options struct {
 
 // Measurement is one reading, dated by when it was taken.
 //
-// A reading is written once, stamped with its own time, and never again (owner
-// ruling on #173, 2026-09-22). Stamping the exporter's clock instead re-dated
-// the latest cached reading at every sample tick whenever collection was
-// slower than sampling: gauges drew a staircase of copies presented as fresh
-// measurements, and a counter's rate() over a short window read a flat run and
-// then a jump -- zero, then a spike -- instead of the rate that happened.
-// Written once at its own time, Prometheus holds only what was measured.
+// A reading is written once, stamped with its own time, and never again
+// (#173). Stamping the exporter's clock instead would re-date a cached reading
+// whenever collection is slower than sampling, giving gauges stale copies and
+// counters a false rate().
 type Measurement struct {
 	// Source names whose clock TimeMs was read from and whose series Write
 	// adds to: "" for this node, a peer's fleet name for a peer's reading.

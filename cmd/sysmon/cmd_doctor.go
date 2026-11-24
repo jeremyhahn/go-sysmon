@@ -168,15 +168,12 @@ const smartCheckName = "SMART / disk health"
 // smartCandidate reports whether a device could have produced a SMART reading
 // at all, which is what belongs in the denominator.
 //
-// Counting every block device put things in it that can never answer.
-// ci-node-1 read "4 of 8" partly because one of the eight is a device-mapper
-// node, which has no medium, and one is a boot card that reports it implements
-// no SMART. Neither will ever be readable however the host is configured, and
-// a denominator containing them is a target nobody can hit.
+// A device-mapper node has no medium and a boot card may implement no SMART;
+// neither can ever be readable, so neither belongs in the denominator.
 //
-// ONLY TWO STATUSES ARE EXCLUDED, and behind_controller is deliberately NOT
-// one of them. That status means "served by a RAID controller and did not
-// answer directly" -- it does NOT establish that the device is a volume rather
+// Only two statuses are excluded, and behind_controller is not one of them.
+// That status means "served by a RAID controller and did not answer
+// directly"; it does not establish that the device is a volume rather
 // than a passthrough disk, which is stated in its own definition and is not
 // knowable from sysfs. Excluding it would let a JBOD disk that genuinely fails
 // to answer disappear from the count, which is the reverse of the defect this
@@ -308,8 +305,7 @@ func checkSMART() checkResult {
 		tally.add(d.SMARTStatus, d.SMARTEnabled, d.SMARTReason)
 		// The drives behind a hardware RAID controller. They are not block
 		// devices and are in no disk list, so a count summed over the list
-		// alone reported ci-node-1 as reading four devices while ten
-		// answered -- a denominator that does not know what it left out.
+		// alone would undercount.
 		//
 		// The volume they hang off is counted too, and separately: it is a
 		// device we could not read directly, which is a different fact from
@@ -349,12 +345,9 @@ func checkSMART() checkResult {
 		return checkResult{Name: smartCheckName, Status: "ok", Detail: detail}
 	}
 
-	// The remedy comes from the devices rather than from a constant. This
-	// check used to offer "add the user to the disk group" for every failure,
-	// which on ci-node-1 was advice to do something already done: the node
-	// opens there and it is the passthrough ioctl that is refused, needing a
-	// capability no group membership grants. The collector already tells those
-	// two apart; the reasons it produced are carried through.
+	// The remedy comes from the devices rather than from a constant: an
+	// open refusal and an ioctl refusal need different fixes, and the
+	// collector's reasons tell them apart.
 	return checkResult{
 		Name:   smartCheckName,
 		Status: "degraded",
@@ -365,11 +358,8 @@ func checkSMART() checkResult {
 
 // smartFix renders the remedy from what the devices said.
 //
-// There is NO FALLBACK to the old "add the user to the disk group" advice. A
-// device that did not explain itself supports "there is a gap" and supports
-// nothing at all about permissions, and guessing a permissions diagnosis is
-// how this check came to tell ci-node-1's operator to join a group the
-// service was already in. An empty Fix says we do not know, which is true.
+// There is no generic fallback: a device that did not explain itself supports
+// no permissions diagnosis, and an empty Fix says we do not know.
 func smartFix(t *smartTally) string {
 	reason, others := t.commonest()
 	if reason == "" {

@@ -206,9 +206,7 @@ func (e *SMARTPassthroughError) Error() string {
 // whether the drive has SMART at all. IDENTIFY DEVICE does, in one bit, and
 // the difference is the difference between "we could not read this drive" and
 // "this drive has nothing to read" -- which is exactly the distinction #45 is
-// about. Measured on ci-node-1: the DELLBOSS boot volume opens, accepts
-// IDENTIFY, and reports no SMART support, while every other failure on that
-// host is the kernel refusing the caller.
+// about: a boot volume can accept IDENTIFY and report no SMART support.
 const ataCmdIdentify uint8 = 0xEC
 
 // IDENTIFY DEVICE word offsets (ATA/ATAPI Command Set).

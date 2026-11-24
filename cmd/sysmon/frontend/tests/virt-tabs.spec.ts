@@ -7,7 +7,7 @@ import type { StackDetection } from '../src/lib/types';
  * The Containers tab exists only on a node with a container runtime, and the
  * Virtualization tab only on one with a hypervisor stack (#187).
  *
- * Owner ruling: a tab hides only when the node PROVES absence. "unknown" --
+ * A tab hides only when the node proves absence. "unknown" --
  * the node could not look -- and a peer too old to send the field both keep
  * the tab, because hiding it there would hide something that may exist.
  */

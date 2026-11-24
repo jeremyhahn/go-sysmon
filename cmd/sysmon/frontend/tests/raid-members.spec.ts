@@ -3,13 +3,9 @@ import { mockSnapshotFeed } from './fixtures/mock-sse';
 import { openTab } from './fixtures/tabs';
 
 /**
- * The drives behind a hardware RAID controller.
- *
- * The fixture is ci-node-1's PERC as measured on 2026-09-02, because the
- * shape is the point: a volume the kernel presents as one disk, made of drives
- * that have no device node and appear nowhere else on the page. Before this,
- * the owner's report was that the machine "has raid, but they are hardware
- * raid" and the dashboard showed neither the arrays nor the six drives in them.
+ * The drives behind a hardware RAID controller: a volume the kernel presents
+ * as one disk, made of drives that have no device node and appear nowhere
+ * else on the page. The fixture is a real controller's layout.
  */
 
 const PERC_VOLUME = {

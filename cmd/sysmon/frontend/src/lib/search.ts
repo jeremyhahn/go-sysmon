@@ -1,9 +1,4 @@
-// Searching the recorded history.
-//
-// The owner asked, 2026-09-02, for "the ability to search across historical
-// data points". The date range (#31) answered half of it -- a window over the
-// charts that already exist -- and this is the other half: naming what you want
-// to see rather than finding the panel it lives on.
+// Searching the recorded history by metric and resource name.
 //
 // What is searched is the catalog crossed with the resources this node actually
 // has. `disk_util` is one catalogued metric, but on a machine with six drives it

@@ -2170,7 +2170,7 @@ func TestCollectAMDCoreTemps_MultiSocket(t *testing.T) {
 	base := t.TempDir()
 	devices := filepath.Join(base, "devices", "pci0000:00")
 	class := filepath.Join(base, "class")
-	// hwmon0 is the SECOND socket's device, so listing order is not socket
+	// hwmon0 is the second socket's device, so listing order is not socket
 	// order.
 	for hwmon, fn := range map[string]string{"hwmon0": "0000:00:19.3", "hwmon1": "0000:00:18.3"} {
 		dev := filepath.Join(devices, fn, "hwmon", hwmon)

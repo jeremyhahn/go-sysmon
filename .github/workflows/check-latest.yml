@@ -1,18 +1,15 @@
 name: Check Latest
 
-# Owner rule 2026-09-22: always the latest stable Go, golangci-lint and dev
-# tools. Nothing noticed when PR #180 was about to ship Go 1.27.0 with 1.27.1
-# out, or when CI sat two releases behind on actionlint (#183). This workflow is
-# what notices: once a day it runs `make check-latest`, and when any pin lags --
-# Go, a dev tool, Node.js LTS, the Debian or Ubuntu base release, an action a
-# workflow uses, or a GitHub-hosted runner label -- it files ONE task:ready
-# issue, none while an earlier one is still open.
+# Every pin tracks the latest stable release. Once a day this runs
+# `make check-latest`, and when any pin lags (Go, a dev tool, Node.js LTS, the
+# Debian or Ubuntu base release, an action a workflow uses, or a GitHub-hosted
+# runner label) it files one task:ready issue, none while an earlier one is open.
 #
 # It never fails an unrelated PR. An upstream release is not a defect in
 # anyone's change, so the online check is not in `make lint` or ci.yml, and
 # this workflow runs on a PR only when the PR changes the check itself -- and
 # then as a dry run, which prints the issue it would file and files nothing.
-# (The offline half, `make check-pins`, IS in lint: disagreeing pins are a
+# (The offline half, `make check-pins`, is in lint: disagreeing pins are a
 # defect in the change that introduced them.)
 #
 # The run goes red only when an item could not be checked (exit 2): a lag is

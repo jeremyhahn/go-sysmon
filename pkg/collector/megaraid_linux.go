@@ -14,7 +14,7 @@ import (
 // Talking to the drives behind a MegaRAID controller.
 //
 // A hardware RAID volume hides its members. The kernel publishes the volume as
-// one SCSI disk -- /dev/sda on ci-node-1 -- and the physical drives that make
+// one SCSI disk, and the physical drives that make
 // it up have no device node, no name in /sys/block and no I/O counters. They
 // are reachable only by asking the controller to carry a command to them, which
 // is what this file does.
@@ -26,18 +26,15 @@ import (
 // SATA members answer the very same ATA PASS-THROUGH(16) command already built
 // in smart_ata_sgio.go -- tunnelled one layer deeper.
 //
-// MEASURED ON ci-node-1, 2026-09-02, and worth stating because the issue that
-// prompted this assumed otherwise: this path needs CAP_SYS_ADMIN and
-// CAP_DAC_OVERRIDE (to open the 0600 root-owned node and to satisfy the
-// driver's check), and it does NOT need CAP_SYS_RAWIO. It never touches the
-// SG_IO or HDIO paths that capability governs -- including ataHDIOCommand,
-// which crash-loops that host (#20). Both capabilities are already granted
-// there, so nothing about the deployment changes to make this work.
+// This path needs CAP_SYS_ADMIN and CAP_DAC_OVERRIDE (to open the 0600
+// root-owned node and to satisfy the driver's check), not CAP_SYS_RAWIO. It
+// never touches the SG_IO or HDIO paths that capability governs, including
+// ataHDIOCommand (#20).
 //
 // Every structure offset below was verified against a C compiler rather than
 // read off a header by eye; see megaraid_packet_test.go, which pins them.
 //
-// THE LAYOUT IS THE 64-BIT ABI, which is what the build tag says. struct iovec
+// The layout is the 64-bit ABI, which is what the build tag says. struct iovec
 // is 16 bytes, the packet is 404, and the ioctl number encodes that size. On a
 // 32-bit target every one of those differs, so the file is built only for the
 // architectures whose layout it actually describes; megaraid_unsupported.go

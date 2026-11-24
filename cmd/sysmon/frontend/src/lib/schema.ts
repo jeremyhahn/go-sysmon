@@ -77,7 +77,7 @@ export const REQUIRED_ARRAYS: readonly string[] = ["cpus", "disks", "networks"];
  *
  * This is the old validator's list unchanged. Presence is the one thing the
  * generated schema cannot decide: it knows a struct is always marshalled, but
- * not whether THIS build's page would survive an older server that predates the
+ * not whether this build's page would survive an older server that predates the
  * field. Keeping the list is what makes this change strictly-more-checking
  * rather than differently-checking.
  */

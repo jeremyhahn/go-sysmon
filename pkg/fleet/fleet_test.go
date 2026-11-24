@@ -242,7 +242,7 @@ func TestPeerSnapshot_Errors(t *testing.T) {
 
 // TestPeerSnapshot_MarksAnUnreachablePeerStale is the fail-open guard for the
 // drill-in path. The last snapshot fetched survives a failed fetch, which is
-// deliberate -- a blip should not blank the page. What must NOT happen is
+// deliberate -- a blip should not blank the page. What must not happen is
 // serving that reading as an ordinary success: the detail view would show
 // frozen numbers as live ones, and a client polling every second would
 // re-record the same values into its history as though it kept measuring them.
@@ -438,16 +438,11 @@ func TestView_StaleSnapshotKeepsItsRealAge(t *testing.T) {
 	}
 }
 
-// TestView_OrdersByNameNotSeverity is the owner ruling of 2026-09-01.
+// TestView_OrdersByNameNotSeverity: View() orders by name.
 //
-// View() used to return worst-status-first so a fault led the list. That reads
-// as "unsorted" to anyone looking for a host: a warning node sorts ahead of a
-// healthy one whose name comes first, so on the real fleet `fs` and
-// `vm-host-1` appeared above `ci-node-1` and the list looked shuffled.
-//
-// The peers are configured in an order that is NEITHER alphabetical nor
+// The peers are configured in an order that is neither alphabetical nor
 // severity-ordered, and the unreachable node is given the name that sorts
-// LAST. A fixture whose config order or severity order happens to match the
+// last. A fixture whose config order or severity order happens to match the
 // alphabet would pass against the old comparator too and prove nothing.
 func TestView_OrdersByNameNotSeverity(t *testing.T) {
 	// zulu is never served, so it comes back unreachable -- the status that
@@ -502,14 +497,8 @@ func TestView_OrdersByNameNotSeverity(t *testing.T) {
 
 // TestPeerConfig_OldPeerExplainsItself.
 //
-// The owner hit "The server returned 502 for /api/fleet/ci-node-1/config" and
-// reported it as a bug. It was not one: the node was reachable, serving
-// snapshots, and simply running a build from before /api/config existed, so the
-// aggregator was faithfully reporting an upstream 404.
-//
-// "peer ci-node-1 returned HTTP 404" gives an operator nothing to act on. A
-// 404 from a node that is otherwise answering is a version statement, and
-// saying so turns a bug report into a known state with an obvious remedy.
+// A 404 for /api/config from a peer that otherwise answers means it runs an
+// older build, and the error says so rather than a bare "returned HTTP 404".
 func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 	// A peer that serves snapshots but has no /api/config: exactly an older
 	// build, rather than a node that is down.
@@ -563,7 +552,7 @@ func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 		t.Errorf("a 500 is reported as a version problem: %s", plain)
 	}
 
-	// And neither does a 404 on an endpoint that has ALWAYS existed.
+	// And neither does a 404 on an endpoint that has always existed.
 	//
 	// /api/snapshot is what the fleet has always polled, so a 404 on it is a
 	// wrong peer URL or a proxy that does not forward the path -- never an old
@@ -582,13 +571,7 @@ func TestPeerConfig_OldPeerExplainsItself(t *testing.T) {
 //
 // RAIDDegraded false and SMARTUnhealthy zero are each produced by two
 // different realities: "this host has none" and "this host's are fine". The
-// fleet view rendered both as a green ok, so a node with no arrays advertised
-// a healthy RAID subsystem it does not have, and a node whose disks report no
-// SMART at all advertised healthy SMART -- which is what ci-node-1 does today
-// while its own node page says N/A for every one of its devices.
-//
-// The per-disk model already distinguishes these; only the roll-up did not.
-// The counts are what let a consumer tell them apart.
+// counts are what let a consumer tell them apart.
 func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -600,8 +583,7 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 		wantSMARTBad      int
 	}{
 		{
-			// The case the owner reported: nothing to report on, and the old
-			// fields say "fine" about all of it.
+			// Nothing to report on: the counts must not say "fine".
 			name:  "no arrays and no SMART",
 			disks: []types.DiskInfo{{Name: "sda", TotalBytes: 100, UsedPercent: 10}},
 		},
@@ -667,7 +649,7 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 			wantCapable: 2, wantSMARTBad: 1,
 		},
 		{
-			// ci-node-1: devices present, none of them answering SMART. The
+			// Devices present, none of them answering SMART. The
 			// unhealthy count is zero for the same reason it is zero on a
 			// perfectly healthy host, which is exactly why zero alone is not
 			// an answer.
@@ -678,11 +660,8 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 			},
 		},
 		{
-			// ci-node-1 once its PERC members are read. The volume itself has
-			// no SMART -- SMARTEnabled is false on sda and sdb -- and all six
-			// readable drives are behind it. Summing the disk list alone would
-			// report a denominator of one for a host with seven answering
-			// devices, which is #44's defect surviving its own fix.
+			// RAID members read behind a volume with no SMART: all six count,
+			// with the NVMe, toward a denominator of seven (#44).
 			name: "drives behind a hardware RAID controller count",
 			disks: []types.DiskInfo{
 				{Name: "nvme0n1", TotalBytes: 100, SMARTEnabled: true, SMARTHealthy: true},
@@ -758,7 +737,7 @@ func TestView_HealthCountsCarryTheirDenominator(t *testing.T) {
 // TestView_APeerThatNeverAnsweredHasNoAge.
 //
 // age_seconds is the only thing distinguishing a node mid-restart from one gone
-// for days (#69), so what it says for a node that has NEVER answered decides
+// for days (#69), so what it says for a node that has never answered decides
 // whether that distinction works at all.
 //
 // It used to be set from the last attempt, which is a couple of seconds ago and

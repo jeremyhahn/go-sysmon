@@ -44,7 +44,7 @@ const FLEET_PAGE_SIZE_KEY = "sysmon.fleet.pageSize";
  * local node, so they are polled no faster than once a second however tight the
  * local stream is set.
  *
- * Note what this does NOT control: the aggregator refreshes its peers on its
+ * Note what this does not control: the aggregator refreshes its peers on its
  * own server-side schedule (fleet.poll_interval_ms), so fetching faster than
  * that just re-reads the same cached figures. The refresh rate here decides how
  * promptly the browser picks up what the server already has; each node card
@@ -133,7 +133,7 @@ class MonitorStore {
   selectedNode = $state<string | null>(null);
 
   /**
-   * peerFreshness describes the LAST poll of the selected peer. It is null when
+   * peerFreshness describes the last poll of the selected peer. It is null when
    * this host is selected, whose data comes from the live stream and is current
    * by construction.
    */
@@ -571,12 +571,9 @@ class MonitorStore {
             error: peer.error ?? "",
             ageSeconds: peer.age_seconds,
           };
-          // Only a CURRENT reading is folded in. The aggregator keeps serving
-          // the last good snapshot after a peer goes away, and applying it on
-          // every cycle appended the same values to the history again and
-          // again -- a flat line that reads as "measured and steady" when
-          // nothing was measured at all. The panels keep showing the last
-          // reading; the stale badge is what says it is not live.
+          // Only a current reading is folded in: the aggregator keeps serving
+          // a gone peer's last snapshot, and re-applying it would draw a flat
+          // line. The stale badge marks the last reading as not live.
           // The base for a later failure's age: what the aggregator said, and
           // when it said it. Recorded for any envelope that arrives, not only
           // one carrying a snapshot -- a reachable:false answer is still a

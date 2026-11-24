@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import snapshot from "./snapshot.json" with { type: "json" };
 /**
- * Zero-valued entries with EVERY field the Go types emit, generated from them
+ * Zero-valued entries with every field the Go types emit, generated from them
  * rather than written by hand.
  *
  * Hand-written fixtures here failed exactly once and instructively: a container

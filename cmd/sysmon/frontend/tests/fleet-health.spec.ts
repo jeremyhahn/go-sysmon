@@ -9,13 +9,9 @@ import type { FleetNode } from '../src/lib/types';
  *
  * `raid_degraded: false` is produced both by "this host has no arrays" and by
  * "its arrays are fine"; `smart_unhealthy: 0` both by "no disk reported SMART"
- * and by "every disk is healthy". The fleet card rendered each pair as a green
- * ok, so a node with no RAID advertised a healthy RAID subsystem it does not
- * have — and ci-node-1, whose PERC and SAS devices report nothing, advertised
- * healthy SMART while its own node page said N/A for every one of them.
- *
- * The cells now carry a denominator and omit themselves when it is zero, which
- * is the treatment swap, temperature and power already use in the same card.
+ * and by "every disk is healthy". The cells carry a denominator and omit
+ * themselves when it is zero, as swap, temperature and power do in the same
+ * card.
  */
 
 // `health` is typed against the wire's FleetNode, so a misspelt field fails the
@@ -97,7 +93,7 @@ test('a node with arrays and readable SMART reports both, with the denominator',
   // Both subsystems report their state as the value: two "ok"s, not one.
   await expect(full.getByText('ok', { exact: true })).toHaveCount(2);
   // "ok" alone cannot say how many were checked, which is the whole defect
-  // #44 was filed about, so BOTH cells keep their denominator -- beside the
+  // #44 was filed about, so both cells keep their denominator -- beside the
   // state as evidence rather than above it as a claim.
   await expect(full.getByText('6 checked')).toBeVisible();
   await expect(full.getByText('2 arrays')).toBeVisible();
@@ -183,13 +179,8 @@ test('an array that is not serving I/O is not called ok', async ({ page }) => {
 });
 
 test('a healthy host is never labelled unhealthy', async ({ page }) => {
-  // The regression the owner reported, and the assertion that would have
-  // caught it: read the whole card as text and look for the word.
-  //
-  // Every existing test here checked the VALUE, which was correct and green
-  // the entire time -- "0 of 6". None looked at what it sat under, which was
-  // the heading "SMART unhealthy". A roll-up is read by its headings, so the
-  // page said a fault about a machine whose six devices had all passed.
+  // A roll-up is read by its headings: read the whole card as text and check
+  // that no fault heading appears over a healthy "0 of 6".
   await fleetWith(page, [
     node('healthy', { raid_arrays: 2, raid_degraded: false, smart_capable: 6, smart_unhealthy: 0 }),
   ]);

@@ -1,15 +1,8 @@
 // The date range, and the history it selects.
 //
-// There is one of these for the whole dashboard, and that is the design. The
-// owner asked to "see the graphs/charts with date range searches ... in addition
-// to the real-time streams (when a date range is not selected)": one surface
-// with two states, chosen by a control whose absence gives the live stream.
-// Not a separate destination, and not a mode carried by each panel -- eight
-// panels each holding their own range would not be comparable with each other
-// and would put state into the real-time path that it does not need.
-//
-// So: this store holds the range, every chart reads it, and clearing it puts
-// the whole dashboard back on the live stream without a reload.
+// One range for the whole dashboard: every chart reads it, so panels stay
+// comparable, and clearing it returns the dashboard to the live stream without
+// a reload.
 
 import {
   RANGE_PRESETS,

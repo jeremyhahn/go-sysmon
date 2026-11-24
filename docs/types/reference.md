@@ -37,10 +37,8 @@ so a value outside the set has to be spelled as a deliberate conversion.
 
 Every slice in these types reaches the wire as a JSON array, never as `null`: a
 host with none of something sends `[]`. A nil Go slice encodes as `null`, and
-the dashboard reads these lists with `.map`, `.length` and spreads, so a single
-`null` used to be a thrown exception that blanked a panel. The owner ruled on
-#151 that an empty list and "none" are the same answer, and dropped the
-distinction.
+the dashboard reads these lists with `.map`, `.length` and spreads, so a
+`null` would throw. An empty list and "none" are the same answer (#151).
 
 `types.ReplaceNilSlices` does it. It walks a value by reflection and replaces
 every nil slice it can reach through structs, pointers, slices and arrays with

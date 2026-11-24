@@ -1,38 +1,21 @@
 [Unit]
-# The headless sysmon web dashboard, run directly by systemd. There is no
-# container: this unit starts the binary that `make deploy` installed into
-# /usr/local/bin.
+# Runs the sysmon-server binary that `make deploy` installs in /usr/local/bin.
 Description=go-sysmon system metrics dashboard
 Documentation=https://github.com/jeremyhahn/go-sysmon
 Documentation=file:/etc/go-sysmon/sysmon.env
 
-# network-online rather than network.target: sysmon can be configured to bind
-# one address, and binding a specific address before the interface has it fails
-# the listener outright. On the default (all interfaces) this ordering costs
-# nothing.
+# Binding a specific address needs the interface to have it.
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-# Type=notify, not exec. Type=exec reports the unit active while the binary
-# exists, which says nothing about whether a request can be answered:
-# vm-host-2 served nothing for two days in that state with NRestarts=0 and
-# 2929 connections queued on a listener nothing was accepting from (#65, #66).
-#
-# With notify the service has to keep answering, and WatchdogSec below turns a
-# stall into a restart instead of a silence.
+# Watchdog pings follow a successful self-request and a recent collection.
 Type=notify
 NotifyAccess=main
-
-# A dedicated system account, created by the deploy. It owns nothing, has no
-# home and no login shell -- sysmon reads the host and writes only to the
-# journal, so there is nothing for the account to hold.
 User=sysmon
 Group=sysmon
 
-# Defaults live here so that a commented-out line in sysmon.env falls back to a
-# working value instead of passing an empty flag. The env file is read second
-# and therefore wins wherever it sets something.
+# Defaults for variables unset in sysmon.env; the env file wins.
 Environment=SYSMON_ADDR=:8081
 Environment=SYSMON_INTERVAL=2000
 Environment=SYSMON_LOG_LEVEL=info
@@ -43,237 +26,48 @@ ExecStart=/usr/local/bin/sysmon-server serve \
 	--interval ${SYSMON_INTERVAL} \
 	--log-level ${SYSMON_LOG_LEVEL}
 
-# Reload re-reads /etc/go-sysmon/sysmon.yaml in place: alert thresholds, fleet
-# peers and the poll interval take effect without restarting. That matters
-# because a restart would reset the Prometheus counters, drop every connected
-# browser and empty the history buffers. The listen address and TLS files are
-# consumed when the socket binds, so changing those still needs a restart --
-# the daemon logs which settings it could not apply.
+# Reloads sysmon.yaml in place; the listen address and TLS files need a restart.
 ExecReload=/bin/kill -HUP $MAINPID
-
 Restart=always
 RestartSec=5s
-
-# The service pings at half this, and ONLY when it has just made a successful
-# HTTP request to its own listener AND the monitor has collected within three
-# polling intervals. A ping from a bare ticker would prove only that a ticker
-# fires: a ticker allocates nothing, so it keeps pinging through exactly the
-# garbage-collection stall that parks every other goroutine in the process.
-#
-# 60s rather than something tighter because a restart is not free -- it drops
-# the event streams and the history the process holds -- and because collection
-# ticks are 2s, so 60s is thirty missed ticks rather than one slow one.
+# Thirty missed 2s collection ticks.
 WatchdogSec=60
-
 SyslogIdentifier=sysmon
 
-# --- resource guards -------------------------------------------------------
-#
-# These are a runaway brake, not a reservation. sysmon shares this host with
-# the service it exists to watch, and a monitor that can crowd out the workload
-# is a liability.
-#
-# CPUWeight, NOT CPUQuota (owner ruling 2026-09-03). The difference is the
-# whole point of this block and it cost a two-day outage to learn:
-#
-#   CPUQuota is a hard stop on the INSTANTANEOUS rate. CPUQuota=50% is
-#   cpu.max "50000 100000" -- 50 ms of CPU per 100 ms period, after which the
-#   kernel freezes every thread in the cgroup until the period rolls over.
-#   CPUWeight only decides who wins when the CPU is contended, and never stops
-#   a runnable process at all.
-#
-# That matters because collection is a BURST, and the collector is tiered
-# (docs/collector/architecture.md): the fast tier runs every tick, the medium
-# tier every fifth, the slow tier every thirtieth. So there is no such thing as
-# "the cost of a tick". Sampled on ci-node-1 at 250 ms resolution, in ms of
-# CPU per sample:
-#
-#     367 367 472 0 0 0 0 0 0 202 0 0 0 0 0 0 158 0 0 0 0 5 0 0 89 0 0 0 0 0 0 0
-#     361 347 425 449 352 399 438 393 400 384 0 0 0 0 9 200 0 0 ...
-#           ^ the medium tick: ~3.9 s of CPU over 2.5 s of wall clock
-#
-# The MEDIAN sample is zero. Every 2 s a fast tick costs a couple of hundred
-# milliseconds; every fifth one a medium tick spends about 3.9 seconds of CPU
-# in 2.5 seconds of wall clock -- more than one core, because collectors
-# overlap. Averaged over the cycle that reads as 543 ms per tick on ci-node-1,
-# 339 ms on mon0 (which also aggregates 10 peers) and 234 ms on vm-host-2,
-# and the average is the number that hides the problem.
-#
-# TRUST THE 543, NOT THE 234. vm-host-2's figure was taken while that host
-# carried ~4.7 GB of abandoned processes at a load in the sixties, so it is
-# inflated by cache pressure and scheduling contention and is illustrative
-# only; it cannot be re-measured, because the fleet has since moved to a build
-# that changes exactly that path. The arithmetic below rests on ci-node-1's
-# 543 ms and on the 250 ms sampling above, both taken on a quiet host.
-#
-# The annotation is here because an unmarked number in this file carries the
-# same authority as the two beside it, and that is how the Atom D510 figures
-# survived: not because anyone defended them, but because nothing beside them
-# said how far to trust them.
-#
-# Against a 50 ms grant per 100 ms period, that medium tick needs 78 periods --
-# nearly EIGHT SECONDS of wall clock to do 3.9 seconds of work, 77 of those
-# periods ending with the kernel freezing every thread in the cgroup. Meanwhile
-# ci-node-1 averaged 33% of a core against its 50% allowance while being
-# frozen for 29.5 s of every 60: more time stopped than running, without ever
-# being over budget. No average-based reading of this file could have found
-# that; only nr_throttled could.
-#
-# What it did: under sustained throttling the Go GC's mark termination cannot
-# close, every allocating goroutine parks in runtime.gcMarkDone, and the
-# server stops accepting while systemd still reports the unit active.
-# vm-host-2 sat that way with NRestarts=0 and an accept queue of 2929. Full
-# account and the goroutine dump in issue #65.
-#
-# Before the change every node in the fleet was frozen for 30-82% of the
-# periods in which it wanted to run. After it, with a control: vm-host-2 on
-# CPUWeight, 1010 processes, 17.2% of a core, ZERO throttling; vm-host-3
-# left on the quota, 803 processes, 12.0% of a core, 9,060 ms of freeze per
-# 60 s.
-#
-# The Atom D510 measurements that used to justify this block are gone rather
-# than corrected. They were taken on a host with about a hundred processes,
-# and a tick's cost scales with how much host there is to read, not with how
-# fast the CPU is -- so they were an order of magnitude under every machine
-# they were applied to. Re-take any of this with the procedure in
-# docs/deployment/engineering.md, "Resource footprint", and read nr_throttled
-# rather than an average.
-#
-# CPUWeight=50 against systemd's default of 100 is a preference, not a limit.
-# Two things to know before tuning it:
-#
-#   - It is work-conserving: it binds only when a sibling is runnable at the
-#     same instant AND the CPU is saturated. sysmon needs roughly a quarter of
-#     one core out of this fleet's 4 to 24, so almost any weight delivers
-#     that. The value is close to inconsequential; the mechanism was the fix.
-#   - It applies WITHIN one cgroup level. Measured 2026-09-03: on ci-node-1
-#     the real workload is machine.slice (the KVM guests, 142x system.slice's
-#     CPU), so this weight competes with sshd and docker rather than with the
-#     VMs. Yielding to those is a system.slice-vs-machine.slice question and
-#     is not sysmon's to set. On vm-host-2 the containers are in
-#     system.slice, so there it does what it says.
-#
-# MemoryHigh sits below MemoryMax deliberately: crossing it throttles the
-# process and reclaims rather than killing it. Only MemoryMax kills, and a
-# monitor that dies silently when the host runs short of memory is missing for
-# the one event worth seeing.
-#
-# 96M/128M was the pair inherited from the Atom, and it had the same defect as
-# the CPU quota: it fired constantly and said nothing. Measured 2026-09-03,
-# vm-host-5 (1005 processes) peaked at 96 MiB and crossed the watermark 658
-# times in one afternoon -- memory.events "high" -- never killed, so never
-# restarted, unit reporting active throughout. Owner ruling the same day:
-# 512M/768M.
-#
-# THE TWO NUMBERS ARE ONE SETTING AND MUST BE READ TOGETHER. For a few hours on
-# 2026-09-03 MemoryHigh was raised to 512M while MemoryMax was still 128M, and
-# because the kernel enforces max first that made the watermark UNREACHABLE:
-# nothing was ever throttled, the service would have been OOM-killed at 128 MiB
-# instead, and memory.events "high" read zero on every node -- which was read as
-# the stalls having been fixed. A ceiling raised out of reach silences its own
-# counter, and the configuration looks more generous while doing so.
-#
-# `sysmon doctor` now reports this pair and calls it degraded when high >= max,
-# because no counter will.
+# MemoryHigh throttles, MemoryMax kills; keep high below max or the watermark
+# is unreachable. GOMEMLIMIT is derived from MemoryHigh (pkg/memlimit).
 MemoryHigh=512M
 MemoryMax=768M
 
-# GOMEMLIMIT is NOT set here on purpose. The service derives it from MemoryHigh
-# at startup (pkg/memlimit) and logs what it derived. A number written here
-# beside MemoryHigh would be two values that must agree with nothing failing
-# when they stop agreeing -- which is exactly how the pair above went wrong.
-# Setting GOMEMLIMIT in the environment still works and still wins: it is an
-# operator decision, and the service reports that it deferred to it.
-
+# CPUWeight, not CPUQuota: a quota freezes the cgroup mid-burst, stalling the GC.
 CPUWeight=50
 TasksMax=64
+# OOMScoreAdjust stays at the default: a monitor does not outrank its workload.
 
-# Left at the default on purpose. Biasing sysmon to survive the OOM killer
-# would bias it ahead of whatever else this host runs, and a monitor does not
-# outrank the thing it monitors.
-# OOMScoreAdjust=
-
-# --- privileges ------------------------------------------------------------
-#
-# Two capabilities, each there for a device node and nothing else (Company
-# Agent ruling 226, carrying ci-node-2's ruling-108 drop-in into this unit).
-# Everything else sysmon collects was compared as root and as an unprivileged
-# user and read the same with no capability at all: CPU package temperatures,
-# per-interface counters, cgroup container metrics and the process list.
-#
-#   CAP_SYS_ADMIN     the NVMe admin passthrough ioctl that reads SMART from
-#                     /dev/nvmeN, and the MegaRAID passthrough that reads the
-#                     drives behind a PERC controller.
-#   CAP_DAC_OVERRIDE  opening those root:root 0600 nodes, and /dev/ipmi0 for
-#                     the drive-slot collector's IPMI fallback
-#                     (docs/collector/drive-slots.md).
-#
-# Verified on ci-node-2: without them every disk read smart_status
-# "unreadable"; with them, "readable on 4 of 10 devices".
-#
-# The bounding set has to list the ambient set: an empty bounding set drops
-# every ambient capability.
-#
-# CAP_DAC_OVERRIDE bypasses every file permission check on the host, so
-# /etc/shadow is readable to this process. ProtectSystem=strict and
-# ProtectHome=yes below still keep the filesystem read-only and /home hidden,
-# and sysmon serves no file it reads.
-#
-# CAP_SYS_RAWIO IS DELIBERATELY OMITTED, and its absence is load-bearing. It
-# enables the SG_IO/HDIO ATA passthrough used for SATA/SAS SMART, and on the
-# dellemc hosts that path segfaults the service into a permanent crash loop:
-# the HDIO_DRIVE_CMD ioctl in ataHDIOCommand() (pkg/collector/smart_ata.go)
-# against the DELLBOSS M.2 virtual disk and the PERC-backed SAS disks overruns
-# the buffer it passes to the kernel, and the next allocation dies in
-# runtime.mallocgc. Bisected there: no grant = stable; +CAP_SYS_RAWIO = crash
-# loop; CAP_SYS_ADMIN+CAP_DAC_OVERRIDE only = stable with NVMe SMART. Do not
-# add it until that bug is fixed and re-verified on that hardware. Without it
-# an ATA disk's SMART reads as refused by the kernel, and `sysmon-server
-# doctor` says so.
+# CAP_SYS_ADMIN: NVMe and MegaRAID SMART passthrough ioctls.
+# CAP_DAC_OVERRIDE: opening the root-only /dev/nvmeN and /dev/ipmi0 nodes.
+# CAP_SYS_RAWIO is omitted: the ATA HDIO passthrough in
+# pkg/collector/smart_ata.go crashes the service on some RAID-backed disks.
 AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 
-# --- filesystem ------------------------------------------------------------
-#
-# sysmon persists nothing, so the whole filesystem can be read-only. There is
-# deliberately no ReadWritePaths, no StateDirectory and no CacheDirectory: if
-# one appears here, something started keeping state and that is a design change,
-# not a deployment detail.
+# sysmon persists nothing; a writable path here would be a design change.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 UMask=0077
 
-# PrivateDevices=yes would give the service a private /dev without the disk
-# and IPMI nodes, and the capabilities above would then reach nothing: every
-# disk read smart_status "unreadable" that way on ci-node-2, bay 3's nvme1
-# included. The host's /dev is needed for /dev/nvmeN and /dev/sdX (SMART) and
-# /dev/ipmi0 (drive slots).
-#
-# The disk group opens the root:disk 0660 block nodes, /dev/sdX among them,
-# without a capability.
+# The disk and IPMI device nodes must be visible; the disk group opens /dev/sdX.
 PrivateDevices=no
 SupplementaryGroups=disk
 
-# --- /proc ------------------------------------------------------------------
-#
-# BOTH of these are load-bearing and both are set to their permissive value on
-# purpose. systemd's hardening defaults are wrong for a system monitor:
-#
-#   ProtectProc=invisible  hides every other process, so the process list and
-#                          the process count go to zero -- silently, with the
-#                          dashboard rendering an apparently idle machine.
-#   ProcSubset=pid         hides /proc/meminfo, /proc/stat, /proc/net/dev and
-#                          the rest, so memory, CPU and network collection all
-#                          stop returning data.
-#
-# Neither failure produces an error. Do not "harden" these.
+# Stricter values hide other processes and /proc/meminfo, /proc/stat and
+# /proc/net/dev, and collection silently returns nothing.
 ProtectProc=default
 ProcSubset=all
 
-# --- kernel -----------------------------------------------------------------
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
@@ -284,12 +78,7 @@ LockPersonality=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 
-# --- syscalls and sockets ---------------------------------------------------
-#
-# AF_NETLINK is required and easy to miss: Go's net.Interfaces() enumerates
-# interfaces over a netlink socket, so dropping it empties the network panel
-# rather than failing loudly. AF_UNIX is what the container-runtime probe dials;
-# it finds nothing on a host with no runtime, which is the expected state here.
+# AF_NETLINK enumerates interfaces; AF_UNIX reaches the container runtime socket.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

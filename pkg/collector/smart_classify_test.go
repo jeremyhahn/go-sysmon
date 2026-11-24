@@ -169,10 +169,8 @@ func TestClassifyRefusal_TellsOpenFromIoctl(t *testing.T) {
 	}
 }
 
-// TestRefusalReason_NamesTheRemedyThatApplies is the point of splitting the
-// two. On ci-node-1 the node opens -- the service is in the 'disk' group --
-// and the ioctl is refused, so advice about group membership is not merely
-// unhelpful there, it is wrong.
+// TestRefusalReason_NamesTheRemedyThatApplies: when the node opens but the
+// ioctl is refused, the remedy is the capability, not group membership.
 func TestRefusalReason_NamesTheRemedyThatApplies(t *testing.T) {
 	openReason := refusedAtOpen.reason()
 	ioctlReason := refusedAtIoctl.reason()
@@ -202,12 +200,9 @@ func TestClassifySMARTFailure_PrefersTheAnswerThatSaysWhereToLook(t *testing.T) 
 	fakeBlockDevice(t, sysBlock, devices, "sda", 498860032, "host0")
 	writeSysfsFile(t, filepath.Join(hosts, "host0", "proc_name"), "megaraid_sas\n")
 
-	// ci-node-1's exact situation: a PERC volume on a host that withholds
-	// CAP_SYS_RAWIO. Both descriptions are true, and the refusal wins -- it is
-	// the one that is fixable, and the controller test cannot tell a volume
-	// from a passthrough disk on the same controller, so claiming "the drives
-	// are behind the controller" would be a claim about drives that may not
-	// exist.
+	// A RAID volume on a host that withholds CAP_SYS_RAWIO: the refusal wins,
+	// because it is fixable and the controller test cannot tell a volume from a
+	// passthrough disk.
 	refused := &SMARTUnavailableError{
 		DevPath: "/dev/sda",
 		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.EPERM},
@@ -229,8 +224,7 @@ func TestClassifySMARTFailure_PrefersTheAnswerThatSaysWhereToLook(t *testing.T) 
 	}
 
 	// And with the capability present, a volume fails with a check condition
-	// rather than EPERM -- measured on ci-node-1 as "unsupported scsi opcode"
-	// -- so behind_controller is still reached wherever it is the whole truth.
+	// ("unsupported scsi opcode") rather than EPERM, so behind_controller is still reached wherever it is the whole truth.
 	declined := &SMARTUnavailableError{
 		DevPath: "/dev/sda",
 		HDIOErr: &SMARTIoctlError{DevPath: "/dev/sda", Op: "HDIO", Errno: syscall.ENOTTY},
@@ -288,7 +282,7 @@ func TestClassifySMARTFailure_CompletedTransportIsNotBlamedOnTheController(t *te
 		t.Errorf("a check condition on a RAID controller = %q, want %q", silent.SMARTStatus, types.SMARTBehindController)
 	}
 	// And it must be phrased as the conditional it is. The SCSI host driver is
-	// knowable; whether THIS device is a volume rather than a passthrough disk
+	// knowable; whether this device is a volume rather than a passthrough disk
 	// is not, so the sentence may not assert it.
 	if !strings.Contains(silent.SMARTReason, "If it is a volume") {
 		t.Errorf("reason = %q; behind_controller may not assert that the device is a volume", silent.SMARTReason)
@@ -396,15 +390,9 @@ func TestClassifySMARTFailure_NonRAIDCases(t *testing.T) {
 
 // ---- the disk list ---------------------------------------------------------
 
-// TestCollectFromSysfs_DropsDevicesWithNoMedium reproduces ci-node-1's block
-// layout as measured on 2026-09-02: sixteen nbd stubs the kernel creates at
-// boot, a device-mapper node carrying the root filesystem, and the disks that
-// actually exist. Sorted by name the stubs come first, which is why the host
-// looked like it had no disk activity at all.
-//
-// dm-0 must survive: it is where / lives, and dropping every virtual device --
-// the obvious reading of "skip dm-*" -- would take the root filesystem's usage
-// with it.
+// TestCollectFromSysfs_DropsDevicesWithNoMedium: sixteen nbd stubs the kernel
+// creates at boot are dropped; dm-0, which carries the root filesystem, and the
+// real disks are kept.
 func TestCollectFromSysfs_DropsDevicesWithNoMedium(t *testing.T) {
 	root := t.TempDir()
 	devices := t.TempDir()
@@ -549,9 +537,7 @@ func TestApplySMARTRead_RecordsEveryOutcome(t *testing.T) {
 }
 
 // TestDisksFromBlockInfo_DropsDevicesWithNoMedium covers the enumeration path
-// that actually runs. ghw lists every name in /sys/block, so the sixteen nbd
-// stubs arrive here exactly as they arrive on ci-node-1 -- and this, not the
-// sysfs fallback, is where they were getting through.
+// that actually runs: ghw lists every name in /sys/block, nbd stubs included.
 func TestDisksFromBlockInfo_DropsDevicesWithNoMedium(t *testing.T) {
 	root := t.TempDir()
 	devices := t.TempDir()

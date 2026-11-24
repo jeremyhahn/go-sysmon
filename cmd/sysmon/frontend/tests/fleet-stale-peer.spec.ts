@@ -9,14 +9,8 @@ import { openTab } from './fixtures/tabs';
  *
  * The aggregator keeps a peer's last good snapshot when the peer stops
  * answering, so GET /api/fleet/{name}/snapshot keeps returning 200 with a full
- * body. Before the freshness envelope, the dashboard could not tell that body
- * apart from a fresh collection: every panel showed the frozen numbers as
- * current, and because the poll repeats on the refresh interval, the identical
- * reading was folded into the history charts again and again -- a flat line
- * that reads as "measured and steady" for a machine that had gone silent.
- *
- * What is asserted here is the visible half of the fix: an unreachable peer is
- * marked, so an operator reading the panels knows the numbers are old.
+ * body. The freshness envelope lets the dashboard mark an unreachable peer, so
+ * an operator knows the numbers are old.
  */
 
 const peerSnapshot = {

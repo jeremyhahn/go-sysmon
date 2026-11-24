@@ -13,8 +13,7 @@ import (
 // starts empty every cycle grows its buffer by doubling until the whole body
 // fits: for a 700 KB snapshot that is a dozen allocations and copies adding up
 // to several times the body, and every byte of it is garbage three seconds
-// later. Measured on the deployed fleet's real snapshots, that growth was more
-// than half of everything an aggregation cycle allocated (#76).
+// later (#76).
 //
 // A peer's snapshot is about the same size from one poll to the next, so the
 // buffer that held the last one holds the next one without growing. Keeping it

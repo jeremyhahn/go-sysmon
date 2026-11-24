@@ -134,8 +134,7 @@ func serveOnListener(t *testing.T, srv *Server, l net.Listener) {
 
 // A peer that stops reading is the failure this deadline exists for: the write
 // parks in TCP retransmission and nothing ever releases the goroutine or the
-// connection. Measured on vm-host-2 on 2026-09-03, 44 goroutines were held
-// that way for seven minutes.
+// connection.
 func TestResponseWriteDeadline_AbortsAWriteToAPeerThatNeverReads(t *testing.T) {
 	original := responseWriteTimeout
 	responseWriteTimeout = 200 * time.Millisecond
@@ -221,7 +220,7 @@ func (s *stampingSnapshotter) collectedAt(name string) (time.Time, bool) {
 	return at, ok
 }
 
-// The stream is the response that must NOT be bounded in total. It resets its
+// The stream is the response that must not be bounded in total. It resets its
 // own deadline before every event, which replaces the server-wide one, so it
 // outlives a deadline that would have killed an ordinary response.
 //

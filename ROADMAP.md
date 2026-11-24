@@ -50,7 +50,7 @@ were not carried over to GitHub.
 
 - **ci-pipeline** — govulncheck runs at a pinned version — Gitea #252 — done
 - **ci-pipeline** — CI runs in a PR tier and a full tier — Gitea #267 — done
-- **ci-pipeline** — CI workflows run without the host Docker socket — Gitea #243 — blocked: go-xkms#1332 needs an owner ruling
+- **ci-pipeline** — CI workflows run without the host Docker socket — Gitea #243 — blocked on go-xkms#1332
 - **project-docs** — roadmap lists the RC milestone — Gitea #255 — done
 - **project-docs** — the project carries docs/SPEC.md and an agreeing ROADMAP.md — Gitea #256 — open
 

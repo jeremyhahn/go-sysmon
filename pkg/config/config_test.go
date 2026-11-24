@@ -776,10 +776,8 @@ fleet:
 	}
 }
 
-// TestLoad_UnnamedPeerIsRejectedByPosition is the owner ruling of 2026-09-23
-// under #120: a peer with no name is a startup error. Defaulting it to its
-// URL's host made the host its routing key on the unauthenticated fleet view,
-// which is the exposure #120 removed.
+// TestLoad_UnnamedPeerIsRejectedByPosition: a peer with no name is a startup
+// error, so a URL's host never becomes a routing key on the fleet view (#120).
 //
 // The error names the peer by its place in fleet.peers and tells the operator
 // what to add. It quotes nothing from the entry -- not the URL, the host, the
@@ -844,8 +842,7 @@ func TestLoad_ReloadKeepsRunningConfigOnUnnamedPeer(t *testing.T) {
 	}
 }
 
-// TestLoad_RejectsPeerNameThatCannotBeAnInstance is the owner ruling on #37: a
-// peer name that breaks the node-name rule is a startup error naming the peer
+// TestLoad_RejectsPeerNameThatCannotBeAnInstance (#37): a peer name that breaks the node-name rule is a startup error naming the peer
 // and the rule, not a history request that 400s later or a chart left empty.
 func TestLoad_RejectsPeerNameThatCannotBeAnInstance(t *testing.T) {
 	for _, name := range []string{
@@ -1068,7 +1065,7 @@ func viewEntry(t *testing.T, mgr *config.Manager, key string) types.ConfigEntry 
 
 // TestManagerReload_BootOnlyKeepsBootSourceWithBootValue is the pair invariant:
 // the settings view must report the value in force AND the layer that supplied
-// THAT value. Pinning only the value leaves ":8080, from the config file" next
+// that value. Pinning only the value leaves ":8080, from the config file" next
 // to a file that says :9090 -- a self-contradicting pair, and worse than either
 // half alone because the settings view is exactly where an operator goes to
 // resolve that confusion.
@@ -1427,7 +1424,7 @@ func TestLoad_PeerURLMustBePollable(t *testing.T) {
 
 // TestValidateLocalName_PeerNamedLikeThisNodeIsRejected covers the
 // explicit case. The fleet handlers resolve the local name before consulting the
-// peer cache, so such a peer answers with THIS machine's snapshot and
+// peer cache, so such a peer answers with this machine's snapshot and
 // configuration: the configured host is never polled, and the dashboard shows a
 // card that looks like it.
 func TestValidateLocalName_PeerNamedLikeThisNodeIsRejected(t *testing.T) {
@@ -1451,13 +1448,9 @@ fleet:
 	}
 }
 
-// TestLoad_DoesNotDependOnTheHostname is the regression guard for a real CI
-// break: the collision check once lived in normalize, which reached for
-// os.Hostname, so a fixture naming a peer "omega" loaded fine everywhere except
-// on the build agent that happened to be called omega. Loading configuration
-// must be a pure function of the inputs -- the same file has to parse the same
-// way on every machine. The collision is a property of where the config is
-// RUNNING, so it is checked separately, against a name the caller supplies.
+// TestLoad_DoesNotDependOnTheHostname: loading is a pure function of the
+// inputs, so a peer named like the build host loads everywhere. The name
+// collision is checked separately, against a name the caller supplies.
 func TestLoad_DoesNotDependOnTheHostname(t *testing.T) {
 	host, err := os.Hostname()
 	if err != nil {
@@ -1495,8 +1488,7 @@ func TestValidateLocalName_UnknownLocalNameChecksNothing(t *testing.T) {
 	}
 }
 
-// TestLoad_RejectsLocalNameThatCannotBeAnInstance is the owner ruling of
-// 2026-09-22 on #37: fleet.local_name is this node's fleet-wide identity and
+// TestLoad_RejectsLocalNameThatCannotBeAnInstance (#37): fleet.local_name is this node's fleet-wide identity and
 // the instance label its history is written under, so it is held to the same
 // rule as a peer name. A configured value depends only on the file, so it is
 // checked while parsing and fails the same way on every machine.
@@ -1575,7 +1567,7 @@ func TestValidateLocalName_AcceptsUsableNames(t *testing.T) {
 }
 
 // TestLoad_PeerNamedLikeAnotherNodeStillLoads is the no-regression guard: only
-// THIS node's name collides. An ordinary peer must not be rejected because the
+// this node's name collides. An ordinary peer must not be rejected because the
 // check is too eager.
 func TestLoad_PeerNamedLikeAnotherNodeStillLoads(t *testing.T) {
 	path := writeConfig(t, "fleet:\n  local_name: aggregator\n  peers:\n    - name: fs\n      url: http://10.0.0.1:8081\n")

@@ -4,21 +4,15 @@ import { openTab } from './fixtures/tabs';
 import { serveFleet } from './fixtures/fleet';
 
 /**
- * The fleet list is ordered by name (owner ruling 2026-09-01).
+ * The fleet list is ordered by name.
  *
- * It used to sort worst-status-first so a fault surfaced on page one. That
- * reads as "not sorted at all" to anyone looking for a host: a warning node
- * sorts ahead of a healthy one whose name comes first, so on the real fleet
- * `fs`, `gpu-host` and `omega` were listed above `ci-node-1` and the list
- * looked shuffled.
- *
- * The ORDER is the server's since #15: it searches, sorts and pages, and
+ * The order is the server's (#15): it searches, sorts and pages, and
  * pkg/fleet's tests pin the order and the page boundaries cut from it. What is
  * checked here is the browser's half -- that it shows the page in the order it
  * was sent. A view that re-sorted each page could only disagree with the order
  * the pages were cut from.
  *
- * The fixture below has statuses deliberately ANTI-correlated with the
+ * The fixture below has statuses deliberately anti-correlated with the
  * alphabet, because a fixture whose severity order happens to match its name
  * order passes under either ordering and proves nothing.
  */
@@ -52,7 +46,7 @@ function fleetNode(name: string, status: string) {
   };
 }
 
-// Worst statuses on the names that sort LAST, healthy on the names that sort
+// Worst statuses on the names that sort last, healthy on the names that sort
 // FIRST. Under the old comparator this list came back exactly reversed.
 const NODES = [
   fleetNode('alpha', 'healthy'),
@@ -97,10 +91,8 @@ test('a degraded node is still counted even though it sorts last', async ({ page
   await page.goto('/');
   await openTab(page, 'Fleet');
 
-  // Ordering by name only costs nothing in discoverability because the roll-up
-  // counts faults, and names the nodes, independently of position. If this
-  // ever stops being true, sorting by name genuinely would bury a fault and the
-  // ruling needs revisiting.
+  // The roll-up counts and names faulty nodes independently of position, so
+  // ordering by name cannot bury a fault.
   await expect(page.getByTestId('fleet-headline')).toContainText('1 warning, 0 critical, 1 unreachable');
   await expect(page.getByRole('list', { name: 'Nodes needing attention' })).toContainText('zulu');
 });
@@ -109,7 +101,7 @@ test('a degraded node is still counted even though it sorts last', async ({ page
  * A five-second restart and a two-day outage both produce status
  * "unreachable" (#69). The word cannot distinguish them and neither can the
  * count, so the view has to say how long -- and `age_seconds` already carries
- * it, because the poller deliberately dates the DATA rather than the last
+ * it, because the poller dates the data rather than the last
  * attempt.
  *
  * The fixture pairs a node absent for seconds with one absent for days, so an
@@ -146,7 +138,7 @@ test('an unreachable node says how long, and the summary reports the worst', asy
 });
 
 /**
- * A node that has NEVER answered reports age_seconds 0 -- the sentinel meaning
+ * A node that has never answered reports age_seconds 0 -- the sentinel meaning
  * "no reading", not "fetched just now". Rendering it through the duration
  * formatter would print "Unreachable for 0s", which reads as the freshest
  * possible failure and is the exact inversion of the truth.

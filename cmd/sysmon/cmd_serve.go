@@ -253,7 +253,7 @@ func runServeCmd(cmd *cobra.Command, _ []string) error {
 	}
 	exporter := startExporter(cfgMgr, mon, done)
 
-	// Topology A (owner ruling 2026-09-04): the aggregator holds every peer's
+	// Topology A: the aggregator holds every peer's
 	// reading already, so it is the one node that can persist the fleet's
 	// history -- and the peers keep no prometheus and no storage of their own.
 	//
@@ -354,10 +354,8 @@ func driveSlotConfig(b config.BMC) collector.DriveSlotConfig {
 // that does nothing when the manager did not ask for one.
 //
 // Both signals are required, and each covers what the other cannot. The probe
-// makes a real request over the socket the server actually bound: accept is
-// what failed on vm-host-2, where 2929 connections queued against a listener
-// nothing was draining while every handler was parked, and a check that does
-// not cross the listener cannot see that. Collection freshness covers the
+// makes a real request over the socket the server bound, so a listener that
+// stopped accepting is caught. Collection freshness covers the
 // opposite case, a server answering promptly with readings from before its
 // poll loop stalled -- to the probe that looks perfect.
 func watchdogFor(srv *server.Server, mon *monitor.Monitor, n *sdnotify.Notifier) *watchdog.Watchdog {

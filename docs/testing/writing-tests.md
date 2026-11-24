@@ -3,9 +3,8 @@
 > **Status: NORMATIVE** · Scope: writing tests in this repository · Last verified: 2026-10-09
 > Conflicts with this document are defects. Fix them here first.
 
-Six rules, each of which was learned the expensive way in this repository. The
-examples are real and the commit history has them; they are here because the
-general form is not obvious from the specific bug.
+Six rules for where tests catch real defects, each with the example that makes
+the general form concrete.
 
 ## 1. Aim at the boundary where untrusted input enters
 
@@ -52,8 +51,7 @@ The test that catches it does not look at the value at all:
 await expect(healthyCard).not.toContainText('unhealthy');
 ```
 
-It reads the whole card as text, which is what the owner did when he reported
-it. Pair it with the inverse — *an unhealthy host still says so* — or "delete
+It reads the whole card as text, as a user does. Pair it with the inverse — *an unhealthy host still says so* — or "delete
 the word" passes.
 
 A test of the data path wearing a test of the interface as a costume is the
@@ -128,15 +126,11 @@ tool being used to check.
 
 ### Named traps
 
-General caution about instruments has not saved anybody here. Each of these has
-caught somebody at least once, most of them more than once, so they are written
-down as specific things to recognise rather than as advice to be careful. Add to
-the list rather than restating the general principle.
+Specific instrument traps to recognise. Add to the list rather than restating
+the general principle.
 
 **`pgrep -f <pattern>` matches the shell running it.** The check's own command
 line contains the pattern, so it finds itself and reports the process alive.
-It has produced a false "still running" for a process that had exited, and a
-false "capture in progress" for a capture that never started.
 
 ```console
 $ pgrep -f "myprocess serve"      # matches the bash -c running this line
@@ -152,77 +146,49 @@ versus `zero`, with a JSON key as the name.** A decoder into a typed structure
 fails on an unknown field; a dictionary lookup does not.
 
 **A "wait" that burns a core.** `read -t 15 x < /dev/zero`, used as a sleep,
-waits the right amount of wall time and consumes a **whole CPU** doing it —
-measured: 3.00 s elapsed at 99% of a core (1.22 user + 1.77 sys), against 0%
-for `sleep 3`. It is not wrong about the duration, which is why it survives
-review. It is wrong about the cost, so any measurement it is waiting *for* —
+waits the right amount of wall time and consumes a **whole CPU** doing it, so any measurement it is waiting *for* —
 CPU time, throttling, load, a quota — is being perturbed by the wait itself.
 
 **Grepping a dump for a format that changed.** A search for `goroutine N [` in
 a Go stack dump returned zero, because the format is
 `goroutine N gp=0x.. m=nil [state, N minutes]`. Zero read as "no goroutines in
-that state" rather than "my pattern is wrong" — `absent` versus `zero` again,
-this time with a text format as the name. It was caught only because a second
-grep beside it, for the *frames*, returned 118: **two probes disagreeing is what
+that state" rather than "my pattern is wrong". **Two probes disagreeing is what
 exposes this, not either probe alone.**
 
 **A field that reports the same value for two opposite states.** `git log
 --format=%G?` prints `N` for an unsigned commit *and* for a correctly signed one
 that cannot be verified without `gpg.ssh.allowedSignersFile`, which agents do
-not have. Measured on this repository's own `main`:
+not have:
 
 ```console
 $ git log -1 --format=%G? 5edd5b65      # N
 $ git cat-file commit 5edd5b65 | grep ^gpgsig   # present
 ```
 
-A check built on `%G?` reports `N` on correctly signed commits, would fail
-everything, and would be switched off within a week. **"Is there a signature"
-and "does the signature verify" are different questions**, and only the first
+**"Is there a signature" and "does the signature verify" are different questions**, and only the first
 can be answered without the file.
 
-**A clean head over a dirty history.** Six commits on a branch carried git
-conflict markers in the committed frontend bundle and every gate passed, because
-later commits rebuilt the bundle and the branch *head* was clean. The tree that
-would have been squash-merged was fine; `git show` on any of those six produced
-a broken bundle, and a bisect would have landed on one. **Checking the end state
-is not checking the work** — where history is navigable, it is part of what
-shipped.
+**A clean head over a dirty history.** Intermediate commits can carry conflict
+markers that a later commit cleans up, and a bisect lands on them. **Checking
+the end state is not checking the work** — where history is navigable, it is
+part of what shipped.
 
-**Recomputing a combined view from the raw list.** A commit's status was read by
-paging the per-context status list and keeping the first entry per context.
-Four entries existed for one aggregator and two shared a timestamp to the
-second, so first-in-list picked `pending` over `success` and a green PR was
-reported red — then reported to a third party as "merged on a pending check",
-which had not happened. The API has a combined-status endpoint that computes
-exactly this. **When an API offers a combined or computed view, do not
+**Recomputing a combined view from the raw list.** Keeping the first entry per
+context from a paged status list can pick `pending` over `success` when two
+entries share a timestamp. **When an API offers a combined or computed view, do not
 reconstruct it yourself from the raw list**; an ambiguous ordering is not a
 verdict.
 
-**A guarantee that holds for a reason nobody wrote down.** Signed commits are
-required on `main`, and unsigned commits were found on a feature branch — which
-looked like the guarantee failing. It was not. Measured: the forge's **squash
-merge discards the branch's commit objects entirely** and authors a new
-single-parent commit signed with its own key, so a branch's signatures never had a path onto
-`main`; and `main`'s protection separately sets `require_signed_commits`, which
-covers the direct-push path.
-
-Two mechanisms, both undocumented, and the investigation began by assuming
-neither existed. **Before reporting that a guarantee is broken, find out what
-was actually enforcing it** — the answer changes the severity, and here it
-changed it downward.
+**A guarantee that holds for a reason nobody wrote down.** Unsigned commits on a
+feature branch do not break signed `main`: the forge's **squash merge discards
+the branch's commit objects** and signs a new commit, and `main`'s protection
+sets `require_signed_commits` for direct pushes. **Before reporting that a
+guarantee is broken, find out what was actually enforcing it.**
 
 **A constant that makes two copies of the suite impossible.** The browser suite
-served on a fixed `:18080`, so two CI jobs on one runner collided by
-construction: whichever bound second failed with "18080 is already used" on a
-machine where nothing was wrong. Measured across a hundred CI runs, **every
-failed browser job was this and nothing else** — four of four, on four
-different runners, three of them on `main`, one of them a commit that changed
-28 lines of markdown. The suite was not flaky; it was **load-dependent**, and a
-red that depends on what else the runner is doing says nothing about the code.
-A collision also does not fail fast: Playwright waits out its `webServer`
-timeout, so each one occupied a runner for **5m42s** to produce a meaningless
-result, consuming the capacity whose scarcity caused it.
+on a fixed port lets two CI jobs on one runner collide, and a red that depends
+on what else the runner is doing says nothing about the code. A collision also
+does not fail fast: Playwright waits out its `webServer` timeout.
 
 Two remedies exist and they are not equivalent. **Asking the kernel for a port
 (`:0`) cannot collide**, and it is available wherever the harness can read the
@@ -238,15 +204,9 @@ the CI job's identity — and choose a band **below** `ip_local_port_range`
 (32768 by default) where the kernel never allocates on its own.
 
 **A "dead" peer on a port nobody holds.** The same race, run the other way. A
-test that needs an address nobody answers on used to listen on `:0`, read the
-port and close the listener; a test that takes a peer down closed its
-`httptest.Server`. Either way the port is free for the rest of the test, and
-under a parallel `go test ./...` another test binary's server can bind it and
-answer as the dead peer. That happened to
-`TestFleetEndpoints_PublishNoPeerAddress` in 2 of 200 runs of an 8-process
-stress run (#222). When it was reproduced, a socket listing taken at the failure
-showed a listener on the "dead" port that belonged to another `server.test`
-process. Its relay returned 200 where 502 was expected.
+port freed by closing a listener or an `httptest.Server` can be bound by
+another test binary under a parallel `go test ./...` and answer as the dead
+peer (#222).
 
 Use `internal/deadpeer` instead. `deadpeer.URL(t)` (or `Addr`) returns a
 loopback address held by a TCP socket that is **bound but never listening**.
@@ -307,9 +267,8 @@ each with an alert firing.
 History mocks are built the same way, by one helper: `tests/fixtures/history.ts`
 answers `/api/history` on the grid a real range query returns, a point at every
 step with optional gaps. Hand-written mocks had three points half an hour apart
-under a fifteen-second step. Once the chart learned to break a line at a
-missing step (#179) those became three outages drawn as dots, and every spec
-that "checked the chart" still passed without drawing a line. `expectLine` in
+under a fifteen-second step, which the chart (#179) draws as three dots, not a
+line, while specs that "checked the chart" still pass. `expectLine` in
 the same file reads the canvas and fails on exactly that.
 
 The strongest remedy is to stop writing the fixture. `pkg/collector/testdata/`

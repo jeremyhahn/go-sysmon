@@ -18,10 +18,8 @@ import (
 	"github.com/jeremyhahn/go-sysmon/pkg/types"
 )
 
-// GET /api/interval is where the fleet cadence reaches a browser, so it is
-// where the truthfulness of that number actually matters. The poller sleeps for
-// the interval AFTER refreshing, so the cadence is interval+work; on mon0 that
-// was 3.20s against a configured 3.00s (#76).
+// GET /api/interval reports the fleet cadence to a browser. The poller sleeps
+// for the interval after refreshing, so the cadence is interval+work (#76).
 
 // TestGetInterval_ReportsTheCadenceIncludingTheRefresh drives a real poller
 // against a deliberately slow peer and reads the number back off the endpoint,

@@ -48,7 +48,7 @@ func stageEtc(t *testing.T, files map[string]string, lsbBinary, raspiBinary bool
 
 const debianOSRelease = "PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nNAME=\"Debian GNU/Linux\"\nID=debian\nVERSION_ID=\"12\"\n"
 
-// The case the short-circuit exists for: fs and mon0, byte for byte.
+// The case the short-circuit exists for, byte for byte.
 func TestDebianWithoutFork_ReproducesGopsutilOnTheAffectedHosts(t *testing.T) {
 	stageEtc(t, map[string]string{
 		"os-release":     debianOSRelease,
@@ -63,8 +63,8 @@ func TestDebianWithoutFork_ReproducesGopsutilOnTheAffectedHosts(t *testing.T) {
 		t.Errorf("platform = %q, want debian", platform)
 	}
 	// Verbatim from /etc/debian_version, which is what gopsutil's default
-	// branch returns. fs reports 12.13 and mon0 12.15; VERSION_ID says "12",
-	// so reading os-release for the version instead would change the API.
+	// branch returns. VERSION_ID says only "12", so reading os-release for
+	// the version instead would change the API.
 	if version != "12.13" {
 		t.Errorf("version = %q, want 12.13 -- the point release, not os-release's VERSION_ID", version)
 	}

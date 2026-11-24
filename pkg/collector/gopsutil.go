@@ -14,25 +14,12 @@ import psprocess "github.com/shirou/gopsutil/v4/process"
 // host with a thousand processes that is thousands of file reads per tick to
 // answer a question whose answer cannot change.
 //
-// Measured on gpu-host (1070 processes) with make bench-collector:
-//
-//	                          before              after
-//	ProcessCollector.Collect  170.7 ms  92.4 MB   70.8 ms  39.0 MB   -58%
-//	VirtCollector.Collect      62.7 ms  30.7 MB   26.4 ms  12.7 MB   -58%
-//	SystemCollector.Snapshot   75.3 ms  26.6 MB   50.2 ms  12.4 MB   -33%
-//
-// A CPU profile before the change put 48% of the whole process walk under
-// common.BootTimeWithContext, and 63% of it in raw syscalls; the cost was the
-// number of files opened, not the parsing.
-//
-// What caching changes, stated rather than waved away: the cached value is
-// /proc/stat's btime, the wall-clock instant of boot, which the kernel derives
-// from the current clock. A wall-clock step therefore moves it. Two collectors
+// The cached value is /proc/stat's btime, the wall-clock instant of boot,
+// which the kernel derives from the current clock, so a wall-clock step moves
+// it. Two collectors
 // read a process create time -- container and VM uptime in virt.go -- so those
 // two fields can be off by the size of any clock step that lands after the
-// first collection. Nothing else in a snapshot depends on it. Measured
-// 2026-09-03 on gpu-host, ci-node-1 and mon0: btime is a single constant value
-// across a 12-sample window on each, and all three are NTP-synchronised.
+// first collection. Nothing else in a snapshot depends on it.
 //
 // This runs in init rather than a constructor because the setting is a package
 // global in gopsutil, shared by ProcessCollector and VirtCollector, and a

@@ -626,7 +626,7 @@ func TestDeltaHub_TellsAClientArrivingAfterTheMonitorStopped(t *testing.T) {
 //
 // latest is what a connecting client is served before anything else arrives --
 // deliberately, so a client arriving between ticks is not blank. It used to be
-// cleared only by shutdown(), which runs when the LAST subscriber leaves. So
+// cleared only by shutdown(), which runs when the last subscriber leaves. So
 // while one client stayed attached after a stop, a second connecting alongside
 // it was sent that pre-stop frame as a full frame, marked current, a moment
 // before its bye: a measurement from before the service stopped, presented as
@@ -696,7 +696,7 @@ func TestDeltaHub_CachedFrameIsNotServedByAStoppedMonitor(t *testing.T) {
 // that window was served a frame from before the gap. For a service restarted
 // after an hour that is an hour-old reading, rendered as current.
 //
-// Stamping the frame with the hub's own run counter did NOT fix this, which is
+// Stamping the frame with the hub's own run counter did not fix this, which is
 // worth recording: in that window the hub's run has not turned over either, so
 // its counter still matched. The generation has to be the MONITOR's, which
 // advances the instant the restart completes and needs no notification to
@@ -886,16 +886,10 @@ func TestNextSeq_RestartsBeforeItStopsBeingExact(t *testing.T) {
 // shape of the two tests above: not "does the hub clear a field" but what a
 // browser connecting after shutdown actually receives.
 //
-// It is an INTERNAL test because it has to hold a subscriber. The hub clears
-// its cached frame in shutdown() too, which runs when the last subscriber
-// leaves -- so an end-to-end test that lets the previous client go proves
-// nothing: shutdown tidies up before the late client connects and the test
-// passes against the bug. Measured, not assumed: written first in
-// deltastream_test.go, it survived removing both halves of the fix.
-//
-// Holding a subscriber is the real situation as well. The bug needed one
-// client still attached after the stop, which is what happens whenever more
-// than one dashboard is open.
+// It is an internal test because it has to hold a subscriber: shutdown() also
+// clears the cached frame when the last subscriber leaves, so a test that lets
+// the previous client go would pass against the bug. A client still attached
+// after the stop is the case with more than one dashboard open.
 func TestStreamDeltas_ServesNoCachedFrameAfterTheMonitorStopped(t *testing.T) {
 	m := hubMonitor(t)
 	s := New(m, "", nil)
@@ -1189,7 +1183,7 @@ func waitForHubLoop(t *testing.T, h *deltaHub) {
 // why it is pinned here as an ordinary call rather than chased as a race: the
 // window is real whether or not the scheduler opens it today.
 //
-// Note what this is NOT evidence of. Only the hub's own goroutine writes
+// Note what this is not evidence of. Only the hub's own goroutine writes
 // latest, and no client ever stores a frame, so nothing in the product can lose
 // a frame this way. The race was between a fixture and the code it was testing.
 func TestDeltaHub_EndingClearsTheCache(t *testing.T) {

@@ -66,10 +66,8 @@ That is enough to drive the things that matter:
 
 The harness also models Clutter's paint rule. Its drawing area has no natural
 width, takes its height from the panel box, and `repaint()` does nothing while
-either dimension is zero. The applet used to set its width only inside its own
-repaint handler, and Clutter never paints a zero-width actor, so on a real
-desktop the gauge was never drawn (#184). The fake used to call the handler
-whatever the size, so no test saw it. The applet now sets the width from the
+either dimension is zero, because Clutter never paints a zero-width actor
+(#184). The applet sets the width from the
 gauge's segments whenever the snapshot or a gauge setting changes, before any
 paint.
 
@@ -133,8 +131,7 @@ What only this tier can prove:
   single-instance applet's file is named after its UUID), with a 500 ms
   interval, and starts the server at 2000 ms. The schema default is 1000 ms,
   so the server reports 500 ms only if Cinnamon read the file and the applet
-  pushed what it read. The runner used to write `0.json`, which Cinnamon never
-  read, and the applet quietly ran on its defaults (#234)
+  pushed what it read (#234)
 - the GObject Introspection calls are real, not just plausible
 - the popup builds against the actual `PopupMenu` implementation, opened by a
   click as a user would open it
@@ -172,7 +169,7 @@ sleep), RandR has to report a real refresh rate for the current mode, and
    GJS `JS WARNING`/`JS ERROR`, LookingGlass error or warning, or Xlib. The
    same check runs again over the whole log after the applet checks.
 
-Two lines are exempt. The first, by owner ruling (2026-09-22), is matched as a whole
+Two lines are exempt. The first is matched as a whole
 line, byte for byte, display included:
 
 ```
@@ -203,11 +200,8 @@ check prints as `n/a ... (not run)` instead of being evaluated, and the run
 exits non-zero even if the counters say otherwise. A desktop that never came up
 reports one failure and a list of checks that were never made.
 
-This replaced a one-shot check made as soon as Cinnamon answered D-Bus. Eval
-answers before the panel exists and before applets load, so that check raced
-startup. Job 42277 (2026-09-03) lost the race by 55 ms: "an applet is
-registered" failed, Cinnamon logged "Loaded applet" right after, and every later
-check passed. Waiting for Cinnamon's own run state removes the race.
+Eval answers D-Bus before the panel exists and before applets load, so the
+runner waits for Cinnamon's own run state instead of racing startup.
 
 `extensions/tests/desktop-runner.test.js` runs the real script against
 stand-in executables for the desktop stack, one scenario per startup shape. It
@@ -217,18 +211,16 @@ it, so a single `ok` after a failed gate step fails the test.
 
 ### The display: Xorg with the dummy driver, not Xvfb
 
-The suite used to run on Xvfb, and every run logged this:
+On Xvfb every run logs this:
 
 ```
 mutter-WARNING: Failed to use linear monitor configuration:
                 Invalid mode 1280x1024 (-nan) for monitor 'unknown unknown'
 ```
 
-Xvfb's only RandR mode has no timings. `xrandr --verbose` shows dot clock,
-htotal and vtotal all at 0, so the refresh rate mutter works out is 0/0. mutter
-rejected its own layouts and fell back to the X server's, so the desktop still
-came up, but on a display mode nobody had configured. The warning did not cause
-the 2026-09-03 failure; the startup race above did. Adding a timed mode later
+Xvfb's only RandR mode has no timings (dot clock, htotal and vtotal all 0), so
+mutter rejects its own layouts and falls back to a display mode nobody
+configured. Adding a timed mode later
 with `xrandr --newmode` does not work either, because Xvfb frees the mode as
 soon as the `xrandr` client that created it exits.
 
@@ -262,7 +254,7 @@ CRITICAL.
 - `make test-extensions-desktop` mounts an empty tmpfs over `/sys/class/drm`,
   so every host shows the container the same zero DRM devices. The runner
   refuses to start on any other view.
-- By owner ruling (2026-09-23), switcheroo-control is not installed. The
+- switcheroo-control is not installed. The
   runner aborts if its bus name is owned. XApp then takes its designed
   fallback: it finds no name owner, logs one warning, and continues with a
   synthetic default GPU. That warning is the second exempt line:

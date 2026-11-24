@@ -6,14 +6,10 @@ import { openTab } from './fixtures/tabs';
  * A device with no SMART reading, and which of several different things that
  * means.
  *
- * The fixture is ci-node-1's storage as measured on 2026-09-02, because that
- * one machine carries every case at once and the owner reported it: a
- * device-mapper node with no medium to ask, two PERC volumes whose member
- * drives answer perfectly well behind the controller, a boot card that reports
- * no SMART support, an NVMe that reads fine, and — with CAP_SYS_RAWIO withheld
- * — a device the kernel simply refuses. All five rendered as one neutral
- * "SMART N/A", which reads as "nothing to see" for four situations where there
- * is a great deal to see.
+ * The fixture carries every case at once: a device-mapper node with no medium,
+ * two RAID volumes whose member drives answer behind the controller, a boot
+ * card with no SMART support, an NVMe that reads fine, and a device the kernel
+ * refuses without CAP_SYS_RAWIO. Each must render distinctly.
  */
 
 const DELLEMC_DISKS = [
@@ -87,9 +83,7 @@ test('each kind of missing SMART reading says which kind it is', async ({ page }
     seen.push(((await badge.textContent()) ?? '').trim());
   }
 
-  // The assertion that matters is that they DIFFER. Any five labels would pass
-  // a check that each is non-empty, which is how five identical "SMART N/A"
-  // badges survived until the owner noticed.
+  // The labels must differ; a non-empty check would pass five identical ones.
   expect(new Set(seen).size).toBe(5);
 });
 

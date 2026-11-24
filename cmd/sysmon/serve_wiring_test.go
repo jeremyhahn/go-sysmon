@@ -144,7 +144,7 @@ func TestLoadServeConfig_RejectsCollisionIntroducedByReload(t *testing.T) {
 }
 
 // TestLoadServeConfig_RejectsUnusableLocalName proves serve refuses to start
-// on a fleet.local_name that cannot be an instance label (owner ruling on #37).
+// on a fleet.local_name that cannot be an instance label (#37).
 func TestLoadServeConfig_RejectsUnusableLocalName(t *testing.T) {
 	withServeConfig(t, "fleet:\n  local_name: 'agg regator'\n")
 

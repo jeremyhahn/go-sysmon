@@ -83,19 +83,13 @@ not something the file knows about.
 
 ### The rate control drives the poller feeding the view
 
-Owner ruling, 2026-09-04: *"the poller provides new data consistent with what
-the user is expecting."* The dashboard's interval control therefore aims at
-whichever poller produces what is on screen:
+The dashboard's interval control aims at whichever poller produces what is on
+screen:
 
 | what is on screen | poller | request |
 |---|---|---|
 | this node's own data | the local monitor | `{"interval_ms":N}` (or `"scope":"local"`) |
 | the fleet, or a selected peer | the aggregator's peer refresh | `{"interval_ms":N,"scope":"fleet"}` |
-
-Without this, choosing 500ms while viewing a peer changed the local monitor —
-a cadence nobody was looking at — while the peer's figures kept arriving at
-`fleet.poll_interval_ms`, and the control reported a rate nothing was collecting
-at.
 
 **A peer refresh is floored at one second** (`fleet.MinPollInterval`). Every
 peer is fetched over HTTP on every cycle, on their CPU as well as this node's,
@@ -112,32 +106,19 @@ no fleet.
 **`fleet_interval_ms` is the interval plus the time the last refresh took, so it
 is not the same number as `fleet.poll_interval_ms`.** The poll loop refreshes
 every peer and *then* sleeps for the interval, so the cadence peers are actually
-polled at is interval + work. On mon0, configured at 3000 ms with a refresh
-costing about 200 ms, peers are refreshed every 3.20 s — measured, as an
-autocorrelation peak at exactly 3.20 s in that node's CPU trace (#76).
+polled at is interval + work: 3000 ms configured with a 200 ms refresh reports
+3200. It reports the **last** cycle rather than an average, so a cycle stretched
+by a peer timeout shows.
 
-The endpoint therefore reports 3200 where the config file says 3000, and that is
-deliberate. Reporting the configured value restates the file rather than
-describing the service, which is the same class of untruth as a dropdown reading
-500 ms over data collected once a second. It reports the **last** cycle rather
-than an average: a cycle in which a peer times out genuinely does stretch, and
-smoothing it would trade a true jumpy number for a calm false one.
-
-The loop is still "work, then sleep" rather than a ticker, and that is a
-deferral rather than an oversight. Converting it would poll every 3.00 s instead
-of 3.20 s — 6.7% *more* aggregation on mon0, the node with the least CPU to
-spare and where aggregation is 94% of the sysmon process's CPU. That is a
-correctness fix paid for with the resource under pressure, so it is held until
-the larger question is settled: whether the poll path should carry peer process
-lists at all, which would remove most of the load and make the ticker free.
+The loop is "work, then sleep" rather than a ticker; a ticker would add
+aggregation load on the aggregator.
 
 **The control never reaches into a peer's own poller.** Changing another
-machine's collection rate from this dashboard is a question of ownership and
-access that no ruling covers; the aggregator changes only how often it asks.
+machine's collection rate is out of scope; the aggregator changes only how often
+it asks.
 
-**The desktop build adjusts the same way.** It used to stop the monitor, build a
-new one and start it, so the same control also discarded every reading the
-monitor had accumulated — a second, unnamed action riding on "polling interval".
+**The desktop build adjusts the same way**, keeping the readings the monitor has
+accumulated.
 
 **Boot-only:** `server.addr`, `server.tls_cert`, `server.tls_key`,
 `server.trusted_proxies` and `server.watch`. These are consumed once, when the
@@ -484,14 +465,11 @@ you open when something is wrong, so it must not be served by a machine that
 could itself be the thing that is wrong: an overloaded or swapping workload host
 would take the view of the whole fleet down with it, exactly when it is needed.
 
-**The aggregator polls summaries, not snapshots** (owner ruling on #76,
-2026-09-22). Every node serves `GET /api/summary`: its own figures for the fleet
-view, about a kilobyte, computed from its two latest collections. The
-aggregator fetches that from each peer every cycle. It used to fetch each peer's
-whole `/api/snapshot`, about 2.9 MB a cycle across the fleet in September 2026,
-and decoding those snapshots was over 80% of the cycle's CPU. Most of the bytes
-were process lists (about 60%) and per-CPU `flags` arrays (about 25%), and the
-fleet view reads neither.
+**The aggregator polls summaries, not snapshots** (#76). Every node serves
+`GET /api/summary`: its own figures for the fleet view, about a kilobyte,
+computed from its two latest collections. The aggregator fetches that from each
+peer every cycle; the fleet view reads neither process lists nor per-CPU
+`flags`, which are most of a snapshot's bytes.
 
 **History still gets full readings, from workers of its own.** While the
 aggregator records history (`prometheus.remote_write_url` is set), each peer
@@ -540,8 +518,8 @@ two of its own polls. If a poll returns the same snapshot as the last one, the
 last measured rate is kept. A counter that goes backwards, as it does when the peer
 reboots, makes that interval unknown.
 
-Measured with `make bench-fleet`: ten peers, each serving a busy-host snapshot
-shaped like ci-node-1 (112 threads with their flags, 1410 processes, 567 KB).
+`make bench-fleet`: ten peers, each serving a busy-host snapshot (112 threads
+with their flags, 1410 processes, 567 KB).
 The CPU figure is an upper bound because the peers run in the benchmark's own
 process.
 
@@ -550,9 +528,6 @@ process.
 | whole snapshots (the shape before #76)     |              5670 KB |        ~42 ms |             14.2 MB |
 | summaries only                             |                10 KB |       ~1.5 ms |              0.1 MB |
 | summaries + one history reading per peer   |              1011 KB |        ~11 ms |              2.2 MB |
-
-Measured with Go 1.27. Before that toolchain the whole-snapshot row was about
-68 ms, and the other rows fell in about the same proportion.
 
 An aggregator that does not record history does about 1/30 of the work. The
 last row is a poll and a history reading landing together, which happens once
@@ -575,7 +550,7 @@ not silently repaired, because a repaired name would be one no peer entry
 matches. The configured value is checked while parsing; the hostname fallback is
 checked with the other machine-dependent rules below.
 
-**A peer's name is its fleet-wide identity** (ruling on #37). It is the name
+**A peer's name is its fleet-wide identity** (#37). It is the name
 that node calls itself — its own `fleet.local_name`, or its hostname — and so it
 is also the Prometheus `instance` label that peer's history is written and
 queried under. Two names for one node agree right up until someone edits one of
@@ -584,15 +559,13 @@ quiet period, so there is no separate alias: **name each peer exactly what it
 calls itself.**
 
 - **Every peer must have a `name:`; an unnamed peer is a startup error**
-  (owner ruling 2026-09-23, under #120). The name is published on the
-  unauthenticated fleet endpoints as the peer's card title, route and history
-  label. The earlier defaults — the whole URL before #37, then the URL's host —
-  put the peer's address on the wire as its routing key, which #120 removed.
+  (#120). The name is published on the unauthenticated fleet endpoints as the
+  peer's card title, route and history label, so the peer's address never is.
   The error names the peer by its position, `fleet peer 3 in fleet.peers has no
   name`, and quotes nothing from the entry. On a reload the file is refused and
   the running configuration kept.
 - **The name is checked at load, and a name that cannot be an `instance` label
-  is a startup error** (owner ruling, 2026-09-22). It must start with a letter
+  is a startup error**. It must start with a letter
   or digit and contain only letters, digits, `.`, `_`, `:` and `-`, at most 253
   characters (`pkg/nodename`). The error names the peer and the rule; on a
   reload the file is refused and the running configuration kept.
@@ -927,8 +900,7 @@ empty card, and an unreachable node is never rendered as a healthy one.
 ### Capacity and headroom
 
 `/api/fleet` carries enough for a scheduler to place work from one query
-(#239): a coordinator keeping each worker at about 80% CPU without swapping
-needs absolute capacity, not only percentages.
+(#239): a scheduler needs absolute capacity, not only percentages.
 
 Each node's summary carries `cpu_count`, `load_1`, `load_5`, `load_15`,
 `memory_total_bytes`, `memory_available_bytes`, `disk_free_bytes`,
@@ -1048,7 +1020,7 @@ polls its `GET /api/fleet/subtree` each cycle.
   routing come from each child's index: name, hostname, status, age, reasons
   and build for each node. Only the summaries of the nodes on a page are
   fetched from their children on request (`GET /api/fleet/nodes`), and they
-  are reused for the poll interval (owner ruling 2026-09-23). Page fetches are
+  are reused for the poll interval. Page fetches are
   bounded:
   - a cached summary is keyed by the child and the child's address;
   - concurrent requests for one batch share a single fetch;
@@ -1152,9 +1124,9 @@ verified.
 ```yaml
 fleet:
   peers:
-    - name: gpu-host
+    - name: node-a
       url: https://198.51.100.91:8081     # verified TLS
-    - name: fs
+    - name: node-b
       url: http://198.51.100.10:8081      # still plaintext, still works
   tls:
     ca_file: /etc/go-sysmon/fleet-ca.pem   # verify peers against this authority
@@ -1281,8 +1253,8 @@ rate(sysmon_swap_out_pages_total[5m]) * sysmon_memory_page_size_bytes
 A drive's health series — `sysmon_disk_smart_healthy`,
 `sysmon_disk_power_on_hours`, and for NVMe `sysmon_disk_wear_percent` and
 `sysmon_disk_spare_percent` — carry the drive's `serial` beside `device`.
-Device names are assigned at boot, and NVMe names can change between boots (on
-ci-node-1 a rebuild swapped two of four), so `device` alone can join one
+Device names are assigned at boot, and NVMe names can change between boots, so
+`device` alone can join one
 drive's history to another's. Select or group on `serial` to follow a drive.
 `device` stays so existing queries keep working. A drive that reports no serial
 has no `serial` label, never an empty one.
@@ -1317,7 +1289,7 @@ joins them. Wear is reported in whole percent, so a week's `delta()` is often 0
 and is interpolated when it isn't. Use it to compare drives over a week, not as
 a precise figure.
 
-The mon0 History view does not offer these. Its catalog charts a counter as a
+The History view does not offer these. Its catalog charts a counter as a
 `rate()` whose window follows the chart's step (see
 [the history API](api.md#counters)), so it cannot hold a fixed seven-day
 `increase()`. Run the queries above in Prometheus directly.
@@ -1348,8 +1320,8 @@ shape, not a degraded one.
 
 ```yaml
 prometheus:
-  remote_write_url: http://mon0:9090/api/v1/write   # this node pushes
-  query_url: http://mon0:9090                       # this node reads back
+  remote_write_url: http://prometheus.example.com:9090/api/v1/write   # this node pushes
+  query_url: http://prometheus.example.com:9090                       # this node reads back
   sample_interval_ms: 15000
   flush_interval_ms: 30000
   batch_size: 1000
@@ -1398,19 +1370,16 @@ not write two samples a second into a database.
 
 #### Every sample is a real measurement
 
-Owner ruling on #173, 2026-09-22: **a reading is written once, stamped with the
-time it was collected, and never again.** Every `sample_interval_ms` the
+**A reading is written once, stamped with the time it was collected, and never
+again** (#173). Every `sample_interval_ms` the
 exporter looks at the node's latest snapshot; if that snapshot has been written
 already it writes nothing. So `sample_interval_ms` is a ceiling on the write
 rate, not the write rate: a dashboard collecting every 60s under the default 15s
 sampling writes one reading a minute, and one collecting every second writes the
 latest one every 15s.
 
-The exporter used to write the cached snapshot at every tick, re-dated to the
-tick. With collection slower than sampling, gauges drew a staircase of copies
-presented as fresh measurements, and a counter's `rate()` over a short window
-saw a flat run and then a jump — zero, then a spike — instead of the rate that
-happened. Now the time between two stored samples is the time between two
+Re-writing a cached snapshot at every tick would draw a staircase of copies and
+make a short-window `rate()` read zero, then a spike. The time between two stored samples is the time between two
 collections, and any rate taken over them is the true one.
 
 Timestamps strictly increase per series, because remote write requires it: a
@@ -1493,8 +1462,7 @@ A node that writes no history may run all three as slowly as it likes.
 
 The database asked is the one `query_url` reads from, or — on a node that only
 writes — the Prometheus whose `/api/v1/write` receiver `remote_write_url` names.
-**Starting and reloading never wait on the database** (owner ruling,
-2026-09-23): the load-time check asks it nothing, and uses only a lookback
+**Starting and reloading never wait on the database**: the load-time check asks it nothing, and uses only a lookback
 already read. Until one has been — at startup, always; later, whenever the
 database is down, publishes none, or the write path belongs to another
 product's receiver — the configuration is accepted and the check is
@@ -1584,8 +1552,7 @@ logic (`pkg/prom/testdata/`).
 
 ### The aggregator persists the fleet
 
-Owner ruling, 2026-09-04: **the fleet's history is written by the aggregator,
-not by the nodes.** A node with `fleet.peers` and a `prometheus.remote_write_url`
+**The fleet's history is written by the aggregator, not by the nodes.** A node with `fleet.peers` and a `prometheus.remote_write_url`
 writes each peer's reading as it arrives, under that peer's own `instance`
 label. The reading is the peer's history payload (`GET /api/snapshot/history`,
 its snapshot without the process list and per-CPU flags, which no series is
@@ -1628,7 +1595,7 @@ Prometheus costs history, never freshness.
 
 ### Two topologies, and which to choose
 
-Owner ruling, 2026-09-04. Both are supported; they differ in **where the past
+Both are supported; they differ in **where the past
 lives**, not in what the dashboard can do with it.
 
 **Topology A -- aggregator persistence.** One node runs the fleet poller and a
@@ -1665,8 +1632,8 @@ that aggregator's store.**
 
 ### Prometheus is a build tag, not only a config section
 
-Owner ruling, 2026-09-04: *"when an endpoint is configured, use it; otherwise
-pure realtime. The prometheus code compiles only under a build tag."*
+When an endpoint is configured, it is used; otherwise the node is pure
+realtime. The Prometheus code compiles only under a build tag.
 
 `sysmon-server` is built with `-tags prometheus`; the **desktop and systray
 builds are not**, so a realtime-only user carries no remote-write writer, no
@@ -1693,16 +1660,13 @@ desktop binary and everything still compiles:
   constraints applied** and fails if `cmd/sysmon`, `pkg/server` or `pkg/metrics`
   can reach `pkg/prom` without the tag.
 - `TestPrometheusTagIncludesProm` requires `cmd/sysmon` to import `pkg/prom`
-  **directly** when the tag is set. Reachability alone was too weak: the wiring
-  file was deleted entirely and a reachability check stayed green, because
+  **directly** when the tag is set; reachability alone is too weak, because
   `cmd/sysmon` reaches `pkg/prom` through `pkg/server` regardless.
 
 ### Searching the history
 
-The owner asked, 2026-09-02, for **the ability to search across historical data
-points**. The date range answered half of that; the search box beside it answers
-the other half: naming what you want to see rather than finding the panel it
-lives on.
+The search box beside the date range names what you want to see rather than
+finding the panel it lives on.
 
 Type a metric (`swap`, `disk read`) or a resource (`sda`, `eth0`, a core
 number). Matches are listed best-first -- an exact resource, then a partial one,
@@ -1772,7 +1736,7 @@ Prometheus and a merely well-formed name would otherwise read any of them.
 
 ```
 GET /api/history/metrics
-GET /api/history?metric=disk_used&node=fs&start=<ms>&end=<ms>[&step=<ms>]
+GET /api/history?metric=disk_used&node=node-a&start=<ms>&end=<ms>[&step=<ms>]
 ```
 
 Both answer `{"enabled": false}` on a node with no `query_url`, rather than 404:

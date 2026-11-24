@@ -1,32 +1,10 @@
 // Port selection for the end-to-end suite.
 //
-// The suite used to serve on a constant :18080, which made two Browser Tests
-// jobs on one runner collide by construction: whichever bound second failed
-// with "18080 is already used" on a machine where nothing was wrong. Measured
-// on 2026-09-03, every failed Browser Tests job in the last hundred CI runs was
-// this and nothing else -- four of four, on four different runners, three of
-// them on `main`. One of those reds was a commit that changed 28 lines of
-// markdown (issue #62).
-//
-// Two properties are wanted, and only the second is obvious:
-//
-//   1. Two jobs running at once must not choose the same port.
-//   2. Nothing else on the host may be holding the port when the server binds.
-//
-// (2) is why this does not probe for a free port. Playwright evaluates this
-// config, then runs `npm run build` and `go build` -- a minute or more --
-// before the server binds. A port that was free at the probe is not a port
-// that is free at the bind, and while it sits unclaimed the kernel is free to
-// hand it to any outbound connection on the box as a source port. The whole
-// band below is therefore chosen to sit UNDER the ephemeral range
-// (/proc/sys/net/ipv4/ip_local_port_range, 32768-60999 by default), where the
-// kernel never allocates on its own.
-//
-// (1) is met by deriving the port from the identity of the CI job rather than
-// from chance: two jobs on one runner always differ in at least one of run id,
-// attempt, job name or runner name, so they land on different ports without
-// coordinating. Deterministic also means a re-run of a job reproduces its port,
-// which is what makes a failure reproducible.
+// The port is derived from the CI job's identity (run id, attempt, job name,
+// runner name), so concurrent jobs on one runner differ and a re-run
+// reproduces its port. It is not probed: the server binds a minute or more
+// after this config is evaluated. The band sits below the kernel's ephemeral
+// range (32768-60999 by default), so no outbound connection takes it.
 
 /** The historical fixed port, kept for local runs where no CI identity exists. */
 export const localPort = 18080;

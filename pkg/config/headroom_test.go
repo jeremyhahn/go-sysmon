@@ -26,7 +26,7 @@ func TestLoad_HeadroomTargetDefaultsToEightyPercent(t *testing.T) {
 }
 
 // TestLoad_HeadroomTargetFromTheFile: a value in (0, 1] is taken as written,
-// the upper bound included -- a coordinator may run nodes flat out.
+// the upper bound included -- a scheduler may run nodes flat out.
 func TestLoad_HeadroomTargetFromTheFile(t *testing.T) {
 	for _, tc := range []struct {
 		body string

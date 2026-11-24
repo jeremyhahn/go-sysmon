@@ -8,7 +8,7 @@ import { openTab } from './fixtures/tabs';
  *
  * A bay's fault LED is the BMC's judgement. It can be lit while every block
  * device the kernel sees reads healthy, because the drive sits behind a RAID
- * controller that hides it. The fixture follows ci-node-2: bay 3 faulted and
+ * controller that hides it. The fixture: bay 3 faulted and
  * lit, bay 2 predicting its own failure with 3% of its media life left, and
  * one empty bay.
  */

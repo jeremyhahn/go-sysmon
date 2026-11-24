@@ -355,11 +355,9 @@ func TestWrite_EmptySerialOmitsTheLabel(t *testing.T) {
 }
 
 // TestRender_MemberDrivesAreLabelledBySerial pins the label choice, which is
-// not cosmetic. A drive behind a controller has no device name, and the names
-// of the things around it are not stable: ci-node-1's rebuild renamed every
-// PERC and BOSS device on the machine. A series keyed on position would have
-// silently become a different series across that reboot -- worse than a
-// missing one, because the history looks continuous.
+// not cosmetic: a drive behind a controller has no device name, and the names
+// around it change across a rebuild, so a series keyed on position would
+// silently become a different series.
 func TestRender_MemberDrivesAreLabelledBySerial(t *testing.T) {
 	snap := &types.Snapshot{
 		Disks: []types.DiskInfo{{

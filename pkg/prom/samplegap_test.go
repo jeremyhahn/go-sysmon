@@ -531,7 +531,7 @@ func TestLongestGap_ALoneSampleAfterAnOutageIsNoCadence(t *testing.T) {
 // lookback raised to 30 minutes keeps a series sampled every 20 minutes
 // present, so it is a cadence rather than an outage there -- and a one-minute
 // range between two of its samples sees only one. The first measurement has to
-// reach back far enough to see the one before: two of THIS database's
+// reach back far enough to see the one before: two of this database's
 // lookbacks, not two of the default's.
 func TestRateGap_MeasuresBackOverTheDatabasesLookback(t *testing.T) {
 	var asked []time.Duration

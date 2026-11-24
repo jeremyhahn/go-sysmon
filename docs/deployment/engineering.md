@@ -124,30 +124,9 @@ miss:
 
 ## Resource footprint
 
-Measured on the reference target — an Atom D510, 2 cores / 4 threads at
-1.66 GHz, 3.8 GB RAM, Debian 12, with the host under its normal load. Windows of
-90–150 s, dashboard idle unless stated.
-
-| Configuration | CPU | RSS |
-|---|---|---|
-| `--interval 1000`, no sandbox | 16.1% of one core | ~19 MB |
-| `--interval 2000`, no sandbox | 6.1–7.8% of one core | ~15–18 MB |
-| `--interval 5000`, no sandbox | 3.9% of one core | ~20 MB |
-| `--interval 2000`, deployed unit | ~10% of one core | 17 MB RSS, 13.4 MB cgroup |
-
-Peak RSS observed across every run, including two attached event-stream clients,
-was **23.4 MB**. Memory is essentially flat in the poll rate; CPU is very nearly
-linear in it.
-
-The last row is the shipped configuration. The gap between it and the
-unsandboxed run at the same interval — about 4 points of one core, roughly 1% of
-this 4-thread box — is the cost of the seccomp-based hardening directives, and
-was measured with both processes running **concurrently over the same window**,
-because sequential measurements on this host vary by ±2 points from background
-load alone. Treat the sandbox cost as "small but real"; do not quote it to two
-significant figures.
-
-To re-take the measurement on another host:
+A collection tick's cost scales with **how much host there is to read**, the
+process table above all, not with CPU speed. Measure on the host you deploy to,
+and record its process count beside the figures:
 
 ```bash
 CG=/sys/fs/cgroup/system.slice/go-sysmon.service
@@ -155,64 +134,28 @@ a=$(awk '/usage_usec/{print $2}' $CG/cpu.stat); sleep 120
 b=$(awk '/usage_usec/{print $2}' $CG/cpu.stat)
 awk -v d=$((b-a)) 'BEGIN{printf "%.2f%% of one core\n", d/1200000}'
 cat $CG/memory.current $CG/memory.peak
+grep nr_throttled $CG/cpu.stat
 ```
 
-`memory.current` is what `MemoryMax` actually bounds and reads lower than RSS,
-because file-backed pages of the binary are charged elsewhere.
+`memory.current` is what `MemoryMax` bounds and reads lower than RSS, because
+file-backed pages of the binary are charged elsewhere. Memory is roughly flat in
+the poll rate; CPU is roughly linear in it.
 
-### The numbers above do not generalise, and that is what went wrong
-
-A collection tick's cost scales with **how much host there is to read** — the
-process table above all — not with how fast the CPU is. The reference target has
-about a hundred processes. Measured across the real fleet on 2026-09-03, at the
-same `--interval 2000`:
-
-| host | processes | CPU per tick | peak cgroup memory |
-|---|---|---|---|
-| ci-node-1 | 1414 | 543 ms | 72 MiB |
-| mon0 | 112 | 339 ms (also aggregates 10 peers) | 51 MiB |
-| vm-host-5 | 1005 | — | **96 MiB** |
-| vm-host-2 | 973 | 234 ms | 41 MiB |
-
-Three consequences, all of them measured rather than predicted:
-
-- **Those per-tick figures are averages across the tier cycle, and the average
-  is what hides the problem.** Sampled at 250 ms on ci-node-1 the median sample
-  is *zero*: a fast tick every 2 s costs a couple of hundred milliseconds, and
-  every fifth tick spends about **3.9 s of CPU in 2.5 s of wall clock**. Against
-  the old `CPUQuota=50%` — 50 ms per 100 ms — that one tick needed 78 periods,
-  nearly eight seconds of wall clock, 77 of them ending with the kernel freezing
-  the cgroup. It is now `CPUWeight`; see the unit file and issue #65.
-- **Read `nr_throttled`, not an average.** ci-node-1 averaged 33% of a core
-  against a 50% allowance while being frozen for 29.5 s of every 60. Both
-  readings were true at once, and only the second one showed the problem.
-- `MemoryHigh` was raised from 96M to **512M** under a **768M** `MemoryMax`
-  (owner ruling 2026-09-03): vm-host-5 crossed the old ceiling **658 times in
-  one afternoon**, and a crossing stalls allocation silently without restarting
-  the unit.
-
-**Read `MemoryHigh` and `MemoryMax` as one setting.** For a few hours on
-2026-09-03 the watermark was raised to 512M while the hard limit was still 128M.
-The kernel enforces `max` first, so the watermark became *unreachable*: nothing
-could be throttled, the service would have been OOM-killed instead, and
-`memory.events` field `high` read **zero on every node** — which was taken as
-evidence the stalls had stopped. **A ceiling raised out of reach silences its
-own counter**, and the configuration reads as more generous while doing it.
-`sysmon doctor` now reports the pair and calls it degraded when `high >= max`,
-because no counter will.
+- **Read `nr_throttled`, not an average.** Collection is bursty: every fifth
+  tick can use more than one core for seconds. A hard `CPUQuota` freezes the
+  cgroup mid-burst, which stalls the Go GC and the listener (#65), so the unit
+  uses `CPUWeight`.
+- **Read `MemoryHigh` and `MemoryMax` as one setting.** The kernel enforces
+  `max` first, so a watermark at or above the hard limit is unreachable and
+  `memory.events` `high` reads zero. `sysmon doctor` reports the pair as
+  degraded when `high >= max`.
 
 **`GOMEMLIMIT` is not configured anywhere.** The service derives it from the
 cgroup watermark at startup (`pkg/memlimit`, 90% of the ceiling) and logs what
-it derived, so there is no second number to keep in agreement with the first.
-The ceiling is the tightest `memory.high` and `memory.max` on the path from the
-service's cgroup up to the root, because a parent's limit binds every cgroup
-beneath it: a service in a slice, or a container started with `--memory`, has
-its limit on an ancestor and `max` on its own group.
-An explicit `GOMEMLIMIT` in the environment still wins, and the service logs
-that it deferred to it.
-
-So when you re-take these on a host, take them **on that host**, and record the
-process count beside them.
+it derived. The ceiling is the tightest `memory.high` and `memory.max` on the
+path from the service's cgroup up to the root, because a parent's limit binds
+every cgroup beneath it. An explicit `GOMEMLIMIT` in the environment still wins,
+and the service logs that it deferred to it.
 
 ## Test strategy
 

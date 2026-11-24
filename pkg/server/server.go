@@ -331,14 +331,9 @@ func newServer(cfg Config, tlsConfig *tls.Config) *Server {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 
-		// WriteTimeout bounds the response side, which for a long time nothing
-		// did. A peer that goes away without an RST leaves a write parked in TCP
+		// WriteTimeout bounds the response side. A peer that goes away without an RST leaves a write parked in TCP
 		// retransmission for as long as the kernel will retry, holding a
 		// goroutine and a connection with nothing to release either.
-		//
-		// Measured on vm-host-2 on 2026-09-03: 53 goroutines in IO wait, every
-		// one of them in net/http.checkConnErrorWriter.Write, 44 of them for the
-		// same seven minutes, on a node whose accept queue had reached 2929.
 		//
 		// /api/events needs no exemption here, which is the point of the
 		// symmetry with ReadTimeout above being only apparent. A ReadTimeout

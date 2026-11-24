@@ -14,12 +14,6 @@ import (
 // snapshot, then patches, with a sequence number and the rule that a patch is
 // only ever sent to a client that has the frame before it -- and only one of
 // them needs a socket.
-//
-// This exists because the desktop did not have it. It emitted the entire
-// snapshot on every tick: measured on a ten-node fleet host, 367,126 bytes per
-// frame against a delta averaging 7,842 -- 47 times the bytes, for identical
-// information, on a machine that already had a correct delta hub it never
-// called (#98).
 type DeltaStream struct {
 	hub *deltaHub
 }

@@ -2,7 +2,7 @@
 #
 # Fails when a git conflict marker is committed.
 #
-# `git add` on a conflicted file stages it WITH the markers in. For source that
+# `git add` on a conflicted file stages it with the markers in. For source that
 # is loud -- the next build or test fails. For the committed frontend bundle it
 # is silent: cmd/sysmon/frontend/dist/ is generated output that nothing compiles
 # and no test reads, so a marker sits there until somebody happens to look.

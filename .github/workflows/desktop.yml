@@ -3,9 +3,8 @@ name: Desktop Tests
 # Tier 3 of the desktop test strategy: a real Cinnamon session on headless Xorg,
 # driven through the org.Cinnamon D-Bus Eval method. Tiers 1 and 2 run on every
 # full-tier run of ci.yml; this one needs a Cinnamon install and software GL, so
-# it takes minutes and is not perfectly reliable. On demand (the coordinator
-# dispatches it nightly; it has no `schedule:`, #267), plus whenever the
-# extension sources actually change.
+# it takes minutes and is not perfectly reliable. It runs on dispatch (no
+# `schedule:`, #267) and whenever the extension sources change.
 #
 # See docs/testing/desktop.md for what each tier proves.
 

@@ -5,9 +5,7 @@
 // heap toward twice the live set and lets the kernel deal with the
 // consequences. Under a cgroup that is not a crash but a stall -- crossing
 // memory.high makes the kernel throttle allocation and reclaim, silently,
-// while systemd still reports the unit active and nothing restarts it. That
-// happened here: vm-host-5 crossed a 96 MiB ceiling 658 times without one
-// line in the journal (issue #65).
+// while systemd still reports the unit active and nothing restarts it (#65).
 //
 // Deriving the limit rather than configuring it is deliberate. A GOMEMLIMIT
 // written into the unit beside MemoryHigh is two numbers that must agree, and

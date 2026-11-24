@@ -28,8 +28,6 @@ import sys
 SEVERITIES = ["info", "low", "moderate", "high", "critical"]
 # npm accepts two more values for --audit-level that name no severity: "none",
 # meaning nothing is worth failing for, and "null", its way of spelling unset.
-# Rejecting them made a valid `make audit AUDIT_LEVEL=none` report an outage,
-# which is the gate accusing a third party of being down over our own flag.
 NO_THRESHOLD = "none"
 UNSET = "null"
 DID_NOT_RUN = 2
@@ -109,8 +107,7 @@ def record(code: int) -> int:
             with open(path, "w") as fh:
                 fh.write(f"{code}\n")
         except OSError as err:
-            # Reported, never fatal: failing the audit because a status file
-            # could not be written would be the gate inventing its own outage.
+            # Reported, never fatal.
             print(f"could not write AUDIT_STATUS_FILE={path}: {err}")
     return code
 
@@ -122,7 +119,7 @@ if __name__ == "__main__":
     try:
         code = main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "low")
     except Exception as err:  # noqa: BLE001 -- see below
-        # The contract is that a verdict is ALWAYS recorded. An unhandled
+        # The contract is that a verdict is always recorded. An unhandled
         # exception would leave the status file empty and exit 1, which this
         # contract reads as "findings" -- turning a crash in the gate into a
         # false accusation against the dependencies.

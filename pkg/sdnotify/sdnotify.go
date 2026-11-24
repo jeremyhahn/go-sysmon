@@ -1,10 +1,7 @@
 // Package sdnotify speaks the systemd notification protocol.
 //
-// It is the transport half of the watchdog in issue #66: vm-host-2 served
-// nothing for two days while systemd reported the unit active, because
-// Type=exec means "the binary is still running" and says nothing about whether
-// a request can be answered. A watchdog turns that into a question the service
-// has to answer repeatedly.
+// It is the transport half of the watchdog (#66): Type=exec means "the binary
+// is still running" and says nothing about whether a request can be answered.
 //
 // The protocol is a datagram of newline-separated key=value pairs sent to the
 // unix socket named in NOTIFY_SOCKET. It is implemented here rather than taken

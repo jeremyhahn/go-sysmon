@@ -116,10 +116,8 @@ its own section.
 ### Fixed
 
 - **The Gitea image is pushed where the release runner may write.** The
-  `Gitea Image` job now pushes `agent-ci-images/go-sysmon`, the namespace of
-  the release runner's registry user (ruling 169), instead of
-  `jeremyhahn/go-sysmon`, which only that user or a site admin may write. The
-  registry refused v0.3.1-alpha's push there with 401 (claude-agents #342).
+  `Gitea Image` job now pushes to the namespace of the release runner's
+  registry user; v0.3.1-alpha's push to the old namespace was refused.
 
 ## [0.3.1-alpha] - 2026-10-26
 
@@ -128,7 +126,7 @@ its own section.
 - **Gitea releases publish the container image.** The push now runs in its own
   `Gitea Image` job on the release runner and logs in with that runner's
   registry credential (`RELEASE_REGISTRY`, `RELEASE_REGISTRY_USER`,
-  `RELEASE_REGISTRY_TOKEN`, ruling 173) instead of the workflow token, which
+  `RELEASE_REGISTRY_TOKEN`) instead of the workflow token, which
   the registry rejected on every release. The login lives in a private Docker
   config removed when the push ends.
 - **Release notes claim an image only when it was pushed.** The Gitea release
@@ -397,6 +395,6 @@ package.
   toolchain is kept on patched Go releases (#7).
 
 Releases up to v0.1.2 predate this changelog. They are described on the
-[Gitea release pages](http://git.example.internal/jeremyhahn/go-sysmon/releases).
+[release pages](https://github.com/jeremyhahn/go-sysmon/releases).
 
-[0.2.0-alpha]: http://git.example.internal/jeremyhahn/go-sysmon/compare/v0.1.2...v0.2.0-alpha
+[0.2.0-alpha]: https://github.com/jeremyhahn/go-sysmon/compare/v0.1.2...v0.2.0-alpha

@@ -283,8 +283,7 @@ func TestDetectHypervisor_XenGuestIsAbsent(t *testing.T) {
 }
 
 func TestDetectHypervisor_KVMDeviceAloneIsAbsent(t *testing.T) {
-	// Owner ruling on #187: /dev/kvm is on nearly every x86 machine, so it
-	// says nothing about whether anyone runs VMs here. The kvm modules are
+	// /dev/kvm is on nearly every x86 machine (#187), so it says nothing about whether anyone runs VMs here. The kvm modules are
 	// loaded for the same reason and must not count either.
 	root := fakeHost(t, "/dev/kvm", "/sys/module/kvm/", "/sys/module/kvm_intel/")
 

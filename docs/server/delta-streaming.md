@@ -12,8 +12,7 @@ original stream encoded all of it separately for every connection on every tick.
 
 ## What it saves
 
-Measured end to end against a real 24-core host with ~1000 processes, ten
-seconds of stream per client:
+A 24-core host with about 1000 processes, ten seconds of stream per client:
 
 | | uncompressed | gzipped |
 |---|---|---|
@@ -211,10 +210,8 @@ snapshot without a `full` frame ever arriving: `{"seq":2,"patch":{"r":null}}` is
 contiguous and well formed, and a cast rather than a check would have rendered
 the `null`.
 
-`gpus` and `alerts` are deliberately **not** required. They were left out
-because a snapshot used to carry `"alerts": null` on a healthy node — a nil Go
-slice marshals to null — and the store reads both through `?? []`. The server
-no longer sends `null` for any list (#151, see
+`gpus` and `alerts` are deliberately **not** required; the store reads both
+through `?? []`. The server never sends `null` for any list (#151, see
 [the types reference](../types/reference.md#lists-are-never-null)), and a patch
 that empties a list describes it as `[]`: an empty keyed order, or a
 replacement with `[]`. The leniency is now unused rather than necessary.
@@ -281,13 +278,10 @@ nothing newer than the replacement can be discarded.
 
 A stopped monitor still answers `Snapshot()` with the last thing it collected,
 and still hands out subscriptions that nothing will ever write to or close. The
-delta hub restarts on demand, so a client connecting after shutdown used to be
-sent that cached reading as an ordinary `full` frame, marked current, followed
-by keepalives for as long as the tab stayed open — a measurement from before the
-service stopped, presented as live. **Both protocols on the endpoint make that check** — the delta path and the
-legacy `snapshot` one, which had the same hole for as long as it has existed
-and does not go through the hub at all, which is exactly why the hub's guard
-did not cover it. A fresh run checks `Monitor.Running()`
+delta hub restarts on demand, so without a check a client connecting after
+shutdown would be sent that cached reading as live. **Both protocols on the
+endpoint make that check** — the delta path and the legacy `snapshot` one,
+which does not go through the hub. A fresh run checks `Monitor.Running()`
 after subscribing and closes its subscribers instead, so the stream ends and the
 dashboard reconnects on its backoff showing the last reading labelled
 disconnected.
@@ -359,11 +353,7 @@ nothing but keepalives.
 ## Both windows get the same stream
 
 The browser and the desktop window run the same Svelte application, and both now
-receive the same protocol. The desktop did not: `MonitorBinding.streamToFrontend`
-emitted the **entire snapshot on every tick** through the Wails event bridge,
-never touching the hub the socket path had used since #29.
-
-Measured on a ten-node fleet host, 2026-09-04:
+receive the same protocol through the hub (#29). On a ten-node fleet host:
 
 ```
 event full :  1 frame  , 367,126 bytes

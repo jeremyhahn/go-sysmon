@@ -11,19 +11,9 @@ import (
 	"github.com/jeremyhahn/go-sysmon/internal/await"
 )
 
-// Wall time is the wrong instrument for an aggregation cycle, and reporting it
-// alone caused a real mistake rather than a theoretical one.
-//
-// BenchmarkPoller_Refresh fetches every peer concurrently, so its ns/op is
-// roughly the slowest round trip and understates the CPU by the concurrency
-// factor. #76 took that 4.0 ms/op, scaled it to mon0, and concluded aggregation
-// was far too small to explain that node's 228 ms/s. Measured on the deployed
-// node instead -- sampling /proc every 50 ms and folding the series on the poll
-// period -- one cycle costs 744 ms of CPU and aggregation is 94% of the
-// process's CPU. The reasoning was sound; the number it started from was a wall
-// clock.
-//
-// So the figure that matters is reported here rather than left to be derived.
+// Wall time understates an aggregation cycle's CPU by the concurrency factor,
+// because BenchmarkPoller_Refresh fetches every peer concurrently. CPU time is
+// reported here directly.
 //
 //	make bench-fleet
 

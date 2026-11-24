@@ -11,16 +11,10 @@ import (
 
 // The prometheus build tag has to actually exclude prometheus.
 //
-// Owner ruling, 2026-09-04: the prometheus code compiles only under a build
-// tag; sysmon-server gets it, the desktop and systray builds do not, so a
-// realtime-only user carries no time-series dependency (#100).
-//
-// Nothing about splitting files enforces that. A single import added to any
-// untagged file in any package on the path puts pkg/prom back into the desktop
-// binary, and everything still compiles, passes and ships -- measured while
-// writing this: an import added to an untagged file built cleanly and no test
-// noticed. So the guarantee is checked here, in both directions, because
-// "excluded" and "included" are each half of what the tag claims.
+// The prometheus code compiles only under a build tag; sysmon-server gets it,
+// the desktop and systray builds do not (#100). One import in an untagged file
+// would pull pkg/prom back into the desktop binary and still compile, so the
+// tag is checked here in both directions.
 
 const promPkg = "github.com/jeremyhahn/go-sysmon/pkg/prom"
 
@@ -45,12 +39,10 @@ func TestPrometheusTagExcludesProm(t *testing.T) {
 // everything in both builds would pass the test above and ship a server with no
 // history at all.
 //
-// It requires cmd/sysmon to import pkg/prom DIRECTLY, which is the wiring --
+// It requires cmd/sysmon to import pkg/prom directly, which is the wiring --
 // the exporter constructed, the querier handed to the server. Reachability
-// alone is too weak to be worth asserting: cmd/sysmon reaches pkg/prom through
-// pkg/server in the tagged build no matter what the wiring does, so deleting
-// serve_prom.go entirely left a reachability check green. Measured, by doing
-// exactly that.
+// alone is too weak: cmd/sysmon reaches pkg/prom through pkg/server in the
+// tagged build whatever the wiring does.
 func TestPrometheusTagIncludesProm(t *testing.T) {
 	graph := tagAwareImports(t, []string{"prometheus"})
 	assertGraphLoaded(t, graph, "prometheus")

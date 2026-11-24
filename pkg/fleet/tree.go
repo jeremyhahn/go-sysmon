@@ -28,7 +28,7 @@ import (
 // searches, orders, counts, pages and routes, exactly as it does for its own
 // peers. The summaries of the nodes on a page are the one thing fetched on
 // request (GET /api/fleet/nodes), from the child that owns them, and reused
-// for the poll interval like a drill-in (owner ruling 2026-09-23, option A).
+// for the poll interval like a drill-in.
 // See page.go.
 //
 // Names are fleet-wide identities (#37): unique across the whole tree, never

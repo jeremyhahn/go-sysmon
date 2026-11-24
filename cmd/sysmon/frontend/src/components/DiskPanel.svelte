@@ -62,12 +62,9 @@
    * The four ways a device can have no SMART reading, and the two ways it can
    * have one.
    *
-   * These used to render as a single neutral "SMART N/A", which reads as
-   * "nothing to see" — true of only one of the four. Measured on ci-node-1,
-   * all four were on screen at once: dm-0 has no medium to ask; sda and sdb are
-   * PERC volumes whose member drives answer fine behind the controller; and
-   * without CAP_SYS_RAWIO every ATA device on the host is simply refused, which
-   * is a fact about the deployment rather than about the hardware.
+   * Each is shown separately: a device with no medium, a RAID volume whose
+   * members answer behind the controller, a device refused for lack of
+   * CAP_SYS_RAWIO (a deployment fact), and one with no SMART support.
    *
    * An unrecognised or absent status falls back to the booleans, so an older
    * server — or a tab held open across a rollback — shows what it showed
@@ -676,12 +673,10 @@
             </div>
           {/if}
 
-          <!-- Physical drives behind a hardware RAID controller.
-               These have no device node and appear nowhere else: without this
-               the six drives in ci-node-1's PERC volumes were invisible, and
-               the volume above could only say that its SMART was somewhere
-               else. Each drive carries its own health, so a single failing
-               member is visible without opening anything. -->
+          <!-- Physical drives behind a hardware RAID controller. They have no
+               device node and appear nowhere else; each carries its own
+               health, so a failing member is visible without opening
+               anything. -->
           {#if disk.members != null && disk.members.length > 0}
             <div class="mt-3">
               <p class="text-xs text-base-content/60 mb-1">

@@ -256,13 +256,9 @@ type NodeSummary struct {
 	// RAIDArrays and SMARTCapable are the DENOMINATORS, and without them the
 	// two fields below cannot be read.
 	//
-	// RAIDDegraded false is produced both by "this host has no arrays" and by
-	// "its arrays are fine". SMARTUnhealthy zero is produced both by "no disk
-	// reported SMART at all" and by "every disk is healthy". The fleet view
-	// rendered both pairs as a green ok, so a node with no RAID advertised a
-	// healthy RAID subsystem it does not have, and ci-node-1 -- whose PERC and
-	// SAS devices report nothing -- advertised healthy SMART while its own node
-	// page said N/A for every one of them.
+	// RAIDDegraded false means either "no arrays" or "arrays are fine", and
+	// SMARTUnhealthy zero means either "no disk reported SMART" or "every disk
+	// is healthy"; the denominators tell them apart.
 	//
 	// SMARTCapable counts block devices AND the drives behind a hardware RAID
 	// controller (Disk.Members), which are not block devices and never appear
@@ -557,7 +553,7 @@ type FleetPage struct {
 }
 
 // FleetRollup is the fleet-level statement: what the fleet is, rather than
-// what each node is. It follows one rule (#46, ratified 2026-09-03):
+// what each node is. It follows one rule (#46):
 //
 //	Show the worst and name the node, or show a sum with its denominator --
 //	never a mean.
@@ -1122,11 +1118,8 @@ type RuntimeInfo struct {
 // images and layers land there (#239).
 //
 // It is measured by statfs on the path itself, never by finding the path's
-// mount in the disk list. A data root is routinely a bind mount: on
-// ci-node-2, /var/lib/docker is /dev/nvme2n1p1[/docker], which the disk list
-// shows only under its other mountpoint, /mnt/ci-scratch, so a lookup by
-// mountpoint finds nothing -- or, falling back to /, the wrong filesystem.
-// statfs answers for whatever filesystem the path is on, and needs only
+// mount in the disk list: a data root is often a bind mount that the disk
+// list shows only under another mountpoint. statfs needs only
 // traversal of its parent directories, so it works for a node whose user
 // cannot reach the runtime's API.
 //
@@ -1135,7 +1128,7 @@ type RuntimeInfo struct {
 // a node with no container runtime at all still has free disk to report, and
 // Path says which of these it was.
 type RuntimeDisk struct {
-	// Path is the path that was measured. EMPTY MEANS NOTHING WAS MEASURED --
+	// Path is the path that was measured. Empty means nothing was measured:
 	// the statfs failed, or the node is a build that predates the field -- and
 	// the two figures below are then zero only because they must be
 	// something: a zero here is never a full disk.
@@ -1653,10 +1646,7 @@ type RAIDMember struct {
 type DiskMember struct {
 	// Serial is the only identity that survives a reboot. The device ID and
 	// the slot describe where the drive is plugged in, not which drive it is,
-	// and ci-node-1's 2026-08-31 rebuild renamed every device on the machine
-	// -- so a metric keyed on anything else silently becomes a different
-	// series, which is worse than a missing one because the history looks
-	// continuous.
+	// so a metric keyed on them silently becomes a different series.
 	Serial string `json:"serial"`
 	Model  string `json:"model"`
 	Vendor string `json:"vendor"`
@@ -1692,16 +1682,9 @@ type PartitionInfo struct {
 // SMARTStatus names which of several different things "there is no SMART
 // reading for this device" means.
 //
-// Before this existed, a device with no reading carried SMARTEnabled=false and
-// SMARTHealthy=false, and four unrelated situations were emitted identically.
-// Measured on ci-node-1 (2026-09-02), all four were present at once on the
-// same host and rendered as the same "SMART N/A": dm-0, a device-mapper node
-// that can never have SMART; sda and sdb, PERC virtual disks whose member
-// drives answer perfectly well behind the controller; sdc, a DELLBOSS card
-// that answers "I do not implement SMART" when asked with enough privilege to
-// hear it; and, without CAP_SYS_RAWIO, every ATA device on the host, refused
-// at the ioctl. "N/A" reads as "nothing to see" for all four, and only one of
-// them means that.
+// A device-mapper node, a RAID controller volume, a device that does not
+// implement SMART and a device whose ioctl was refused all lack a reading for
+// different reasons, and only the first means there is nothing to see.
 type SMARTStatus string
 
 const (
@@ -1757,8 +1740,7 @@ const (
 //
 // It is a separate reading from Disks on purpose. A bay's fault LED is the
 // BMC's judgement, made from the backplane and the RAID controller, and it
-// can be lit while every block device the kernel sees is healthy: ci-node-2
-// bay 3 showed an orange LED that no host-side collector could see.
+// can be lit while every block device the kernel sees is healthy.
 type DriveSlots struct {
 	// Available is true when a source answered and Slots is its reading.
 	Available bool `json:"available"`
@@ -1917,14 +1899,10 @@ type GPUProcess struct {
 // DRM usage-stats fdinfo interface, and is only populated when the driver
 // implements it and this process may read the owning task's fdinfo.
 //
-// BusyTimeUs is the driver's own cumulative counter, exposed raw and
-// DELIBERATELY NOT turned into a percentage. On Arrow Lake (intel_vpu) it was
-// measured advancing at 98.8% of resumed time with no client holding the
-// device at all, and its lifetime total sat within 2% of runtime_active_time
-// -- it tracks D0 residency far more closely than job execution. Dividing it
-// by the sampling interval yields a utilisation figure pinned near 100%
-// whenever anything keeps the NPU awake, including this monitor's own polling.
-// Present it as a counter or not at all.
+// BusyTimeUs is the driver's own cumulative counter, exposed raw and not
+// turned into a percentage: on intel_vpu it tracks D0 residency rather than
+// job execution, so a rate derived from it reads near 100% whenever the NPU
+// is awake. Present it as a counter or not at all.
 type NPUInfo struct {
 	// Identity
 	Index        int    `json:"index"`

@@ -133,7 +133,7 @@ func capacityPoller(t *testing.T, cfg *atomic.Pointer[config.Fleet]) *fleet.Poll
 	return p
 }
 
-// TestView_CapacityAndHeadroomForEveryNode is the query a coordinator makes:
+// TestView_CapacityAndHeadroomForEveryNode is the query a scheduler makes:
 // one GET /api/fleet, and every node -- this one, served as self, and its
 // peers -- carries its absolute capacity and its headroom at the configured
 // target, while a peer on an older build carries neither and is counted out

@@ -169,13 +169,6 @@ func (b *MonitorBinding) SetInterval(ms int) error {
 // streamToFrontend delivers the delta protocol to the Wails frontend: one
 // whole snapshot, then patches against it, each carrying a sequence number.
 //
-// It used to emit the entire snapshot on every tick. Measured on a ten-node
-// fleet host, that is 367,126 bytes per frame against a delta averaging 7,842
-// -- 47 times the bytes for identical information, on a machine that already
-// had a correct delta hub it never called (#98). The browser has been getting
-// patches since #29; the desktop window is the same Svelte application and was
-// getting whole snapshots.
-//
 // The stream is the same code the socket uses, not a second implementation:
 // pkg/server owns the rule that a patch is only ever sent to a client holding
 // the frame before it, and two copies of that rule would be two places for it

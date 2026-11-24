@@ -530,7 +530,7 @@ func TestNPUClients_IdleClientReportsZero(t *testing.T) {
 }
 
 // TestNPUClients_OrdersByBusiestNow verifies the list leads with the process
-// responsible for CURRENT load. Ordering by the cumulative total put a
+// responsible for current load. Ordering by the cumulative total put a
 // long-running idle client above the one actually working.
 func TestNPUClients_OrdersByBusiestNow(t *testing.T) {
 	samples := []npuClientSample{
