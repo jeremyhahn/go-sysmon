@@ -178,7 +178,7 @@ INTERVAL ?= 1000
         test-e2e lint lint-workflows fmt fmt-check vet clean docker-build deploy deploy-binary \
         ci ci-fast vulncheck gosec audit check-signed check-conflicts check-cgo-clean release-build release-build-desktop changelog-assemble check-changelog clean-dist \
         build-both generate check-generated check-ts check-nolint \
-        check-build-tags check-release-builder check-devcontainer-base check-cpu-baseline test-fips check-pins check-latest \
+        check-build-tags check-release-builder check-devcontainer-base check-cpu-baseline test-fips check-pins check-latest check-runtime-uncached \
         tools tool-golangci-lint tool-actionlint tool-gosec tool-govulncheck \
         install-extension-cinnamon uninstall-extension-cinnamon scan-image scan-image-sarif \
         test-extensions test-extensions-desktop desktop-docker-build \
@@ -476,7 +476,7 @@ uninstall-extension-cinnamon:
 # must be the pinned version (see GOLANGCI_LINT_VERSION), and `make tools`
 # installs it. check-generated keeps the dashboard's TypeScript in step with
 # pkg/types.
-lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-release-builder check-devcontainer-base check-pins check-nolint check-package-targets check-coverage-exceptions check-ts \
+lint: fmt-check vet lint-workflows check-conflicts check-cgo-clean check-generated check-build-tags check-release-builder check-devcontainer-base check-pins check-runtime-uncached check-nolint check-package-targets check-coverage-exceptions check-ts \
 	$(addprefix lint-shape-,$(ALL_SHAPES))
 
 # golangci-lint in one shape. Its unused check is what finds code that only one
@@ -694,6 +694,17 @@ check-devcontainer-base:
 		exit 1; }
 	@echo "The devcontainer is built from the Dockerfile's builder image."
 
+# check-runtime-uncached fails unless the Dockerfile's final stage is named
+# runtime and every workflow step that builds the image passes
+# no-cache-filters: runtime. That stage upgrades Debian's packages, and a
+# layer reused from the build cache would not hold the fixes published since.
+check-runtime-uncached:
+	@awk 'toupper($$1) == "FROM" { last = $$NF } END { exit last == "runtime" ? 0 : 1 }' Dockerfile || { \
+		echo "The Dockerfile's final stage is not named runtime (FROM <image> AS runtime)."; exit 1; }
+	@awk '/uses: docker\/build-push-action@/ { builds++ } /^ +no-cache-filters: runtime$$/ { fresh++ } END { exit builds && builds == fresh ? 0 : 1 }' .github/workflows/*.yml || { \
+		echo "A workflow builds the image without no-cache-filters: runtime, so the runtime stage's package upgrade can come from the build cache."; exit 1; }
+	@echo "Every image build runs the runtime stage's package upgrade fresh."
+
 ## Clean
 
 clean-dist:
@@ -854,7 +865,7 @@ TRIVY_SEVERITY ?= CRITICAL,HIGH
 TRIVY_IMAGE ?= go-sysmon:scan
 
 scan-image:
-	docker build -t $(TRIVY_IMAGE) .
+	docker build --no-cache-filter runtime -t $(TRIVY_IMAGE) .
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 	    aquasec/trivy:latest image \
 	      --severity $(TRIVY_SEVERITY) \
@@ -864,7 +875,7 @@ scan-image:
 
 # scan-image-sarif emits machine-readable output for the Security tab.
 scan-image-sarif:
-	docker build -t $(TRIVY_IMAGE) .
+	docker build --no-cache-filter runtime -t $(TRIVY_IMAGE) .
 	docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 	    aquasec/trivy:latest image \
 	      --severity $(TRIVY_SEVERITY) \

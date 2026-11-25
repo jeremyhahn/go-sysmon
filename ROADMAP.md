@@ -15,7 +15,7 @@ Items marked "Gitea #N" were tracked on the retired Gitea forge; those issues
 were not carried over to GitHub.
 
 
-- [Release candidate](../../milestone/2) — target kind: RC — projected date: set by the department plan. Latest release is v0.3.5-alpha.
+- [Release candidate](../../milestone/2) — target kind: RC — projected date: set by the department plan. Latest release is v0.3.6-alpha.
 
 ## Complete
 

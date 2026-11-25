@@ -244,6 +244,16 @@ docker build -t go-sysmon:dev --build-arg VERSION=dev .
 The Dockerfile builds the frontend and the binary from source in separate
 stages, so it needs no prebuilt artifacts.
 
+The final stage, `runtime`, upgrades Debian's packages, so an image holds the
+security fixes published up to the moment it was built. Docker reuses that
+layer from its cache on a rebuild; to take newer fixes, rebuild the one stage:
+
+```bash
+docker build --no-cache-filter runtime -t go-sysmon:dev --build-arg VERSION=dev .
+```
+
+CI, the release build and `make scan-image` all do this.
+
 ## Security
 
 The dashboard has no authentication, and
