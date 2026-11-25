@@ -63,18 +63,16 @@ RUN go build -trimpath -tags nvml \
 # --- runtime ----------------------------------------------------------------
 # Debian rather than Alpine: CGO means the binary is linked against glibc, and
 # a musl base would need a separate toolchain for no real gain.
-FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
 
 # curl is here for the healthcheck only. The image has no shell-based tooling
 # otherwise, and "is the process alive" is a weak check for a monitor: the
 # failure worth catching is a server that is running but no longer serving.
-# apt-get upgrade, not just install: libpcre2-8-0 arrives as a dependency at the
-# version the base layer was built with, and Debian's security update for it
-# (10.42-1 -> 10.42-1+deb12u1) failed the Trivy gate, which is a required check,
-# on every open pull request. Upgrading here takes the next such fix
-# automatically instead of blocking CI again. Determinism is unaffected: this
-# stage already runs an unpinned update/install, so the layer was never
-# reproducible by pinning.
+# apt-get upgrade, not just install: the base layer's packages are as old as
+# the pinned digest, and the image scan fails on any with a fix available.
+# Upgrading takes each Debian security fix as it is published. Every build
+# passes --no-cache-filter runtime, so this layer is never reused from a cache
+# (`make check-runtime-uncached`).
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates curl \
