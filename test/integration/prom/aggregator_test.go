@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,4 +239,129 @@ func TestAggregator_ATwoSocketPeersCoresAreDistinctSeries(t *testing.T) {
 			t.Errorf("write %d answered %d: %s", i, w.status, w.rejected)
 		}
 	}
+}
+
+// droppedMetric is the scrape's count of samples remote write has discarded.
+const droppedMetric = "sysmon_remote_write_samples_dropped_total_current"
+
+// TestAggregator_ADriveListedTwiceCostsItsSecondSampleNotTheBatch relays a
+// peer whose RAID volume lists one drive twice, so every reading gives each
+// of that drive's two series a second sample at the same time. The first
+// sample stands and the rest of the batch is delivered, each second sample is
+// counted as dropped, and the defect is reported once per series however many
+// readings repeat it.
+func TestAggregator_ADriveListedTwiceCostsItsSecondSampleNotTheBatch(t *testing.T) {
+	db := newTSDB(t)
+	t0 := time.Now().Add(-time.Minute).Truncate(time.Second)
+	snap := gpuBox("gpu-box", t0)
+	snap.Disks[1].Members = []types.DiskMember{
+		{Serial: "WD-0001", Temperature: 35, SMARTEnabled: true, SMARTHealthy: true},
+		{Serial: "WD-0001", Temperature: 44, SMARTEnabled: true, SMARTHealthy: false},
+	}
+	peer := newPeerNode(t, snap, 1000)
+	config := aggregatorConfig(db.writeURL(), map[string]string{"gpu-box": peer.srv.URL})
+	agg := serveNode(t, config)
+
+	const taken = 3
+	at := func(i int) time.Time { return t0.Add(time.Duration(i) * time.Second) }
+	up := labelsOf("__name__", "sysmon_up", "instance", "gpu-box")
+	for i := range taken {
+		peer.setTimestamp(at(i))
+		db.await(t, fmt.Sprintf("reading %d to be stored", i), func(db *tsdb) bool {
+			_, ok := sampleAt(db, up, at(i).UnixMilli())
+			return ok
+		})
+	}
+
+	db.mu.Lock()
+	for i, w := range db.writes {
+		if w.status/100 != 2 {
+			t.Errorf("write %d answered %d: %s", i, w.status, w.rejected)
+		}
+	}
+	for name, want := range map[string]float64{
+		"sysmon_disk_member_temperature_celsius": 35, "sysmon_disk_member_smart_healthy": 1,
+	} {
+		drive := labelsOf("__name__", name, "instance", "gpu-box", "serial", "WD-0001", "volume", "sda")
+		for i := range taken {
+			if got, ok := sampleAt(db, drive, at(i).UnixMilli()); !ok || got != want {
+				t.Errorf("%s at reading %d = %v (stored %v), want the %v of the drive's first listing", name, i, got, ok, want)
+			}
+		}
+	}
+	db.mu.Unlock()
+
+	if dropped, ok := metricValue(scrape(t, agg.Server), droppedMetric); !ok || dropped != 2*taken {
+		t.Errorf("%s = %v (present %v), want the second sample of two series in each of %d readings",
+			droppedMetric, dropped, ok, taken)
+	}
+	var reported []string
+	for _, rec := range agg.logged(t, config, "prom: a reading gave one series two samples at the same time; the second is dropped") {
+		if rec["source"] != "gpu-box" {
+			t.Errorf("the collision was reported for %v, want gpu-box", rec["source"])
+		}
+		reported = append(reported, fmt.Sprint(rec["series"]))
+	}
+	slices.Sort(reported)
+	if len(reported) != 2 || !strings.Contains(reported[0], "sysmon_disk_member_smart_healthy") ||
+		!strings.Contains(reported[1], "sysmon_disk_member_temperature_celsius") {
+		t.Errorf("collisions reported over %d readings = %q, want each of the drive's two series once", taken, reported)
+	}
+}
+
+// TestAggregator_AStalledReceiverDropsAndCountsWhatItCannotQueue stalls the
+// receiver mid-write under an aggregator of many peers. Nothing is taken from
+// the queue of peer readings while the write is out, so the queue fills; the
+// readings past it are dropped and counted rather than held up, and history
+// resumes once the receiver answers.
+func TestAggregator_AStalledReceiverDropsAndCountsWhatItCannotQueue(t *testing.T) {
+	db := newTSDB(t)
+	t0 := time.Now().Add(-time.Minute).Truncate(time.Second)
+	const peerCount = 64
+	peers := make(map[string]string, peerCount)
+	var first *peerNode
+	for i := range peerCount {
+		name := fmt.Sprintf("node-%02d", i)
+		peer := newPeerNode(t, gpuBox(name, t0), 1000)
+		peers[name] = peer.srv.URL
+		if i == 0 {
+			first = peer
+		}
+	}
+	agg := serveServer(t, aggregatorConfig(db.writeURL(), peers)+"  timeout_ms: 20000\n")
+	db.await(t, "every peer's first reading to be stored", func(db *tsdb) bool {
+		return len(db.matching(labelsOf("__name__", "sysmon_up"))) == peerCount+1
+	})
+	if dropped, ok := metricValue(scrape(t, agg), droppedMetric); !ok || dropped != 0 {
+		t.Fatalf("%s = %v (present %v) before the receiver stalled, want 0", droppedMetric, dropped, ok)
+	}
+
+	held, release := make(chan struct{}, 1), make(chan struct{})
+	db.set(func(db *tsdb) {
+		db.writeHook = func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case held <- struct{}{}:
+			default:
+			}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+	await.Recv(t, "a write to be held by the receiver", held)
+	awaitScrape(t, agg, "the readings the queue has no room for to be counted as dropped", func(e string) bool {
+		dropped, _ := metricValue(e, droppedMetric)
+		return dropped > 0
+	})
+
+	db.set(func(db *tsdb) { db.writeHook = nil })
+	close(release)
+	later := t0.Add(time.Second)
+	first.setTimestamp(later)
+	db.await(t, "a reading taken after the stall to be stored", func(db *tsdb) bool {
+		_, ok := sampleAt(db, labelsOf("__name__", "sysmon_up", "instance", "node-00"), later.UnixMilli())
+		return ok
+	})
 }

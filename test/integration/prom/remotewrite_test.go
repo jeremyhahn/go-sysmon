@@ -157,9 +157,38 @@ func TestRemoteWrite_ClientErrorDropsTheBatch(t *testing.T) {
 		}
 	}
 	awaitScrape(t, s, "the drop to be counted", func(e string) bool {
-		v, _ := metricValue(e, "sysmon_remote_write_samples_dropped_total_current")
+		v, _ := metricValue(e, droppedMetric)
 		return v > 0
 	})
+}
+
+// TestRemoteWrite_ARefusalCutOffMidBodyIsStillARefusal verifies a 400 whose
+// body breaks off partway, as from a proxy failing while it relays the
+// receiver's reason, is the refusal its status says it is. The batch is
+// dropped and counted rather than kept and sent again, the log gives the
+// status with what was read of the reason and says the rest could not be, and
+// later batches are delivered.
+func TestRemoteWrite_ARefusalCutOffMidBodyIsStillARefusal(t *testing.T) {
+	db := newTSDB(t)
+	db.set(func(db *tsdb) {
+		db.writeHook = func(w http.ResponseWriter, _ *http.Request) {
+			truncated(t, w, http.StatusBadRequest, "out of order sam")
+		}
+	})
+	s := serveServer(t, writeConfig("rack-7", db.writeURL(), ""))
+
+	rec := s.Logs.AwaitMsg(t, "prom: remote write rejected a batch permanently, dropping it")
+	if msg := fmt.Sprint(rec["error"]); !strings.Contains(msg, "returned 400: out of order sam") ||
+		!strings.Contains(msg, "response body unreadable") {
+		t.Errorf("the drop was logged with %q, want the status, the part of the reason that arrived, and that the rest did not", msg)
+	}
+	awaitScrape(t, s, "the drop to be counted", func(e string) bool {
+		dropped, _ := metricValue(e, droppedMetric)
+		return dropped > 0
+	})
+
+	db.set(func(db *tsdb) { db.writeHook = nil })
+	db.await(t, "a later push to be accepted", func(db *tsdb) bool { return db.accepted() >= 1 })
 }
 
 // TestRemoteWrite_RedirectIsRefused verifies a receiver answering with a

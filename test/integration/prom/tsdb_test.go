@@ -46,6 +46,9 @@ type tsdb struct {
 	// respond scripts the answer to the n-th write request (from 0). A zero
 	// status accepts it.
 	respond func(n int) writeAnswer
+	// writeHook, when set, answers a write request instead of the receiver:
+	// the request is not recorded and nothing is stored.
+	writeHook http.HandlerFunc
 	// queries are the expressions of every range query received.
 	queries []string
 	// queryHook, when set, answers a range query instead of the engine.
@@ -265,6 +268,13 @@ func (db *tsdb) handleWrite(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	db.mu.Lock()
+	hook := db.writeHook
+	db.mu.Unlock()
+	if hook != nil {
+		hook(w, r)
 		return
 	}
 	req := writeRequest{header: r.Header.Clone()}
@@ -507,6 +517,26 @@ func (db *tsdb) handleFlags(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeEnvelope(w, http.StatusOK, map[string]any{"status": "success", "data": flags})
 	}
+}
+
+// holdLookback makes the database hold every request for its flags until
+// release is closed, and then answer a five-minute lookback. abandoned is sent
+// to when the caller of a held request goes away first.
+func (db *tsdb) holdLookback() (release, abandoned chan struct{}) {
+	release, abandoned = make(chan struct{}), make(chan struct{}, 1)
+	db.set(func(db *tsdb) {
+		db.flagsHook = func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				abandoned <- struct{}{}
+				return
+			}
+			writeEnvelope(w, http.StatusOK, map[string]any{"status": "success",
+				"data": map[string]string{"query.lookback-delta": "5m"}})
+		}
+	})
+	return release, abandoned
 }
 
 func (db *tsdb) handleBuildinfo(w http.ResponseWriter, _ *http.Request) {

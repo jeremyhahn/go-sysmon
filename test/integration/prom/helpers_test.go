@@ -7,9 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -82,6 +84,26 @@ func (n *node) reload(t *testing.T, body string) harness.LogRecord {
 		}
 		return seen == want
 	})
+}
+
+// logged reloads the node's configuration as body and returns every record
+// with message msg logged before the reload's outcome. The outcome is written
+// after them, so once it has been read, all of them have been.
+func (n *node) logged(t *testing.T, body, msg string) []harness.LogRecord {
+	t.Helper()
+	n.reload(t, body)
+	var out []harness.LogRecord
+	seen := 0
+	n.Logs.Await(t, "the reload's outcome", func(r harness.LogRecord) bool {
+		if r.Msg() == msg {
+			out = append(out, r)
+		}
+		if reloadOutcomes[r.Msg()] {
+			seen++
+		}
+		return seen == n.reloads
+	})
+	return out
 }
 
 // scrape fetches /metrics and returns its body, requiring the exposition
@@ -341,4 +363,38 @@ func decodeJSON(t *testing.T, body []byte, v any) {
 	if err := json.Unmarshal(body, v); err != nil {
 		t.Fatalf("decode %s: %v", body, err)
 	}
+}
+
+// answer is how a request made off the test goroutine ended.
+type answer struct {
+	status int
+	body   []byte
+	err    error
+}
+
+// getAsync requests url on a goroutine of its own, for a request the test acts
+// during. sent is closed once the request has been written to the server, and
+// done yields how it ended.
+func getAsync(ctx context.Context, url string) (sent <-chan struct{}, done <-chan answer) {
+	wrote, ended := make(chan struct{}), make(chan answer, 1)
+	var once sync.Once
+	trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { once.Do(func() { close(wrote) }) }}
+	go func() {
+		req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, url, nil)
+		if err != nil {
+			ended <- answer{err: err}
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			ended <- answer{err: err}
+			return
+		}
+		body, err := io.ReadAll(resp.Body)
+		if cerr := resp.Body.Close(); err == nil {
+			err = cerr
+		}
+		ended <- answer{status: resp.StatusCode, body: body, err: err}
+	}()
+	return wrote, ended
 }
