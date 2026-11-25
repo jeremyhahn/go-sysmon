@@ -431,6 +431,37 @@ func (c *expiringContext) Err() error {
 	}
 }
 
+// A caller can find the cache empty, lose the processor, and take the fetch
+// only after another caller's fetch has finished and published its answer.
+// The clock stands in for that other caller: its second reading, the one
+// taken once the fetch is owned, finds the answer already cached.
+func TestLookback_AnswerPublishedBeforeTheFetchIsOwnedIsNotFetchedAgain(t *testing.T) {
+	s := newStatusServer(t, statusAnswers{flags: 200,
+		flagsBody: `{"status":"success","data":{"query.lookback-delta":"15m"}}`})
+	q := querier(s.srv.URL, 5*time.Second)
+	base := s.srv.URL
+	clock := time.Unix(1788300000, 0)
+	var readings atomic.Int64
+	q.now = func() time.Time {
+		if readings.Add(1) > 1 {
+			q.lookbacks.entries.Store(base, &lookbackEntry{
+				value: 5 * time.Minute, expires: clock.Add(lookbackTTL), known: 5 * time.Minute})
+		}
+		return clock
+	}
+
+	got, err := q.Lookback(context.Background())
+	if err != nil || got != 5*time.Minute {
+		t.Fatalf("Lookback() = %v, %v; want the published 5m", got, err)
+	}
+	if n := s.requests.Load(); n != 0 {
+		t.Fatalf("%d flags requests for an answer already published, want 0", n)
+	}
+	if _, running := q.lookbacks.fetching.Load(base); running {
+		t.Fatal("the fetch is still registered as in flight")
+	}
+}
+
 // TestLookback_ConcurrentCallersShareOneFetch. Many charts opened at once
 // against an empty cache ask the database once between them -- a slow one is
 // not asked once per chart -- and all get its answer.

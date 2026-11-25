@@ -89,6 +89,17 @@ type lookbackCache struct {
 	fetching sync.Map // base URL -> *lookbackFetch
 }
 
+// fresh returns the cached answer for base, if there is one that has not
+// expired at now.
+func (c *lookbackCache) fresh(base string, now time.Time) (*lookbackEntry, bool) {
+	cached, ok := c.entries.Load(base)
+	if !ok {
+		return nil, false
+	}
+	e := cached.(*lookbackEntry)
+	return e, now.Before(e.expires)
+}
+
 // lookbackFetch is one refresh in flight: done is closed when entry is set.
 type lookbackFetch struct {
 	done  chan struct{}
@@ -113,11 +124,8 @@ func (q *Querier) LookbackAt(ctx context.Context, base string) (time.Duration, e
 	if base == "" {
 		return 0, &NoQueryEndpointError{}
 	}
-	now := q.now()
-	if cached, ok := q.lookbacks.entries.Load(base); ok {
-		if e := cached.(*lookbackEntry); now.Before(e.expires) {
-			return e.value, e.err
-		}
+	if e, ok := q.lookbacks.fresh(base, q.now()); ok {
+		return e.value, e.err
 	}
 
 	// Join a refresh already in flight rather than start another.
@@ -138,6 +146,15 @@ func (q *Querier) LookbackAt(ctx context.Context, base string) (time.Duration, e
 		q.lookbacks.fetching.Delete(base)
 		close(f.done)
 	}()
+
+	// Another caller's fetch can finish between the cache read above and
+	// taking the fetch here. Its answer is in the cache by then, so it is
+	// read again rather than fetched a second time.
+	now := q.now()
+	if e, ok := q.lookbacks.fresh(base, now); ok {
+		f.entry = e
+		return e.value, e.err
+	}
 
 	value, err := q.fetchLookback(ctx, base)
 	f.entry = &lookbackEntry{value: value, err: err}

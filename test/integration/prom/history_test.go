@@ -177,6 +177,10 @@ func TestHistory_RefusesWhatItWillNotAsk(t *testing.T) {
 		{"end before start", fmt.Sprintf("/api/history?metric=load1&start=%d&end=%d", end.UnixMilli(), start.UnixMilli()), "end must be after start"},
 		{"a window past 90 days", fmt.Sprintf("/api/history?metric=load1&start=%d&end=%d", end.Add(-100*24*time.Hour).UnixMilli(), end.UnixMilli()), "at most"},
 		{"more points than Prometheus returns", base + "&metric=load1&step=1", "points at this step"},
+		// Milliseconds too many to hold as a duration: 2^58 of them come out
+		// as no step at all, and the largest integer as a step backwards.
+		{"a step too long to hold, read as zero", base + "&metric=load1&step=288230376151711744", "step"},
+		{"a step too long to hold, read as negative", base + "&metric=swap_in&step=9223372036854775807", "step"},
 		{"a counter step past the read budget", base + "&metric=swap_in&step=" + fmt.Sprint((90 * 24 * time.Hour).Milliseconds()), "exceed"},
 		// The range leaves an hour of the 90-day read budget; a 59-minute step
 		// fits in it, but the rate window it needs, with two lookbacks, does not.
@@ -192,6 +196,11 @@ func TestHistory_RefusesWhatItWillNotAsk(t *testing.T) {
 				t.Errorf("GET %s = %d %q, want 400 naming %q", c.path, status, body, c.want)
 			}
 		})
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if len(db.queries) != 0 {
+		t.Errorf("the database was sent %q, want no query for a request that is refused", db.queries)
 	}
 }
 
@@ -233,7 +242,7 @@ func TestHistory_DatabaseFailuresAreBadGateway(t *testing.T) {
 						return
 					}
 					if c.truncate {
-						truncated(t, w, `{"status":"success","data":{"resultType":"matrix","result":[`)
+						truncated(t, w, http.StatusOK, `{"status":"success","data":{"resultType":"matrix","result":[`)
 						return
 					}
 					w.Header().Set("Content-Type", "application/json")
@@ -390,45 +399,20 @@ func TestHistory_ACounterOutageIsAGap(t *testing.T) {
 // inheriting the abandoned one's failure.
 func TestHistory_AbandonedRequestLeavesTheLookbackUncached(t *testing.T) {
 	db := newTSDB(t)
-	release := make(chan struct{})
 	// fetchEnded is sent to when the aggregator's own fetch of the abandoned
 	// request ends: the client going away does not end it until the server
 	// notices the disconnect, and a fetch answered before then is a real
 	// answer that is rightly cached.
-	fetchEnded := make(chan struct{}, 1)
-	db.set(func(db *tsdb) {
-		db.flagsHook = func(w http.ResponseWriter, r *http.Request) {
-			select {
-			case <-release:
-			case <-r.Context().Done():
-				fetchEnded <- struct{}{}
-				return
-			}
-			writeEnvelope(w, http.StatusOK, map[string]any{"status": "success",
-				"data": map[string]string{"query.lookback-delta": "5m"}})
-		}
-	})
+	release, fetchEnded := db.holdLookback()
 	agg := serveServer(t, fmt.Sprintf("fleet:\n  local_name: agg\nprometheus:\n  query_url: %q\n", db.srv.URL))
-	end := time.Now()
-	url := agg.URL(fmt.Sprintf("/api/history?metric=swap_in&start=%d&end=%d", end.Add(-time.Minute).UnixMilli(), end.UnixMilli()))
+	url := counterURL(agg)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	abandoned := make(chan error, 1)
-	go func() {
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil {
-			err = resp.Body.Close()
-		}
-		abandoned <- err
-	}()
+	_, abandoned := getAsync(ctx, url)
 	db.await(t, "the lookback to be asked for", func(db *tsdb) bool { return db.flagsAsked == 1 })
 	cancel()
-	if err := await.Recv(t, "the abandoned request to end", abandoned); !errors.Is(err, context.Canceled) {
-		t.Fatalf("the abandoned request ended with %v, want it cancelled", err)
+	if a := await.Recv(t, "the abandoned request to end", abandoned); !errors.Is(a.err, context.Canceled) {
+		t.Fatalf("the abandoned request ended with %v, want it cancelled", a.err)
 	}
 	await.Recv(t, "the aggregator's fetch for the abandoned request to end", fetchEnded)
 
@@ -444,10 +428,119 @@ func TestHistory_AbandonedRequestLeavesTheLookbackUncached(t *testing.T) {
 	}
 }
 
-// truncated answers with a Content-Length longer than the body it sends, then
-// drops the connection: a response cut off mid-answer, as from a proxy that
-// failed while relaying it.
-func truncated(t *testing.T, w http.ResponseWriter, partial string) {
+// counterURL is a request for the last minute of the aggregator's own swap-in
+// rate, a counter, which cannot be drawn without the database's lookback.
+func counterURL(s *harness.Server) string {
+	end := time.Now()
+	return s.URL(fmt.Sprintf("/api/history?metric=swap_in&start=%d&end=%d", end.Add(-time.Minute).UnixMilli(), end.UnixMilli()))
+}
+
+// TestHistory_ASlowLookbackIsAskedForOnceBetweenCharts opens a second counter
+// chart while the first is still waiting on a database that never answers
+// with its lookback. The second waits on the first's request instead of
+// making its own, and both fail once the timeout passes: a database that is
+// not answering is asked once, not once per chart.
+func TestHistory_ASlowLookbackIsAskedForOnceBetweenCharts(t *testing.T) {
+	db := newTSDB(t)
+	db.set(func(db *tsdb) {
+		db.flagsHook = func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
+	})
+	agg := serveServer(t, fmt.Sprintf("fleet:\n  local_name: agg\nprometheus:\n  query_url: %q\n  timeout_ms: 2000\n", db.srv.URL))
+	url := counterURL(agg)
+
+	_, first := getAsync(context.Background(), url)
+	db.await(t, "the first chart to ask for the lookback", func(db *tsdb) bool { return db.flagsAsked == 1 })
+	if status, body := harness.Get(t, url); status != http.StatusBadGateway {
+		t.Errorf("the second chart = %d %q, want 502 once the lookback request times out", status, body)
+	}
+	if a := await.Recv(t, "the first chart to be answered", first); a.err != nil || a.status != http.StatusBadGateway {
+		t.Errorf("the first chart = %d %q (%v), want 502 once the lookback request times out", a.status, a.body, a.err)
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.flagsAsked != 1 {
+		t.Errorf("the lookback was asked for %d times, want once between the two charts", db.flagsAsked)
+	}
+}
+
+// TestHistory_ChartsShareOneLookbackRequest opens three counter charts against
+// a database slow to answer with its lookback, so the second and third wait
+// on the request made for the first. The third is abandoned while it waits:
+// it ends at once and asks the database nothing. When the first is answered,
+// the second is drawn from the same answer. When the first is abandoned
+// instead, its failure is not the second's: the second asks afresh and is
+// drawn.
+func TestHistory_ChartsShareOneLookbackRequest(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		abandonFirst bool
+		asked        int
+	}{
+		{name: "the first chart is answered", asked: 1},
+		{name: "the first chart is abandoned", abandonFirst: true, asked: 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			db := newTSDB(t)
+			release, fetchEnded := db.holdLookback()
+			agg := serveServer(t, fmt.Sprintf("fleet:\n  local_name: agg\nprometheus:\n  query_url: %q\n  timeout_ms: 30000\n", db.srv.URL))
+			url := counterURL(agg)
+
+			firstCtx, abandonFirst := context.WithCancel(context.Background())
+			defer abandonFirst()
+			_, first := getAsync(firstCtx, url)
+			db.await(t, "the first chart to ask for the lookback", func(db *tsdb) bool { return db.flagsAsked == 1 })
+
+			secondSent, second := getAsync(context.Background(), url)
+			await.Recv(t, "the second chart's request to be sent", secondSent)
+			thirdCtx, abandonThird := context.WithCancel(context.Background())
+			defer abandonThird()
+			thirdSent, third := getAsync(thirdCtx, url)
+			await.Recv(t, "the third chart's request to be sent", thirdSent)
+
+			abandonThird()
+			if a := await.Recv(t, "the third chart's request to end", third); !errors.Is(a.err, context.Canceled) {
+				t.Fatalf("the third chart ended with %d (%v), want it cancelled", a.status, a.err)
+			}
+			// Logged while the first chart's request is still held: the
+			// third did not wait for it.
+			agg.Logs.Await(t, "the abandoned third chart to stop waiting", func(r harness.LogRecord) bool {
+				return r.Msg() == "server: history query failed" && strings.Contains(fmt.Sprint(r["error"]), context.Canceled.Error())
+			})
+			db.set(func(db *tsdb) {
+				if db.flagsAsked != 1 {
+					t.Errorf("the lookback was asked for %d times while the first request was held, want once", db.flagsAsked)
+				}
+			})
+
+			if c.abandonFirst {
+				abandonFirst()
+				if a := await.Recv(t, "the first chart's request to end", first); !errors.Is(a.err, context.Canceled) {
+					t.Fatalf("the first chart ended with %d (%v), want it cancelled", a.status, a.err)
+				}
+				await.Recv(t, "the aggregator's request for the first chart to end", fetchEnded)
+			}
+			close(release)
+			if !c.abandonFirst {
+				if a := await.Recv(t, "the first chart to be answered", first); a.err != nil || a.status != http.StatusOK {
+					t.Errorf("the first chart = %d %q (%v), want the range drawn", a.status, a.body, a.err)
+				}
+			}
+			if a := await.Recv(t, "the second chart to be answered", second); a.err != nil || a.status != http.StatusOK {
+				t.Errorf("the second chart = %d %q (%v), want the range drawn", a.status, a.body, a.err)
+			}
+			db.mu.Lock()
+			defer db.mu.Unlock()
+			if db.flagsAsked != c.asked {
+				t.Errorf("the lookback was asked for %d times, want %d", db.flagsAsked, c.asked)
+			}
+		})
+	}
+}
+
+// truncated answers status with a Content-Length longer than the body it
+// sends, then drops the connection: a response cut off mid-answer, as from a
+// proxy that failed while relaying it.
+func truncated(t *testing.T, w http.ResponseWriter, status int, partial string) {
 	t.Helper()
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -464,8 +557,8 @@ func truncated(t *testing.T, w http.ResponseWriter, partial string) {
 			t.Errorf("close the hijacked connection: %v", err)
 		}
 	}()
-	if _, err := fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
-		len(partial)+4096, partial); err != nil {
+	if _, err := fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+		status, http.StatusText(status), len(partial)+4096, partial); err != nil {
 		t.Errorf("write the truncated answer: %v", err)
 		return
 	}
