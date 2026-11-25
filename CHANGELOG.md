@@ -9,6 +9,81 @@ Changes waiting for the next release are kept as fragments in `changelog.d/`,
 one file per change named `<issue>-<slug>.md`. Each release folds them into
 its own section.
 
+## [0.3.6-alpha] - 2026-11-25
+
+### Added
+
+- **`make check-cpu-baseline`** fails when a binary's ELF notes demand a CPU
+  above its architecture's baseline. `release.yml` runs it on the binaries it
+  has built, before they are uploaded. To check any other binary, run `make
+  check-cpu-baseline BINARIES=bin/sysmon-server`.
+- **`make check-release-builder`**, part of `make lint`, fails when
+  `release.yml` would build the release binaries in any image but the
+  `Dockerfile`'s builder image, digest included.
+
+### Changed
+
+- **go-sysmon is licensed under the Apache License 2.0**, in place of MIT.
+  `LICENSE` holds the Apache 2.0 text, the container image's
+  `org.opencontainers.image.licenses` label reads `Apache-2.0`, and the README
+  badge and License section say so. Releases before this one remain available
+  under MIT.
+- **GitHub is the only forge.** Every Gitea code path is gone: the Gitea
+  release and image jobs in `release.yml`, the off-GitHub branches of the
+  `ci.yml`, `release.yml` and `desktop.yml` conditionals, the
+  `internal/gitea` package, and `.gitea/workflows` as a place `make
+  check-pins` and `make check-latest` look for workflows. The jobs, runners
+  and gates CI and releases run on GitHub are unchanged.
+- **The daily check-latest run files its issue on GitHub.** The new
+  `internal/github` package finds an open check-latest issue by the marker in
+  its body and files one `task:ready` issue when none is open, with the
+  workflow's own `GITHUB_TOKEN`. `check-latest.yml` runs on a daily schedule
+  again. `cmd/checklatest` takes `-github-api` (default
+  `https://api.github.com`) in place of `-gitea-api`, and reads its token from
+  `GITHUB_TOKEN` by default.
+- **Dependabot PRs merge themselves once CI is green.** The new
+  `dependabot-automerge.yml` enables GitHub's native auto-merge on each
+  Dependabot PR and replaces `automerge.yml`.
+
+### Removed
+
+- **The manual release targets.** `make release`, `make release-candidate`,
+  `make release-alpha` and `scripts/release.sh` pushed a signed tag to the
+  Gitea remote. A green merge that bumps `VERSION` releases instead
+  (`auto-release.yml`).
+
+### Fixed
+
+- **The `linux-amd64` release binaries start on every x86-64 CPU again.**
+  v0.3.4-alpha and v0.3.5-alpha needed a CPU with AVX2 (x86-64-v3). On an
+  older one, such as an Intel Atom, glibc refused them with `CPU ISA level is
+  lower than required`. They were built on GitHub's `ubuntu-26.04` runner,
+  whose C toolchain targets x86-64-v3. `release.yml` now builds the server and
+  desktop binaries, `amd64` and `arm64`, inside the `Dockerfile`'s builder
+  image. Nothing changes on a newer CPU: Go builds for `GOAMD64=v1` as before,
+  and its runtime still uses newer instructions where it detects them. The
+  container image was not affected.
+- **The README's binary install works on arm64.** It downloaded the
+  `linux-amd64` build on every host, although each release also ships
+  `linux-arm64` binaries. It now picks the build from `uname -m`, checks it
+  against its `.sha256` file before installing, and says that the container
+  image covers both architectures.
+- **The README describes what ships.** It now covers NPUs (the Metrics table
+  and `sysmon npu`), drive-bay health from the BMC, md and MegaRAID arrays,
+  alerts, the fleet, Prometheus export and history, and configuration reload.
+  The command list gains `host`, `npu` and `version`, the project layout lists
+  every `cmd/`, `pkg/` and `internal/` directory, and the documentation table
+  links the SPEC, the alerts/fleet/config page, delta streaming, remote
+  deployment and testing. It no longer says there is no configuration file.
+- **`docs/cli/reference.md` documents `sysmon npu`**, and
+  `docs/collector/user.md` says what NPU and drive-bay readings need.
+- **`docs/SPEC.md` describes the release pipeline as it runs**: a green merge
+  to `main` that bumps `VERSION` is tagged and released by
+  `auto-release.yml`, not by a signed tag pushed by hand. `ROADMAP.md`
+  records the change, names v0.3.5-alpha as the latest release, links the
+  GitHub release-candidate milestone, and stops linking issues that only
+  existed on the retired Gitea forge.
+
 ## [0.3.5-alpha] - 2026-11-23
 
 ### Changed
