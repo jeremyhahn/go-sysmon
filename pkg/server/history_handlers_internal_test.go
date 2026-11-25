@@ -688,6 +688,165 @@ func TestHandleHistory_BadWindowsAreRejected(t *testing.T) {
 	}
 }
 
+// TestHandleHistory_MillisecondsThatDoNotFitAreRejected. A millisecond count
+// too large to hold in nanoseconds wraps when it is converted: a step of
+// 2^58+1000 comes out as exactly one second, and a timestamp past the year
+// 2262 as an instant in 1677. Each is the caller's mistake and is refused as
+// one, never served as the value it wrapped to.
+func TestHandleHistory_MillisecondsThatDoNotFitAreRejected(t *testing.T) {
+	f := newFakePrometheus(t)
+	s := historyServer(t, f.srv.URL)
+
+	tests := []struct {
+		name, query, want string
+	}{
+		{"a step that wraps to one second", "start=1788300000000&end=1788303600000&step=288230376151712744", "step is out of range"},
+		{"a step one past the largest", "start=1788300000000&end=1788303600000&step=9223372036855", "step is out of range"},
+		{"a negative step one past the largest", "start=1788300000000&end=1788303600000&step=-9223372036855", "step is out of range"},
+		{"an end past the last nanosecond", "start=9223372033254&end=9223372036855", "end is out of range"},
+		{"a start before the first nanosecond", "start=-9223372036855&end=1788303600000", "start is out of range"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f.seen = nil
+			rec := get(t, s, "/api/history?metric=cpu&node=mon0&"+tt.query)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tt.want) {
+				t.Errorf("status = %d, body %q; want 400 naming %q", rec.Code, rec.Body.String(), tt.want)
+			}
+			if f.seen != nil {
+				t.Errorf("Prometheus was asked for start=%s end=%s step=%s",
+					f.seen.Get("start"), f.seen.Get("end"), f.seen.Get("step"))
+			}
+		})
+	}
+}
+
+// TestHandleHistory_TheLargestMillisecondsThatFitAreServed. The bound is on
+// what a duration can hold, not on what is sensible: the largest step that
+// fits is asked of Prometheus as it was given, and echoed back.
+func TestHandleHistory_TheLargestMillisecondsThatFitAreServed(t *testing.T) {
+	f := newFakePrometheus(t)
+	s := historyServer(t, f.srv.URL)
+
+	rec := get(t, s, "/api/history?metric=cpu&node=mon0&start=1788300000000&end=1788303600000&step=9223372036854")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got, want := f.seen.Get("step"), "9223372036.854"; got != want {
+		t.Errorf("upstream step = %q, want %q", got, want)
+	}
+	var got types.History
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.StepMs != 9223372036854 {
+		t.Errorf("step_ms = %d, want the step asked for", got.StepMs)
+	}
+}
+
+// TestHandleHistory_ARangeWithNoRoomBeforeItIsRejected. A counter's
+// measurement reads before start, by up to what the range leaves of the 90
+// days. A range that fits in nanoseconds itself, but so early that the read
+// before it does not, would have that read wrap to the year 2262; it is
+// refused instead.
+func TestHandleHistory_ARangeWithNoRoomBeforeItIsRejected(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.cadence = 15 * time.Second
+	s := historyServer(t, f.srv.URL)
+
+	tests := []struct {
+		name, query string
+	}{
+		{"starting at the first nanosecond", "start=-9223372036854&end=-9223372033254"},
+		{"ending a millisecond short of 90 days after it", "start=-9215599636855&end=-9215596036855"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f.queries = nil
+			rec := get(t, s, "/api/history?metric=swap_in&node=mon0&step=15000&"+tt.query)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "end is out of range") {
+				t.Errorf("status = %d, body %q; want 400 saying end is out of range", rec.Code, rec.Body.String())
+			}
+			for _, q := range f.queries {
+				t.Errorf("Prometheus was asked for %s from %s to %s", q.Get("query"), q.Get("start"), q.Get("end"))
+			}
+		})
+	}
+}
+
+// TestHandleHistory_TheEarliestRangeIsAskedForAsItIs. A counter's measurement
+// reads before start, so the earliest range served has to leave that read
+// inside what nanoseconds hold too: every instant asked of Prometheus is at or
+// after the first one, and none has wrapped past the range's end.
+func TestHandleHistory_TheEarliestRangeIsAskedForAsItIs(t *testing.T) {
+	f := newFakePrometheus(t)
+	f.cadence = 15 * time.Second
+	s := historyServer(t, f.srv.URL)
+
+	rec := get(t, s, "/api/history?metric=swap_in&node=mon0&start=-9215599636854&end=-9215596036854&step=15000")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if len(f.queries) != 2 {
+		t.Fatalf("%d queries, want the gap measurement and the rate", len(f.queries))
+	}
+	for _, q := range f.queries {
+		start, err := strconv.ParseFloat(q.Get("start"), 64)
+		if err != nil {
+			t.Fatalf("upstream start = %q: %v", q.Get("start"), err)
+		}
+		if got, want := q.Get("end"), "-9215596036.854"; got != want {
+			t.Errorf("%s: upstream end = %q, want %q", q.Get("query"), got, want)
+		}
+		if start < -9223372036.854 || start > -9215596036.854 {
+			t.Errorf("%s: upstream start = %v, want it before the range's end and no earlier than the first nanosecond",
+				q.Get("query"), start)
+		}
+	}
+}
+
+// TestMsParam covers the one place a millisecond parameter is read: absent it
+// is the fallback, present it is the integer given, and anything that is not
+// an integer whose nanoseconds fit is an *prom.InvalidRangeError naming it.
+func TestMsParam(t *testing.T) {
+	const largest = math.MaxInt64 / int64(time.Millisecond)
+
+	tests := []struct {
+		name    string
+		value   []string
+		want    int64
+		wantErr string
+	}{
+		{name: "absent", want: 42},
+		{name: "empty", value: []string{""}, want: 42},
+		{name: "an integer", value: []string{"1500"}, want: 1500},
+		{name: "a negative integer", value: []string{"-1500"}, want: -1500},
+		{name: "the largest that fits", value: []string{strconv.FormatInt(largest, 10)}, want: largest},
+		{name: "the smallest that fits", value: []string{strconv.FormatInt(-largest, 10)}, want: -largest},
+		{name: "one past the largest", value: []string{strconv.FormatInt(largest+1, 10)}, wantErr: "at is out of range"},
+		{name: "one before the smallest", value: []string{strconv.FormatInt(-largest-1, 10)}, wantErr: "at is out of range"},
+		{name: "the largest integer", value: []string{strconv.FormatInt(math.MaxInt64, 10)}, wantErr: "at is out of range"},
+		{name: "the smallest integer", value: []string{strconv.FormatInt(math.MinInt64, 10)}, wantErr: "at is out of range"},
+		{name: "not a number", value: []string{"soon"}, wantErr: "at must be an integer"},
+		{name: "past an integer", value: []string{"9223372036854775808"}, wantErr: "at must be an integer"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := msParam(map[string][]string{"at": tt.value}, "at", 42)
+			if tt.wantErr == "" {
+				if err != nil || got != tt.want {
+					t.Fatalf("msParam = %d, %v; want %d", got, err, tt.want)
+				}
+				return
+			}
+			var invalid *prom.InvalidRangeError
+			if !errors.As(err, &invalid) || !strings.Contains(invalid.Message, tt.wantErr) {
+				t.Fatalf("msParam = %d, %v; want an InvalidRangeError saying %q", got, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestHandleHistory_UpstreamFailureIsABadGateway. The distinction matters to
 // whoever is reading the error: 502 says the dashboard reached go-sysmon and
 // go-sysmon could not reach Prometheus.
