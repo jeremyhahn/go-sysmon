@@ -178,9 +178,17 @@ func TestHistory_RefusesWhatItWillNotAsk(t *testing.T) {
 		{"a window past 90 days", fmt.Sprintf("/api/history?metric=load1&start=%d&end=%d", end.Add(-100*24*time.Hour).UnixMilli(), end.UnixMilli()), "at most"},
 		{"more points than Prometheus returns", base + "&metric=load1&step=1", "points at this step"},
 		// Milliseconds too many to hold as a duration: 2^58 of them come out
-		// as no step at all, and the largest integer as a step backwards.
-		{"a step too long to hold, read as zero", base + "&metric=load1&step=288230376151711744", "step"},
-		{"a step too long to hold, read as negative", base + "&metric=swap_in&step=9223372036854775807", "step"},
+		// as no step at all, a thousand more as one second, and the largest
+		// integer as a step backwards.
+		{"a step too long to hold, read as zero", base + "&metric=load1&step=288230376151711744", "step is out of range"},
+		{"a step too long to hold, read as one second", base + "&metric=load1&step=288230376151712744", "step is out of range"},
+		{"a step too long to hold, read as negative", base + "&metric=swap_in&step=9223372036854775807", "step is out of range"},
+		// Timestamps too many milliseconds to hold as nanoseconds: the year
+		// 2262 would be asked of the database as 1677, and the reverse.
+		{"an end past the last nanosecond", fmt.Sprintf("/api/history?metric=load1&start=%d&end=9223372036855", start.UnixMilli()), "end is out of range"},
+		{"a start before the first nanosecond", fmt.Sprintf("/api/history?metric=load1&start=-9223372036855&end=%d", end.UnixMilli()), "start is out of range"},
+		// The range itself fits, but a counter's measurement reads before it.
+		{"a range with no room to read before it", "/api/history?metric=swap_in&start=-9223372036854&end=-9223372033254", "end is out of range"},
 		{"a counter step past the read budget", base + "&metric=swap_in&step=" + fmt.Sprint((90 * 24 * time.Hour).Milliseconds()), "exceed"},
 		// The range leaves an hour of the 90-day read budget; a 59-minute step
 		// fits in it, but the rate window it needs, with two lookbacks, does not.

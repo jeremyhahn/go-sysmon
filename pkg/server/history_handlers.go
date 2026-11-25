@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -23,6 +24,15 @@ import (
 // for a long time, and this endpoint is reachable by anything that can route to
 // the host.
 const maxHistoryWindow = 90 * 24 * time.Hour
+
+// maxParamMs is the largest magnitude a millisecond parameter may have: the
+// most milliseconds whose nanoseconds a time.Duration holds, and so the last
+// instant a time.Time gives as Unix nanoseconds.
+//
+// A value past it wraps when converted rather than failing. A step of
+// 2^58+1000 milliseconds multiplies out to exactly one second, and a
+// timestamp past the year 2262 is asked of the database as one in 1677.
+const maxParamMs = math.MaxInt64 / int64(time.Millisecond)
 
 // handleHistoryMetrics advertises what history is available.
 //
@@ -268,6 +278,16 @@ func historyWindow(q map[string][]string) (start, end time.Time, step time.Durat
 	if err != nil {
 		return time.Time{}, time.Time{}, 0, err
 	}
+	// A counter is read from before start as well, by up to what the range
+	// leaves of maxHistoryWindow (readHistory): the earliest instant a request
+	// can have the database asked about is that far before end, and it has to
+	// fit in nanoseconds as end itself does.
+	if earliest := maxHistoryWindow.Milliseconds() - maxParamMs; endMs < earliest {
+		return time.Time{}, time.Time{}, 0, &prom.InvalidRangeError{
+			Message: "end is out of range; it may be no earlier than " +
+				strconv.FormatInt(earliest, 10) + " milliseconds",
+		}
+	}
 	startMs, err := msParam(q, "start", endMs-time.Hour.Milliseconds())
 	if err != nil {
 		return time.Time{}, time.Time{}, 0, err
@@ -294,7 +314,8 @@ func historyWindow(q map[string][]string) (start, end time.Time, step time.Durat
 	return start, end, time.Duration(stepMs) * time.Millisecond, nil
 }
 
-// msParam reads one integer-millisecond parameter, defaulting when absent.
+// msParam reads one integer-millisecond parameter, defaulting when absent. A
+// value past maxParamMs either way is refused.
 func msParam(q map[string][]string, name string, fallback int64) (int64, error) {
 	values := q[name]
 	if len(values) == 0 || values[0] == "" {
@@ -303,6 +324,12 @@ func msParam(q map[string][]string, name string, fallback int64) (int64, error) 
 	v, err := strconv.ParseInt(values[0], 10, 64)
 	if err != nil {
 		return 0, &prom.InvalidRangeError{Message: name + " must be an integer number of milliseconds"}
+	}
+	if v > maxParamMs || v < -maxParamMs {
+		return 0, &prom.InvalidRangeError{
+			Message: name + " is out of range; its magnitude may be at most " +
+				strconv.FormatInt(maxParamMs, 10) + " milliseconds",
+		}
 	}
 	return v, nil
 }
