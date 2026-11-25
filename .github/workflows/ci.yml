@@ -483,6 +483,9 @@ jobs:
           tags: go-sysmon:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # The runtime stage upgrades Debian's packages: a cached layer would
+          # keep yesterday's.
+          no-cache-filters: runtime
 
       # Trivy runs from its own image rather than an action: actions that
       # install themselves through a nested checkout resolve against whichever
