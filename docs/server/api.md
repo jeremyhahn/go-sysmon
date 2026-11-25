@@ -666,6 +666,12 @@ Answers one metric over one date range, for one node.
 | `end`     | Unix milliseconds. Defaults to now. |
 | `step`    | Milliseconds. Defaults to a resolution chosen for the window. |
 
+A millisecond value is refused, not converted, when its nanoseconds do not fit a
+64-bit integer: `start`, `end` and `step` may each be at most 9223372036854
+either side of zero — a timestamp between the years 1677 and 2262, a step of
+about 292 years. `end` may also be no earlier than -9215596036854, 90 days after
+the earliest such instant, because a counter is read from before its range.
+
 ```json
 {
   "enabled": true,
@@ -708,7 +714,7 @@ Status codes:
 | Code | Meaning |
 |------|---------|
 | 200  | Answered. An empty `series` is a real answer: the node has no data for that window. |
-| 400  | Unknown metric, a node this dashboard does not serve, or a window it will not serve — an end at or before the start, more than 90 days, a step needing over 11,000 points (counted inclusively: a sample at the start, at every step, and at the end), or, for a counter, a range plus rate window longer than 90 days. |
+| 400  | Unknown metric, a node this dashboard does not serve, or a window it will not serve — a `start`, `end` or `step` that is not an integer or is out of range, an end at or before the start, more than 90 days, a step needing over 11,000 points (counted inclusively: a sample at the start, at every step, and at the end), or, for a counter, a range plus rate window longer than 90 days. |
 | 502  | Prometheus could not be reached, or refused the query. The dashboard reached go-sysmon; go-sysmon did not reach Prometheus. The detail is in the server log, not the response. |
 
 ## Origins
